@@ -10,21 +10,22 @@
 | 任务清单与验收 | `规划/05` §3.6（APP-01…16） |
 | 业务规则取值（BR） | `规划/08_业务规则/`；不在本仓库复述数值 |
 | 接口、错误码、枚举、桥、路由、文案 | `contracts/snapshot/`（从 `../rebate-platform/contracts/` 按 `contract.lock` 锁定的提交转写，禁止手改） |
-| 设计令牌 | `contracts/snapshot/design-tokens.json`（从规划仓库 `design/tokens/design-tokens.json` 按 `contract.lock` 转写） |
+| 设计令牌 | `contracts/snapshot/design/design-tokens.json`（从规划仓库 `design/tokens/design-tokens.json` 按 `contract.lock` 转写） |
 | 设计稿 | `../couli-runs/design-hifi/`（`GUIDE.md`、`flow-map.md`、`adaptation-a11y-spec.md`、`project/*.dc.html`） |
 
 ## 2. 命令
 
 | 用途 | 命令 |
 | --- | --- |
-| 契约快照（换锁定版本时） | `tools/contracts/sync.sh` |
-| 生成代码 | `python3 tools/codegen/gen.py`；`--check` 只查漂移 |
-| 本机 CI | `tools/ci/verify.sh`（ktlint + detekt + Android Lint + 生成物漂移 + 构建 + 单测） |
+| 契约快照（换锁定版本时） | `tools/contracts/sync.sh`（worktree 里用 `REBATE_PLATFORM_DIR`、`COULI_DIR` 指定两个仓库） |
+| 生成代码 | `python3 tools/codegen/gen.py`；`--check` 只查漂移；命名规则测试 `python3 tools/codegen/test_gen.py` |
+| 本机 CI | `tools/ci/verify.sh`（ktlint + detekt + Android Lint + 生成物漂移 + 构建 + 单测 + Release 制品扫描）；`--fast` 只到 assembleDebug |
+| 静态检查 | `./gradlew ktlintCheck detekt lint`（自定义规则 `couliRules` 随 `detekt` 跑） |
 
 ## 3. 硬规则
 
 1. 依赖方向：App → Features → Core → Generated；Feature 之间不互相依赖，跨功能跳转只经 Router（路由名）。
-2. `core/generated/` 与 `contracts/snapshot/` 是生成物，不手改；改生成器或换锁定版本后重新生成。
+2. `core/generated/`（`src/test` 的一致性测试除外）与 `contracts/snapshot/` 是生成物，不手改；改生成器或换锁定版本后重新生成。
 3. 金额是整数分（`Long`），不用浮点；格式化只走 DesignSystem 的格式化函数。
 4. 业务页面不硬编码中文文案，文案经文案字典取键（BR-TEXT-12）。
 5. 第三方 SDK 只在 `PrivacyGate.onConsented()` 里初始化。

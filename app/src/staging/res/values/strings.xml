@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Staging 包的可见测试标识（03 §3.6）：同包名覆盖安装，避免被误当成正式包分发。 -->
+    <string name="app_name">凑狸测试</string>
+</resources>

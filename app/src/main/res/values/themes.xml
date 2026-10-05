@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+        系统深色模式下强制浅色（TECH-22）。界面由 Compose 的 CouliTheme（Material 3）绘制；
+        窗口主题用平台浅色主题作底（Material Components 的 XML 主题不在依赖白名单里）。
+    -->
+    <style name="Theme.Couli" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
+        <item name="android:windowBackground">@color/couli_window_background</item>
+    </style>
+</resources>

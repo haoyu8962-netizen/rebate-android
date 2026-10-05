@@ -1,0 +1,26 @@
+# detekt 配置：在默认配置之上覆盖（--build-upon-default-config）。0 问题即通过。
+# 生成物目录（core:generated 的 src/main、src/debugFeatures）不在输入里。
+build:
+  maxIssues: 0
+
+config:
+  validation: true
+
+naming:
+  FunctionNaming:
+    # Compose 函数按惯例大写开头
+    ignoreAnnotated: ['Composable']
+
+style:
+  MaxLineLength:
+    maxLineLength: 140
+  MagicNumber:
+    excludes: ['**/test/**', '**/testDebug/**', '**/androidTest/**', '**/*.kts']
+  ForbiddenImport:
+    active: true
+    imports:
+      # 03 §3.3：页面状态用 ViewModel + StateFlow；LiveData 不用
+      - value: 'androidx.lifecycle.LiveData'
+        reason: '页面状态用 StateFlow（03 §3.3）'
+      - value: 'androidx.lifecycle.MutableLiveData'
+        reason: '页面状态用 StateFlow（03 §3.3）'

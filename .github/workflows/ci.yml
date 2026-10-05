@@ -1,0 +1,29 @@
+# 远端仓库建好后启用：内容只是调用本机 CI 入口 tools/ci/verify.sh（03 §11）。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: verify
+        run: tools/ci/verify.sh
+      - name: upload reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-reports
+          path: |
+            build/verify/
+            **/build/reports/

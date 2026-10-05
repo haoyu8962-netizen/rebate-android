@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Android Lint 配置：生成物目录（core/generated 的 src/main、src/debugFeatures）不检查。 -->
+<lint>
+    <issue id="all">
+        <ignore path="**/core/generated/src/main/**" />
+        <ignore path="**/core/generated/src/debugFeatures/**" />
+    </issue>
+</lint>
