@@ -8,6 +8,7 @@
 #         - 调试面板标记 COULI_DEBUG_PANEL
 #         - DebugRoutes 的唯一长标记（DebugRoutes.MARKER，取自生成物 DebugRoutes.kt）
 #         - 快照 routes.json 里 debug_only 路由的名字
+#         - 组件目录页的唯一长标记（COMPONENT_CATALOG_MARKER，取自 app/src/debugFeatures 的 ComponentCatalog.kt；DS-01）
 #       另用 aapt2 检查不可调试（badging 没有 application-debuggable，清单没有 android:debuggable=true）。
 #   tools/ci/release-scan.sh --self-test [debug.apk] [release.apk] [staging.apk]
 #       证明扫描有牙齿：debug、staging 制品必须命中（含 DebugRoutes 标记；debug 还必须命中 debuggable），
@@ -28,6 +29,7 @@ SELF="$ROOT/tools/ci/release-scan.sh"
 ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 ROUTES="$ROOT/contracts/snapshot/contracts/routes.json"
 DEBUG_ROUTES_KT="$ROOT/core/generated/src/debugFeatures/kotlin/com/couli/generated/DebugRoutes.kt"
+CATALOG_KT="$ROOT/app/src/debugFeatures/kotlin/com/couli/app/catalog/ComponentCatalog.kt"
 
 DEFAULT_DEBUG_APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 DEFAULT_RELEASE_APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"
@@ -81,6 +83,7 @@ scan_apk() {
   [ -r "$apk" ] || fail "APK 不可读：$apk"
   [ -f "$ROUTES" ] || fail "找不到快照 $ROUTES"
   [ -f "$DEBUG_ROUTES_KT" ] || fail "找不到生成物 $DEBUG_ROUTES_KT"
+  [ -f "$CATALOG_KT" ] || fail "找不到组件目录页源码 $CATALOG_KT"
 
   local aapt2
   aapt2="$(resolve_aapt2)"
@@ -94,6 +97,10 @@ scan_apk() {
   marker="$(sed -n 's/^ *const val MARKER: kotlin\.String = "\([A-Za-z0-9_]*\)"$/\1/p' "$DEBUG_ROUTES_KT")" ||
     fail "读取 DebugRoutes 标记失败（$DEBUG_ROUTES_KT）"
   [ "${#marker}" -ge 24 ] || fail "DebugRoutes.kt 里没有足够长的 MARKER 常量（读到 '${marker}'）"
+  local catalog_marker
+  catalog_marker="$(sed -n 's/^const val COMPONENT_CATALOG_MARKER = "\([A-Za-z0-9_]*\)"$/\1/p' "$CATALOG_KT")" ||
+    fail "读取组件目录页标记失败（$CATALOG_KT）"
+  [ "${#catalog_marker}" -ge 24 ] || fail "ComponentCatalog.kt 里没有足够长的 COMPONENT_CATALOG_MARKER 常量（读到 '${catalog_marker}'）"
 
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/couli-scan.XXXXXX")" || fail "mktemp 失败"
@@ -125,9 +132,10 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker"; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker"; do
     case "$pattern" in
       "$marker") label="debug_routes_marker" ;;
+      "$catalog_marker") label="component_catalog" ;;
       COULI_DEBUG_PANEL) label="debug_panel" ;;
       *) label="nonprod_url:${pattern%%\\*}" ;;
     esac
@@ -215,6 +223,7 @@ if [ "${1:-}" = "--self-test" ]; then
   run_scan "$debug_apk"
   require_label "debug" "debug_routes_marker"
   require_label "debug" "debug_panel"
+  require_label "debug" "component_catalog"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -222,6 +231,7 @@ if [ "${1:-}" = "--self-test" ]; then
   run_scan "$staging_apk"
   require_label "staging" "debug_routes_marker"
   require_label "staging" "debug_panel"
+  require_label "staging" "component_catalog"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"
 

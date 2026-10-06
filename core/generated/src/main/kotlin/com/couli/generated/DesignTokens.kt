@@ -114,4 +114,11 @@ object DesignTokens {
             "android" to 48,
             "harmony" to 48,
         )
+
+    /** focus.* → 焦点环线宽与外距（逻辑像素） */
+    val focus: kotlin.collections.Map<kotlin.String, kotlin.Int> =
+        linkedMapOf(
+            "width" to 2,
+            "offset" to 2,
+        )
 }

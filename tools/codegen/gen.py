@@ -733,6 +733,7 @@ def gen_tokens(out_root: str):
             raise GenError(f"令牌 font.line-height.{path} 不是数值")
         line_height.append((path, float(value)))
     target = int_leaves((tokens.get("interaction") or {}).get("target") or {}, "interaction.target")
+    focus = int_leaves(tokens.get("focus") or {}, "focus")
     lines = [
         "/** 设计令牌原始常量（design/tokens/design-tokens.json）。语义映射在 core:designsystem。 */",
         "object DesignTokens {",
@@ -753,6 +754,8 @@ def gen_tokens(out_root: str):
     lines += kmap_lines("lineHeight", "font.line-height.* → 行高倍数", "kotlin.Double", line_height, repr)
     lines.append("")
     lines += kmap_lines("interactionTarget", "interaction.target.* → 最小命中区（逻辑像素）", "kotlin.Int", target, str)
+    lines.append("")
+    lines += kmap_lines("focus", "focus.* → 焦点环线宽与外距（逻辑像素）", "kotlin.Int", focus, str)
     lines.append("}")
     return [write(out_root, f"{MAIN_KOTLIN}/DesignTokens.kt", kotlin_file("\n".join(lines) + "\n"))]
 

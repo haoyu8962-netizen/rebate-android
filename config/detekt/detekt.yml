@@ -6,6 +6,15 @@ build:
 config:
   validation: true
 
+# Compose 组件惯例：参数多为可选的外观参数，函数体是界面树（DS-01）。只对 @Composable 放宽这三条。
+complexity:
+  LongParameterList:
+    ignoreAnnotated: ['Composable']
+  LongMethod:
+    ignoreAnnotated: ['Composable']
+  TooManyFunctions:
+    ignoreAnnotatedFunctions: ['Composable']
+
 naming:
   FunctionNaming:
     # Compose 函数按惯例大写开头

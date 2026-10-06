@@ -12,10 +12,11 @@
 #   4. 源码规则扫描器单测（./gradlew -p build-logic :convention:test：字符串模板嵌套、原始字符串、字符字面量、注释）；
 #      lint 违反样例必须报错（tools/ci/lint-fixtures/ 每条规则至少一个；含插值里的中文、插值里的 SDK 初始化）
 #   5. ./gradlew assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
-#   6. ./gradlew testDebugUnitTest（含 Robolectric 与 ContractConformanceTest）
+#   6. ./gradlew testDebugUnitTest（含 Robolectric、ContractConformanceTest 与 DS-01 格式向量 FormatVectorTest）；
+#      ./gradlew :core:designsystem:verifyRoborazziDebug（DS-01 组件快照与入库基准图 src/test/snapshots 比对）
 #   7. python3 tools/codegen/test_gen.py（生成器命名规则；含用 Gradle 缓存里的 Kotlin 编译器真编译探针生成物，
 #      所以放在构建之后，COULI_GEN_REQUIRE_KOTLINC=1：找不到编译器即失败，不跳过）
-#   8. tools/ci/release-scan.sh <release apk>、--self-test（debug / staging 命中、release 不命中）
+#   8. tools/ci/release-scan.sh <release apk>、--self-test（debug / staging 命中、release 不命中；含组件目录页标记）
 #      与 --self-test-tools（非 ZIP、注入返回 127 的假 unzip / strings / aapt2 / python3 / grep 时必须以 2 退出）
 # 兼容 macOS 自带 bash 3.2；路径加引号（仓库路径含中文）。
 set -uo pipefail
@@ -156,7 +157,8 @@ expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feat
 
 step "构建 debug / staging / release 与 androidTest" \
   $GRADLE assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
-step "单元测试（testDebugUnitTest，含 Robolectric）" $GRADLE testDebugUnitTest
+step "单元测试（testDebugUnitTest，含 Robolectric 与格式向量）" $GRADLE testDebugUnitTest
+step "组件快照测试（Roborazzi verifyRoborazziDebug）" $GRADLE :core:designsystem:verifyRoborazziDebug
 
 step "生成器命名规则测试（test_gen.py，含探针编译）" env COULI_GEN_REQUIRE_KOTLINC=1 python3 tools/codegen/test_gen.py -v
 

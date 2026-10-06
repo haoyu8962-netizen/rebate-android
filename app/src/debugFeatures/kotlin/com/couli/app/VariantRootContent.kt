@@ -1,5 +1,8 @@
 package com.couli.app
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,10 +14,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import com.couli.app.catalog.CATALOG_EXTRA
+import com.couli.app.catalog.CatalogPage
+import com.couli.app.catalog.ComponentCatalog
 import com.couli.app.debug.COULI_DEBUG_PANEL
 import com.couli.app.debug.DebugPanel
 import com.couli.app.debug.rememberEnvironmentSwitcher
@@ -32,6 +39,14 @@ internal fun VariantRootContent() {
     val switcher = rememberEnvironmentSwitcher(LocalContext.current)
     var environment by remember { mutableStateOf(switcher.current) }
     var panelOpen by remember { mutableStateOf(false) }
+    // 组件目录（DS-01）：从调试面板进入；adb 可用 intent extra couli.catalog=<页面 key> 直接打开（截图用）
+    val context = LocalContext.current
+    val requested = remember(context) { CatalogPage.fromKey(context.findActivity()?.intent?.getStringExtra(CATALOG_EXTRA)) }
+    var catalog by rememberSaveable { mutableStateOf(requested) }
+    catalog?.let { page ->
+        ComponentCatalog(initial = page, onClose = { catalog = null })
+        return
+    }
 
     Column(
         modifier =
@@ -51,6 +66,9 @@ internal fun VariantRootContent() {
             Text(text = if (panelOpen) "Close debug panel" else "Debug panel")
         }
         if (panelOpen) {
+            TextButton(onClick = { catalog = CatalogPage.INDEX }) {
+                Text(text = "Component catalog")
+            }
             DebugPanel(
                 switcher = switcher,
                 current = environment,
@@ -59,3 +77,10 @@ internal fun VariantRootContent() {
         }
     }
 }
+
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }

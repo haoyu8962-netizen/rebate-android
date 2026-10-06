@@ -24,6 +24,11 @@ ktlint_function_naming_ignore_when_annotated_with = Composable
 ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_function-signature = disabled
 
+# DS-01 的格式向量测试同样由 Codex 先写、本仓库不改；它的格式与上面同两条规则不一致，只对这一个文件关掉。
+[core/designsystem/src/test/kotlin/com/couli/core/designsystem/FormatVectorTest.kt]
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_function-signature = disabled
+
 [*.{yml,yaml,json,toml}]
 indent_size = 2
 
