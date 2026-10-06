@@ -14,3 +14,9 @@ internal fun reconcileEnvironmentAtStartup(
     context: Context,
     cleaners: EnvironmentSwitchCleanerRegistry,
 ): EnvironmentStartupReconciler.Outcome = EnvironmentSwitcher(context, buildDefaultEnvironment(), cleaners).reconcileAtStartup()
+
+/** 当前环境的接口基址（网络层 ApiClient 用；debug / staging 按显式选择或构建默认）。 */
+internal fun currentApiBaseUrl(
+    context: Context,
+    cleaners: EnvironmentSwitchCleanerRegistry,
+): String = EnvironmentSwitcher(context, buildDefaultEnvironment(), cleaners).endpoints.apiBaseUrl

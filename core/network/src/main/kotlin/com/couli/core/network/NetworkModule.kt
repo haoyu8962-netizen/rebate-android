@@ -1,8 +1,8 @@
 package com.couli.core.network
 
 /**
- * 网络层：生成的客户端 + 中间件（03 §3.1、§4）。
- *
- * TODO(APP-03): 按任务书实现；APP-01 只建模块边界，不写假装能用的逻辑。
+ * 网络核心（03 §3.1、§4.2；APP-03a）：[ApiClient] 请求管线、[RequestHeaderPolicy] 公共头与本地放行、[RequestSigner] 签名、
+ * [RefreshCoordinator] 单飞刷新、[ErrorActionMapper]、[PendingKeyStore] 未决幂等键、[SessionTokens] 令牌存储。
+ * TODO(APP-03b): 设备注册（DeviceCredentials 的实现）、ConfigStore + LKG、Tracker。
  */
 object NetworkModule

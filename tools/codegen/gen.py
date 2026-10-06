@@ -11,6 +11,7 @@
   python3 tools/codegen/gen.py           生成（覆盖上述文件，删除输出目录里多余的旧文件）
   python3 tools/codegen/gen.py --check   在临时目录生成后逐字比较；不一致退出 1 并列出文件
 
+APP-03a 加：openapi 每个 operation 的登记表 → ApiOperations（包 com.couli.core.generated；不生成请求 / 响应模型）。
 本任务生成：枚举、错误码、路由、桥、文案、令牌；不生成 OpenAPI 客户端、事件、apps.json 片段
 （分别归 APP-03、APP-03、APP-04/06）。API 形状见 APP-01-android 任务书 §5。
 APP-02c 加：商店对照表 specs/app-stores.yaml → AppStores（main）；openapi GET /v1/app-versions/check 的 200 响应示例
@@ -55,7 +56,10 @@ PACKAGE_PATH = PACKAGE.replace(".", "/")
 MAIN_KOTLIN = "core/generated/src/main/kotlin/" + PACKAGE_PATH
 DEBUG_KOTLIN = "core/generated/src/debugFeatures/kotlin/" + PACKAGE_PATH
 RESOURCES = "core/generated/src/main/resources"
-OWNED_DIRS = [MAIN_KOTLIN, DEBUG_KOTLIN, RESOURCES]
+# APP-03a：openapi 操作登记表（ApiOperations）。包名按三端测试接线约定（NetworkVectorTest：com.couli.core.generated）。
+API_PACKAGE = "com.couli.core.generated"
+API_KOTLIN = "core/generated/src/main/kotlin/" + API_PACKAGE.replace(".", "/")
+OWNED_DIRS = [MAIN_KOTLIN, DEBUG_KOTLIN, RESOURCES, API_KOTLIN]
 
 HEADER = "// 生成物，禁止手改；来源 contract.lock（tools/codegen/gen.py 由 contracts/snapshot/ 生成）\n"
 
@@ -80,6 +84,9 @@ GENERATOR_TYPE_NAMES = {
     "AppStoreSpec",
     "AppStores",
     "AppVersionCheckExample",
+    "ApiOperation",
+    "ApiOperations",
+    "ApiMinVersionGate",
 }
 # Kotlin 默认导入（kotlin.*、kotlin.collections.* 等）里常见的类型名；同包声明会遮蔽它们。
 KOTLIN_STANDARD_TYPE_NAMES = {
@@ -226,12 +233,12 @@ def write(out_root: str, rel: str, content: str) -> str:
     return rel
 
 
-def kotlin_file(body: str, imports=(), suppress=()) -> str:
+def kotlin_file(body: str, imports=(), suppress=(), package: str = PACKAGE) -> str:
     lines = [HEADER.rstrip("\n")]
     if suppress:
         lines.append("@file:Suppress(" + ", ".join(kstr(s) for s in suppress) + ")")
         lines.append("")
-    lines.append(f"package {PACKAGE}")
+    lines.append(f"package {package}")
     lines.append("")
     if imports:
         for imp in sorted(imports):
@@ -976,6 +983,142 @@ def gen_app_version_check_example(out_root: str):
     return [write(out_root, f"{DEBUG_KOTLIN}/AppVersionCheckExample.kt", kotlin_file("\n".join(lines) + "\n"))]
 
 
+# ---------------------------------------------------------------- openapi 操作登记表（APP-03a）
+
+HTTP_METHODS = ["get", "post", "put", "patch", "delete"]
+# x-min-version-gate：true（受闸门约束）/ false（例外）/ "conditional"（按请求体条件）/ 未标注。
+MIN_VERSION_GATES = {True: "GATED", False: "EXEMPT", "conditional": "CONDITIONAL", None: "UNSPECIFIED"}
+OPERATION_EXTENSIONS = {
+    "x-auth", "x-signed", "x-idempotent", "x-step-up", "x-error-codes", "x-session-scopes",
+    "x-min-version-gate", "x-implementation",
+}
+
+
+def gen_api_operations(out_root: str):
+    data = load("contracts/openapi.json")
+    paths = data.get("paths")
+    if not isinstance(paths, dict) or not paths:
+        raise GenError("openapi.json 没有 paths")
+    entries = []
+    seen = set()
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            raise GenError(f"openapi.json paths[{path!r}] 不是对象")
+        for method in HTTP_METHODS:
+            op = item.get(method)
+            if op is None:
+                continue
+            where = f"openapi.json {method.upper()} {path}"
+            op_id = op.get("operationId")
+            if not isinstance(op_id, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", op_id):
+                raise GenError(f"{where} 的 operationId 不合法：{op_id!r}")
+            if op_id in seen:
+                raise GenError(f"operationId 重复：{op_id}")
+            seen.add(op_id)
+            unknown = sorted(k for k in op if k.startswith("x-") and k not in OPERATION_EXTENSIONS)
+            if unknown:
+                raise GenError(f"{where} 有不认识的扩展字段：{unknown}")
+            auth = op.get("x-auth")
+            if auth not in ("none", "optional", "login", "realname"):
+                raise GenError(f"{where} 的 x-auth 不认识：{auth!r}")
+            flags = {}
+            for key in ("x-signed", "x-idempotent"):
+                value = op.get(key, False)
+                if not isinstance(value, bool):
+                    raise GenError(f"{where} 的 {key} 不是布尔：{value!r}")
+                flags[key] = value
+            step_up = op.get("x-step-up")
+            if step_up is not None and not isinstance(step_up, str):
+                raise GenError(f"{where} 的 x-step-up 不是字符串：{step_up!r}")
+            codes = op.get("x-error-codes", [])
+            if not isinstance(codes, list) or not all(isinstance(c, int) and not isinstance(c, bool) for c in codes):
+                raise GenError(f"{where} 的 x-error-codes 不是整数列表")
+            # BR-ID-01 细则「受限会话」：未标注时取 [full]
+            scopes = op.get("x-session-scopes", ["full"])
+            if not isinstance(scopes, list) or not all(isinstance(v, str) for v in scopes) or not scopes:
+                raise GenError(f"{where} 的 x-session-scopes 不是非空字符串列表")
+            gate = op.get("x-min-version-gate")
+            gate_key = gate if isinstance(gate, bool) or gate is None else str(gate)
+            if gate_key not in MIN_VERSION_GATES:
+                raise GenError(f"{where} 的 x-min-version-gate 不认识：{gate!r}")
+            implementation = op.get("x-implementation")
+            if implementation not in (None, "planned"):
+                raise GenError(f"{where} 的 x-implementation 不认识：{implementation!r}")
+            entries.append(
+                [
+                    f"            {kstr(op_id)} to",
+                    "                ApiOperation(",
+                    f"                    operationId = {kstr(op_id)},",
+                    f"                    method = {kstr(method.upper())},",
+                    f"                    pathTemplate = {kstr(path)},",
+                    f"                    auth = {kstr(auth)},",
+                    f"                    signed = {kbool(flags['x-signed'])},",
+                    f"                    idempotent = {kbool(flags['x-idempotent'])},",
+                    f"                    stepUp = {knullable_str(step_up)},",
+                    "                    errorCodes = listOf(" + ", ".join(str(c) for c in codes) + "),",
+                    "                    sessionScopes = listOf(" + ", ".join(kstr(v) for v in scopes) + "),",
+                    f"                    minVersionGate = ApiMinVersionGate.{MIN_VERSION_GATES[gate_key]},",
+                    f"                    planned = {kbool(implementation == 'planned')},",
+                    "                ),",
+                ]
+            )
+    lines = [
+        "/** openapi 的 x-min-version-gate（BR-ID-01 细则「最低支持版本的接口层拦截」）。 */",
+        "enum class ApiMinVersionGate {",
+        "    /** true：受闸门约束。 */",
+        "    GATED,",
+        "",
+        "    /** false：不受约束（例外）。 */",
+        "    EXEMPT,",
+        "",
+        "    /** conditional：按请求体条件（operation 说明里写条件）。 */",
+        "    CONDITIONAL,",
+        "",
+        "    /** 未标注（只读接口）。 */",
+        "    UNSPECIFIED,",
+        "}",
+        "",
+        "/**",
+        " * openapi 的一个 operation（contracts/openapi.yaml）。只登记方法、路径与扩展字段，不含请求 / 响应模型。",
+        " * [sessionScopes] 未标注时为 [full]（BR-ID-01 细则「受限会话」）；[planned] = x-implementation: planned。",
+        " */",
+        "data class ApiOperation(",
+        "    val operationId: kotlin.String,",
+        "    /** 大写 HTTP 方法。 */",
+        "    val method: kotlin.String,",
+        "    val pathTemplate: kotlin.String,",
+        "    /** x-auth：none / optional / login / realname。 */",
+        "    val auth: kotlin.String,",
+        "    val signed: kotlin.Boolean,",
+        "    val idempotent: kotlin.Boolean,",
+        "    /** x-step-up 的 action；不需要二次验证为 null。 */",
+        "    val stepUp: kotlin.String?,",
+        "    val errorCodes: kotlin.collections.List<kotlin.Int>,",
+        "    val sessionScopes: kotlin.collections.List<kotlin.String>,",
+        "    val minVersionGate: ApiMinVersionGate,",
+        "    val planned: kotlin.Boolean,",
+        ") {",
+        "    /** 只读接口（GET）。 */",
+        "    val isRead: kotlin.Boolean get() = method == \"GET\"",
+        "}",
+        "",
+        "/** 全部 operation，按 openapi 出现顺序。 */",
+        "object ApiOperations {",
+        "    val all: kotlin.collections.Map<kotlin.String, ApiOperation> =",
+        "        linkedMapOf(",
+    ]
+    for entry in entries:
+        lines += entry
+    lines += [
+        "        )",
+        "",
+        "    fun byId(operationId: kotlin.String): ApiOperation? = all[operationId]",
+        "}",
+    ]
+    content = kotlin_file("\n".join(lines) + "\n", package=API_PACKAGE)
+    return [write(out_root, f"{API_KOTLIN}/ApiOperations.kt", content)]
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -989,6 +1132,7 @@ def generate(out_root: str) -> list:
     written += gen_tokens(out_root)
     written += gen_app_stores(out_root)
     written += gen_app_version_check_example(out_root)
+    written += gen_api_operations(out_root)
     return sorted(written)
 
 

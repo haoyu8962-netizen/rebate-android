@@ -74,8 +74,22 @@ class AppUpdate
         private var coldStartChecked = false
         private var checkJob: Job? = null
 
-        /** 交给 Router 的状态（启动排队器与守卫）。 */
-        val routerUpdate: UpdateCheck get() = ui.value.state.toRouterUpdate()
+        /** 本进程发出的检查还没有结果（冷启动、回前台复查、【重试】）。 */
+        private var checkInFlight = false
+
+        /** 本进程最近一次检查失败（下一次成功检查之前 Router 按 unknown，F-AND-09）。 */
+        private var lastCheckFailed = false
+
+        /** 上一次交给 Router 的状态（变化才通知）。 */
+        private var publishedRouterUpdate: UpdateCheck = routerView(ui.value.state)
+
+        /**
+         * 交给 Router 的状态（启动排队器与守卫）。检查进行中、本进程的已知结论不是强更（ok / below_recommended）时按 CHECKING：
+         * 回前台复查进行中，外部入口与待办恢复 defer（update_checking），不用本进程旧的 ok 直接放行（F-AND-08）。
+         * 最近一次检查失败、还没有新的成功检查时按 UNKNOWN（F-AND-09，APP-02c rule-gaps 编排者裁定：界面可保留旧结论，
+         * 外部入口只读、待办恢复受未知限制）。界面（[ui]）仍显示已知结论，不因复查闪成检查中；below_min 保持强更。
+         */
+        val routerUpdate: UpdateCheck get() = routerView(ui.value.state)
 
         /** Router 的 update 状态源（AppModule 接 AppRouting.update）。 */
         fun onRouterUpdate(listener: (UpdateCheck) -> Unit) {
@@ -150,9 +164,13 @@ class AppUpdate
         private fun runCheck(thenPickStore: Boolean = false) {
             if (checkJob?.isActive == true) return
             mutableUi.value = mutableUi.value.copy(working = thenPickStore)
+            checkInFlight = true
             checkJob =
                 scope.launch {
-                    when (val outcome = checker.check()) {
+                    val outcome = checker.check()
+                    checkInFlight = false
+                    lastCheckFailed = outcome is UpdateCheckOutcome.Failure
+                    when (outcome) {
                         is UpdateCheckOutcome.Success -> gate.apply(outcome.result, clock())
                         UpdateCheckOutcome.Failure -> gate.applyFailure(clock())
                     }
@@ -163,11 +181,25 @@ class AppUpdate
         }
 
         private fun publish() {
-            val before = mutableUi.value.state.toRouterUpdate()
             val state = gate.state(clock())
             mutableUi.value = mutableUi.value.copy(state = state, result = store.load().result)
-            val after = state.toRouterUpdate()
-            if (after != before) routerListeners.forEach { it(after) }
+            val after = routerView(state)
+            if (after != publishedRouterUpdate) {
+                publishedRouterUpdate = after
+                routerListeners.forEach { it(after) }
+            }
+        }
+
+        /** Gate 的结论 + 本进程检查进度 → Router 的强更进度（F-AND-08）。 */
+        private fun routerView(state: UpdateState): UpdateCheck {
+            val known = state.toRouterUpdate()
+            val provisional = known == UpdateCheck.OK || known == UpdateCheck.BELOW_RECOMMENDED
+            return when {
+                !provisional -> known
+                checkInFlight -> UpdateCheck.CHECKING
+                lastCheckFailed -> UpdateCheck.UNKNOWN
+                else -> known
+            }
         }
     }
 

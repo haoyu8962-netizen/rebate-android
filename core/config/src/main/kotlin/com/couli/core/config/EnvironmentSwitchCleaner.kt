@@ -4,7 +4,7 @@ package com.couli.core.config
  * 切换环境时的清理入口（03 §3.6）：先清本机会话与缓存，再在新环境重新注册、重新登录。
  * 会话、令牌、LKG 配置、页面缓存、pending_action 等由各自模块以后注册进 [EnvironmentSwitchCleanerRegistry]；
  * APP-01 先注册本 App 的 SharedPreferences 命名空间（[SharedPreferencesNamespaceCleaner]）。
- * TODO(APP-03): Keystore 里的会话密钥、DataStore 文件随存储层实现后注册。
+ * APP-03a 起 App 另注册会话令牌清除与 Keystore 会话密钥删除（AppModule）；TODO(APP-03b): LKG 等存储实现后注册。
  */
 fun interface EnvironmentSwitchCleaner {
     fun clean(
