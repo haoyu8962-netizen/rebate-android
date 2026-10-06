@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -31,7 +32,7 @@ import com.couli.generated.DefaultTexts
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
-/** 首页（Tab 外壳在 APP-02b 做；现在是各构建类型的首屏内容）。 */
+/** 导航起点：Tab 外壳（隐私闸门有结论之前是启动底图，APP-02b）。 */
 @Serializable
 data object HomeDestination
 
@@ -77,6 +78,7 @@ fun AppNavHost(
     registry: RoutePageRegistry = remember { RoutePageRegistry() },
     navController: NavHostController = rememberNavController(),
     launchExtraAllowlist: Set<String> = variantLaunchExtraAllowlist(),
+    shellHooks: ShellHooks = ShellHooks(),
 ) {
     val activity = LocalActivity.current
     // 必须在组合期间、NavHost 设置导航图之前替换（SideEffect 在组合之后才执行，来不及）
@@ -84,28 +86,52 @@ fun AppNavHost(
         activity?.let { host -> LaunchIntentSanitizer.sanitize(host.intent, launchExtraAllowlist).also { host.intent = it } }
     }
     DisposableEffect(navController, routing) {
-        val navigator = NavControllerNavigator(navController)
+        val navigator = NavControllerNavigator(navController, shellHooks)
         routing.attach(navigator)
         onDispose { routing.detach(navigator) }
     }
     NavHost(navController = navController, startDestination = HomeDestination) {
         composable<HomeDestination> { home() }
-        composable<RouteDestination> { entry -> registry.Render(entry.toRoute<RouteDestination>()) }
+        composable<RouteDestination> { entry ->
+            val destination = entry.toRoute<RouteDestination>()
+            // 每一页显示前重新过守卫（恢复的导航状态、隐私收紧后返回旧页）：不再允许就清栈回到起点，不渲染（APP-02b R1-06）
+            if (shellHooks.pageAllowed(destination)) {
+                registry.Render(destination)
+            } else {
+                LaunchedEffect(entry) { navController.popBackStack(HomeDestination, inclusive = false) }
+            }
+        }
         composable<UpgradeDestination> { UpgradePromptPage() }
     }
 }
 
+/**
+ * 外壳给导航的钩子（APP-02b）：
+ * - [tabRoutes] / [onOpenTab]：Router 打开的是 Tab 根路由（不带参数）时回到起点并切到那个 Tab，不另推一页；
+ *   同时带上 Router 给的只读标记（R1-07：只读降级不能在 Tab 分支丢失）；
+ * - [onRequestConsent]：Router 要求补同意（基本模式下点需同意的功能）时弹首启弹窗；
+ * - [pageAllowed]：推入的页面显示前按当前状态重新过守卫（R1-06），false = 清栈回到起点、不渲染。
+ */
+class ShellHooks(
+    val tabRoutes: Set<String> = setOf(RouteNames.HOME),
+    val onOpenTab: (route: String, readonly: Boolean) -> Unit = { _, _ -> },
+    val onRequestConsent: (RouteRequest) -> Unit = {},
+    val pageAllowed: (RouteDestination) -> Boolean = { true },
+)
+
 /** Router 结论 → Navigation Compose。 */
 class NavControllerNavigator(
     private val navController: NavController,
+    private val hooks: ShellHooks = ShellHooks(),
 ) : RouteNavigator {
     override fun open(
         route: String,
         params: JsonObject,
         readonly: Boolean,
     ) {
-        if (route == RouteNames.HOME && params.isEmpty()) {
+        if (route in hooks.tabRoutes && params.isEmpty()) {
             navController.popBackStack(HomeDestination, inclusive = false)
+            hooks.onOpenTab(route, readonly)
         } else {
             navController.navigate(RouteDestination(route, params.toString(), readonly))
         }
@@ -115,8 +141,8 @@ class NavControllerNavigator(
         navController.navigate(UpgradeDestination)
     }
 
-    // TODO(APP-02b): 弹隐私弹窗（基本模式下用户主动点需要同意的功能；Agent 卡片同意后不补打开）。
-    override fun requestConsent(request: RouteRequest) = Unit
+    /** 弹首启弹窗（基本模式下用户主动点需要同意的功能；Agent 卡片同意后不补打开，由 Router 决定是否登记）。 */
+    override fun requestConsent(request: RouteRequest) = hooks.onRequestConsent(request)
 
     // 不打开：冷启动停在首页（起点），前台停在当前页。TODO(APP-04): 埋点 route_entry_blocked（只记路由名与入口类别）。
     override fun blocked(

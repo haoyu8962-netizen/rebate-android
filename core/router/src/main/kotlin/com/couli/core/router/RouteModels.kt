@@ -206,6 +206,12 @@ object GuardReason {
      */
     const val PARAMS_INVALID = "params_invalid"
 
+    /**
+     * 首启隐私未有结论时，用户在弹窗里点开协议（[EntryGuard.undecidedReadableRoutes]）：只读打开。
+     * 向量未定义（APP-02b 补），TODO(N-14) 三端对齐后补向量。
+     */
+    const val PRIVACY_UNDECIDED_READONLY = "privacy_undecided_readonly"
+
     /** 来源不是 [RouteSource] 之一：拒绝。TODO(N-14) 同上，向量未定义。 */
     const val SOURCE_INVALID = "source_invalid"
 }

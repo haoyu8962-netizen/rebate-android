@@ -2,6 +2,7 @@ package com.couli.app
 
 import android.app.Application
 import android.util.Log
+import com.couli.app.privacy.AppPrivacy
 import com.couli.core.config.EnvironmentGate
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -12,6 +13,9 @@ class CouliApplication : Application() {
     @Inject
     lateinit var environmentGate: EnvironmentGate
 
+    @Inject
+    lateinit var privacy: AppPrivacy
+
     override fun onCreate() {
         super.onCreate()
         // 覆盖安装可能改变本次环境（debug → staging → release）：与上次生效的环境不同则先清理（03 §3.6）。
@@ -21,6 +25,9 @@ class CouliApplication : Application() {
         if (state is EnvironmentGate.State.Blocked) {
             Log.e(TAG, "environment cleanup failed; app is blocked until retry succeeds", state.cause)
         }
+        // 隐私闸门（03 §4.4：环境 → 隐私 → Tab）：读本机隐私决定、比对包内版本；已同意当前版本且环境已就绪才初始化 SDK。
+        privacy.coldStart()
+        privacy.initializeIfReady()
     }
 
     private companion object {

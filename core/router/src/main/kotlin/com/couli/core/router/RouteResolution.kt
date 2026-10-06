@@ -138,6 +138,10 @@ internal object RouteResolution {
                     GuardKind.OPEN_READONLY to GuardReason.BASIC_READONLY
                 }
 
+                context.privacy == PrivacyState.NOT_DECIDED -> {
+                    GuardKind.OPEN_READONLY to GuardReason.PRIVACY_UNDECIDED_READONLY
+                }
+
                 context.update == UpdateState.BELOW_MIN -> {
                     GuardKind.OPEN to GuardReason.FORCE_UPDATE_EXCEPTION
                 }

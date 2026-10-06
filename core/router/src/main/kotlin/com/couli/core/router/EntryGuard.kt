@@ -24,6 +24,12 @@ object EntryGuard {
     val basicModeRoutes: Set<String> =
         setOf("Home", "Search", "ProductDetail", "Settings", "PrivacyCenter", "Agreement", "About", "Help")
 
+    /**
+     * 首启隐私尚未有结论时，用户在弹窗里主动点开的页面（只读）：协议文本（BR-ID-11「同意前只允许请求协议文本与 /v1/config」）。
+     * 只放行 App 内来源；深链、推送、pending_action 仍等待。TODO(N-14): 向量没有这一项（APP-02b 补），三端对齐后补向量。
+     */
+    val undecidedReadableRoutes: Set<String> = setOf("Agreement")
+
     /** 强更检查结果未知时外部请求与自动动作只能打开的只读页面（BR-ID-10 细则「路由入口矩阵」）。 */
     val updateUnknownReadonlyRoutes: Set<String> =
         setOf(
@@ -84,7 +90,10 @@ object EntryGuard {
             }
 
             PrivacyState.NOT_DECIDED -> {
-                if (context.source == RouteSource.AGENT_CARD) {
+                if (context.source == RouteSource.IN_APP && context.route in undecidedReadableRoutes) {
+                    // 首启弹窗、二次说明里的《隐私政策》《用户协议》：同意前允许请求协议文本（BR-ID-11），只读打开
+                    null
+                } else if (context.source == RouteSource.AGENT_CARD) {
                     // Agent 卡片：先走首启弹窗，同意后不自动补打开，由用户再点（BR-ID-10 Agent 卡片 ②）。
                     decision(GuardKind.REQUIRE_CONSENT, null, GuardReason.AGENT_CONSENT_NO_REPLAY)
                 } else {

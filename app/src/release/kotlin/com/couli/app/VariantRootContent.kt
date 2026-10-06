@@ -8,7 +8,10 @@ import androidx.compose.ui.Modifier
 import com.couli.app.routing.RoutingTrace
 import com.couli.core.designsystem.CouliColors
 
-/** Release 首屏内容：只显示品牌色背景。没有调试能力、没有环境切换（03 §3.6）。[trace] 只在调试首屏显示。 */
+/**
+ * Release 首页 Tab 的根内容：首页 Feature 还没做（TODO(APP-11)），只显示页面底色。没有调试能力、没有环境切换（03 §3.6）。
+ * [trace] 只在调试首屏显示。
+ */
 @Suppress("UnusedParameter")
 @Composable
 internal fun VariantRootContent(trace: RoutingTrace? = null) {
@@ -16,6 +19,6 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
         modifier =
             Modifier
                 .fillMaxSize()
-                .background(CouliColors.brandPrimary),
+                .background(CouliColors.backgroundCanvas),
     )
 }

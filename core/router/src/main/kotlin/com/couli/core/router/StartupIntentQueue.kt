@@ -39,12 +39,15 @@ sealed interface StartupIntent {
 /**
  * 交出意图前要看的几件事（状态源可注入：隐私闸门 02b、强更检查 02c 接入前由调用方给占位值）。
  * @property shellReady Tab 等外壳就绪（02b 接入；之前恒为 true）。
+ * @property consentPromptShowing 首启弹窗 / 二次说明正在显示（02b；含基本模式下补同意期间，此时 [privacy] 仍是 BASIC_MODE）：
+ *   运行中收到的深链与推送丢弃，已排队的意图等弹窗有结论再交出（03 §4.4，R1-05）。
  */
 data class StartupReadiness(
     val environmentSettled: Boolean,
     val privacy: PrivacyState,
     val update: UpdateCheck,
     val shellReady: Boolean = true,
+    val consentPromptShowing: Boolean = false,
 )
 
 /** 放行的意图与这次应当使用的强更状态（等待超时的「检查中」已改为 unknown）。 */
@@ -58,7 +61,8 @@ data class ReleasedIntent(
  * [updateTimeoutMillis] 按 unknown）→ 外壳就绪」的顺序，全部满足才把意图交出去（之后由调用方推送回查、走 Router）。
  *
  * - 冷启动带来的意图排队等待；
- * - App 已在运行时收到的深链或推送，若此时正停在首启弹窗（隐私未有结论）或 ForceUpdate（低于最低版本），丢弃；
+ * - App 已在运行时收到的深链或推送，若此时正停在首启弹窗（隐私未有结论，或基本模式下补同意的弹窗正显示）
+ *   或 ForceUpdate（低于最低版本），丢弃；
  * - 强更等待的 5 秒从「环境 settled、隐私有结论」且强更仍在检查时**第一次**被 [offer] / [drain] 观察到的时刻起算
  *   （R1-06、R2-03）：环境与隐私的等待不计入；外壳是否就绪**不影响**计时，只决定能否交出——外壳晚于 5 秒就绪时，
  *   就绪那一刻直接按 unknown 交出。整个队列共用一个起点；强更检查有了结果即清零（之后再次进入「检查中」重新起算）；
@@ -85,7 +89,10 @@ class StartupIntentQueue(
         now: Long,
     ): Boolean {
         observe(readiness, now)
-        val onBlockingScreen = readiness.privacy == PrivacyState.NOT_DECIDED || readiness.update == UpdateCheck.BELOW_MIN
+        val onBlockingScreen =
+            readiness.privacy == PrivacyState.NOT_DECIDED ||
+                readiness.consentPromptShowing ||
+                readiness.update == UpdateCheck.BELOW_MIN
         if (!coldStart && onBlockingScreen) return false
         // 恢复 pending_action 只需排一条：已在队里的那条交出时读到的就是最新记录
         val duplicateResume = intent == StartupIntent.ResumePending && intent in entries
@@ -140,9 +147,9 @@ class StartupIntentQueue(
     private val StartupReadiness.preGatesOpen: Boolean
         get() = environmentSettled && privacy != PrivacyState.NOT_DECIDED
 
-    /** 可以交出意图：前置闸门通过且外壳就绪。 */
+    /** 可以交出意图：前置闸门通过、外壳就绪、没有隐私弹窗挡在上面。 */
     private val StartupReadiness.gatesOpen: Boolean
-        get() = preGatesOpen && shellReady
+        get() = preGatesOpen && shellReady && !consentPromptShowing
 
     companion object {
         /** 启动意图等强更检查最长 5 秒（03 §4.4，客户端常量）。 */

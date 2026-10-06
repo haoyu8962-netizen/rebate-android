@@ -22,7 +22,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.CollectionInfo
+import androidx.compose.ui.semantics.CollectionItemInfo
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.collectionInfo
+import androidx.compose.ui.semantics.collectionItemInfo
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -101,7 +105,12 @@ fun TabBar(
     Column(modifier = modifier.fillMaxWidth().background(CouliColors.backgroundSurface)) {
         Box(Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
         Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space1).selectableGroup(),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = CouliSpacing.space1)
+                    .selectableGroup()
+                    .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = items.size) },
         ) {
             items.forEachIndexed { index, item ->
                 val selected = index == selectedIndex
@@ -118,7 +127,10 @@ fun TabBar(
                                 indication = LocalIndication.current,
                                 role = Role.Tab,
                                 onClick = { onSelect(index) },
-                            ).padding(vertical = CouliSpacing.space1),
+                            ).semantics {
+                                // 读屏「标签，第 n 个，共 4 个，已选中」（adaptation-a11y-spec）：Role.Tab + 选中态 + 集合位置
+                                collectionItemInfo = CollectionItemInfo(rowIndex = 0, rowSpan = 1, columnIndex = index, columnSpan = 1)
+                            }.padding(vertical = CouliSpacing.space1),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2, Alignment.CenterVertically),
                 ) {

@@ -7,11 +7,15 @@ config:
   validation: true
 
 # Compose 组件惯例：参数多为可选的外观参数，函数体是界面树（DS-01）。只对 @Composable 放宽这三条。
+# APP-02b 的隐私闸门向量测试由 Codex 先写、本仓库不改（任务书 §4）：只对这一个文件放宽它触发的几条规则。
 complexity:
   LongParameterList:
     ignoreAnnotated: ['Composable']
   LongMethod:
     ignoreAnnotated: ['Composable']
+    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
+  CyclomaticComplexMethod:
+    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 
@@ -21,6 +25,10 @@ naming:
     ignoreAnnotated: ['Composable']
 
 style:
+  LoopWithTooManyJumpStatements:
+    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
+  UseCheckOrError:
+    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
   MaxLineLength:
     maxLineLength: 140
   MagicNumber:

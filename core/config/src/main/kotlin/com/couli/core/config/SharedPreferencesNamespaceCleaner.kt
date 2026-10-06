@@ -26,9 +26,25 @@ object CouliPreferenceNamespaces {
 
     val registered: List<String> = listOf(SESSION, CACHE, ROUTER)
 
+    /**
+     * 本机隐私决定（APP-02b PrivacyGate：同意的决定、同意时的政策版本与点击时间、基本模式）。
+     * **故意不以 [PREFIX] 开头，切换环境时不清理**：它是本机用户对本 App 隐私政策的决定，与连哪个服务器无关
+     * （03 §3.6 切换环境要清的是会话、令牌、device_id、install_secret、LKG、页面缓存与 pending_action，不含同意决定）；
+     * 换到新环境后由 PrivacyGate.onConsented 重新注册设备，并在新环境补报同意记录（BR-ID-12）。
+     * 撤回同意（BR-ID-13）不删这个文件，而是把决定改写为基本模式；撤回要清的令牌、device_id、install_secret 在 [SESSION]
+     * 命名空间（切换环境与撤回同意都会清），见 core:privacy 的 CredentialCleanerRegistry。
+     */
+    const val PRIVACY_DECISION = "couli_privacy"
+
+    /** 已登记、但切换环境时保留的 SharedPreferences（不在命名空间内）。 */
+    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION)
+
     init {
         registered.forEach { name ->
             require(name.startsWith(PREFIX)) { "SharedPreferences 名 $name 不以 $PREFIX 开头" }
+        }
+        preservedAcrossEnvironmentSwitch.forEach { name ->
+            require(!name.startsWith(PREFIX)) { "保留的 SharedPreferences 名 $name 不能以 $PREFIX 开头（否则切换环境会被清掉）" }
         }
     }
 }

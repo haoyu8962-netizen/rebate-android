@@ -54,6 +54,14 @@ class Router(
 
     private val generationCounter = AtomicLong(0L)
 
+    /**
+     * 本进程里刚为「基本模式下点受限入口 → 补同意」登记了待办，隐私弹窗还没有结论（只在内存，不落盘）。
+     * 为 true 时自动恢复遇到隐私阻断不删除这条待办（它正在等用户在弹窗里决定）；同意后按前置完成继续，
+     * 仍不同意时 [onConsentDeclined] 删除。进程重启后为 false：基本模式下的自动恢复照常 reject 删除（F-ALL-04）。
+     */
+    @Volatile
+    private var awaitingConsentDecision = false
+
     /** 最近一次 open 的结论。 */
     val lastOutcome: StateFlow<RouteOutcome?> = mutableLastOutcome.asStateFlow()
 
@@ -69,7 +77,8 @@ class Router(
         val decision = EntryGuard.decide(request, guardState)
         PendingRegistration.payload(request, decision, guardState)?.let { payload ->
             // 含令牌、验证码的参数 save 返回 false：不登记，前置完成后不自动打开。
-            pendingStore.save(PendingActionStore.OPEN_ROUTE, payload, origin = request.source)
+            val saved = pendingStore.save(PendingActionStore.OPEN_ROUTE, payload, origin = request.source)
+            if (saved) awaitingConsentDecision = decision.kind == GuardKind.REQUIRE_CONSENT
         }
         dispatch(request, decision)
         return decision
@@ -129,10 +138,14 @@ class Router(
         val params = pending.params[KEY_PARAMS] as? JsonObject ?: JsonObject(emptyMap())
         val request = RouteRequest(route, params, RouteSource.PENDING_ACTION)
         val decision = EntryGuard.decide(request, current)
-        val keep = decision.kind in KEEP_PENDING_KINDS
+        // 补同意的弹窗还没有结论：隐私阻断（基本模式 reject）不删这条待办，只记结论
+        val heldForConsent = awaitingConsentDecision && current.privacyState != PrivacyState.CONSENTED
+        if (current.privacyState == PrivacyState.CONSENTED) awaitingConsentDecision = false
+        val keep = decision.kind in KEEP_PENDING_KINDS || heldForConsent
         if (!keep) pendingStore.clear()
         // 仍缺前置时不重复登记（不改计时），只进入前置页；要补同意、等待时只记结论。
-        if (keep && (decision.kind !in PREREQUISITE_KINDS || !enterPrerequisite)) {
+        val entersPrerequisite = decision.kind in PREREQUISITE_KINDS && enterPrerequisite && !heldForConsent
+        if (keep && !entersPrerequisite) {
             mutableLastOutcome.value = RouteOutcome(request, decision)
         } else {
             dispatch(request, decision)
@@ -140,22 +153,37 @@ class Router(
         return decision
     }
 
-    /** 完成了一个前置步骤（同意、登录、绑手机、实名、授权）：重置计时后尝试恢复。 */
-    fun onPrerequisiteCompleted(): GuardDecision? {
+    /**
+     * 完成了一个前置步骤（同意、登录、绑手机、实名、授权）：重置计时（BR-ID-10：每完成一步重置）后尝试恢复。
+     * [resume] = false 时只续时、不立即恢复（返回 null）：调用方要等启动闸门允许（环境、强更、外壳就绪）后再
+     * [resumePending]（enterPrerequisite = true），见 App 的 AppRouting.onConsentEvent（APP-02b R1-03）。
+     */
+    fun onPrerequisiteCompleted(resume: Boolean = true): GuardDecision? {
         // 先按当前隐私删 Agent 记录，再续时：被删的记录不会被续活
         dropAgentPendingIfPrivacyBlocked(state())
         pendingStore.markStepDone()
-        return resumePending()
+        return if (resume) resumePending() else null
+    }
+
+    /**
+     * 用户在二次说明里明确【仍不同意】（首启或基本模式下补同意，R1-04）：本次补同意登记的待办在基本模式下不可达，
+     * 立即删除（03 §4.4「基本模式下丢弃不可达的自动动作」）；之后再点【开启完整功能】并同意也不会自动打开被拒绝的目标。
+     */
+    fun onConsentDeclined() {
+        awaitingConsentDecision = false
+        if (state().privacyState != PrivacyState.CONSENTED) pendingStore.clear()
     }
 
     /** 退出登录、切换账号：清除 pending_action（BR-ID-10），代次加一（进行中的推送回查结果作废）。 */
     fun onSessionEnded() {
+        awaitingConsentDecision = false
         generationCounter.incrementAndGet()
         pendingStore.clear()
     }
 
     /** 切换环境（或环境闸门重新对账）：代次加一，清除 pending_action。 */
     fun onEnvironmentChanged() {
+        awaitingConsentDecision = false
         generationCounter.incrementAndGet()
         pendingStore.clear()
     }

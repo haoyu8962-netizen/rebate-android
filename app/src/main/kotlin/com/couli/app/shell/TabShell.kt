@@ -1,0 +1,196 @@
+package com.couli.app.shell
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
+import com.couli.core.designsystem.CouliButton
+import com.couli.core.designsystem.CouliButtonSize
+import com.couli.core.designsystem.CouliColors
+import com.couli.core.designsystem.CouliIconButton
+import com.couli.core.designsystem.CouliIcons
+import com.couli.core.designsystem.CouliRadius
+import com.couli.core.designsystem.CouliSizes
+import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.TabBar
+import com.couli.core.designsystem.TabItem
+import com.couli.generated.DefaultTexts
+
+const val TAB_SHELL_TAG = "tab_shell"
+const val BASIC_MODE_PAGE_TAG = "basic_mode_page"
+const val BASIC_MODE_ENABLE_TAG = "basic_mode_enable_full"
+const val BASIC_MODE_SETTINGS_TAG = "basic_mode_settings"
+
+/** 底部四个 Tab：路由名（routes.json）→ 图标与名称（名称取 [ShellDraftTexts]，TODO(N-16)）。 */
+enum class ShellTab(
+    val route: String,
+) {
+    HOME("Home"),
+    AGENT("AgentChat"),
+    ORDERS("OrderList"),
+    ME("Me"),
+    ;
+
+    val item: TabItem
+        get() =
+            when (this) {
+                HOME -> TabItem(CouliIcons.home, ShellDraftTexts.TAB_HOME)
+                AGENT -> TabItem(CouliIcons.chat, ShellDraftTexts.TAB_AGENT)
+                ORDERS -> TabItem(CouliIcons.orders, ShellDraftTexts.TAB_ORDERS)
+                ME -> TabItem(CouliIcons.user, ShellDraftTexts.TAB_ME)
+            }
+
+    companion object {
+        val routes: Set<String> = entries.map { it.route }.toSet()
+
+        fun ofRoute(route: String): ShellTab? = entries.firstOrNull { it.route == route }
+    }
+}
+
+/**
+ * Tab 外壳（GUIDE §3「底部 Tab」）：上面是选中 Tab 的根页（经路由注册表渲染各 Feature 的占位页，不 import Feature 类型），
+ * 下面是 DesignSystem 的 [TabBar]，白底铺满到屏幕底边（adaptation-a11y-spec「Tab 栏同样铺满到底」）。
+ * 基本模式下四个 Tab 照常显示（设计稿 BasicMode）；点非放行的 Tab 由调用方经 Router 判定（补同意），见 AppShell。
+ */
+@Composable
+fun TabShell(
+    selected: ShellTab,
+    onSelect: (ShellTab) -> Unit,
+    tabRoot: @Composable (ShellTab) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas).testTag(TAB_SHELL_TAG)) {
+        Box(modifier = Modifier.weight(1f).fillMaxWidth().consumeWindowInsets(WindowInsets.navigationBars)) {
+            tabRoot(selected)
+        }
+        Box(modifier = Modifier.fillMaxWidth().background(CouliColors.backgroundSurface).navigationBarsPadding()) {
+            TabBar(
+                items = ShellTab.entries.map { it.item },
+                selectedIndex = selected.ordinal,
+                onSelect = { onSelect(ShellTab.entries[it]) },
+            )
+        }
+    }
+}
+
+/**
+ * 基本模式页（设计稿 BasicMode；BR-ID-11、BR-ID-02 细则）：首页 Tab 的根在基本模式下换成本页——
+ * 顶部搜索入口（只读搜索）与【设置】，提示条 privacy.basic_mode.notice + 【开启完整功能】，下面是首页内容（[content]，占位）。
+ */
+@Composable
+fun BasicModePage(
+    onSearch: () -> Unit,
+    onSettings: () -> Unit,
+    onEnableFullFunction: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().testTag(BASIC_MODE_PAGE_TAG)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = CouliSpacing.space4, end = CouliSpacing.space2, top = CouliSpacing.space2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+        ) {
+            SearchEntry(onClick = onSearch, modifier = Modifier.weight(1f))
+            CouliIconButton(
+                icon = CouliIcons.settings,
+                label = ShellDraftTexts.SETTINGS_LABEL,
+                onClick = onSettings,
+                modifier = Modifier.testTag(BASIC_MODE_SETTINGS_TAG),
+            )
+        }
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space3),
+        ) {
+            BasicModeNotice(onEnableFullFunction)
+        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
+    }
+}
+
+/** 搜索入口（只是入口，点了经 Router 打开 Search）：白底、1 描边、圆角 12，图标 + 占位字 17。 */
+@Composable
+private fun SearchEntry(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(CouliRadius.button)
+    Row(
+        modifier =
+            modifier
+                .heightIn(min = CouliSizes.touchTarget)
+                .border(CouliSizes.hairline, CouliColors.borderControl, shape)
+                .background(CouliColors.backgroundSurface, shape)
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+    ) {
+        Icon(
+            CouliIcons.search,
+            contentDescription = null,
+            tint = CouliColors.textSecondary,
+            modifier = Modifier.size(CouliSizes.iconMedium),
+        )
+        Text(text = ShellDraftTexts.BASIC_SEARCH_PLACEHOLDER, style = CouliTypography.body, color = CouliColors.textSecondary)
+    }
+}
+
+/** 提示条：品牌浅底、圆角 16、内边距 16；信息图标 + 说明，下面整行主按钮（紧凑尺寸）。 */
+@Composable
+private fun BasicModeNotice(onEnableFullFunction: () -> Unit) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(CouliColors.brandSubtle, RoundedCornerShape(CouliRadius.card))
+                .padding(CouliSpacing.space4),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            Icon(
+                CouliIcons.info,
+                contentDescription = null,
+                tint = CouliColors.brandEmphasis,
+                modifier = Modifier.padding(top = NOTICE_ICON_TOP).size(CouliSizes.iconMedium),
+            )
+            Text(
+                text = DefaultTexts.text("privacy.basic_mode.notice").orEmpty(),
+                style = CouliTypography.footnote,
+                color = CouliColors.textPrimary,
+            )
+        }
+        CouliButton(
+            text = DefaultTexts.text("privacy.basic_mode.enable").orEmpty(),
+            onClick = onEnableFullFunction,
+            size = CouliButtonSize.COMPACT,
+            modifier = Modifier.fillMaxWidth().testTag(BASIC_MODE_ENABLE_TAG),
+        )
+    }
+}
+
+private val NOTICE_ICON_TOP = 0.5.dp
