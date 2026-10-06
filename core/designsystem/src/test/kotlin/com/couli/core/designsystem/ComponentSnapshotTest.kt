@@ -278,7 +278,7 @@ class ComponentSnapshotTest {
                 onConfirm = {},
                 dismissText = "取消",
             )
-            DisclaimerFooter(lines = listOf(DisclaimerLine("券后价按单件计算，不含运费及会员价、跨店满减等优惠，以下单页为准"), DisclaimerLine("以结算为准")))
+            DisclaimerFooter(lines = listOf(DisclaimerLine("券后价按单件计算，不含运费及会员价等优惠，以下单页为准"), DisclaimerLine("以结算为准")))
             TabBar(
                 items =
                     listOf(

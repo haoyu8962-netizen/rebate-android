@@ -54,10 +54,10 @@ object PriceTerms {
     const val SETTLE_BASIS = "以结算为准"
 
     /** 口径说明 price_basis（BR-PRICE-03 正文；只用于有券卡，细则「无券商品与混排列表的口径说明」）。TODO(N-11) */
-    const val PRICE_BASIS = "券后价按单件计算，不含运费及会员价、跨店满减等优惠，以下单页为准"
+    const val PRICE_BASIS = "券后价按单件计算，不含运费及会员价等优惠，以下单页为准"
 
     /** 口径说明 price_basis.general（BR-PRICE-03 细则：无券卡，及含无券卡的列表底部）。TODO(N-11) */
-    const val PRICE_BASIS_GENERAL = "价格按单件计算，不含运费及会员价、跨店满减等优惠，以下单页为准"
+    const val PRICE_BASIS_GENERAL = "价格按单件计算，不含运费及会员价等优惠，以下单页为准"
 
     /** 口径说明 rebate_estimate 默认文案（BR-PRICE-17）。TODO(N-11) */
     const val REBATE_ESTIMATE = "预估返利以平台结算为准，未结算或订单失效时不返"

@@ -35,8 +35,8 @@ class DisclaimerKeysTest {
 
     @Test
     fun textsAreTheRuleDefaults() {
-        assertEquals("券后价按单件计算，不含运费及会员价、跨店满减等优惠，以下单页为准", DisclaimerKeys.text(DisclaimerKeys.PRICE_BASIS))
-        assertEquals("价格按单件计算，不含运费及会员价、跨店满减等优惠，以下单页为准", DisclaimerKeys.text(DisclaimerKeys.PRICE_BASIS_GENERAL))
+        assertEquals("券后价按单件计算，不含运费及会员价等优惠，以下单页为准", DisclaimerKeys.text(DisclaimerKeys.PRICE_BASIS))
+        assertEquals("价格按单件计算，不含运费及会员价等优惠，以下单页为准", DisclaimerKeys.text(DisclaimerKeys.PRICE_BASIS_GENERAL))
         assertNull(DisclaimerKeys.text("unknown_key"))
     }
 }
