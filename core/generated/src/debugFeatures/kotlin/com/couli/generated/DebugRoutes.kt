@@ -20,6 +20,29 @@ object DebugRoutes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = true,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "page_key",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "token",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
         )
 }

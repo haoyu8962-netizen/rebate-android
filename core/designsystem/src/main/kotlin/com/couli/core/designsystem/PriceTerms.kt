@@ -53,6 +53,13 @@ object PriceTerms {
     /** 比价区间的后缀说明（BR-PRICE-07 rebate_compare 默认文案「以结算为准」）。 */
     const val SETTLE_BASIS = "以结算为准"
 
+    /**
+     * 金额隐藏的缺省遮罩与读屏（BR-TEXT-10「****」；adaptation-a11y-spec §9「金额已隐藏」）：调用方只给 amountHidden、
+     * 没给 [AmountMask] 时用（[AmountMask.DEFAULT_HIDDEN]）。TODO(N-11): 字典补键后改读 [DefaultTexts]。
+     */
+    const val AMOUNT_MASK = "****"
+    const val AMOUNT_HIDDEN_SPOKEN = "金额已隐藏"
+
     /** 口径说明 price_basis（BR-PRICE-03 正文；只用于有券卡，细则「无券商品与混排列表的口径说明」）。TODO(N-11) */
     const val PRICE_BASIS = "券后价按单件计算，不含运费及会员价等优惠，以下单页为准"
 

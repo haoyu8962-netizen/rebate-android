@@ -69,7 +69,34 @@ data class ProductCardData(
     val infoLabel: String = "",
     val shopName: String? = null,
     val quotedAt: String? = null,
-)
+    /**
+     * 金额隐藏（BR-TEXT-10；三端统一裁定）：隐藏时返利标签显示「预估返 ****」（读屏「预估返，金额已隐藏」），不显示「预估返后」，
+     * 购买按钮只显示动词；价格、口径 i、「以结算为准」照常。遮罩与读屏文案由调用方从字典给。
+     */
+    val amountMask: AmountMask? = null,
+) {
+    val amountHidden: Boolean get() = amountMask?.hidden == true
+
+    /** 卡上实际显示的返利标签（金额隐藏时已遮罩）。 */
+    val displayedRebate: RebateTagContent get() = amountMask?.takeIf { it.hidden }?.let { rebate.masked(it) } ?: rebate
+
+    /** 「预估返后」只跟着同卡返利标签显示金额时出现：有价格、返利有金额、金额没隐藏（F-AND-05）。 */
+    val visibleEstNet: String? get() = estNet?.takeIf { price != null && rebate.hasAmount && !amountHidden }
+
+    /**
+     * 整张卡的金额隐藏状态统一成一份（R1-08）：[hidden] 与卡上现有的 [amountMask] 不一致时，换成同一个遮罩来源——
+     * 要隐藏但没给遮罩用 [AmountMask.DEFAULT_HIDDEN]，要显示就把遮罩设为不隐藏。返利标签、读屏、预估返后、购买按钮都读这份结果。
+     */
+    fun withAmountHidden(hidden: Boolean): ProductCardData =
+        when {
+            hidden == amountHidden -> this
+            hidden -> copy(amountMask = (amountMask ?: AmountMask.DEFAULT_HIDDEN).copy(hidden = true))
+            else -> copy(amountMask = amountMask?.copy(hidden = false))
+        }
+
+    /** 价格口径 i 跟着价格走：卡上有价格、有说明全文就显示，与返利区是否显示（暂无返利、隐藏）无关（F-AND-06）。 */
+    val showsDisclaimerButton: Boolean get() = price != null && disclaimer.isNotEmpty()
+}
 
 /** 列表卡的两种用处：搜索卡（主价 22，底行左侧口径说明）与 AI 卡（主价 17，口径按钮在右上角）。 */
 enum class ProductCardVariant {
@@ -92,15 +119,17 @@ fun ProductCardList(
     modifier: Modifier = Modifier,
     variant: ProductCardVariant = ProductCardVariant.SEARCH,
     buyState: BuyButtonState = BuyButtonState.NORMAL,
-    amountHidden: Boolean = false,
+    amountHidden: Boolean = data.amountHidden,
     context: String = if (variant == ProductCardVariant.AI) BuyButtonModel.CONTEXT_AGENT else BuyButtonModel.CONTEXT_LIST,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val ai = variant == ProductCardVariant.AI
+    // 整卡同一份隐藏状态：只传 amountHidden=true（没给遮罩）时返利标签、读屏、预估返后与按钮一起隐藏（R1-08）
+    val shown = data.withAmountHidden(amountHidden)
     val priceSize = if (ai) PriceTagSize.AI else PriceTagSize.LIST
     val metrics = rememberAmountMetrics()
     val density = LocalDensity.current
-    val priceBlockMinWidth = remember(data, priceSize, metrics) { data.listPriceBlockMinWidth(metrics, priceSize) }
+    val priceBlockMinWidth = remember(shown, priceSize, metrics) { shown.listPriceBlockMinWidth(metrics, priceSize) }
     BoxWithConstraints(modifier = modifier.fillMaxWidth().couliCard()) {
         // 右栏宽 = 卡宽 − 两侧内边距 − 左图 − 间距；任一金额段放不下右栏时价格区移到整卡宽度
         val rightColumn = maxWidth - CouliSpacing.space3 * 2 - CouliSizes.listThumbnail - CouliSpacing.space3
@@ -110,39 +139,39 @@ fun ProductCardList(
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
-                ProductThumbnail(label = data.imageLabel, size = CouliSizes.listThumbnail)
+                ProductThumbnail(label = shown.imageLabel, size = CouliSizes.listThumbnail)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
                     BadgedTitle(
-                        platformName = data.platformName,
-                        title = data.title,
+                        platformName = shown.platformName,
+                        title = shown.title,
                         modifier = if (ai) Modifier.padding(end = CouliSpacing.space8 - CouliSpacing.space1) else Modifier,
                     )
-                    BenefitTagRow(tags = data.benefitTags)
-                    if (!priceFullWidth) ListPriceBlock(data = data, size = priceSize)
+                    BenefitTagRow(tags = shown.benefitTags)
+                    if (!priceFullWidth) ListPriceBlock(data = shown, size = priceSize)
                 }
             }
-            if (priceFullWidth) ListPriceBlock(data = data, size = priceSize)
+            if (priceFullWidth) ListPriceBlock(data = shown, size = priceSize)
             EndWrapRow(
                 modifier = Modifier.fillMaxWidth().heightIn(min = CouliSizes.touchTarget),
                 start = {
-                    if (!ai) SettleNoteWithInfo(data = data, expanded = expanded, onToggle = { expanded = !expanded })
+                    if (!ai) SettleNoteWithInfo(data = shown, expanded = expanded, onToggle = { expanded = !expanded })
                 },
                 end = {
                     BuyButton(
-                        base = data.buyBase,
-                        rebate = data.rebate,
+                        base = shown.buyBase,
+                        rebate = shown.displayedRebate,
                         onClick = onBuy,
                         context = context,
                         state = buyState,
-                        amountHidden = amountHidden,
+                        amountHidden = shown.amountHidden,
                     )
                 },
             )
-            if (expanded) DisclaimerFooter(lines = data.disclaimer.map { DisclaimerLine(it, icon = null) })
+            if (expanded) DisclaimerFooter(lines = shown.disclaimer.map { DisclaimerLine(it, icon = null) })
         }
-        if (ai && data.disclaimer.isNotEmpty()) {
+        if (ai && shown.showsDisclaimerButton) {
             DisclaimerInfoButton(
-                label = data.infoLabel,
+                label = shown.infoLabel,
                 expanded = expanded,
                 onToggle = { expanded = !expanded },
                 modifier = Modifier.align(Alignment.TopEnd),
@@ -164,9 +193,9 @@ private fun ListPriceBlock(
             itemVerticalAlignment = Alignment.CenterVertically,
         ) {
             if (data.price != null) PriceTagMain(content = data.price, size = size)
-            if (data.rebate.kind != RebateKind.NONE) RebateTag(content = data.rebate)
+            if (data.rebate.kind != RebateKind.NONE) RebateTag(content = data.displayedRebate)
         }
-        PriceSubLines(lines = data.priceSubLines(estNet = data.estNet))
+        PriceSubLines(lines = data.priceSubLines(estNet = data.visibleEstNet))
     }
 }
 
@@ -177,8 +206,8 @@ private fun ProductCardData.listPriceBlockMinWidth(
 ): Int =
     maxOf(
         metrics.priceMain(price, size),
-        if (rebate.kind == RebateKind.NONE) 0 else metrics.rebateTag(rebate),
-        metrics.subLineAmounts(priceSubLines(estNet = estNet)),
+        if (rebate.kind == RebateKind.NONE) 0 else metrics.rebateTag(displayedRebate),
+        metrics.subLineAmounts(priceSubLines(estNet = visibleEstNet)),
     )
 
 /** 网格卡内容最窄宽度（px）：卡内边距 + max(主价、返利块最宽的一段金额、副行金额)。 */
@@ -188,7 +217,14 @@ internal fun ProductCardData.gridMinWidth(
 ): Int {
     val cardPadding = with(density) { ((CouliSpacing.space2 + CouliSpacing.space1) * 2).roundToPx() }
     val rebatePadding = with(density) { (CouliSpacing.space2 * 2).roundToPx() }
-    val rebate = if (rebate.kind == RebateKind.NONE) 0 else rebatePadding + metrics.rebateSegments(rebate, CouliTextStyles.amountBody)
+    val rebate =
+        if (rebate.kind ==
+            RebateKind.NONE
+        ) {
+            0
+        } else {
+            rebatePadding + metrics.rebateSegments(displayedRebate, CouliTextStyles.amountBody)
+        }
     return cardPadding + maxOf(metrics.priceMain(price, PriceTagSize.AI), rebate, metrics.subLineAmounts(priceSubLines(estNet = null)))
 }
 
@@ -207,7 +243,7 @@ private fun SettleNoteWithInfo(
             Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
         }
         // 48 命中区比 16 图标大，向左收 12 让图标贴近文字 / 卡片内边距（设计稿用负外边距达到同样效果，GUIDE §7.2.1）
-        if (data.disclaimer.isNotEmpty()) {
+        if (data.showsDisclaimerButton) {
             DisclaimerInfoButton(
                 label = data.infoLabel,
                 expanded = expanded,
@@ -281,9 +317,19 @@ fun ProductCardGrid(
         ) {
             BadgedTitle(platformName = data.platformName, title = data.title)
             BenefitTagRow(tags = data.benefitTags)
-            if (data.price != null) PriceTagMain(content = data.price, size = PriceTagSize.AI)
+            val info = onInfo.takeIf { data.showsDisclaimerButton }
+            val rebateShown = data.rebate.kind != RebateKind.NONE
+            if (data.price != null) {
+                // 返利区不显示（暂无返利）时口径 i 放在价格行右侧，不随返利区一起消失（F-AND-06）
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PriceTagMain(content = data.price, size = PriceTagSize.AI, modifier = Modifier.weight(1f, fill = false))
+                    if (!rebateShown && info != null) {
+                        DisclaimerInfoButton(label = data.infoLabel, expanded = false, onToggle = info)
+                    }
+                }
+            }
             PriceSubLines(lines = data.priceSubLines(estNet = null))
-            if (data.rebate.kind != RebateKind.NONE) GridRebateBlock(data = data, onInfo = onInfo.takeIf { data.disclaimer.isNotEmpty() })
+            if (rebateShown) GridRebateBlock(data = data, onInfo = info)
         }
     }
 }
@@ -328,19 +374,24 @@ private fun GridRebateBlock(
     data: ProductCardData,
     onInfo: (() -> Unit)?,
 ) {
+    val rebate = data.displayedRebate
+    val accent = rebate.usesRebateAccent
+    val color = if (accent) CouliColors.rebateText else CouliColors.textSecondary
     Column(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(CouliRadius.small))
-                .background(CouliColors.rebateBackground)
+                .background(if (accent) CouliColors.rebateBackground else CouliColors.backgroundMuted)
                 .padding(horizontal = CouliSpacing.space2, vertical = CouliSpacing.space1)
-                .semantics(mergeDescendants = true) { contentDescription = data.rebate.spoken },
+                .semantics(mergeDescendants = true) { contentDescription = rebate.spoken },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(CouliIcons.clock, contentDescription = null, tint = CouliColors.rebateText, modifier = Modifier.size(CouliSizes.iconTiny))
-            Spacer(Modifier.width(CouliSpacing.space1))
-            Text(text = data.rebate.label, style = CouliTypography.caption, color = CouliColors.rebateText, modifier = Modifier.weight(1f))
+            if (accent) {
+                Icon(CouliIcons.clock, contentDescription = null, tint = color, modifier = Modifier.size(CouliSizes.iconTiny))
+                Spacer(Modifier.width(CouliSpacing.space1))
+            }
+            Text(text = rebate.label, style = CouliTypography.caption, color = color, modifier = Modifier.weight(1f))
             if (onInfo != null) {
                 DisclaimerInfoButton(
                     label = data.infoLabel,
@@ -350,7 +401,7 @@ private fun GridRebateBlock(
                 )
             }
         }
-        RebateAmountSegments(content = data.rebate, style = CouliTextStyles.amountBody)
+        RebateAmountSegments(content = rebate, style = CouliTextStyles.amountBody, color = color)
     }
 }
 
@@ -380,12 +431,12 @@ fun ProductCardLarge(
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
                 itemVerticalAlignment = Alignment.CenterVertically,
             ) {
-                RebateTag(content = data.rebate, size = RebateTagSize.LARGE)
+                RebateTag(content = data.displayedRebate, size = RebateTagSize.LARGE)
                 if (data.rebate.kind == RebateKind.RANGE) {
                     Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
                 }
             }
-            val meta = if (data.price == null) emptyList() else listOfNotNull(data.estNet, data.quotedAt)
+            val meta = if (data.price == null) emptyList() else listOfNotNull(data.visibleEstNet, data.quotedAt)
             if (meta.isNotEmpty()) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
                     meta.forEach { Text(text = it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }

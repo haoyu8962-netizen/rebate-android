@@ -246,7 +246,8 @@ enum class RebateTagSize {
 
 /**
  * 返利标签（GUIDE §7.1）：返利浅底 + 深橙字 + 钟表图形；金额 600 等宽。区间两段只在破折号处折行（每段整块不拆），放不下整块换行。
- * 「暂无返利」用中性色、不用橙（列表里由调用方隐藏，BR-TEXT-10）。读屏读完整句（「预估返 1.35 元到 2.69 元」）。
+ * 「暂无返利」用中性色、不用橙（[RebateTagContent.usesRebateAccent]；列表里由调用方隐藏，BR-TEXT-10）。
+ * 读屏读完整句（「预估返 1.35 元到 2.69 元」）。金额隐藏时传 [RebateTagContent.masked] 的结果（「预估返 ****」）。
  */
 @Composable
 fun RebateTag(
@@ -254,9 +255,9 @@ fun RebateTag(
     modifier: Modifier = Modifier,
     size: RebateTagSize = RebateTagSize.SMALL,
 ) {
-    val none = content.kind == RebateKind.NONE
-    val background = if (none) CouliColors.backgroundMuted else CouliColors.rebateBackground
-    val color = if (none) CouliColors.textSecondary else CouliColors.rebateText
+    val accent = content.usesRebateAccent
+    val background = if (accent) CouliColors.rebateBackground else CouliColors.backgroundMuted
+    val color = if (accent) CouliColors.rebateText else CouliColors.textSecondary
     val large = size == RebateTagSize.LARGE
     val labelStyle = if (large) CouliTextStyles.footnoteMedium else CouliTypography.caption
     val amountStyle = rebateAmountStyle(large)
@@ -278,7 +279,7 @@ fun RebateTag(
         itemVerticalAlignment = Alignment.CenterVertically,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-            if (!none) {
+            if (accent) {
                 Icon(
                     imageVector = CouliIcons.clock,
                     contentDescription = null,
@@ -311,7 +312,10 @@ fun RebateAmountSegments(
 private fun rebateAmountStyle(large: Boolean): TextStyle =
     if (large) CouliTextStyles.amountTitle else CouliTextStyles.captionSemibold.tabular()
 
-/** 「预估返后 ¥x」那一行（[EstNetModel] 给文字；不显示时传 null 即不占位）。 */
+/**
+ * 「预估返后 ¥x」那一行（[EstNetModel] 给文字；不显示时传 null 即不占位）。同卡的返利标签不显示金额（暂无返利、金额隐藏）时
+ * 不显示这一行（它能反推返利，F-AND-05 / 三端统一裁定）：商品卡用 [ProductCardData.visibleEstNet]。
+ */
 @Composable
 fun EstNetLine(
     text: String?,

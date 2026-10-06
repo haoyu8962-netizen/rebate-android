@@ -66,6 +66,7 @@ object ContractEnums {
             "user_level" to UserLevel.known.map { it.raw },
             "agent_intent" to AgentIntent.known.map { it.raw },
             "agent_card_type" to AgentCardType.known.map { it.raw },
+            "page_guide_reject_reason" to PageGuideRejectReason.known.map { it.raw },
             "agent_finish_reason" to AgentFinishReason.known.map { it.raw },
             "watch_status" to WatchStatus.known.map { it.raw },
             "watch_event_status" to WatchEventStatus.known.map { it.raw },

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    只在 debug / staging 声明的测试深链 scheme（APP-02a 冒烟用）：couli-dev://r/<路由名>?<参数>。
+    占位 scheme，正式 scheme 未定（needs.md N-05）；release 的清单里没有这一段，占位 scheme 不进正式包。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            tools:node="merge">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="r"
+                    android:scheme="couli-dev" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

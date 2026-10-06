@@ -82,17 +82,44 @@ class RebateTagContent internal constructor(
     val amountSegments: List<String>,
     /** 读屏名称：「预估返 1.35 元到 2.69 元」。 */
     val spoken: String,
+    /** 金额已被遮罩（[masked]）：金额段只有遮罩，不能再当金额用（购买按钮后缀等）。 */
+    val isMasked: Boolean = false,
 ) {
     /** 向量里的 kind 字符串：amount / range / none / unknown / login。 */
     val kindRaw: String get() = kind.raw
 
     /** 单一金额（kind = amount）时的金额字符串，供购买按钮后缀用（与标签同一格式化结果）。 */
-    val singleAmount: String? get() = if (kind == RebateKind.AMOUNT) amountSegments.firstOrNull() else null
+    val singleAmount: String? get() = if (kind == RebateKind.AMOUNT && !isMasked) amountSegments.firstOrNull() else null
 
     /** 有没有可显示的金额。 */
     val hasAmount: Boolean get() = kind == RebateKind.AMOUNT || kind == RebateKind.RANGE
 
-    override fun equals(other: Any?): Boolean = other is RebateTagContent && other.kind == kind && other.text == text
+    /**
+     * 是否用返利强调色（GUIDE §7.1「无返利 / 返利 ¥0 不用橙」；三端统一，F-AND-06）：「暂无返利」（含异常数据降级）中性；
+     * 金额、区间、金额未知、登录查看用返利色。金额被遮罩时按种类（不让颜色泄露金额是否为 0）。
+     */
+    val usesRebateAccent: Boolean get() = kind != RebateKind.NONE
+
+    /**
+     * 金额隐藏时的返利标签（编排者三端统一裁定）：有金额的种类显示「预估返 ****」，读屏「预估返，金额已隐藏」；
+     * 没有金额的种类（暂无返利、金额未知、登录查看）不含金额，原样返回。
+     */
+    fun masked(mask: AmountMask): RebateTagContent =
+        if (!hasAmount || isMasked) {
+            this
+        } else {
+            RebateTagContent(
+                kind = kind,
+                text = "$label ${mask.mask}",
+                label = label,
+                amountSegments = listOf(mask.mask),
+                spoken = label + PriceTerms.SPOKEN_PAUSE + mask.spoken,
+                isMasked = true,
+            )
+        }
+
+    override fun equals(other: Any?): Boolean =
+        other is RebateTagContent && other.kind == kind && other.text == text && other.isMasked == isMasked
 
     override fun hashCode(): Int = kind.hashCode() * HASH_PRIME + text.hashCode()
 

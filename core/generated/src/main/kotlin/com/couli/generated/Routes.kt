@@ -4,6 +4,21 @@ package com.couli.generated
 /** 路由类型。 */
 enum class RouteKind { NATIVE, H5 }
 
+/** 路由参数的取值类型（params JSON Schema 的 type）。 */
+enum class RouteParamType { STRING, OBJECT }
+
+/** 路由的一个参数（params JSON Schema 的一项 property；schema 一律 additionalProperties=false）。 */
+data class RouteParamSpec(
+    val name: kotlin.String,
+    val type: RouteParamType,
+    val required: kotlin.Boolean,
+    val enumValues: kotlin.collections.List<kotlin.String>?,
+    val minLength: kotlin.Int?,
+    val maxLength: kotlin.Int?,
+    /** ECMA 正则（契约当前只有 ^https://）。 */
+    val pattern: kotlin.String?,
+)
+
 /** 一条路由（contracts/routes.json）。 */
 data class RouteSpec(
     val name: kotlin.String,
@@ -14,6 +29,12 @@ data class RouteSpec(
     val entries: kotlin.collections.List<RouteEntry>,
     val h5Path: kotlin.String?,
     val debugOnly: kotlin.Boolean,
+    /** Agent 页面引导卡能否打开（agent_guide，缺省 false；03 §4.4、BR-ID-10）。 */
+    val agentGuide: kotlin.Boolean,
+    /** agent_guide_account（phone / delete / fund）：Agent 从不引导、改答文案的账号安全页；null 表示没有。 */
+    val agentGuideAccount: kotlin.String?,
+    /** params schema 的 properties（additionalProperties 一律 false）。 */
+    val params: kotlin.collections.List<RouteParamSpec>,
 )
 
 /**
@@ -32,6 +53,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "BasicMode" to
                 RouteSpec(
@@ -42,6 +66,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Login" to
                 RouteSpec(
@@ -52,6 +79,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "BindPhone" to
                 RouteSpec(
@@ -62,6 +92,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "phone",
+                    params = emptyList(),
                 ),
             "Home" to
                 RouteSpec(
@@ -72,6 +105,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Search" to
                 RouteSpec(
@@ -82,6 +118,29 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "q",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = 100,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "ProductDetail" to
                 RouteSpec(
@@ -92,6 +151,38 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "product_key",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 3,
+                                maxLength = 128,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "item_ref",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = 1024,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "AuthSheet" to
                 RouteSpec(
@@ -102,6 +193,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "JumpTip" to
                 RouteSpec(
@@ -112,6 +217,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "AgentChat" to
                 RouteSpec(
@@ -122,6 +241,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "context",
+                                type = RouteParamType.OBJECT,
+                                required = false,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "AgentConsent" to
                 RouteSpec(
@@ -132,6 +265,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "OrderList" to
                 RouteSpec(
@@ -142,6 +278,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "scope",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("self", "share"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "OrderDetail" to
                 RouteSpec(
@@ -152,6 +302,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "order_id",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "FindOrder" to
                 RouteSpec(
@@ -162,6 +326,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = "/find-order",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Me" to
                 RouteSpec(
@@ -172,6 +339,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Wallet" to
                 RouteSpec(
@@ -182,6 +352,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Withdraw" to
                 RouteSpec(
@@ -192,6 +365,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "fund",
+                    params = emptyList(),
                 ),
             "WithdrawRecords" to
                 RouteSpec(
@@ -202,6 +378,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "withdrawal_id",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "Ledger" to
                 RouteSpec(
@@ -212,6 +402,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = "/ledger",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "RealName" to
                 RouteSpec(
@@ -222,6 +415,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "fund",
+                    params = emptyList(),
                 ),
             "PayoutAccount" to
                 RouteSpec(
@@ -232,6 +428,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "fund",
+                    params = emptyList(),
                 ),
             "LaborAgreement" to
                 RouteSpec(
@@ -242,6 +441,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "fund",
+                    params = emptyList(),
                 ),
             "Settings" to
                 RouteSpec(
@@ -252,6 +454,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "PrivacyCenter" to
                 RouteSpec(
@@ -262,6 +467,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "DeleteAccount" to
                 RouteSpec(
@@ -272,6 +480,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = "delete",
+                    params = emptyList(),
                 ),
             "RiskNotice" to
                 RouteSpec(
@@ -282,6 +493,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Appeal" to
                 RouteSpec(
@@ -292,6 +506,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "ForceUpdate" to
                 RouteSpec(
@@ -302,6 +519,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "About" to
                 RouteSpec(
@@ -312,6 +532,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Messages" to
                 RouteSpec(
@@ -322,6 +545,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = "/messages",
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "InviteShare" to
                 RouteSpec(
@@ -332,6 +558,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = "/invite",
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Rules" to
                 RouteSpec(
@@ -342,6 +571,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = "/rules",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "Help" to
                 RouteSpec(
@@ -352,6 +584,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = "/help",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "article_id",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "Notice" to
                 RouteSpec(
@@ -362,6 +608,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = "/notice",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "article_id",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "Agreement" to
                 RouteSpec(
@@ -372,6 +632,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = "/agreement",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "type",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("agreement", "privacy", "sdk_list"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "WebPage" to
                 RouteSpec(
@@ -382,6 +656,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "url",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = 2048,
+                                pattern = "^https://",
+                            ),
+                        ),
                 ),
             "ExternalPage" to
                 RouteSpec(
@@ -392,6 +680,38 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "url",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = 2048,
+                                pattern = "^https://",
+                            ),
+                            RouteParamSpec(
+                                name = "title",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = 20,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "nav_style",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("light", "dark"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "InvitedFriends" to
                 RouteSpec(
@@ -402,6 +722,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "LevelUpgrade" to
                 RouteSpec(
@@ -412,6 +735,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "LinkLanding" to
                 RouteSpec(
@@ -422,6 +748,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "link_id",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "Earnings" to
                 RouteSpec(
@@ -432,6 +772,20 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = "/earnings",
                     debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "AuthManage" to
                 RouteSpec(
@@ -442,6 +796,9 @@ object Routes {
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,
+                    agentGuide = true,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
         )
 

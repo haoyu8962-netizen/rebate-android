@@ -68,6 +68,7 @@ FILES="$FILES
 contracts/error-codes.yaml
 contracts/routes.json
 contracts/bridge.schema.json
+contracts/agent-stream.schema.json
 contracts/texts.default.json
 contracts/apps.json
 specs/events.yaml

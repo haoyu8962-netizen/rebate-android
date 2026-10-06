@@ -217,6 +217,49 @@ class NamingRulesTest(SnapshotCase):
                     self.assertEqual(a.read(), b.read())
 
 
+class RouteSchemaTest(SnapshotCase):
+    """APP-02a：routes.json 的 agent_guide / agent_guide_account / params 进 RouteSpec；不认识的约束明确失败。"""
+
+    def edit_routes(self, mutate):
+        path = os.path.join(self.snapshot, "contracts", "routes.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        mutate(data["routes"])
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    def test_agent_flags_and_params_are_generated(self):
+        self.generate()
+        source = self.read(f"{gen.MAIN_KOTLIN}/Routes.kt")
+        self.assertIn("val agentGuide: kotlin.Boolean,", source)
+        self.assertIn("val agentGuideAccount: kotlin.String?,", source)
+        self.assertIn('agentGuideAccount = "fund",', source)
+        self.assertIn('name = "product_key",', source)
+        self.assertIn('pattern = "^https://",', source)
+
+    def test_agent_guide_defaults_to_false(self):
+        self.edit_routes(lambda routes: routes["Wallet"].pop("agent_guide"))
+        self.generate()
+        source = self.read(f"{gen.MAIN_KOTLIN}/Routes.kt")
+        wallet = source[source.index('"Wallet" to'):source.index('"Withdraw" to')]
+        self.assertIn("agentGuide = false,", wallet)
+
+    def test_unknown_param_keyword_fails(self):
+        self.edit_routes(lambda routes: routes["Search"]["params"]["properties"]["q"].__setitem__("format", "uri"))
+        with self.assertRaisesRegex(gen.GenError, "Search.*format"):
+            self.generate()
+
+    def test_unknown_route_field_fails(self):
+        self.edit_routes(lambda routes: routes["Home"].__setitem__("agent_only", True))
+        with self.assertRaisesRegex(gen.GenError, "Home.*agent_only"):
+            self.generate()
+
+    def test_non_boolean_agent_guide_fails(self):
+        self.edit_routes(lambda routes: routes["Wallet"].__setitem__("agent_guide", "yes"))
+        with self.assertRaisesRegex(gen.GenError, "Wallet.*agent_guide"):
+            self.generate()
+
+
 def find_jar(gradle_home: str, group: str, artifact: str, version: str | None):
     base = os.path.join(gradle_home, "caches", "modules-2", "files-2.1", group, artifact)
     versions = [version] if version else sorted(os.listdir(base)) if os.path.isdir(base) else []
@@ -260,6 +303,30 @@ def kotlin_compiler():
     return java, os.pathsep.join(compiler), os.pathsep.join(library)
 
 
+# 探针编译的 JVM 参数：固定堆上限、无界面；保留默认分层编译（不用 TieredStopAtLevel=1——那会让 JVM 把
+# CodeCache 缩到 48 MB，Kotlin 编译器在高负载下会撑满并以 VirtualMachineError 失败），并显式给足 CodeCache。
+PROBE_JVM_OPTIONS = ["-Xmx1536m", "-XX:ReservedCodeCacheSize=256m", "-XX:+UseParallelGC", "-Djava.awt.headless=true"]
+# 单次编译的时限（秒）：空闲机器约 10 秒；可用 COULI_GEN_KOTLINC_TIMEOUT 调整。超时后自动再试一次。
+PROBE_TIMEOUT_SECONDS = int(os.environ.get("COULI_GEN_KOTLINC_TIMEOUT", "900"))
+PROBE_ATTEMPTS = 2
+
+
+def load_average() -> str:
+    try:
+        return " / ".join(f"{value:.1f}" for value in os.getloadavg())
+    except OSError:
+        return "未知"
+
+
+def run_probe_compiler(command: list, timeout: int) -> tuple[subprocess.CompletedProcess | None, str]:
+    """跑一次编译；超时返回 (None, 说明)。stdin 关掉，免得子进程等终端输入。"""
+    try:
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL), ""
+    except subprocess.TimeoutExpired as expired:
+        tail = (expired.stdout or "")[-2000:] if isinstance(expired.stdout, str) else ""
+        return None, f"超过 {timeout} 秒未结束（当时负载 {load_average()}）。{tail}"
+
+
 class CompileProbeTest(SnapshotCase):
     def test_probe_output_compiles(self):
         found = kotlin_compiler()
@@ -274,15 +341,27 @@ class CompileProbeTest(SnapshotCase):
             os.path.join(self.out, "core/generated/src/main/kotlin"),
             os.path.join(self.out, "core/generated/src/debugFeatures/kotlin"),
         ]
-        result = subprocess.run(
-            [java, "-cp", compiler_cp, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
-             "-no-stdlib", "-no-reflect", "-classpath", library_cp, "-d", os.path.join(self.tmp, "classes"),
-             *sources],
-            capture_output=True, text=True, timeout=600,
-        )
+        classes = os.path.join(self.tmp, "classes")
+        command = [java, *PROBE_JVM_OPTIONS, "-cp", compiler_cp, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+                   "-no-stdlib", "-no-reflect", "-classpath", library_cp, "-d", classes, *sources]
+        notes = []
+        result = None
+        for attempt in range(1, PROBE_ATTEMPTS + 1):
+            shutil.rmtree(classes, ignore_errors=True)
+            result, note = run_probe_compiler(command, PROBE_TIMEOUT_SECONDS)
+            if result is not None:
+                break
+            notes.append(f"第 {attempt} 次：{note}")
+            print(f"探针编译第 {attempt} 次超时（{PROBE_TIMEOUT_SECONDS} 秒，负载 {load_average()}），重试", file=sys.stderr)
+        if result is None:
+            self.fail(
+                "探针编译超时：机器负载过高时 Kotlin 编译器跑不完，不是生成物错误。"
+                "等负载降下来重跑 tools/ci/verify.sh，或设置 COULI_GEN_KOTLINC_TIMEOUT=<秒> 放宽时限。\n"
+                + "\n".join(notes)
+            )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertTrue(
-            glob.glob(os.path.join(self.tmp, "classes", "com", "couli", "generated", "ContractString.class")),
+            glob.glob(os.path.join(classes, "com", "couli", "generated", "ContractString.class")),
             "编译产物里没有 ContractString.class",
         )
 

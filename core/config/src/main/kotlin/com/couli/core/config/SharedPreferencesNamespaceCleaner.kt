@@ -21,7 +21,10 @@ object CouliPreferenceNamespaces {
     /** 页面与配置缓存（TODO(APP-03)）。 */
     const val CACHE = "couli.cache"
 
-    val registered: List<String> = listOf(SESSION, CACHE)
+    /** 路由：pending_action（APP-02a；退出登录时由调用方 clear，切换环境时随命名空间清理）。 */
+    const val ROUTER = "couli.router"
+
+    val registered: List<String> = listOf(SESSION, CACHE, ROUTER)
 
     init {
         registered.forEach { name ->

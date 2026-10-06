@@ -65,6 +65,8 @@ GENERATOR_TYPE_NAMES = {
     "ErrorCodes",
     "RouteKind",
     "RouteSpec",
+    "RouteParamSpec",
+    "RouteParamType",
     "Routes",
     "DebugRoutes",
     "BridgeMethodSpec",
@@ -468,7 +470,77 @@ def gen_error_codes(out_root: str):
 # ---------------------------------------------------------------- 路由
 
 
+ROUTE_KEYS = {"page", "kind", "h5_path", "params", "auth", "entry", "since", "debug_only", "phase",
+              "agent_guide", "agent_guide_account"}
+# params schema 里生成器认识的关键字；出现其他关键字即失败（不静默忽略约束）。
+PARAM_SCHEMA_KEYS = {"type", "additionalProperties", "properties", "required"}
+PARAM_PROPERTY_KEYS = {"type", "enum", "minLength", "maxLength", "pattern", "description", "additionalProperties"}
+PARAM_TYPES = {"string": "STRING", "object": "OBJECT"}
+
+
+def kint_or_null(value, where: str) -> str:
+    if value is None:
+        return "null"
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise GenError(f"{where} 必须是非负整数：{value!r}")
+    return str(value)
+
+
+def route_params_exprs(name: str, r: dict, indent: str) -> list:
+    schema = r.get("params")
+    where = f"路由 {name} 的 params"
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise GenError(f"{where} 必须是 type=object 的 JSON Schema")
+    unknown = set(schema) - PARAM_SCHEMA_KEYS
+    if unknown:
+        raise GenError(f"{where} 出现生成器不认识的关键字：{sorted(unknown)}")
+    if schema.get("additionalProperties", True) is not False:
+        raise GenError(f"{where} 必须 additionalProperties=false")
+    props = schema.get("properties") or {}
+    required = schema.get("required") or []
+    for key in required:
+        if key not in props:
+            raise GenError(f"{where} 的 required {key!r} 不在 properties 里")
+    lines = []
+    for key, prop in props.items():
+        pw = f"{where}.{key}"
+        if not isinstance(prop, dict):
+            raise GenError(f"{pw} 必须是对象")
+        unknown = set(prop) - PARAM_PROPERTY_KEYS
+        if unknown:
+            raise GenError(f"{pw} 出现生成器不认识的关键字：{sorted(unknown)}")
+        ptype = prop.get("type")
+        if ptype not in PARAM_TYPES:
+            raise GenError(f"{pw} 的 type {ptype!r} 不支持")
+        if ptype == "object" and set(prop) - {"type", "additionalProperties", "description"}:
+            raise GenError(f"{pw} 是 object，只支持 additionalProperties")
+        if ptype == "string" and "additionalProperties" in prop:
+            raise GenError(f"{pw} 是 string，不应有 additionalProperties")
+        enum = prop.get("enum")
+        if enum is not None and (not isinstance(enum, list) or not all(isinstance(v, str) for v in enum)):
+            raise GenError(f"{pw} 的 enum 必须是字符串数组")
+        enum_expr = "null" if enum is None else "listOf(" + ", ".join(kstr(v) for v in enum) + ")"
+        pattern = prop.get("pattern")
+        if pattern is not None and not isinstance(pattern, str):
+            raise GenError(f"{pw} 的 pattern 必须是字符串")
+        lines += [
+            f"{indent}RouteParamSpec(",
+            f"{indent}    name = {kstr(key)},",
+            f"{indent}    type = RouteParamType.{PARAM_TYPES[ptype]},",
+            f"{indent}    required = {kbool(key in required)},",
+            f"{indent}    enumValues = {enum_expr},",
+            f"{indent}    minLength = {kint_or_null(prop.get('minLength'), pw + '.minLength')},",
+            f"{indent}    maxLength = {kint_or_null(prop.get('maxLength'), pw + '.maxLength')},",
+            f"{indent}    pattern = {knullable_str(pattern)},",
+            f"{indent}),",
+        ]
+    return lines
+
+
 def route_spec_expr(name: str, r: dict, route_entry_item, indent: str) -> list:
+    unknown = set(r) - ROUTE_KEYS
+    if unknown:
+        raise GenError(f"路由 {name} 出现生成器不认识的字段：{sorted(unknown)}")
     kind = r.get("kind")
     if kind not in ("native", "h5"):
         raise GenError(f"路由 {name} 的 kind {kind!r} 不支持")
@@ -483,6 +555,20 @@ def route_spec_expr(name: str, r: dict, route_entry_item, indent: str) -> list:
     auth = r.get("auth")
     if not isinstance(auth, str):
         raise GenError(f"路由 {name} 缺 auth")
+    agent_guide = r.get("agent_guide", False)
+    if not isinstance(agent_guide, bool):
+        raise GenError(f"路由 {name} 的 agent_guide 必须是布尔")
+    agent_guide_account = r.get("agent_guide_account")
+    if agent_guide_account is not None and not isinstance(agent_guide_account, str):
+        raise GenError(f"路由 {name} 的 agent_guide_account 必须是字符串")
+    if agent_guide and agent_guide_account is not None:
+        raise GenError(f"路由 {name} 同时有 agent_guide=true 与 agent_guide_account（契约说明二者互斥）")
+    params = route_params_exprs(name, r, indent + "                ")
+    params_expr = (
+        [f"{indent}        params =", f"{indent}            listOf("] + params + [f"{indent}            ),"]
+        if params
+        else [f"{indent}        params = emptyList(),"]
+    )
     return [
         f"{indent}{kstr(name)} to",
         f"{indent}    RouteSpec(",
@@ -493,6 +579,9 @@ def route_spec_expr(name: str, r: dict, route_entry_item, indent: str) -> list:
         f"{indent}        entries = listOf({', '.join(entry_exprs)}),",
         f"{indent}        h5Path = {knullable_str(r.get('h5_path'))},",
         f"{indent}        debugOnly = {kbool(r.get('debug_only') is True)},",
+        f"{indent}        agentGuide = {kbool(agent_guide)},",
+        f"{indent}        agentGuideAccount = {knullable_str(agent_guide_account)},",
+    ] + params_expr + [
         f"{indent}    ),",
     ]
 
@@ -512,6 +601,21 @@ def gen_routes(out_root: str, enums):
         "/** 路由类型。 */",
         "enum class RouteKind { NATIVE, H5 }",
         "",
+        "/** 路由参数的取值类型（params JSON Schema 的 type）。 */",
+        "enum class RouteParamType { STRING, OBJECT }",
+        "",
+        "/** 路由的一个参数（params JSON Schema 的一项 property；schema 一律 additionalProperties=false）。 */",
+        "data class RouteParamSpec(",
+        "    val name: kotlin.String,",
+        "    val type: RouteParamType,",
+        "    val required: kotlin.Boolean,",
+        "    val enumValues: kotlin.collections.List<kotlin.String>?,",
+        "    val minLength: kotlin.Int?,",
+        "    val maxLength: kotlin.Int?,",
+        "    /** ECMA 正则（契约当前只有 ^https://）。 */",
+        "    val pattern: kotlin.String?,",
+        ")",
+        "",
         "/** 一条路由（contracts/routes.json）。 */",
         "data class RouteSpec(",
         "    val name: kotlin.String,",
@@ -522,6 +626,12 @@ def gen_routes(out_root: str, enums):
         f"    val entries: kotlin.collections.List<{route_entry_type}>,",
         "    val h5Path: kotlin.String?,",
         "    val debugOnly: kotlin.Boolean,",
+        "    /** Agent 页面引导卡能否打开（agent_guide，缺省 false；03 §4.4、BR-ID-10）。 */",
+        "    val agentGuide: kotlin.Boolean,",
+        "    /** agent_guide_account（phone / delete / fund）：Agent 从不引导、改答文案的账号安全页；null 表示没有。 */",
+        "    val agentGuideAccount: kotlin.String?,",
+        "    /** params schema 的 properties（additionalProperties 一律 false）。 */",
+        "    val params: kotlin.collections.List<RouteParamSpec>,",
         ")",
         "",
         "/**",

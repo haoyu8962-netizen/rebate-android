@@ -1,6 +1,7 @@
 package com.couli.app
 
 import android.content.Context
+import com.couli.app.routing.AppRouting
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.SharedPreferencesNamespaceCleaner
@@ -38,4 +39,17 @@ object AppModule {
         @ApplicationContext context: Context,
         cleaners: EnvironmentSwitchCleanerRegistry,
     ): EnvironmentGate = EnvironmentGate { reconcileEnvironmentAtStartup(context, cleaners) }
+
+    /** 路由接线（APP-02a）：启动意图排队、统一入口守卫、pending_action。 */
+    @Provides
+    @Singleton
+    fun appRouting(
+        @ApplicationContext context: Context,
+        environmentGate: EnvironmentGate,
+        cleaners: EnvironmentSwitchCleanerRegistry,
+    ): AppRouting =
+        AppRouting(context, environmentGate).also { routing ->
+            // 切换环境：作废进行中的推送回查、清 pending_action（R1-03）
+            cleaners.register { _, _ -> routing.onEnvironmentSwitched() }
+        }
 }

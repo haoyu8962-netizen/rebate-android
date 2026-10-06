@@ -193,6 +193,8 @@ enum class AgentIntent(
     HANDOFF("handoff"),
     CLARIFY("clarify"),
     OUT_OF_SCOPE("out_of_scope"),
+    PAGE_GUIDE("page_guide"),
+    EARNINGS_QUERY("earnings_query"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -208,6 +210,8 @@ enum class AgentIntent(
                 HANDOFF,
                 CLARIFY,
                 OUT_OF_SCOPE,
+                PAGE_GUIDE,
+                EARNINGS_QUERY,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, AgentIntent> = known.associateBy { it.raw }
@@ -250,6 +254,8 @@ enum class AgentCardType(
     AUTH_REQUIRED("auth_required"),
     NOTICE("notice"),
     RULE_REF("rule_ref"),
+    PAGE_GUIDE("page_guide"),
+    EARNINGS_SUMMARY("earnings_summary"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -265,6 +271,8 @@ enum class AgentCardType(
                 AUTH_REQUIRED,
                 NOTICE,
                 RULE_REF,
+                PAGE_GUIDE,
+                EARNINGS_SUMMARY,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, AgentCardType> = known.associateBy { it.raw }
@@ -284,6 +292,57 @@ object AgentCardTypeSerializer : KSerializer<AgentCardType> {
     override fun serialize(
         encoder: Encoder,
         value: AgentCardType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `page_guide_reject_reason`（contracts/enums/ops.yaml）。
+ * agent_runs.page_guide_reject_reason，页面引导意图不出卡的原因（BR-AI-01 细则「页面引导」）
+ *
+ * 未知取值解码为 [PageGuideRejectReason.UNKNOWN]，不抛错。
+ */
+@Serializable(with = PageGuideRejectReasonSerializer::class)
+enum class PageGuideRejectReason(
+    val raw: kotlin.String,
+) {
+    NOT_ALLOWED("not_allowed"),
+    EXTRA_FIELDS("extra_fields"),
+    DISABLED("disabled"),
+    UNTRUSTED_INPUT("untrusted_input"),
+    PARAMS_REQUESTED("params_requested"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<PageGuideRejectReason> =
+            listOf(
+                NOT_ALLOWED,
+                EXTRA_FIELDS,
+                DISABLED,
+                UNTRUSTED_INPUT,
+                PARAMS_REQUESTED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, PageGuideRejectReason> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): PageGuideRejectReason = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [PageGuideRejectReason] 的序列化器：未知字符串得 [PageGuideRejectReason.UNKNOWN]；序列化写 raw。 */
+object PageGuideRejectReasonSerializer : KSerializer<PageGuideRejectReason> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.PageGuideRejectReason", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): PageGuideRejectReason = PageGuideRejectReason.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: PageGuideRejectReason,
     ) {
         encoder.encodeString(value.raw)
     }

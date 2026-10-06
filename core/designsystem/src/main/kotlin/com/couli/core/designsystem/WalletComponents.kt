@@ -7,6 +7,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -53,7 +54,128 @@ data class AmountCell(
     val onHelp: (() -> Unit)? = null,
     val isAmount: Boolean = true,
     val hiddenNote: String? = null,
-)
+    /** 带类型的数值（[of] 构造时有）：区间按破折号分段排版，强调色只给正金额。 */
+    val amount: AmountValue? = null,
+) {
+    /** 不可拆分的显示段：区间「¥a」「–¥b」只在破折号处折行；手写文字的格按空格分段。 */
+    fun segments(masked: Boolean): List<String> = amount?.takeUnless { masked }?.segments() ?: value.split(' ')
+
+    /**
+     * 是否用返利强调色（GUIDE §7.1「无返利 / 返利 ¥0 不用橙」，F-AND-06）：只给 [emphasis] 的格；有 [amount] 时只给正金额，
+     * 金额隐藏时按种类（金额、区间仍用，不让「****」的颜色泄露是否为 0），纯文字不用。
+     */
+    fun usesRebateAccent(amountHidden: Boolean): Boolean {
+        val typed = amount
+        return emphasis &&
+            when {
+                typed == null -> true
+                typed is AmountValue.Text -> false
+                amountHidden -> true
+                else -> typed.isPositiveAmount
+            }
+    }
+
+    companion object {
+        /** 按类型构造一格：显示文字与读屏（「预估返，1.35 元到 2.69 元」）由 [value] 生成；[isRebate] 为返利类（强调色）。 */
+        @Suppress("LongParameterList")
+        fun of(
+            label: String,
+            value: AmountValue,
+            isRebate: Boolean = false,
+            note: String? = null,
+            labelIcon: ImageVector? = null,
+            helpLabel: String? = null,
+            onHelp: (() -> Unit)? = null,
+            hiddenNote: String? = null,
+        ): AmountCell =
+            AmountCell(
+                label = label,
+                value = value.segments().joinToString(""),
+                spoken = label + PriceTerms.SPOKEN_PAUSE + value.spoken(),
+                note = note,
+                emphasis = isRebate,
+                labelIcon = labelIcon,
+                helpLabel = helpLabel,
+                onHelp = onHelp,
+                isAmount = value !is AmountValue.Text,
+                hiddenNote = hiddenNote,
+                amount = value,
+            )
+    }
+}
+
+/** 数字格的数值类型（F-AND-05「AmountGrid 区间金额类型」，与 iOS AmountValue 同义）。 */
+@Immutable
+sealed interface AmountValue {
+    /** 单一金额（分）。 */
+    data class Amount(
+        val fen: Long,
+    ) : AmountValue
+
+    /**
+     * 返利区间（订单数字格「预估返」等）：「¥a–¥b」、读「a 元到 b 元」，只在破折号处折行。min = max > 0 按单值；
+     * 异常数据（min > max 不排序、端点为负、上限为 0）按 rule-gaps 统一裁定显示「暂无返利」。
+     */
+    data class Range(
+        val minFen: Long,
+        val maxFen: Long,
+    ) : AmountValue
+
+    /** 非金额文字（如「10 月结算」「暂无返利」）。 */
+    data class Text(
+        val text: String,
+    ) : AmountValue
+
+    /** 不可拆分的显示段。 */
+    fun segments(): List<String> =
+        when (this) {
+            is Amount -> {
+                listOf(CouliFormat.money(fen))
+            }
+
+            is Range -> {
+                when {
+                    !validRange() -> listOf(PriceTerms.NO_REBATE)
+                    minFen == maxFen -> listOf(CouliFormat.money(minFen))
+                    else -> listOf(CouliFormat.money(minFen), PriceTerms.RANGE_DASH + CouliFormat.money(maxFen))
+                }
+            }
+
+            is Text -> {
+                listOf(text)
+            }
+        }
+
+    fun spoken(): String =
+        when (this) {
+            is Amount -> {
+                CouliFormat.moneySpoken(fen)
+            }
+
+            is Range -> {
+                when {
+                    !validRange() -> PriceTerms.NO_REBATE
+                    minFen == maxFen -> CouliFormat.moneySpoken(minFen)
+                    else -> CouliFormat.moneySpoken(minFen) + PriceTerms.SPOKEN_TO + CouliFormat.moneySpoken(maxFen)
+                }
+            }
+
+            is Text -> {
+                text
+            }
+        }
+
+    /** 可显示的正金额：单值 > 0；区间合法且上限 > 0。0、负数、异常区间与纯文字都不是。 */
+    val isPositiveAmount: Boolean
+        get() =
+            when (this) {
+                is Amount -> fen > 0
+                is Range -> validRange()
+                is Text -> false
+            }
+
+    private fun Range.validRange(): Boolean = minFen in 0..maxFen && maxFen > 0
+}
 
 /** 金额隐藏状态（BR-TEXT-10；adaptation-a11y-spec §9：被隐藏的金额读「金额已隐藏」，文案由调用方从字典给）。 */
 @Immutable
@@ -63,7 +185,12 @@ data class AmountMask(
     val mask: String,
     /** 读屏用的「金额已隐藏」。 */
     val spoken: String,
-)
+) {
+    companion object {
+        /** 只知道「要隐藏」、调用方没给遮罩时的缺省遮罩（[PriceTerms.AMOUNT_MASK]、[PriceTerms.AMOUNT_HIDDEN_SPOKEN]）。 */
+        val DEFAULT_HIDDEN: AmountMask = AmountMask(hidden = true, mask = PriceTerms.AMOUNT_MASK, spoken = PriceTerms.AMOUNT_HIDDEN_SPOKEN)
+    }
+}
 
 /** 数字格配色：白卡片上（标签灰、数值墨棕，返利类用返利强调色）与狸橙实底上（全白）。 */
 enum class AmountGridTone {
@@ -98,10 +225,7 @@ fun AmountGrid(
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val gap = CouliSpacing.space3
         val columnWidthPx = with(density) { ((maxWidth - gap) / 2).roundToPx() }
-        val widestSegment =
-            cells.maxOfOrNull { cell ->
-                cell.value.split(' ').maxOf { segment -> measurer.measure(segment, valueStyle).size.width }
-            } ?: 0
+        val widestSegment = widestSegment(cells, masked) { measurer.measure(it, valueStyle).size.width }
         val stacked = density.fontScale >= CouliAlpha.LARGE_FONT_SCALE || widestSegment > columnWidthPx
         if (stacked) {
             Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
@@ -128,6 +252,13 @@ fun AmountGrid(
     }
 }
 
+/** 所有格里最宽的一个不可拆分段（px）。 */
+private fun widestSegment(
+    cells: List<AmountCell>,
+    masked: Boolean,
+    width: (String) -> Int,
+): Int = cells.maxOfOrNull { cell -> cell.segments(masked && cell.isAmount).maxOf(width) } ?: 0
+
 /** 隐藏金额后的格：数值换遮罩、读屏不读金额、说明行换成不含金额的版本（或不显示）。 */
 private fun AmountCell.masked(mask: AmountMask): AmountCell =
     if (!isAmount) {
@@ -147,18 +278,7 @@ private fun AmountCellView(
     masked: Boolean = false,
 ) {
     val solid = tone == AmountGridTone.ON_SOLID
-    val labelColor =
-        when {
-            solid -> CouliColors.textInverse
-            cell.emphasis -> CouliColors.rebateText
-            else -> CouliColors.textSecondary
-        }
-    val valueColor =
-        when {
-            solid -> CouliColors.textInverse
-            cell.emphasis -> CouliColors.rebateText
-            else -> CouliColors.priceText
-        }
+    val (labelColor, valueColor) = cellColors(cell, solid, masked)
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
         Row(
             modifier = if (alignLabelRow) Modifier.heightIn(min = CouliSizes.touchTarget) else Modifier,
@@ -185,8 +305,38 @@ private fun AmountCellView(
                 )
             }
         }
-        Text(text = cell.value, style = valueStyle, color = valueColor, modifier = Modifier.clearAndSetSemantics { })
+        AmountCellValue(cell = cell, masked = masked, style = valueStyle, color = valueColor)
         if (cell.note != null) AmountNote(note = cell.note, solid = solid, masked = masked)
+    }
+}
+
+/** 标签色与数值色：实底全白；返利强调色只给正金额（[AmountCell.usesRebateAccent]）。 */
+private fun cellColors(
+    cell: AmountCell,
+    solid: Boolean,
+    masked: Boolean,
+): Pair<Color, Color> =
+    when {
+        solid -> CouliColors.textInverse to CouliColors.textInverse
+        cell.usesRebateAccent(amountHidden = masked) -> CouliColors.rebateText to CouliColors.rebateText
+        else -> CouliColors.textSecondary to CouliColors.priceText
+    }
+
+/** 数值：区间两段只在破折号处折行，每段整块单行（F-AND-05）；其余格整串一个 Text。读屏由格名称读。 */
+@Composable
+private fun AmountCellValue(
+    cell: AmountCell,
+    masked: Boolean,
+    style: TextStyle,
+    color: Color,
+) {
+    val segments = cell.segments(masked)
+    if (cell.amount is AmountValue.Range && segments.size > 1) {
+        FlowRow(modifier = Modifier.clearAndSetSemantics { }) {
+            segments.forEach { AmountText(text = it, style = style, color = color) }
+        }
+    } else {
+        Text(text = cell.value, style = style, color = color, modifier = Modifier.clearAndSetSemantics { })
     }
 }
 

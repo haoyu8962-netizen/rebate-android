@@ -1,6 +1,7 @@
 package com.couli.core.designsystem
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,16 +23,18 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -39,6 +42,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.delay
 
 /** Agent 卡片的条件标记（BR-AI-24）：符合条件 / 已放宽 / 规格待确认；文字取字典。 */
 enum class MatchBadgeKind {
@@ -85,10 +89,13 @@ fun EmptyState(
     icon: ImageVector = CouliIcons.search,
     action: StateAction? = null,
 ) {
-    StateLayout(title = title, message = message, icon = icon, action = action, modifier = modifier, announce = false)
+    StateLayout(title = title, message = message, icon = icon, action = action, modifier = modifier)
 }
 
-/** 错误态：同空态布局，图标为警示三角；出现时立即播报（assertive，adaptation-a11y-spec §10）。 */
+/**
+ * 错误态：同空态布局，图标为警示三角。出现时立即播报整句（adaptation-a11y-spec §10），播报读完后读屏焦点移到【重试】
+ * （F-AND-06，[ErrorStateFocus]）；同一内容重绘不重复，换了内容重新播报、重新移焦。
+ */
 @Composable
 fun ErrorState(
     title: String,
@@ -96,7 +103,22 @@ fun ErrorState(
     modifier: Modifier = Modifier,
     message: String? = null,
 ) {
-    StateLayout(title = title, message = message, icon = CouliIcons.alert, action = retry, modifier = modifier, announce = true)
+    val announcer = rememberCouliAnnouncer()
+    val retryFocus = remember { FocusRequester() }
+    val announcement = ErrorStateFocus.announcement(title, message)
+    LaunchedEffect(announcement) {
+        announcer.announce(announcement)
+        delay(ErrorStateFocus.focusDelayMillis(announcement))
+        retryFocus.requestFocusSafely()
+    }
+    StateLayout(
+        title = title,
+        message = message,
+        icon = CouliIcons.alert,
+        action = retry,
+        modifier = modifier,
+        actionModifier = Modifier.couliFocusTarget(retryFocus),
+    )
 }
 
 @Composable
@@ -106,7 +128,7 @@ private fun StateLayout(
     icon: ImageVector,
     action: StateAction?,
     modifier: Modifier,
-    announce: Boolean,
+    actionModifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier.fillMaxWidth().padding(vertical = CouliSpacing.space6, horizontal = CouliSpacing.space4),
@@ -131,10 +153,7 @@ private fun StateLayout(
             modifier =
                 Modifier
                     .padding(top = CouliSpacing.space2)
-                    .semantics {
-                        heading()
-                        if (announce) liveRegion = LiveRegionMode.Assertive
-                    },
+                    .semantics { heading() },
         )
         if (message != null) {
             Text(text = message, style = CouliTypography.footnote, color = CouliColors.textSecondary, textAlign = TextAlign.Center)
@@ -144,7 +163,7 @@ private fun StateLayout(
                 text = action.label,
                 onClick = action.onClick,
                 variant = CouliButtonVariant.SECONDARY,
-                modifier = Modifier.padding(top = CouliSpacing.space2),
+                modifier = Modifier.padding(top = CouliSpacing.space2).then(actionModifier),
             )
         }
     }
@@ -185,13 +204,19 @@ fun SkeletonProductCard(
     }
 }
 
-/** 轻提示（页顶）：白底浮层 + 文字，礼貌播报（adaptation-a11y-spec §10）。显示时机由调用方控制。 */
+/**
+ * 轻提示（页顶）：白底浮层 + 文字，出现时播报（adaptation-a11y-spec §10）。显示时机由调用方控制。
+ * 内容变化重新播报；同一句再次提示时调用方换一个 [announcementId]（如递增计数）也重新播报（F-AND-05）。
+ */
 @Composable
 fun CouliToast(
     message: String,
     modifier: Modifier = Modifier,
     icon: ImageVector? = CouliIcons.check,
+    announcementId: Any? = null,
 ) {
+    val announcer = rememberCouliAnnouncer()
+    LaunchedEffect(message, announcementId) { announcer.announce(message) }
     val shape = RoundedCornerShape(CouliRadius.button)
     Row(
         modifier =
@@ -199,8 +224,7 @@ fun CouliToast(
                 .shadow(CouliSpacing.space2, shape, ambientColor = CouliColors.textPrimary, spotColor = CouliColors.textPrimary)
                 .clip(shape)
                 .background(CouliColors.backgroundSurface)
-                .padding(CouliSpacing.space3)
-                .semantics { liveRegion = LiveRegionMode.Polite },
+                .padding(CouliSpacing.space3),
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -216,8 +240,8 @@ fun CouliToast(
 /**
  * 居中弹窗（GUIDE §3 / §6）：白底圆角 16、内边距 20；标题 17/600 → 正文 14 → 按钮「一主一次」：放得下并排等宽（次左主右），
  * 放不下整块换行、各占通栏、主按钮在上。最大高 = 可视高度 − 2 × (安全区 + 24)；标题与按钮行固定，正文在中间可滚动
- * （adaptation-a11y-spec §4，R2-03）。模态：系统 Dialog 窗口，读屏焦点进弹窗、底层不可达，关闭后回到原控件（系统行为）。
- * [dismissible] 为 false 时返回键与点外部都不关闭（如首启隐私弹窗）。
+ * （adaptation-a11y-spec §4，R2-03）。模态：系统 Dialog 窗口，底层不可达；打开时焦点进标题，关闭后回到 [restoreFocusTo]
+ * （触发控件挂 [couliFocusTarget]，F-AND-05）。[dismissible] 为 false 时返回键与点外部都不关闭（如首启隐私弹窗）。
  */
 @Composable
 fun CouliDialog(
@@ -229,7 +253,9 @@ fun CouliDialog(
     dismissText: String? = null,
     onDismiss: () -> Unit = onDismissRequest,
     dismissible: Boolean = true,
+    restoreFocusTo: FocusRequester? = null,
 ) {
+    RestoreFocusOnDispose(restoreFocusTo)
     Dialog(
         onDismissRequest = onDismissRequest,
         properties =
@@ -244,6 +270,8 @@ fun CouliDialog(
             modifier = Modifier.safeDrawingPadding().padding(CouliSpacing.space6),
             contentAlignment = Alignment.Center,
         ) {
+            val titleFocus = remember { FocusRequester() }
+            FocusOnAppear(titleFocus)
             CouliDialogContent(
                 title = title,
                 message = message,
@@ -251,6 +279,7 @@ fun CouliDialog(
                 onConfirm = onConfirm,
                 dismissText = dismissText,
                 onDismiss = onDismiss,
+                titleFocus = titleFocus,
             )
         }
     }
@@ -269,6 +298,7 @@ fun CouliDialogContent(
     message: String? = null,
     dismissText: String? = null,
     onDismiss: () -> Unit = {},
+    titleFocus: FocusRequester? = null,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -283,7 +313,7 @@ fun CouliDialogContent(
                 text = title,
                 style = CouliTextStyles.bodySemibold,
                 color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { heading() },
+                modifier = Modifier.modalTitle(titleFocus),
             )
         },
         body =
@@ -411,7 +441,8 @@ private fun DialogButtons(
 
 /**
  * 底部半屏（GUIDE §3）：白底、上两角 24、顶部 36×4 把手；标题 → 正文 → 操作。头部与底部操作 [actions] 固定，只有正文滚动，
- * 正文可滚时操作区上方加分隔线（adaptation-a11y-spec §4）。模态由 ModalBottomSheet 提供（焦点进入、底层不可达）。
+ * 正文可滚时操作区上方加分隔线（adaptation-a11y-spec §4）。模态由 ModalBottomSheet 提供（底层不可达）；
+ * 打开时焦点进标题，关闭（按钮、遮罩、返回、下拉都一样）后回到 [restoreFocusTo]（F-AND-05）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -419,8 +450,10 @@ fun CouliSheet(
     title: String,
     onDismissRequest: () -> Unit,
     actions: (@Composable () -> Unit)? = null,
+    restoreFocusTo: FocusRequester? = null,
     content: @Composable () -> Unit,
 ) {
+    RestoreFocusOnDispose(restoreFocusTo)
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -429,7 +462,9 @@ fun CouliSheet(
         scrimColor = CouliColors.textPrimary.copy(alpha = CouliAlpha.SCRIM),
         dragHandle = { SheetHandle() },
     ) {
-        CouliSheetBody(title = title, actions = actions, content = content)
+        val titleFocus = remember { FocusRequester() }
+        FocusOnAppear(titleFocus)
+        CouliSheetBody(title = title, actions = actions, titleFocus = titleFocus, content = content)
     }
 }
 
@@ -439,6 +474,7 @@ fun CouliSheetBody(
     title: String,
     modifier: Modifier = Modifier,
     actions: (@Composable () -> Unit)? = null,
+    titleFocus: FocusRequester? = null,
     content: @Composable () -> Unit,
 ) {
     ScrollBodyLayout(
@@ -450,7 +486,7 @@ fun CouliSheetBody(
                 text = title,
                 style = CouliTextStyles.bodySemibold,
                 color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { heading() },
+                modifier = Modifier.modalTitle(titleFocus),
             )
         },
         body = { Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) { content() } },
@@ -470,6 +506,10 @@ fun SheetHandle(modifier: Modifier = Modifier) {
                 .background(CouliColors.borderSubtle),
     )
 }
+
+/** 弹层标题：标题语义；给了 [focus] 时可被程序聚焦（打开时焦点进标题）。 */
+private fun Modifier.modalTitle(focus: FocusRequester?): Modifier =
+    semantics { heading() }.then(if (focus != null) Modifier.focusRequester(focus).focusable() else Modifier)
 
 private const val SKELETON_SECOND_LINE = 0.7f
 private const val SKELETON_PRICE_LINE = 0.4f

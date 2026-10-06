@@ -2,6 +2,8 @@
 plugins {
     alias(libs.plugins.couli.android.application)
     alias(libs.plugins.couli.android.compose)
+    // Navigation Compose 类型安全路由（APP-02a 的占位接线）
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
@@ -13,7 +15,8 @@ android {
         // 三套构建类型同一个包名，测试包与正式包覆盖安装（02 §3.2）。
         applicationId = "com.couli.app"
         versionCode = 1
-        versionName = "0.1.0"
+        // routes.json 的 since 从 1.0.0 起（APP-02a：Router 用它判断「since 高于当前版本」；0.1.0 会让所有路由走升级提示）。
+        versionName = "1.0.0"
     }
 
     buildFeatures {
@@ -69,6 +72,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

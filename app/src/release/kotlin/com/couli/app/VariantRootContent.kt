@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import com.couli.app.routing.RoutingTrace
 import com.couli.core.designsystem.CouliColors
 
-/** Release 首屏内容：只显示品牌色背景。没有调试能力、没有环境切换（03 §3.6）。 */
+/** Release 首屏内容：只显示品牌色背景。没有调试能力、没有环境切换（03 §3.6）。[trace] 只在调试首屏显示。 */
+@Suppress("UnusedParameter")
 @Composable
-internal fun VariantRootContent() {
+internal fun VariantRootContent(trace: RoutingTrace? = null) {
     Box(
         modifier =
             Modifier

@@ -17,12 +17,15 @@
         android:usesCleartextTraffic="false">
 
         <!--
+            singleTop：App 已在前台时收到的深链走 onNewIntent，先过启动意图排队与统一入口守卫（03 §4.4）。
+            深链 intent-filter 只在 src/debug、src/staging 的清单里声明（测试 scheme，needs.md N-05）。
             手机锁定竖屏（03 §10.4）。面向 API 36 时，系统在最小宽度 ≥ 600dp 的屏幕上忽略方向锁定，
             大屏布局按 03 §10.4 实现（内容区限宽居中、配置变化不丢状态），不依赖这里的锁定。
         -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="portrait"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
             <intent-filter>

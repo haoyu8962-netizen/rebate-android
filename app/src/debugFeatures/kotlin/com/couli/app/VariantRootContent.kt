@@ -25,6 +25,7 @@ import com.couli.app.catalog.ComponentCatalog
 import com.couli.app.debug.COULI_DEBUG_PANEL
 import com.couli.app.debug.DebugPanel
 import com.couli.app.debug.rememberEnvironmentSwitcher
+import com.couli.app.routing.RoutingTrace
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
@@ -35,7 +36,7 @@ import com.couli.generated.DesignTokens
  * 这些是开发字样，用英文；入口以后由 AppShell 任务挪走（TODO(APP-02)）。
  */
 @Composable
-internal fun VariantRootContent() {
+internal fun VariantRootContent(trace: RoutingTrace? = null) {
     val switcher = rememberEnvironmentSwitcher(LocalContext.current)
     var environment by remember { mutableStateOf(switcher.current) }
     var panelOpen by remember { mutableStateOf(false) }
@@ -59,6 +60,15 @@ internal fun VariantRootContent() {
         Text(text = "Design tokens ${DesignTokens.version}", style = CouliTypography.title, color = CouliColors.textPrimary)
         Text(text = "Build type: ${BuildConfig.BUILD_KIND}", style = CouliTypography.body, color = CouliColors.textPrimary)
         Text(text = "Environment: ${environment.key}", style = CouliTypography.body, color = CouliColors.textSecondary)
+        // 最近一次入站请求的守卫结论（APP-02a 冒烟截图用）
+        trace?.let {
+            Text(
+                text = "Last route: ${it.source} ${it.route ?: "-"} -> ${it.kind} (${it.reason})",
+                style = CouliTypography.body,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.testTag(ROUTE_TRACE_TAG),
+            )
+        }
         TextButton(
             onClick = { panelOpen = !panelOpen },
             modifier = Modifier.testTag(COULI_DEBUG_PANEL),
@@ -77,6 +87,9 @@ internal fun VariantRootContent() {
         }
     }
 }
+
+/** 调试首屏上「最近一次路由结论」那一行。 */
+internal const val ROUTE_TRACE_TAG = "route_trace"
 
 private tailrec fun Context.findActivity(): Activity? =
     when (this) {
