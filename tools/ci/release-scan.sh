@@ -9,6 +9,7 @@
 #         - DebugRoutes 的唯一长标记（DebugRoutes.MARKER，取自生成物 DebugRoutes.kt）
 #         - 快照 routes.json 里 debug_only 路由的名字
 #         - 组件目录页的唯一长标记（COMPONENT_CATALOG_MARKER，取自 app/src/debugFeatures 的 ComponentCatalog.kt；DS-01）
+#         - 版本检查调试假数据的唯一长标记（AppVersionCheckExample.MARKER，取自生成物 AppVersionCheckExample.kt；APP-02c）
 #       另用 aapt2 检查不可调试（badging 没有 application-debuggable，清单没有 android:debuggable=true）。
 #   tools/ci/release-scan.sh --self-test [debug.apk] [release.apk] [staging.apk]
 #       证明扫描有牙齿：debug、staging 制品必须命中（含 DebugRoutes 标记；debug 还必须命中 debuggable），
@@ -30,6 +31,7 @@ ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 ROUTES="$ROOT/contracts/snapshot/contracts/routes.json"
 DEBUG_ROUTES_KT="$ROOT/core/generated/src/debugFeatures/kotlin/com/couli/generated/DebugRoutes.kt"
 CATALOG_KT="$ROOT/app/src/debugFeatures/kotlin/com/couli/app/catalog/ComponentCatalog.kt"
+UPDATE_EXAMPLE_KT="$ROOT/core/generated/src/debugFeatures/kotlin/com/couli/generated/AppVersionCheckExample.kt"
 
 DEFAULT_DEBUG_APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 DEFAULT_RELEASE_APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"
@@ -84,6 +86,7 @@ scan_apk() {
   [ -f "$ROUTES" ] || fail "找不到快照 $ROUTES"
   [ -f "$DEBUG_ROUTES_KT" ] || fail "找不到生成物 $DEBUG_ROUTES_KT"
   [ -f "$CATALOG_KT" ] || fail "找不到组件目录页源码 $CATALOG_KT"
+  [ -f "$UPDATE_EXAMPLE_KT" ] || fail "找不到生成物 $UPDATE_EXAMPLE_KT"
 
   local aapt2
   aapt2="$(resolve_aapt2)"
@@ -101,6 +104,10 @@ scan_apk() {
   catalog_marker="$(sed -n 's/^const val COMPONENT_CATALOG_MARKER = "\([A-Za-z0-9_]*\)"$/\1/p' "$CATALOG_KT")" ||
     fail "读取组件目录页标记失败（$CATALOG_KT）"
   [ "${#catalog_marker}" -ge 24 ] || fail "ComponentCatalog.kt 里没有足够长的 COMPONENT_CATALOG_MARKER 常量（读到 '${catalog_marker}'）"
+  local update_marker
+  update_marker="$(sed -n 's/^ *const val MARKER: kotlin\.String = "\([A-Za-z0-9_]*\)"$/\1/p' "$UPDATE_EXAMPLE_KT")" ||
+    fail "读取版本检查假数据标记失败（$UPDATE_EXAMPLE_KT）"
+  [ "${#update_marker}" -ge 24 ] || fail "AppVersionCheckExample.kt 里没有足够长的 MARKER 常量（读到 '${update_marker}'）"
 
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/couli-scan.XXXXXX")" || fail "mktemp 失败"
@@ -132,10 +139,11 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker"; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker"; do
     case "$pattern" in
       "$marker") label="debug_routes_marker" ;;
       "$catalog_marker") label="component_catalog" ;;
+      "$update_marker") label="update_check_example" ;;
       COULI_DEBUG_PANEL) label="debug_panel" ;;
       *) label="nonprod_url:${pattern%%\\*}" ;;
     esac
@@ -224,6 +232,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "debug_routes_marker"
   require_label "debug" "debug_panel"
   require_label "debug" "component_catalog"
+  require_label "debug" "update_check_example"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -232,6 +241,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "debug_routes_marker"
   require_label "staging" "debug_panel"
   require_label "staging" "component_catalog"
+  require_label "staging" "update_check_example"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"
 
@@ -291,7 +301,7 @@ fi
 echo "release-scan：扫描 $1"
 run_scan "$1"
 if [ "$SCAN_HITS" -ne 0 ]; then
-  echo "release-scan：失败，命中 $SCAN_HITS 项（Release 制品里不得有测试环境地址、调试面板、debug_only 路由，且不可调试）" >&2
+  echo "release-scan：失败，命中 $SCAN_HITS 项（Release 制品里不得有测试环境地址、调试面板、debug_only 路由、版本检查假数据，且不可调试）" >&2
   exit 1
 fi
 echo "release-scan：通过"

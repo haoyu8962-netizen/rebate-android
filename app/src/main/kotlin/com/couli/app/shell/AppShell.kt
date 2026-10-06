@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,15 +23,27 @@ import com.couli.app.privacy.toRouterPrivacy
 import com.couli.app.routing.AppNavHost
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.HomeDestination
+import com.couli.app.routing.PlaceholderRoutePage
 import com.couli.app.routing.RouteDestination
 import com.couli.app.routing.RoutePageRegistry
 import com.couli.app.routing.ShellHooks
+import com.couli.app.update.AppUpdate
+import com.couli.app.update.ForceUpdateActions
+import com.couli.app.update.ForceUpdatePage
+import com.couli.app.update.UpdatePromptDialog
+import com.couli.app.update.UpdateUi
 import com.couli.core.router.EntryGuard
 import com.couli.core.router.GuardKind
 import com.couli.core.router.GuardState
 import com.couli.core.router.PrivacyState
+import com.couli.core.router.RouteNames
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
+import com.couli.core.router.SessionState
+import com.couli.core.router.UpdateCheck
+import com.couli.core.router.UpdateState
+import com.couli.core.update.UpdateStatus
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -48,7 +61,13 @@ import kotlinx.serialization.json.jsonObject
  * 启动意图与 pending_action 的放行由 [AppRouting] 按「环境 → 隐私有结论 → 强更 → 外壳就绪」判断（03 §4.4）；
  * 隐私结论变化经 [AppPrivacy.onConclusionChanged] 通知 AppRouting（AppModule 接线）。
  *
+ * 强更（APP-02c；03 §4.1）：
+ * - 强更结论为 below_min 时无论在哪个页面都进入 ForceUpdate（清掉起点之上的页面）；强更页吞返回键；从强更页进入的
+ *   隐私政策、登录（受限登录标记）推在它上面，返回回到强更页；结论解除（重试后不再低于最低版本）时回到起点。
+ * - below_recommended 且该弹时，在当前页上弹可关闭更新提示（不在强更页、首启弹窗之上弹）。
+ *
  * @param homeContent 首页 Tab 的根内容（首页 Feature 的占位；debug / staging 是调试首屏）。
+ * @param update 强更检查（APP-02c）；为 null 时不显示强更页与更新提示（只测外壳的单测）。
  */
 @Composable
 fun AppShell(
@@ -56,6 +75,7 @@ fun AppShell(
     privacy: AppPrivacy,
     homeContent: @Composable () -> Unit,
     navController: NavHostController = rememberNavController(),
+    update: AppUpdate? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -63,14 +83,32 @@ fun AppShell(
     var selection by rememberSaveable(stateSaver = TabSelection.Saver) {
         mutableStateOf(guardedSelection(ShellTab.HOME, routing.guardState()))
     }
-    val registry = remember(homeContent) { RoutePageRegistry(mapOf(ShellTab.HOME.route to { _ -> homeContent() })) }
+    val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
+    val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
+    val registry =
+        remember(homeContent, update) {
+            RoutePageRegistry(
+                mapOf(
+                    ShellTab.HOME.route to { _ -> homeContent() },
+                    RouteNames.FORCE_UPDATE to { _ -> update?.let { ForceUpdateRoute(it, routing) } },
+                    // 强更状态下能到登录页只有一条路：从强更页进入（受限登录，BR-ID-01「受限会话」）
+                    RouteNames.LOGIN to { page ->
+                        PlaceholderRoutePage(page, restrictedLogin = routing.update.value == UpdateCheck.BELOW_MIN)
+                    },
+                    // 隐私中心占位（TODO(APP-12)）：强更状态下只可能从强更页进入，带强更状态标记（R1-05）
+                    PRIVACY_CENTER_ROUTE to { page ->
+                        PlaceholderRoutePage(page, fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN)
+                    },
+                ),
+            )
+        }
     val hooks =
         remember(privacy) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly -> ShellTab.ofRoute(route)?.let { selection = TabSelection(it, readonly) } },
                 onRequestConsent = { privacy.requestFullFunction() },
-                pageAllowed = { page -> stillAllowed(page, routing.guardState()) },
+                pageAllowed = { page -> stillAllowedWithUpdate(page, routing.guardState()) },
             )
         }
     val activity = LocalActivity.current
@@ -87,7 +125,8 @@ fun AppShell(
                 val state = routing.guardState().copy(privacy = after.raw)
                 selection =
                     if (after == PrivacyState.BASIC_MODE) {
-                        navController.popBackStack(HomeDestination, inclusive = false)
+                        // 基本模式保留已知强更（03 §4.4，R1-01）：清栈后 below_min 仍回到强更页
+                        resetToStart(navController, update?.ui?.value?.status)
                         guardedSelection(ShellTab.HOME, state)
                     } else {
                         tightenedSelection(selection, state)
@@ -95,6 +134,12 @@ fun AppShell(
             }
         onDispose { unsubscribe() }
     }
+
+    // 强更（APP-02c）：进入 below_min → 进强更页（已在强更页或它上面的次要入口时不动）；解除 → 清掉强更页回到起点。
+    // 导航栈每次变化也重新同步（R1-01）：任何清栈（基本模式、Tab 点击、守卫清掉旧页）之后，below_min 时强更页始终在最上层
+    val updateStatus = updateUi?.status
+    val top by navController.currentBackStackEntryAsState()
+    LaunchedEffect(updateStatus, top?.id, navController) { syncForceUpdatePage(navController, updateStatus) }
 
     AppNavHost(
         routing = routing,
@@ -124,11 +169,12 @@ fun AppShell(
     )
 
     // 弹窗只在协议页（从弹窗里点开的 Agreement）之外显示：看协议时让出屏幕，返回后重新出现
-    val top by navController.currentBackStackEntryAsState()
-    val readingAgreement =
-        top?.takeIf { it.destination.hasRoute(RouteDestination::class) }?.toRoute<RouteDestination>()?.name == AGREEMENT_ROUTE
+    val topRoute = top?.takeIf { it.destination.hasRoute(RouteDestination::class) }?.toRoute<RouteDestination>()?.name
+    val readingAgreement = topRoute == AGREEMENT_ROUTE
     val showPrompt = privacyState.mustPrompt && !readingAgreement
     BackHandler(enabled = showPrompt) {}
+    // 可关闭更新提示：不在首启弹窗、强更页之上弹
+    if (update != null) UpdatePromptHost(update, updateUi, hidden = showPrompt || topRoute == RouteNames.FORCE_UPDATE)
     if (showPrompt) {
         PrivacyPromptDialog(
             stage = privacyState.promptStage,
@@ -253,7 +299,8 @@ private fun openAgreement(
 
 internal fun inAppRequest(route: String): RouteRequest = RouteRequest(route, JsonObject(emptyMap()), RouteSource.IN_APP)
 
-private const val AGREEMENT_ROUTE = "Agreement"
+internal const val AGREEMENT_ROUTE = "Agreement"
+internal const val PRIVACY_CENTER_ROUTE = "PrivacyCenter"
 private const val SEARCH_ROUTE = "Search"
 private const val SETTINGS_ROUTE = "Settings"
 private const val EMPTY_PARAMS = "{}"

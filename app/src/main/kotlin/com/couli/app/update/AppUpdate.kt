@@ -1,0 +1,182 @@
+package com.couli.app.update
+
+import com.couli.core.router.UpdateCheck
+import com.couli.core.update.UpdateCheckOutcome
+import com.couli.core.update.UpdateCheckResult
+import com.couli.core.update.UpdateChecker
+import com.couli.core.update.UpdateGate
+import com.couli.core.update.UpdateState
+import com.couli.core.update.UpdateStatus
+import com.couli.core.update.UpdateStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * 强更页与可关闭提示要显示的东西。
+ * @property result 最近一次成功检查的结果（标题、更新内容；选店用它的商店列表）。
+ * @property forceUnavailable 强更页【去更新】没有可去的商店：显示 app_update.unavailable 与【重试】，不给任何下载地址。
+ * @property promptUnavailable 可关闭提示【去更新】时来源商店打不开（BR-ID-01：可选更新不改去别家）。
+ * @property working 正在重试检查或打开商店（按钮防连点）。
+ */
+data class UpdateUi(
+    val state: UpdateState,
+    val result: UpdateCheckResult?,
+    val forceUnavailable: Boolean = false,
+    val promptUnavailable: Boolean = false,
+    val working: Boolean = false,
+) {
+    val status: UpdateStatus get() = state.status
+}
+
+/**
+ * 商店能力（本机）：读安装来源、能否打开、打开。[canOpen] 只是能力检查；[open] 真正打开失败时继续下一家（rule-gaps G08）。
+ */
+interface StoreAccess {
+    /** 已按商店对照表归一化的安装来源商店键；读不到或不在表里为 null。 */
+    val installSource: String?
+
+    fun canOpen(storeKey: String): Boolean
+
+    fun open(storeKey: String): Boolean
+}
+
+/**
+ * App 的强更检查接线（APP-02c；03 §4.1、§4.4）：[UpdateGate] 的结论 → Router 的 update 状态源（[onRouterUpdate]）与界面（[ui]）。
+ *
+ * - 冷启动必查、回前台按间隔复查；检查只在 [canCheck]（环境 settled 且已同意隐私政策）时发：同意前只允许请求协议文本与
+ *   /v1/config（BR-ID-11），基本模式不发 check、保留已知强更（rule-gaps G06）。冷启动时还不能查的，等能查了（同意后）再补一次冷启动检查。
+ * - 检查失败不拦用户自己的操作（Gate 保持上次已知结论或 unknown）。
+ * - 10405 入口 [on10405] 给网络层（APP-03）调用：直接进 below_min。
+ * - 【去更新】按 Gate 选店；都不行 → 强更页显示 unavailable 与【重试】；【重试】重新检查再选。
+ *
+ * 非线程安全：在主线程使用（[scope] 用 Main）。
+ */
+@Suppress("TooManyFunctions") // 检查时机、10405、提示、选店四组入口都是 App 层接线，不拆类
+class AppUpdate
+    @Suppress("LongParameterList") // Gate、存储、检查器、商店能力、协程域、能否检查、时钟逐项注入（可替身）
+    constructor(
+        private val gate: UpdateGate,
+        private val store: UpdateStore,
+        private val checker: UpdateChecker,
+        private val stores: StoreAccess,
+        private val scope: CoroutineScope,
+        private val canCheck: () -> Boolean,
+        private val clock: () -> Long = System::currentTimeMillis,
+    ) {
+        private val mutableUi = MutableStateFlow(UpdateUi(gate.state(clock()), store.load().result))
+        val ui: StateFlow<UpdateUi> = mutableUi.asStateFlow()
+
+        private val routerListeners = mutableListOf<(UpdateCheck) -> Unit>()
+        private var coldStartChecked = false
+        private var checkJob: Job? = null
+
+        /** 交给 Router 的状态（启动排队器与守卫）。 */
+        val routerUpdate: UpdateCheck get() = ui.value.state.toRouterUpdate()
+
+        /** Router 的 update 状态源（AppModule 接 AppRouting.update）。 */
+        fun onRouterUpdate(listener: (UpdateCheck) -> Unit) {
+            routerListeners += listener
+        }
+
+        /** 冷启动（每个进程一次）；还不能查时什么都不做，之后 [onCheckAllowedChanged] 再补。 */
+        fun coldStart() {
+            if (coldStartChecked || !canCheck()) {
+                publish()
+                return
+            }
+            coldStartChecked = true
+            if (gate.onColdStart(clock())) runCheck()
+            publish()
+        }
+
+        /** 隐私结论或环境闸门变化：变得可以查了而冷启动还没查过 → 补冷启动检查。 */
+        fun onCheckAllowedChanged() = coldStart()
+
+        /** 回前台（不含冷启动那一次）：距上次成功检查超过间隔才查。 */
+        fun onForeground() {
+            if (!coldStartChecked) {
+                coldStart()
+                return
+            }
+            if (canCheck() && gate.onForeground(clock())) runCheck()
+            publish()
+        }
+
+        /** 立即重新检查（强更页【重试】、调试面板切换假数据）。[thenPickStore]：检查后仍需强更就再选一次店。 */
+        fun recheck(thenPickStore: Boolean = false) {
+            if (!canCheck()) return
+            runCheck(thenPickStore)
+        }
+
+        /** 接口层收到 10405（APP-03 网络层调用，只送确需强更的，rule-gaps G07）。 */
+        fun on10405(minSupported: String?) {
+            gate.on10405(minSupported, clock())
+            publish()
+        }
+
+        /** 可关闭提示【暂不更新】：按提示时的目标版本记录。 */
+        fun dismissPrompt() {
+            gate.dismissPrompt(clock())
+            publish()
+        }
+
+        /** 【去更新】：选店并打开；没有可去的商店时置 unavailable（强更页显示提示与【重试】）。 */
+        fun goToStore() {
+            val result = store.load().result
+            val status = gate.state(clock()).status
+            val opened = result != null && openFirstStore(result)
+            mutableUi.value =
+                mutableUi.value.copy(
+                    forceUnavailable = status == UpdateStatus.BELOW_MIN && !opened,
+                    promptUnavailable = status == UpdateStatus.BELOW_RECOMMENDED && !opened,
+                )
+        }
+
+        /** 按 Gate 的顺序逐家试；能力检查通过但真正打开失败的，排除后再选下一家（rule-gaps G08）。 */
+        private fun openFirstStore(result: UpdateCheckResult): Boolean {
+            val failed = mutableSetOf<String>()
+            while (true) {
+                val choice = gate.pickStore(result, clock()) { key -> key !in failed && stores.canOpen(key) }
+                val key = choice.storeKey ?: return false
+                if (stores.open(key)) return true
+                failed += key
+            }
+        }
+
+        private fun runCheck(thenPickStore: Boolean = false) {
+            if (checkJob?.isActive == true) return
+            mutableUi.value = mutableUi.value.copy(working = thenPickStore)
+            checkJob =
+                scope.launch {
+                    when (val outcome = checker.check()) {
+                        is UpdateCheckOutcome.Success -> gate.apply(outcome.result, clock())
+                        UpdateCheckOutcome.Failure -> gate.applyFailure(clock())
+                    }
+                    mutableUi.value = mutableUi.value.copy(working = false, forceUnavailable = false, promptUnavailable = false)
+                    publish()
+                    if (thenPickStore && gate.state(clock()).status == UpdateStatus.BELOW_MIN) goToStore()
+                }
+        }
+
+        private fun publish() {
+            val before = mutableUi.value.state.toRouterUpdate()
+            val state = gate.state(clock())
+            mutableUi.value = mutableUi.value.copy(state = state, result = store.load().result)
+            val after = state.toRouterUpdate()
+            if (after != before) routerListeners.forEach { it(after) }
+        }
+    }
+
+/** Gate 的结论 → Router 的强更进度。 */
+fun UpdateState.toRouterUpdate(): UpdateCheck =
+    when (status) {
+        UpdateStatus.CHECKING -> UpdateCheck.CHECKING
+        UpdateStatus.OK -> UpdateCheck.OK
+        UpdateStatus.BELOW_RECOMMENDED -> UpdateCheck.BELOW_RECOMMENDED
+        UpdateStatus.BELOW_MIN -> UpdateCheck.BELOW_MIN
+        UpdateStatus.UNKNOWN -> UpdateCheck.UNKNOWN
+    }

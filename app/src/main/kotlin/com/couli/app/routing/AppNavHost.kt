@@ -132,6 +132,8 @@ class NavControllerNavigator(
         if (route in hooks.tabRoutes && params.isEmpty()) {
             navController.popBackStack(HomeDestination, inclusive = false)
             hooks.onOpenTab(route, readonly)
+        } else if (route == RouteNames.FORCE_UPDATE) {
+            navigateToForceUpdate(navController)
         } else {
             navController.navigate(RouteDestination(route, params.toString(), readonly))
         }
@@ -151,9 +153,41 @@ class NavControllerNavigator(
     ) = Unit
 }
 
-/** 占位页：只显示路由名、参数与是否只读（开发字样，不是业务文案）。 */
+/** ForceUpdate 的导航目的地（不带参数）。 */
+val FORCE_UPDATE_DESTINATION = RouteDestination(RouteNames.FORCE_UPDATE, "{}", readonly = false)
+
+/**
+ * 进入强更页（APP-02c；03 §4.1「命中 below_min 时无论在哪个页面都进入 ForceUpdate」）：清掉起点之上的页面再推强更页，
+ * 已在栈顶时不重复推。强更页的次要入口（隐私政策、登录等）推在它上面，返回回到强更页。
+ */
+fun navigateToForceUpdate(navController: NavController) {
+    navController.navigate(FORCE_UPDATE_DESTINATION) {
+        popUpTo(HomeDestination) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
+/** 返回栈里有没有强更页。 */
+fun hasForceUpdatePage(navController: NavController): Boolean =
+    runCatching { navController.getBackStackEntry(FORCE_UPDATE_DESTINATION) }.isSuccess
+
+/** 受限登录标记（UI 测试、冒烟用）：从强更页进入的登录，不显示邀请码等业务输入（BR-ID-01「受限会话」）。 */
+const val RESTRICTED_LOGIN_TAG = "route_login_restricted"
+
+/** 强更状态标记（UI 测试、冒烟用）：强更状态下从强更页进入的隐私中心（R1-05）。 */
+const val FORCE_UPDATE_ENTRY_TAG = "route_from_force_update"
+
+/**
+ * 占位页：只显示路由名、参数与是否只读（开发字样，不是业务文案）。
+ * [restrictedLogin]：从强更页进入的登录（受限登录）。TODO(APP-05): 真实登录页按这个标记隐藏邀请码等业务输入。
+ * [fromForceUpdate]：强更状态下从强更页进入（隐私中心等次要入口）。TODO(APP-12): 真实隐私中心按这个标记只给协议、清单与撤回同意。
+ */
 @Composable
-fun PlaceholderRoutePage(destination: RouteDestination) {
+fun PlaceholderRoutePage(
+    destination: RouteDestination,
+    restrictedLogin: Boolean = false,
+    fromForceUpdate: Boolean = false,
+) {
     Column(
         modifier =
             Modifier
@@ -167,6 +201,22 @@ fun PlaceholderRoutePage(destination: RouteDestination) {
         Text(text = destination.paramsJson, style = CouliTypography.body, color = CouliColors.textSecondary)
         if (destination.readonly) {
             Text(text = "readonly", style = CouliTypography.body, color = CouliColors.textSecondary)
+        }
+        if (restrictedLogin) {
+            Text(
+                text = "restricted login (no invite code)",
+                style = CouliTypography.body,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.testTag(RESTRICTED_LOGIN_TAG),
+            )
+        }
+        if (fromForceUpdate) {
+            Text(
+                text = "from force update (below_min)",
+                style = CouliTypography.body,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.testTag(FORCE_UPDATE_ENTRY_TAG),
+            )
         }
     }
 }
@@ -183,7 +233,8 @@ fun UpgradePromptPage() {
                 .testTag(UPGRADE_PAGE_TAG),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        // TODO(APP-02c): 打开应用商店（与 ForceUpdate 同一套选店逻辑）。
+        // TODO(N-14): 「请升级 App」没有目标版本（routes.json since 只说明本端何时支持），选店门槛未定；
+        //  商店打开方式还是 null（N-17）。强更与可关闭提示的选店见 AppUpdate（APP-02c）。
         TextButton(onClick = {}) {
             Text(text = DefaultTexts.text("app_update.go_store").orEmpty())
         }

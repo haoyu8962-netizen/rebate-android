@@ -9,7 +9,7 @@ enum class UpdateCheck {
     UNKNOWN,
     ;
 
-    /** 交给守卫的状态；「检查中」等到超时后按 unknown。 */
+    /** 排队器交出意图时用的状态：「检查中」只会在等满超时后交出，按 unknown。 */
     fun toUpdateState(): UpdateState =
         when (this) {
             OK -> UpdateState.OK
@@ -17,6 +17,12 @@ enum class UpdateCheck {
             BELOW_RECOMMENDED -> UpdateState.BELOW_RECOMMENDED
             CHECKING, UNKNOWN -> UpdateState.UNKNOWN
         }
+
+    /**
+     * 实时交给守卫的状态（App 内操作、桥、前置完成后的恢复）：「检查中」原样交出，守卫对外部与自动来源返回
+     * defer（update_checking），App 内操作不等（F-ALL-03）。
+     */
+    fun toLiveUpdateState(): UpdateState = if (this == CHECKING) UpdateState.CHECKING else toUpdateState()
 }
 
 /** 启动意图：深链（已解析的请求）或推送（只记消息编号）。只放内存，不落盘（03 §4.4「冷启动时的深链与推送」）。 */
@@ -62,7 +68,8 @@ data class ReleasedIntent(
  *
  * - 冷启动带来的意图排队等待；
  * - App 已在运行时收到的深链或推送，若此时正停在首启弹窗（隐私未有结论，或基本模式下补同意的弹窗正显示）
- *   或 ForceUpdate（低于最低版本），丢弃；
+ *   或 ForceUpdate（低于最低版本），丢弃；恢复 pending_action 例外：低于最低版本时照样排队并交出，由守卫给出
+ *   ForceUpdate 并删除持久化的待办（followups F-AND-07），不能被热启动丢弃规则吞掉而留下过期记录；
  * - 强更等待的 5 秒从「环境 settled、隐私有结论」且强更仍在检查时**第一次**被 [offer] / [drain] 观察到的时刻起算
  *   （R1-06、R2-03）：环境与隐私的等待不计入；外壳是否就绪**不影响**计时，只决定能否交出——外壳晚于 5 秒就绪时，
  *   就绪那一刻直接按 unknown 交出。整个队列共用一个起点；强更检查有了结果即清零（之后再次进入「检查中」重新起算）；
@@ -93,7 +100,9 @@ class StartupIntentQueue(
             readiness.privacy == PrivacyState.NOT_DECIDED ||
                 readiness.consentPromptShowing ||
                 readiness.update == UpdateCheck.BELOW_MIN
-        if (!coldStart && onBlockingScreen) return false
+        // F-AND-07：below_min 时 ResumePending 不套热启动丢弃规则，交给 Router.resumePending 让守卫删除持久化待办
+        val resumeOnForceUpdate = intent == StartupIntent.ResumePending && readiness.update == UpdateCheck.BELOW_MIN
+        if (!coldStart && onBlockingScreen && !resumeOnForceUpdate) return false
         // 恢复 pending_action 只需排一条：已在队里的那条交出时读到的就是最新记录
         val duplicateResume = intent == StartupIntent.ResumePending && intent in entries
         if (!duplicateResume) entries.addLast(intent)

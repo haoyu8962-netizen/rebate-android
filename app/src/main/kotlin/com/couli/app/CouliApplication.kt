@@ -3,6 +3,7 @@ package com.couli.app
 import android.app.Application
 import android.util.Log
 import com.couli.app.privacy.AppPrivacy
+import com.couli.app.update.AppUpdate
 import com.couli.core.config.EnvironmentGate
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -16,6 +17,9 @@ class CouliApplication : Application() {
     @Inject
     lateinit var privacy: AppPrivacy
 
+    @Inject
+    lateinit var update: AppUpdate
+
     override fun onCreate() {
         super.onCreate()
         // 覆盖安装可能改变本次环境（debug → staging → release）：与上次生效的环境不同则先清理（03 §3.6）。
@@ -28,6 +32,8 @@ class CouliApplication : Application() {
         // 隐私闸门（03 §4.4：环境 → 隐私 → Tab）：读本机隐私决定、比对包内版本；已同意当前版本且环境已就绪才初始化 SDK。
         privacy.coldStart()
         privacy.initializeIfReady()
+        // 强更检查（03 §4.1：冷启动必查）：环境 settled 且已同意隐私政策才发；否则同意后由 AppUpdate 补查（APP-02c）
+        update.coldStart()
     }
 
     private companion object {

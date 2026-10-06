@@ -4,6 +4,7 @@
 只读 contracts/snapshot/，输出：
   core/generated/src/main/kotlin/com/couli/generated/*.kt
   core/generated/src/debugFeatures/kotlin/com/couli/generated/DebugRoutes.kt   （只被 debug、staging 加入）
+  core/generated/src/debugFeatures/kotlin/com/couli/generated/AppVersionCheckExample.kt （同上；APP-02c 调试假数据）
   core/generated/src/main/resources/texts.default.json                         （快照原样复制）
 
 用法：
@@ -12,6 +13,8 @@
 
 本任务生成：枚举、错误码、路由、桥、文案、令牌；不生成 OpenAPI 客户端、事件、apps.json 片段
 （分别归 APP-03、APP-03、APP-04/06）。API 形状见 APP-01-android 任务书 §5。
+APP-02c 加：商店对照表 specs/app-stores.yaml → AppStores（main）；openapi GET /v1/app-versions/check 的 200 响应示例
+→ AppVersionCheckExample（debugFeatures，调试面板的版本检查假数据，Release 里没有）。
 只用 Python 3 标准库；输出不含时间戳，可重复。
 
 命名规则（防止契约里的名字遮蔽 Kotlin 标准类型或生成器自用名；tools/codegen/test_gen.py 用探针输入覆盖）：
@@ -74,6 +77,9 @@ GENERATOR_TYPE_NAMES = {
     "BridgeErrors",
     "DefaultTexts",
     "DesignTokens",
+    "AppStoreSpec",
+    "AppStores",
+    "AppVersionCheckExample",
 }
 # Kotlin 默认导入（kotlin.*、kotlin.collections.* 等）里常见的类型名；同包声明会遮蔽它们。
 KOTLIN_STANDARD_TYPE_NAMES = {
@@ -105,6 +111,9 @@ RETRY_KINDS = ["never", "after_action", "later", "immediate", "not_applicable"]
 UNKNOWN_RAW = "__unknown__"
 # DebugRoutes 的唯一标记（release-scan.sh 读同一个常量名：DEBUG_ROUTES_MARKER）。
 DEBUG_ROUTES_MARKER = "COULI_DEBUG_ROUTES_MARKER_8d1f4c2a9e7b"
+# 版本检查假数据的唯一标记（release-scan.sh 读 AppVersionCheckExample.kt 里的 MARKER）。
+UPDATE_EXAMPLE_MARKER = "COULI_UPDATE_CHECK_EXAMPLE_MARKER_5b7e3d91c2a4"
+APP_VERSION_CHECK_PATH = "/v1/app-versions/check"
 
 
 class GenError(Exception):
@@ -870,6 +879,103 @@ def gen_tokens(out_root: str):
     return [write(out_root, f"{MAIN_KOTLIN}/DesignTokens.kt", kotlin_file("\n".join(lines) + "\n"))]
 
 
+# ---------------------------------------------------------------- 商店对照表与版本检查示例（APP-02c）
+
+
+def gen_app_stores(out_root: str):
+    data = load("specs/app-stores.json")
+    version = data.get("version")
+    stores = data.get("stores")
+    if not isinstance(version, str) or not isinstance(stores, list):
+        raise GenError("app-stores.json 缺 version 或 stores")
+    lines = [
+        "/**",
+        " * 商店对照表的一行（specs/app-stores.yaml）。值为 null 的商店一律视为「本机打不开」（APP-02c；needs N-17）。",
+        " * installSourcePackages：Android 安装来源包名（本机读到的安装来源与它相等即认作这家商店）。",
+        " */",
+        "data class AppStoreSpec(",
+        "    val key: kotlin.String?,",
+        "    val name: kotlin.String,",
+        "    val platform: kotlin.String,",
+        "    val channels: kotlin.collections.List<kotlin.String>,",
+        "    val installSourcePackages: kotlin.collections.List<kotlin.String>,",
+        "    val openMethod: kotlin.String?,",
+        "    val target: kotlin.String?,",
+        ")",
+        "",
+        "/** 商店对照表（specs/app-stores.yaml；规划/03 §4.1、BR-ID-01）。代码里不写死商店键与打开方式。 */",
+        "object AppStores {",
+        "    /** version */",
+        f"    const val version: kotlin.String = {kstr(version)}",
+        "",
+        "    val all: kotlin.collections.List<AppStoreSpec> =",
+        "        listOf(",
+    ]
+    for index, item in enumerate(stores):
+        where = f"app-stores.json stores[{index}]"
+        if not isinstance(item, dict):
+            raise GenError(f"{where} 不是对象")
+        name, platform = item.get("name"), item.get("platform")
+        if not isinstance(name, str) or not isinstance(platform, str):
+            raise GenError(f"{where} 缺 name 或 platform")
+        key = item.get("key")
+        if key is not None and (not isinstance(key, str) or not re.fullmatch(r"[a-z0-9_]+", key)):
+            raise GenError(f"{where} 的 key 不是小写字母、数字、下划线：{key!r}")
+        channels = item.get("channels") or []
+        packages = item.get("install_source_packages") or []
+        if not all(isinstance(v, str) for v in channels) or not all(isinstance(v, str) for v in packages):
+            raise GenError(f"{where} 的 channels / install_source_packages 不是字符串列表")
+        detail = item.get("detail_page") or {}
+        open_method, target = detail.get("open_method"), detail.get("target")
+        for label, value in (("open_method", open_method), ("target", target)):
+            if value is not None and not isinstance(value, str):
+                raise GenError(f"{where} 的 detail_page.{label} 不是字符串或 null")
+        lines += [
+            "            AppStoreSpec(",
+            f"                key = {knullable_str(key)},",
+            f"                name = {kstr(name)},",
+            f"                platform = {kstr(platform)},",
+            "                channels = listOf(" + ", ".join(kstr(v) for v in channels) + "),",
+            "                installSourcePackages = listOf(" + ", ".join(kstr(v) for v in packages) + "),",
+            f"                openMethod = {knullable_str(open_method)},",
+            f"                target = {knullable_str(target)},",
+            "            ),",
+        ]
+    lines += [
+        "        )",
+        "",
+        "    /** 某一端（client_platform：ios / android / harmony）的商店。 */",
+        "    fun forPlatform(platform: kotlin.String): kotlin.collections.List<AppStoreSpec> = all.filter { it.platform == platform }",
+        "}",
+    ]
+    return [write(out_root, f"{MAIN_KOTLIN}/AppStores.kt", kotlin_file("\n".join(lines) + "\n"))]
+
+
+def gen_app_version_check_example(out_root: str):
+    data = load("contracts/openapi.json")
+    try:
+        response = data["paths"][APP_VERSION_CHECK_PATH]["get"]["responses"]["200"]
+        example = response["content"]["application/json"]["example"]
+    except (KeyError, TypeError) as error:
+        raise GenError(f"openapi.json 里没有 GET {APP_VERSION_CHECK_PATH} 的 200 响应示例（{error}）") from error
+    body = example.get("data") if isinstance(example, dict) else None
+    if not isinstance(body, dict):
+        raise GenError(f"GET {APP_VERSION_CHECK_PATH} 的响应示例没有 data 对象")
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    lines = [
+        "/**",
+        f" * openapi GET {APP_VERSION_CHECK_PATH} 的 200 响应示例里的 data（AppVersionCheck），原样转写。",
+        " * 只在 debug、staging 编译（调试面板的版本检查假数据，APP-02c）；Release 里没有，release-scan 查 [MARKER]。",
+        " */",
+        "object AppVersionCheckExample {",
+        f"    const val MARKER: kotlin.String = {kstr(UPDATE_EXAMPLE_MARKER)}",
+        "",
+        f"    const val DATA_JSON: kotlin.String = {kstr(text)}",
+        "}",
+    ]
+    return [write(out_root, f"{DEBUG_KOTLIN}/AppVersionCheckExample.kt", kotlin_file("\n".join(lines) + "\n"))]
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -881,6 +987,8 @@ def generate(out_root: str) -> list:
     written += gen_bridge(out_root)
     written += gen_texts(out_root)
     written += gen_tokens(out_root)
+    written += gen_app_stores(out_root)
+    written += gen_app_version_check_example(out_root)
     return sorted(written)
 
 

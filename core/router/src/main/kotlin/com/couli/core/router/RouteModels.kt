@@ -53,7 +53,10 @@ enum class PrivacyState(
     }
 }
 
-/** 强更检查结果（03 §4.1）。「检查中」不进 [GuardState]：由 [StartupIntentQueue] 等待，超时按 unknown。 */
+/**
+ * 强更检查结果（03 §4.1）。[CHECKING]（检查进行中，APP-02c F-ALL-03）：外部来源与 pending 恢复返回 defer（update_checking），
+ * App 内用户操作不等待；启动意图由 [StartupIntentQueue] 排队，等满 5 秒仍在检查时按 unknown 交出。
+ */
 enum class UpdateState(
     val raw: String,
 ) {
@@ -61,6 +64,7 @@ enum class UpdateState(
     UNKNOWN("unknown"),
     BELOW_MIN("below_min"),
     BELOW_RECOMMENDED("below_recommended"),
+    CHECKING("checking"),
     ;
 
     companion object {
@@ -183,6 +187,12 @@ object GuardReason {
     const val PRIVACY_UNDECIDED = "privacy_undecided"
     const val ENVIRONMENT_UNSETTLED = "environment_unsettled"
     const val UPDATE_UNKNOWN_READONLY = "update_unknown_readonly"
+
+    /**
+     * 强更检查进行中，外部来源（deeplink / bridge / agent_card / push）与 pending_action 恢复：等待（defer），最长 5 秒后
+     * 按 unknown 处理（排队器）；App 内用户操作不等待。三端同名（followups F-ALL-03）。向量未定义（router-vectors G11）。
+     */
+    const val UPDATE_CHECKING = "update_checking"
     const val UPDATE_UNKNOWN_BLOCKED = "update_unknown_blocked"
     const val UPDATE_UNKNOWN_PUSH_FALLBACK = "update_unknown_push_fallback"
     const val FORCE_UPDATE_REQUIRED = "force_update_required"

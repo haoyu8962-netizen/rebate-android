@@ -91,13 +91,17 @@ class Router(
      * 2. 未登录或受限会话：不回查，登记「打开 Messages」后进登录页（BR-ID-10「推送点击的落点」）；
      * 3. 回查是异步的：发起时记下代次，结果回来时代次已变（期间退出登录、换账号、换环境）→ 丢弃，返回 null；
      *    否则用**当时最新**的状态重新判定（期间进入强更等都生效），不沿用点击时的结论。
+     *
+     * @param releasedUpdate 排队器交出这条推送时的强更状态（等满 5 秒仍在检查 → unknown）：最新状态仍是「检查中」时用它，
+     *   不再按 update_checking 等待（等待已在排队器里做完，F-ALL-03）；最新状态已有结果时用最新状态。
      */
     suspend fun openPush(
         messageId: String,
         landing: PushLanding,
+        releasedUpdate: UpdateState? = null,
     ): GuardDecision? {
         val startGeneration = generation
-        val before = state()
+        val before = state().afterQueueWait(releasedUpdate)
         val messages = PushLanding.messagesRequest()
         val blocked = EntryGuard.preconditions(messages, before)
         if (blocked != null) {
@@ -108,7 +112,7 @@ class Router(
         val result = landing.resolve(messageId, before.sessionState)
         val target = (result as? PushLandingResult.Open)?.request ?: messages
         // 代次不符：回查发起后退出登录、换了账号或环境，丢弃结果
-        return if (generation == startGeneration) open(target) else null
+        return if (generation == startGeneration) open(target, state().afterQueueWait(releasedUpdate)) else null
     }
 
     /**
@@ -248,3 +252,7 @@ class Router(
         private val KEEP_PENDING_KINDS = PREREQUISITE_KINDS + setOf(GuardKind.REQUIRE_CONSENT, GuardKind.DEFER)
     }
 }
+
+/** 仍在检查而排队器已等满（[releasedUpdate] 非空）时，强更状态换成交出时的状态（F-ALL-03）；否则原样。 */
+private fun GuardState.afterQueueWait(releasedUpdate: UpdateState?): GuardState =
+    if (releasedUpdate != null && updateState == UpdateState.CHECKING) copy(update = releasedUpdate.raw) else this

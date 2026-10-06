@@ -62,7 +62,8 @@ trap 'rm -rf "$TMP"' EXIT
 OUT="$TMP/snapshot"
 mkdir -p "$OUT"
 
-# 要取的契约与 specs 文件（03 §2；APP-01 任务书 §1）。
+# 要取的契约与 specs 文件（03 §2；APP-01 任务书 §1）。APP-02c 加入 openapi.yaml（GET /v1/app-versions/check 的
+# 响应示例给调试假数据；OpenAPI 客户端仍归 APP-03）与 specs/app-stores.yaml（商店对照表，生成 AppStores 常量）。
 FILES="$(git -C "$RP_DIR" ls-tree --name-only "$RP_COMMIT" contracts/enums/ | grep '\.yaml$' | sort)"
 FILES="$FILES
 contracts/error-codes.yaml
@@ -74,7 +75,9 @@ contracts/apps.json
 specs/events.yaml
 specs/client-public-ids.yaml
 specs/client-security-baseline.yaml
-specs/system-permissions.yaml"
+specs/system-permissions.yaml
+contracts/openapi.yaml
+specs/app-stores.yaml"
 
 normalize_json() {
   # $1 输入 JSON 文件，$2 输出文件

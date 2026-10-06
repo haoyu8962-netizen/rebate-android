@@ -26,6 +26,7 @@ import com.couli.app.debug.COULI_DEBUG_PANEL
 import com.couli.app.debug.DebugPanel
 import com.couli.app.debug.rememberEnvironmentSwitcher
 import com.couli.app.routing.RoutingTrace
+import com.couli.app.update.DebugUpdateSection
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
@@ -84,6 +85,8 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
                 current = environment,
                 onSwitched = { environment = it },
             )
+            // 版本检查假数据（APP-02c）：正常 / 建议更新 / 强制更新 / 商店都不可用 / 请求失败
+            DebugUpdateSection()
         }
     }
 }

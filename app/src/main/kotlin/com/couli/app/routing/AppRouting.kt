@@ -57,8 +57,12 @@ data class RoutingTrace(
 /**
  * App 的路由接线（APP-02a 最小外壳）：启动意图排队 → 统一入口守卫 → Navigation Compose。
  *
- * 隐私闸门已接真实的 PrivacyGate（APP-02b，经 AppPrivacy）；其余状态源先用占位值：强更检查 TODO(APP-02c)、会话 TODO(APP-05)、
- * 推送回查请求 TODO(APP-03)。环境闸门用真实的 [EnvironmentGate]。
+ * 隐私闸门已接真实的 PrivacyGate（APP-02b，经 AppPrivacy）；强更检查接 UpdateGate（APP-02c，经 AppUpdate 写 [update]）；
+ * 其余状态源先用占位值：会话 TODO(APP-05)、推送回查请求 TODO(APP-03)。环境闸门用真实的 [EnvironmentGate]。
+ *
+ * 强更（APP-02c）：检查进行中（CHECKING）时，实时判定（App 内操作、前置完成后的恢复）把「检查中」交给守卫：外部与自动来源
+ * defer（update_checking），App 内操作不等（F-ALL-03）；启动意图与冷启动恢复由排队器等满 5 秒按 unknown 交出。
+ * 进入 below_min 时排一条恢复（F-AND-07：不套热启动丢弃规则），守卫给出 ForceUpdate 并删除持久化的待办。
  *
  * 状态源变化时（环境闸门、隐私、强更）重新 [drain]；隐私变化同时让 Router 删除 Agent 卡片的 pending_action（R1-05）；
  * 会话由已登录变为游客时调 [Router.onSessionEnded]（清 pending_action、作废进行中的推送回查，R1-03）。
@@ -76,247 +80,255 @@ data class RoutingTrace(
  * - [onConsentEvent]：主动同意 = 完成一个前置步骤：续时，并在启动闸门允许时以 enterPrerequisite = true 恢复一次
  *   （进入仍缺的前置页，R1-03）；明确【仍不同意】→ 丢弃本次登记的待办（R1-04）。
  */
-class AppRouting(
-    context: Context,
-    private val environmentGate: EnvironmentGate,
-    private val deepLinkConfig: DeepLinkConfig = variantDeepLinkConfig(),
-    private val clock: () -> Long = System::currentTimeMillis,
-    initialPrivacy: PrivacyState = PrivacyState.CONSENTED,
-    private val privacyHooks: RoutingPrivacyHooks = RoutingPrivacyHooks(),
-) {
-    /**
-     * 隐私闸门的结论（APP-02b）：生产由 AppModule 用 AppPrivacy 的当前结论构造，并在每次结论变化时写入（AppPrivacy.onConclusionChanged）；
-     * 变化即触发 [Router.onPrivacyChanged]、重排 pending_action 恢复并 drain。缺省值只给单测用。
-     */
-    val privacy = MutableStateFlow(initialPrivacy)
-
-    // TODO(APP-02c): 接强更检查；冷启动检查有结果前应为 CHECKING。
-    val update = MutableStateFlow(UpdateCheck.OK)
-
-    // TODO(APP-05): 接会话。
-    val session = MutableStateFlow(SessionState.GUEST)
-
-    private val mutableTrace = MutableStateFlow<RoutingTrace?>(null)
-    val lastTrace: StateFlow<RoutingTrace?> = mutableTrace.asStateFlow()
-
-    private val queue = StartupIntentQueue()
-
-    /** 下一次交出 ResumePending 时是否进入仍缺的前置页：用户刚主动完成一个前置步骤（同意）时为 true（R1-03）。 */
-    private var enterPrerequisiteOnResume = false
-    private val handler = Handler(Looper.getMainLooper())
-    private val drainRunnable = Runnable { drain() }
-
-    /** [drain] 被调用的次数（测试观察是否空转用）。 */
-    var drainCount: Int = 0
-        private set
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
-    // TODO(APP-03): 换成 GET /v1/messages/{message_id}；现在回查一律失败（落到 Messages）。
-    private val pushLanding = PushLanding(lookup = { PushLookupResult.Failed })
-    private var navigator: RouteNavigator? = null
-
-    val router: Router =
-        Router(
-            state = { guardState() },
-            pendingStore = PendingActionStore(SharedPreferencesPendingBackend(context), clock),
-            navigator = TracingNavigator(),
-        )
-
-    init {
-        // 前置条件变化后再排一次 pending_action 恢复（队里已有则不重复）
-        fun scheduleResume() = queue.offer(StartupIntent.ResumePending, coldStart = false, readiness, clock())
-
-        // 冷启动：隐私不是已同意时先删 Agent 卡片登记的记录（BR-ID-10 Agent 卡片 ②），再排一次恢复
-        router.onPrivacyChanged()
-        queue.offer(StartupIntent.ResumePending, coldStart = true, readiness, clock())
-        scope.launch {
-            privacy.drop(1).collect {
-                router.onPrivacyChanged()
-                scheduleResume()
-                drain()
-            }
-        }
-        scope.launch {
-            var previous = session.value
-            session.drop(1).collect { current ->
-                val ended = previous != SessionState.GUEST && current == SessionState.GUEST
-                previous = current
-                if (ended) router.onSessionEnded()
-                scheduleResume()
-                drain()
-            }
-        }
-        scope.launch {
-            merge(update.drop(1), environmentGate.state.drop(1)).collect {
-                scheduleResume()
-                drain()
-            }
-        }
-    }
-
-    /**
-     * 首启弹窗 / 二次说明里的明确决定：
-     * - [ConsentEvent.AGREED]（R1-03）：完成了一个前置步骤——立即为未过期的待办续时（BR-ID-10），再排一次恢复；
-     *   启动闸门（环境、强更、外壳、没有弹窗）允许时交出，以 enterPrerequisite = true 恢复：能打开就打开，仍缺登录等前置
-     *   就进入那个前置页。冷启动、状态变化触发的自动恢复仍是 enterPrerequisite = false；
-     * - [ConsentEvent.DECLINED]（R1-04）：丢弃本次补同意登记的待办；弹窗已关，排着的意图可以交出。
-     */
-    fun onConsentEvent(event: ConsentEvent) {
-        when (event) {
-            ConsentEvent.AGREED -> {
-                router.onPrerequisiteCompleted(resume = false)
-                enterPrerequisiteOnResume = true
-                queue.offer(StartupIntent.ResumePending, coldStart = false, readiness, clock())
-            }
-
-            ConsentEvent.DECLINED -> {
-                router.onConsentDeclined()
-                enterPrerequisiteOnResume = false
-            }
-        }
-        drain()
-    }
-
-    /** 切换账号（不经过游客态）：TODO(APP-05) 会话层切换账号时调用。 */
-    fun onAccountSwitched() = router.onSessionEnded()
-
-    /** 切换环境：由环境切换清理入口调用（AppModule 登记）。 */
-    fun onEnvironmentSwitched() = router.onEnvironmentChanged()
-
-    fun guardState(updateState: UpdateState = update.value.toUpdateState()): GuardState =
-        GuardState(
-            privacy = privacy.value,
-            update = updateState,
-            // 撤回同意的本地清理没完成：不读任何会话凭据，按游客（R1-01）
-            session = if (privacyHooks.credentialsReadable()) session.value else SessionState.GUEST,
-            environmentSettled = environmentGate.isSettled,
-            appVersion = BuildConfig.VERSION_NAME,
-            isDebugBuild = BuildConfig.DEBUG_FEATURES,
-            // TODO(APP-05): 实名状态来自会话；TODO(APP-03): external_hosts、bridge_origins 来自 /v1/config（LKG）。
-            realnameVerified = false,
-            externalHosts = emptyList(),
-            bridgeOrigins = emptyList(),
-        )
-
-    /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */
-    fun onLaunchIntent(
-        data: String?,
-        coldStart: Boolean,
+class AppRouting
+    @Suppress("LongParameterList") // 环境闸门、深链配置、时钟与三组状态源初值逐项注入（单测替身）
+    constructor(
+        context: Context,
+        private val environmentGate: EnvironmentGate,
+        private val deepLinkConfig: DeepLinkConfig = variantDeepLinkConfig(),
+        private val clock: () -> Long = System::currentTimeMillis,
+        initialPrivacy: PrivacyState = PrivacyState.CONSENTED,
+        private val privacyHooks: RoutingPrivacyHooks = RoutingPrivacyHooks(),
+        initialUpdate: UpdateCheck = UpdateCheck.OK,
     ) {
-        if (data == null) return
-        val request = DeepLinkParser.parse(data, deepLinkConfig)
-        if (request == null) {
-            mutableTrace.value = RoutingTrace(source = "deeplink", route = null, kind = "invalid", reason = "parse_failed")
-            return
-        }
-        queue.offer(StartupIntent.Link(request), coldStart, readiness, clock())
-        drain()
-    }
+        /**
+         * 隐私闸门的结论（APP-02b）：生产由 AppModule 用 AppPrivacy 的当前结论构造，并在每次结论变化时写入（AppPrivacy.onConclusionChanged）；
+         * 变化即触发 [Router.onPrivacyChanged]、重排 pending_action 恢复并 drain。缺省值只给单测用。
+         */
+        val privacy = MutableStateFlow(initialPrivacy)
 
-    /** 推送点击（只带消息编号）。TODO(APP-03): 推送 SDK 接入后由点击回调调用。 */
-    fun onPushClicked(
-        messageId: String,
-        coldStart: Boolean,
-    ) {
-        queue.offer(StartupIntent.Push(messageId), coldStart, readiness, clock())
-        drain()
-    }
+        /**
+         * 强更检查的结论（APP-02c）：生产由 AppModule 用 AppUpdate 的当前结论构造，并在每次变化时写入；变化即重排
+         * pending_action 恢复并 drain。缺省值只给单测用。
+         */
+        val update = MutableStateFlow(initialUpdate)
 
-    /** 导航外壳就绪（NavHost 已组合）。 */
-    fun attach(navigator: RouteNavigator) {
-        this.navigator = navigator
-        drain()
-    }
+        // TODO(APP-05): 接会话。
+        val session = MutableStateFlow(SessionState.GUEST)
 
-    fun detach(navigator: RouteNavigator) {
-        if (this.navigator === navigator) this.navigator = null
-    }
+        private val mutableTrace = MutableStateFlow<RoutingTrace?>(null)
+        val lastTrace: StateFlow<RoutingTrace?> = mutableTrace.asStateFlow()
 
-    /** 状态变化（环境闸门、隐私、强更）或等待到点时调用：把满足条件的启动意图交给 Router。 */
-    fun drain() {
-        drainCount++
-        handler.removeCallbacks(drainRunnable)
-        queue.drain(readiness, clock()).forEach { released ->
-            when (val intent = released.intent) {
-                is StartupIntent.Link -> {
-                    router.open(intent.request, guardState(released.update))
-                }
+        private val queue = StartupIntentQueue()
 
-                is StartupIntent.Push -> {
-                    openPush(intent.messageId, released.update)
-                }
+        /** 下一次交出 ResumePending 时是否进入仍缺的前置页：用户刚主动完成一个前置步骤（同意）时为 true（R1-03）。 */
+        private var enterPrerequisiteOnResume = false
+        private val handler = Handler(Looper.getMainLooper())
+        private val drainRunnable = Runnable { drain() }
 
-                StartupIntent.ResumePending -> {
-                    val enter = enterPrerequisiteOnResume
-                    enterPrerequisiteOnResume = false
-                    router.resumePending(guardState(released.update), enterPrerequisite = enter)
-                }
-            }
-        }
-        // 只有等强更超时才需要定时器；到点前至少等 1 毫秒，不会零延迟反复调度
-        queue.nextDeadline(readiness)?.let { deadline ->
-            handler.postDelayed(drainRunnable, (deadline - clock()).coerceAtLeast(1L))
-        }
-    }
+        /** [drain] 被调用的次数（测试观察是否空转用）。 */
+        var drainCount: Int = 0
+            private set
+        private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /** 回查结果回来时由 Router 按当时最新的状态重新判定（不沿用点击时的状态）。 */
-    @Suppress("UnusedParameter") // 放行时的强更状态只决定何时放行；判定用回查结束时的最新状态
-    private fun openPush(
-        messageId: String,
-        updateState: UpdateState,
-    ) {
-        scope.launch { router.openPush(messageId, pushLanding) }
-    }
+        // TODO(APP-03): 换成 GET /v1/messages/{message_id}；现在回查一律失败（落到 Messages）。
+        private val pushLanding = PushLanding(lookup = { PushLookupResult.Failed })
+        private var navigator: RouteNavigator? = null
 
-    private val readiness: StartupReadiness
-        get() =
-            StartupReadiness(
-                environmentSettled = environmentGate.isSettled,
-                privacy = privacy.value,
-                update = update.value,
-                shellReady = navigator != null,
-                consentPromptShowing = privacyHooks.promptShowing(),
+        val router: Router =
+            Router(
+                state = { guardState() },
+                pendingStore = PendingActionStore(SharedPreferencesPendingBackend(context), clock),
+                navigator = TracingNavigator(),
             )
 
-    /** 把 Router 的结论转给当前的 NavHost，并记一条调试轨迹。 */
-    private inner class TracingNavigator : RouteNavigator {
-        override fun open(
-            route: String,
-            params: JsonObject,
-            readonly: Boolean,
+        init {
+            // 前置条件变化后再排一次 pending_action 恢复（队里已有则不重复）
+            fun scheduleResume() = queue.offer(StartupIntent.ResumePending, coldStart = false, readiness, clock())
+
+            // 冷启动：隐私不是已同意时先删 Agent 卡片登记的记录（BR-ID-10 Agent 卡片 ②），再排一次恢复
+            router.onPrivacyChanged()
+            queue.offer(StartupIntent.ResumePending, coldStart = true, readiness, clock())
+            scope.launch {
+                privacy.drop(1).collect {
+                    router.onPrivacyChanged()
+                    scheduleResume()
+                    drain()
+                }
+            }
+            scope.launch {
+                var previous = session.value
+                session.drop(1).collect { current ->
+                    val ended = previous != SessionState.GUEST && current == SessionState.GUEST
+                    previous = current
+                    if (ended) router.onSessionEnded()
+                    scheduleResume()
+                    drain()
+                }
+            }
+            scope.launch {
+                merge(update.drop(1), environmentGate.state.drop(1)).collect {
+                    scheduleResume()
+                    drain()
+                }
+            }
+        }
+
+        /**
+         * 首启弹窗 / 二次说明里的明确决定：
+         * - [ConsentEvent.AGREED]（R1-03）：完成了一个前置步骤——立即为未过期的待办续时（BR-ID-10），再排一次恢复；
+         *   启动闸门（环境、强更、外壳、没有弹窗）允许时交出，以 enterPrerequisite = true 恢复：能打开就打开，仍缺登录等前置
+         *   就进入那个前置页。冷启动、状态变化触发的自动恢复仍是 enterPrerequisite = false；
+         * - [ConsentEvent.DECLINED]（R1-04）：丢弃本次补同意登记的待办；弹窗已关，排着的意图可以交出。
+         */
+        fun onConsentEvent(event: ConsentEvent) {
+            when (event) {
+                ConsentEvent.AGREED -> {
+                    router.onPrerequisiteCompleted(resume = false)
+                    enterPrerequisiteOnResume = true
+                    queue.offer(StartupIntent.ResumePending, coldStart = false, readiness, clock())
+                }
+
+                ConsentEvent.DECLINED -> {
+                    router.onConsentDeclined()
+                    enterPrerequisiteOnResume = false
+                }
+            }
+            drain()
+        }
+
+        /** 切换账号（不经过游客态）：TODO(APP-05) 会话层切换账号时调用。 */
+        fun onAccountSwitched() = router.onSessionEnded()
+
+        /** 切换环境：由环境切换清理入口调用（AppModule 登记）。 */
+        fun onEnvironmentSwitched() = router.onEnvironmentChanged()
+
+        fun guardState(updateState: UpdateState = update.value.toLiveUpdateState()): GuardState =
+            GuardState(
+                privacy = privacy.value,
+                update = updateState,
+                // 撤回同意的本地清理没完成：不读任何会话凭据，按游客（R1-01）
+                session = if (privacyHooks.credentialsReadable()) session.value else SessionState.GUEST,
+                environmentSettled = environmentGate.isSettled,
+                appVersion = BuildConfig.VERSION_NAME,
+                isDebugBuild = BuildConfig.DEBUG_FEATURES,
+                // TODO(APP-05): 实名状态来自会话；TODO(APP-03): external_hosts、bridge_origins 来自 /v1/config（LKG）。
+                realnameVerified = false,
+                externalHosts = emptyList(),
+                bridgeOrigins = emptyList(),
+            )
+
+        /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */
+        fun onLaunchIntent(
+            data: String?,
+            coldStart: Boolean,
         ) {
-            trace()
-            navigator?.open(route, params, readonly)
+            if (data == null) return
+            val request = DeepLinkParser.parse(data, deepLinkConfig)
+            if (request == null) {
+                mutableTrace.value = RoutingTrace(source = "deeplink", route = null, kind = "invalid", reason = "parse_failed")
+                return
+            }
+            queue.offer(StartupIntent.Link(request), coldStart, readiness, clock())
+            drain()
         }
 
-        override fun showUpgradePrompt(request: RouteRequest) {
-            trace()
-            navigator?.showUpgradePrompt(request)
-        }
-
-        override fun requestConsent(request: RouteRequest) {
-            trace()
-            navigator?.requestConsent(request)
-        }
-
-        override fun blocked(
-            request: RouteRequest,
-            decision: GuardDecision,
+        /** 推送点击（只带消息编号）。TODO(APP-03): 推送 SDK 接入后由点击回调调用。 */
+        fun onPushClicked(
+            messageId: String,
+            coldStart: Boolean,
         ) {
-            trace()
-            navigator?.blocked(request, decision)
+            queue.offer(StartupIntent.Push(messageId), coldStart, readiness, clock())
+            drain()
         }
 
-        private fun trace() {
-            router.lastOutcome.value?.let { outcome ->
-                mutableTrace.value =
-                    RoutingTrace(
-                        source = outcome.request.source,
-                        route = outcome.request.route,
-                        kind = outcome.decision.kindRaw,
-                        reason = outcome.decision.reason,
-                    )
+        /** 导航外壳就绪（NavHost 已组合）。 */
+        fun attach(navigator: RouteNavigator) {
+            this.navigator = navigator
+            drain()
+        }
+
+        fun detach(navigator: RouteNavigator) {
+            if (this.navigator === navigator) this.navigator = null
+        }
+
+        /** 状态变化（环境闸门、隐私、强更）或等待到点时调用：把满足条件的启动意图交给 Router。 */
+        fun drain() {
+            drainCount++
+            handler.removeCallbacks(drainRunnable)
+            queue.drain(readiness, clock()).forEach { released ->
+                when (val intent = released.intent) {
+                    is StartupIntent.Link -> {
+                        router.open(intent.request, guardState(released.update))
+                    }
+
+                    is StartupIntent.Push -> {
+                        openPush(intent.messageId, released.update)
+                    }
+
+                    StartupIntent.ResumePending -> {
+                        val enter = enterPrerequisiteOnResume
+                        enterPrerequisiteOnResume = false
+                        router.resumePending(guardState(released.update), enterPrerequisite = enter)
+                    }
+                }
+            }
+            // 只有等强更超时才需要定时器；到点前至少等 1 毫秒，不会零延迟反复调度
+            queue.nextDeadline(readiness)?.let { deadline ->
+                handler.postDelayed(drainRunnable, (deadline - clock()).coerceAtLeast(1L))
+            }
+        }
+
+        /**
+         * 回查结果回来时由 Router 按当时最新的状态重新判定（不沿用点击时的状态）；最新状态仍在检查时用交出时的状态
+         * （等满 5 秒 → unknown），不再按 update_checking 等。
+         */
+        private fun openPush(
+            messageId: String,
+            updateState: UpdateState,
+        ) {
+            scope.launch { router.openPush(messageId, pushLanding, releasedUpdate = updateState) }
+        }
+
+        private val readiness: StartupReadiness
+            get() =
+                StartupReadiness(
+                    environmentSettled = environmentGate.isSettled,
+                    privacy = privacy.value,
+                    update = update.value,
+                    shellReady = navigator != null,
+                    consentPromptShowing = privacyHooks.promptShowing(),
+                )
+
+        /** 把 Router 的结论转给当前的 NavHost，并记一条调试轨迹。 */
+        private inner class TracingNavigator : RouteNavigator {
+            override fun open(
+                route: String,
+                params: JsonObject,
+                readonly: Boolean,
+            ) {
+                trace()
+                navigator?.open(route, params, readonly)
+            }
+
+            override fun showUpgradePrompt(request: RouteRequest) {
+                trace()
+                navigator?.showUpgradePrompt(request)
+            }
+
+            override fun requestConsent(request: RouteRequest) {
+                trace()
+                navigator?.requestConsent(request)
+            }
+
+            override fun blocked(
+                request: RouteRequest,
+                decision: GuardDecision,
+            ) {
+                trace()
+                navigator?.blocked(request, decision)
+            }
+
+            private fun trace() {
+                router.lastOutcome.value?.let { outcome ->
+                    mutableTrace.value =
+                        RoutingTrace(
+                            source = outcome.request.source,
+                            route = outcome.request.route,
+                            kind = outcome.decision.kindRaw,
+                            reason = outcome.decision.reason,
+                        )
+                }
             }
         }
     }
-}

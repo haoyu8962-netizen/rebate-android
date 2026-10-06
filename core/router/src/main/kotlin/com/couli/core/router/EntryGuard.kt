@@ -11,8 +11,8 @@ import kotlinx.serialization.json.JsonObject
  * 1. 来源合法；环境闸门（EnvironmentGate）未 settled → 等待。
  * 2. 隐私闸门：未有结论 → 等待（Agent 卡片 → 先补同意、同意后不补打开）；基本模式只放行八个页面，
  *    用户在 App 内主动点的其余页面先补同意，外部与自动的丢弃。
- * 3. 强更：低于最低版本 → ForceUpdate（只放行从强更页进入的次要入口）；未知 → 外部与自动的请求只开只读页面清单，
- *    推送改开 Messages；用户在原生页面上自己的操作不拦。
+ * 3. 强更：低于最低版本 → ForceUpdate（只放行从强更页进入的次要入口）；检查中 → 外部与自动的请求等待（update_checking）；
+ *    未知 → 外部与自动的请求只开只读页面清单，推送改开 Messages；用户在原生页面上自己的操作不拦。
  * 4. Agent 卡片：只开 agent_guide=true 的路由，且不带参数。
  * 5. 查路由：未知（含 Release 里的 debug_only 名）→ 升级提示；since 高于本端版本 → 升级提示。
  * 6. 入口：没声明该入口 → 不打开（推送改开 Messages）。
@@ -122,6 +122,11 @@ object EntryGuard {
                 } else {
                     decision(GuardKind.FORCE_UPDATE, RouteNames.FORCE_UPDATE, GuardReason.FORCE_UPDATE_REQUIRED)
                 }
+            }
+
+            UpdateState.CHECKING -> {
+                // F-ALL-03：检查进行中，外部与自动的请求等结果（排队器等满 5 秒按 unknown 再交出）；App 内操作不等
+                if (context.source.isExternalOrAutomatic) decision(GuardKind.DEFER, null, GuardReason.UPDATE_CHECKING) else null
             }
 
             UpdateState.UNKNOWN -> {

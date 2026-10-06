@@ -24,7 +24,16 @@ object CouliPreferenceNamespaces {
     /** 路由：pending_action（APP-02a；退出登录时由调用方 clear，切换环境时随命名空间清理）。 */
     const val ROUTER = "couli.router"
 
-    val registered: List<String> = listOf(SESSION, CACHE, ROUTER)
+    /** 版本检查结论（APP-02c UpdateGate：最近一次成功检查、10405 强更、「暂不更新」记录）；属于连接的那套服务器，切换环境时清。 */
+    const val UPDATE = "couli.update"
+
+    /**
+     * debug / staging 调试面板假数据得到的版本检查结论（APP-02c R1-03）：与 [UPDATE] 分开存，Release 不读这里，
+     * 覆盖安装成 Release 后不会被假的强更结论误拦。切换环境时同样清。
+     */
+    const val UPDATE_DEBUG = "couli.update_debug"
+
+    val registered: List<String> = listOf(SESSION, CACHE, ROUTER, UPDATE, UPDATE_DEBUG)
 
     /**
      * 本机隐私决定（APP-02b PrivacyGate：同意的决定、同意时的政策版本与点击时间、基本模式）。

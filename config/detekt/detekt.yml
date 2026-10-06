@@ -13,7 +13,10 @@ complexity:
     ignoreAnnotated: ['Composable']
   LongMethod:
     ignoreAnnotated: ['Composable']
-    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
+    excludes:
+      - '**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt'
+      # APP-02c 的 UpdateGate 向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/config/src/test/kotlin/com/couli/core/update/UpdateGateVectorTest.kt'
   CyclomaticComplexMethod:
     excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
   TooManyFunctions:
