@@ -3,6 +3,11 @@ package com.couli.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.couli.app.clientcore.AppConfig
+import com.couli.app.clientcore.AppTracker
+import com.couli.app.clientcore.clientPrivacyRaw
+import com.couli.app.clientcore.pendingEventsSink
+import com.couli.app.clientcore.trackerCanUpload
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
@@ -10,14 +15,26 @@ import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
 import com.couli.app.update.variantUpdateStore
+import com.couli.core.clientcore.AtomicTextFile
+import com.couli.core.clientcore.BundledConfig
+import com.couli.core.clientcore.ClientPlatformRaw
+import com.couli.core.clientcore.ConfigStore
+import com.couli.core.clientcore.ExecutorPeriodicScheduler
+import com.couli.core.clientcore.TrackerQueue
+import com.couli.core.clientcore.TrackerSink
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
+import com.couli.core.config.EnvironmentSwitchListener
 import com.couli.core.config.SharedPreferencesNamespaceCleaner
+import com.couli.core.network.AndroidDeviceIdReader
 import com.couli.core.network.AndroidKeystoreCipher
 import com.couli.core.network.ApiClient
+import com.couli.core.network.ApiConfigFetcher
 import com.couli.core.network.ClientIdentity
+import com.couli.core.network.DeviceRegistry
 import com.couli.core.network.EncryptedPreferences
 import com.couli.core.network.InFlightCalls
+import com.couli.core.network.KeystoreDeviceCredentialStore
 import com.couli.core.network.KeystoreSessionTokens
 import com.couli.core.network.NetworkContext
 import com.couli.core.network.NetworkHooks
@@ -26,12 +43,15 @@ import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.SecretCipher
 import com.couli.core.network.SecurePendingKeyBackend
 import com.couli.core.network.SessionTokens
-import com.couli.core.network.UnregisteredDevice
 import com.couli.core.network.UpdateRaw
+import com.couli.core.privacy.AndroidPermissionRequester
+import com.couli.core.privacy.AndroidPermissionSystem
 import com.couli.core.privacy.CredentialCleanerRegistry
 import com.couli.core.privacy.MainThreadRetryScheduler
+import com.couli.core.privacy.PermissionPrompts
 import com.couli.core.privacy.PrivacyGate
 import com.couli.core.privacy.SharedPreferencesPrivacyStore
+import com.couli.core.privacy.permissionPreferences
 import com.couli.core.privacy.registerPlaceholderCredentialCleaners
 import com.couli.core.privacy.registerProductionInitSteps
 import com.couli.core.router.PrivacyState
@@ -44,6 +64,9 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import java.io.File
+import java.util.UUID
+import javax.inject.Provider
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,20 +78,49 @@ import kotlinx.coroutines.SupervisorJob
 @Suppress("TooManyFunctions") // Hilt 的 @Provides 逐项一个函数（APP-03a 加了网络核心的令牌、加密、在途请求登记）
 object AppModule {
     /**
-     * 切换环境时的清理入口注册表（03 §3.6）。先登记本 App 的 SharedPreferences 命名空间；
-     * 会话、LKG、Keystore 等模块实现后各自注册。
+     * 切换环境时的清理入口注册表（03 §3.6：会话、令牌、device_id、install_secret、LKG、页面缓存与 pending_action）。
+     * 设备注册、配置 LKG 与埋点队列（APP-03b）经 Provider 取：清理在 Application.onCreate 的环境对账里就可能执行，不依赖它们
+     * 是否已被别处创建。
      */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 各清理对象逐项注入
     fun environmentSwitchCleaners(
         @ApplicationContext context: Context,
         tokens: SessionTokens,
         cipher: SecretCipher,
         inFlight: InFlightCalls,
+        device: Provider<DeviceRegistry>,
+        config: Provider<AppConfig>,
+        tracker: Provider<TrackerQueue>,
+        environmentGate: Provider<EnvironmentGate>,
+        privacyGate: Provider<PrivacyGate>,
     ): EnvironmentSwitchCleanerRegistry =
         EnvironmentSwitchCleanerRegistry().apply {
+            // 运行中切换环境（调试面板，在主线程）：开始时同步关环境闸门，并在任何等待之前同步作废网络世代、取消全部在途请求
+            // （lessons 10、17）；清理与提交期间不注册设备、不发任何请求。结束后开闸门，并重新开始设备注册（从第 1 次按退避）、
+            // 冷启动拉配置（R1-05）。失败（R2-03）时环境保持旧环境，但清理可能已清掉 device_id、install_secret 与 LKG：同样重新开始
+            // 注册与拉取，恢复已被清除的初始化状态（旧环境里剩下的数据仍属于旧环境）。
+            addSwitchListener(
+                object : EnvironmentSwitchListener {
+                    override fun onSwitchStarting() {
+                        environmentGate.get().closeForSwitch()
+                        inFlight.onEnvironmentSwitching()
+                    }
+
+                    override fun onSwitchFinished(committed: Boolean) {
+                        environmentGate.get().reopenAfterSwitch()
+                        privacyGate.get().restartDeviceRegistration()
+                        config.get().onEnvironmentSwitched()
+                    }
+                },
+            )
             // 第一步：作废并取消全部在途请求（含还在等连接的），旧环境的请求不再发出、迟到的响应不再写入（APP-03a A-R2-01）
             register { _, _ -> inFlight.onEnvironmentSwitching() }
+            // APP-03b：device_id、install_secret（内存与安全存储）、LKG 配置文件、埋点队列（带旧环境的 device_id）
+            register { _, _ -> device.get().clear() }
+            register { _, _ -> config.get().store.clearForEnvironmentSwitch() }
+            register { _, _ -> tracker.get().clear() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -95,8 +147,7 @@ object AppModule {
 
     /**
      * 网络核心（APP-03a）：环境闸门未通过时不发请求；隐私结论与撤回清理状态决定带不带凭据；强更结论给 ErrorActionMapper，
-     * 确需强更的 10405 调 AppUpdate.on10405（切到主线程）。设备凭据在 APP-03b 设备注册后接入，现在是未注册。
-     * TODO(APP-03b): DeviceCredentials（device_id、install_secret）、10402 重新注册设备。
+     * 确需强更的 10405 调 AppUpdate.on10405（切到主线程）。设备凭据与 10402 重新注册来自设备注册 [DeviceRegistry]（APP-03b）。
      * TODO(N-19): X-App-Id 的取值契约里没有登记，先用占位 couli。
      */
     @Provides
@@ -111,6 +162,7 @@ object AppModule {
         tokens: SessionTokens,
         cipher: SecretCipher,
         inFlight: InFlightCalls,
+        device: DeviceRegistry,
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -137,10 +189,15 @@ object AppModule {
                     update = update.routerUpdate.toNetworkUpdate(),
                 )
             },
-            device = UnregisteredDevice,
+            device = device,
             tokens = tokens,
             pendingKeys = PendingKeyStore(SecurePendingKeyBackend(EncryptedPreferences(context, cipher)), System::currentTimeMillis),
-            hooks = NetworkHooks(onForceUpdate = { min -> main.post { update.on10405(min) } }),
+            hooks =
+                NetworkHooks(
+                    onForceUpdate = { min -> main.post { update.on10405(min) } },
+                    // 10402：单飞重新注册设备后沿用原键重放 1 次（BR-ID-09）
+                    reRegisterDevice = device::reRegister,
+                ),
             inFlight = inFlight,
         ).also { client ->
             // 强更状态恢复为受支持时，受限会话屏障到期（R1-10、lessons 19）：状态源一变就通知，不只靠下一个请求观察
@@ -169,6 +226,8 @@ object AppModule {
         @ApplicationContext context: Context,
         tokens: SessionTokens,
         inFlight: InFlightCalls,
+        device: Provider<DeviceRegistry>,
+        tracker: Provider<TrackerQueue>,
     ): CredentialCleanerRegistry =
         CredentialCleanerRegistry().apply {
             // 第一步：作废并取消全部在途请求（含还在等连接、TLS 的），已捕获凭据的请求不再写出（APP-03a A-R2-01）
@@ -176,6 +235,10 @@ object AppModule {
             registerPlaceholderCredentialCleaners(context)
             // 真实的会话令牌（APP-03a，含 session_scope）；h5_token 仍由占位项按键删（APP-05）
             register(SESSION_TOKENS_CLEANER) { tokens.clear() }
+            // 设备注册（APP-03b）：内存里的 device_id、install_secret 与安全存储（占位项按同名键也删一次）；作废在途注册
+            register(DEVICE_REGISTRY_CLEANER) { device.get().clear() }
+            // 埋点队列（APP-03b，BR-ID-13）：撤回同意立即清空，之后不再采集、不再上报
+            register(TRACKER_QUEUE_CLEANER) { tracker.get().clear() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -186,6 +249,7 @@ object AppModule {
     fun privacyGate(
         @ApplicationContext context: Context,
         credentialCleaners: CredentialCleanerRegistry,
+        device: Provider<DeviceRegistry>,
     ): PrivacyGate =
         PrivacyGate(
             store = SharedPreferencesPrivacyStore(context),
@@ -194,8 +258,133 @@ object AppModule {
         ).apply {
             retryScheduler = MainThreadRetryScheduler()
             withdrawalCleanup = { credentialCleaners.cleanAll() }
-            registerProductionInitSteps()
+            // 设备注册（APP-03b）在后台执行，失败按已有退避重试
+            registerProductionInitSteps { onResult -> device.get().registerAsync(onResult) }
+            val main = Handler(Looper.getMainLooper())
+            // 10402 后重新注册失败（凭据已丢）：回到主线程从第 1 次开始按退避重新注册
+            device.get().onCredentialsLost = { main.post { restartDeviceRegistration() } }
         }
+
+    /**
+     * 设备注册（APP-03b，BR-ID-09）：ANDROID_ID → device_hash → POST /v1/devices；device_id、install_secret 都进 Keystore 加密的
+     * couli.session（install_secret 只进安全存储，CSB-05；切换环境随命名空间清、Keystore 密钥删除）。网络核心与隐私闸门经 Provider
+     * 延迟取（两者都依赖它）。
+     */
+    @Provides
+    @Singleton
+    fun deviceRegistry(
+        @ApplicationContext context: Context,
+        cipher: SecretCipher,
+        inFlight: InFlightCalls,
+        privacy: Provider<AppPrivacy>,
+        client: Provider<ApiClient>,
+    ): DeviceRegistry =
+        DeviceRegistry(
+            platform = ClientPlatformRaw.ANDROID,
+            idReader = AndroidDeviceIdReader(context),
+            store = KeystoreDeviceCredentialStore(EncryptedPreferences(context, cipher)),
+            privacy = { privacy.get().let { clientPrivacyRaw(it.conclusion, it.credentialAccess.cleanupPending) } },
+            client = { client.get() },
+            epochs = inFlight::epochs,
+        )
+
+    /**
+     * 配置与 LKG（APP-03b，03 §4.3）：LKG 存 filesDir（不在 cacheDir：「清除缓存」不清）；拉取经网络核心（getConfig，基本模式白名单内）；
+     * 没有 LKG 用包内 default_config.json。切换环境由清理入口删 LKG。
+     */
+    @Provides
+    @Singleton
+    fun appConfig(
+        @ApplicationContext context: Context,
+        environmentGate: EnvironmentGate,
+        client: Provider<ApiClient>,
+    ): AppConfig {
+        val file = AtomicTextFile(File(context.filesDir, LKG_CONFIG_FILE))
+        val fetcher = ApiConfigFetcher({ client.get() })
+        val store =
+            ConfigStore(
+                readFile = file::read,
+                writeFile = file::write,
+                fetcher = fetcher::fetch,
+                clock = System::currentTimeMillis,
+                bundled = BundledConfig.dataJson,
+            )
+        return AppConfig(store, environmentSettled = { environmentGate.isSettled })
+    }
+
+    /**
+     * 埋点队列（APP-03b，03 §4.7）：队列存 filesDir；只在已同意时采集（隐私结论变化时通知队列，撤回立即清空）；强更检查有结果才上报；
+     * 上报 sink 暂为空实现（TODO(N-20)：没有 /v1/events）。每 10 秒定时上报（R1-08，后台线程；只在已同意时运行）由 [AppTracker] 在
+     * 真实启动流程里启动（R2-04）。
+     * user_id 取自网络核心的有效会话（R1-09：会话隔离中、读不出时为空，游客只带 device_id）；session_id 按进程。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 隐私、强更、设备、会话、在途世代逐项注入
+    fun trackerQueue(
+        @ApplicationContext context: Context,
+        privacy: AppPrivacy,
+        update: AppUpdate,
+        device: DeviceRegistry,
+        client: Provider<ApiClient>,
+        inFlight: InFlightCalls,
+    ): TrackerQueue {
+        val file = AtomicTextFile(File(context.filesDir, TRACKER_QUEUE_FILE))
+        val current = { clientPrivacyRaw(privacy.conclusion, privacy.credentialAccess.cleanupPending) }
+        return TrackerQueue(
+            readFile = file::read,
+            writeFile = file::write,
+            sink = TrackerSink(::pendingEventsSink),
+            privacy = current(),
+            userId = { client.get().activeUserId() },
+            deviceId = { device.deviceId },
+            platform = ClientPlatformRaw.ANDROID,
+            appVersion = BuildConfig.VERSION_NAME.substringBefore('-'),
+            sessionId = { PROCESS_SESSION_ID },
+            clock = System::currentTimeMillis,
+            canUpload = { trackerCanUpload(update.routerUpdate) },
+            channel = { InstallChannel.OFFICIAL.raw },
+            // 上报批次的归属（R2-05）：撤回同意、切换环境（InFlightCalls 的隐私 / 环境世代）之后，已取出的批次不再交给 sink
+            epochs = inFlight::epochs,
+        ).also { queue ->
+            privacy.onConclusionChanged { queue.onPrivacyChanged(current()) }
+            update.onRouterUpdate { if (trackerCanUpload(it)) queue.flush() }
+        }
+    }
+
+    /** Tracker 的启动接线（R2-04）：CouliApplication 在环境与隐私就绪后显式初始化队列并启动每 10 秒的定时上报。 */
+    @Provides
+    @Singleton
+    fun appTracker(
+        environmentGate: EnvironmentGate,
+        tracker: Provider<TrackerQueue>,
+    ): AppTracker = AppTracker({ tracker.get() }, ExecutorPeriodicScheduler(), environmentSettled = { environmentGate.isSettled })
+
+    /** 真实启动流程（CouliApplication、MainActivity，R2-04）。 */
+    @Provides
+    @Singleton
+    fun appStartup(
+        environmentGate: EnvironmentGate,
+        config: AppConfig,
+        privacy: AppPrivacy,
+        update: AppUpdate,
+        tracker: AppTracker,
+    ): AppStartup = AppStartup(environmentGate, config, privacy, update, tracker)
+
+    /** 系统权限（APP-03b，03 §4.9）：状态与申请；MainActivity 提供当前 Activity。 */
+    @Provides
+    @Singleton
+    fun permissionSystem(
+        @ApplicationContext context: Context,
+    ): AndroidPermissionSystem = AndroidPermissionSystem(context, permissionPreferences(context))
+
+    /** 申请系统权限的唯一入口（APP-03b PermissionRequester；节流记录在 couli_permission，切换环境与清除缓存都不清）。 */
+    @Provides
+    @Singleton
+    fun permissionRequester(
+        @ApplicationContext context: Context,
+        system: AndroidPermissionSystem,
+    ): AndroidPermissionRequester = AndroidPermissionRequester(system, PermissionPrompts(), permissionPreferences(context))
 
     @Provides
     @Singleton
@@ -281,6 +470,13 @@ object AppModule {
     private const val BUNDLED_PRIVACY_POLICY_VERSION = "1"
 
     private const val SESSION_TOKENS_CLEANER = "session_tokens"
+    private const val DEVICE_REGISTRY_CLEANER = "device_registry"
+    private const val TRACKER_QUEUE_CLEANER = "tracker_queue"
+    private const val LKG_CONFIG_FILE = "couli_config/lkg.json"
+    private const val TRACKER_QUEUE_FILE = "couli_tracker/queue.json"
+
+    /** 埋点的 session_id：本进程一次（03 §4.7 公共字段）。 */
+    private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
     private const val IN_FLIGHT_CALLS_CLEANER = "in_flight_calls"
 }
 

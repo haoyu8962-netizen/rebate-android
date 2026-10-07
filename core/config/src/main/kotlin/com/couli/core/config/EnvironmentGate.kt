@@ -42,8 +42,23 @@ class EnvironmentGate(
     /** 只读状态（Settled / Blocked）。 */
     val state: StateFlow<State> = mutableState.asStateFlow()
 
+    /** 运行中切换环境（调试面板）进行中：清理与提交期间闸门关闭（lessons 10）。 */
+    @Volatile
+    private var switching = false
+
+    /** 已对账且不在切换环境中：可以读本环境的会话与缓存、发请求。 */
     val isSettled: Boolean
-        get() = state.value is State.Settled
+        get() = !switching && state.value is State.Settled
+
+    /** 切换环境开始（任何清理之前同步调用）：立即关闭闸门，之后的设备注册与一切请求都不发。 */
+    fun closeForSwitch() {
+        switching = true
+    }
+
+    /** 切换环境结束（新环境已提交，或失败后环境保持不变）：重新打开闸门。 */
+    fun reopenAfterSwitch() {
+        switching = false
+    }
 
     /** 启动时调用：失败自动再试一次。 */
     fun settleAtStartup(): State = attempt(STARTUP_ATTEMPTS)
@@ -53,13 +68,12 @@ class EnvironmentGate(
 
     /** 会话、缓存、网络层的守卫：未 Settled 即抛 [IllegalStateException]。 */
     fun requireSettled() {
-        val current = state.value
-        check(current is State.Settled) { "environment gate is blocked; cleanup has not succeeded" }
+        check(isSettled) { "environment gate is blocked; cleanup has not succeeded" }
     }
 
     @Synchronized
     private fun attempt(times: Int): State {
-        if (!isSettled) mutableState.value = runAttempts(times)
+        if (state.value !is State.Settled) mutableState.value = runAttempts(times)
         return state.value
     }
 

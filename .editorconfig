@@ -36,6 +36,15 @@ ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_class-signature = disabled
 ktlint_standard_when-entry-bracing = disabled
 
+# APP-03b 的客户端内核向量测试同样由 Codex 先写、本仓库不改；它的格式与下面五条规则不一致（关 indent 必须连带关 string-template-indent），只对这一个文件关掉。
+[core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt]
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_indent = disabled
+ktlint_standard_string-template-indent = disabled
+ktlint_standard_when-entry-bracing = disabled
+
 [*.{yml,yaml,json,toml}]
 indent_size = 2
 

@@ -2,6 +2,7 @@ package com.couli.core.privacy
 
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** 本机的隐私决定（BR-ID-11）。取值与 specs/privacy-gate-vectors.json 的 decision 同名。 */
 enum class PrivacyDecision(
@@ -127,6 +128,7 @@ class MainThreadRetryScheduler : RetryScheduler {
  * @param bundledPolicyVersion 包内隐私政策版本（十进制整数串）。TODO(N-16): 协议线上版本、实际展示版本与用户协议版本
  *   （BR-ID-12）的输入在 §2.1 API 之外，接入 /v1/config.legal 后补。
  */
+@Suppress("TooManyFunctions") // 状态迁移逐项一个入口；APP-03b 加了异步设备注册步骤与重新开始注册
 class PrivacyGate(
     private val store: PrivacyStore,
     private val clock: () -> Long,
@@ -148,10 +150,15 @@ class PrivacyGate(
 
     private val initSteps = mutableListOf<Pair<String, () -> Unit>>()
 
+    /**
+     * 设备注册步骤（可异步，APP-03b）：调用后回调是否成功；失败按退避重试。[registerInitStep] 登记的同步步骤（抛异常 = 失败）也包成它。
+     */
+    private var deviceStep: ((onResult: (Boolean) -> Unit) -> Unit)? = null
+
     /** 本同意周期内是否已经初始化过（同一实例只初始化一次；撤回后重置）。 */
     private var initialized = false
 
-    /** 同意周期代次：撤回同意后加一，旧周期里排着的设备注册重试作废。 */
+    /** 设备注册代次：撤回同意、重新开始注册（[restartDeviceRegistration]）时加一，之前排着的设备注册重试作废。 */
     private var consentGeneration = 0
 
     // 三端 API 统一带 now（brief §2.1）；本端的状态迁移只有 agree 用到时间，其余操作不看时间。
@@ -234,6 +241,27 @@ class PrivacyGate(
     ) {
         initSteps.removeAll { it.first == name }
         initSteps += name to action
+        if (name == DEVICE_REGISTER) deviceStep = { onResult -> onResult(runCatching(action).isSuccess) }
+    }
+
+    /**
+     * 登记异步的设备注册步骤（APP-03b DeviceRegistry.registerAsync）：[action] 在后台注册，完成后回调是否成功（可在任意线程回调，
+     * 只回调第一次）；失败按 [retryDelayMillis] 退避重试（调度经 [retryScheduler]，生产在主线程）。顺序仍按 [INIT_ORDER] 排第一。
+     */
+    fun registerDeviceStep(action: (onResult: (Boolean) -> Unit) -> Unit) {
+        initSteps.removeAll { it.first == DEVICE_REGISTER }
+        initSteps += DEVICE_REGISTER to {}
+        deviceStep = action
+    }
+
+    /**
+     * 设备凭据丢失后重新开始注册（10402 后重新注册失败、切换环境清掉了 device_id）：本同意周期已初始化且仍已同意时，作废之前排着的
+     * 重试，从第 1 次开始按退避注册。还没初始化的不做（之后 [onConsented] 会注册）。在主线程调用。
+     */
+    fun restartDeviceRegistration(now: Long = clock()) {
+        if (!initialized || !state(now).fullyConsented) return
+        consentGeneration += 1
+        attemptDeviceRegister(attempt = 1, generation = consentGeneration)
     }
 
     /**
@@ -249,7 +277,7 @@ class PrivacyGate(
         val generation = consentGeneration
         orderedInitSteps(initSteps).forEach { (name, action) ->
             if (name == DEVICE_REGISTER) {
-                attemptDeviceRegister(action, attempt = 1, generation = generation)
+                attemptDeviceRegister(attempt = 1, generation = generation)
             } else {
                 runCatching(action)
             }
@@ -257,17 +285,20 @@ class PrivacyGate(
     }
 
     private fun attemptDeviceRegister(
-        action: () -> Unit,
         attempt: Int,
         generation: Int,
     ) {
         if (generation != consentGeneration || !state().fullyConsented || credentialAccess.cleanupPending) return
-        val succeeded = runCatching(action).isSuccess
-        if (!succeeded) {
-            retryScheduler.schedule(retryDelayMillis(attempt)) {
-                attemptDeviceRegister(action, attempt + 1, generation)
+        val step = deviceStep ?: return
+        val answered = AtomicBoolean(false)
+        val onResult = { succeeded: Boolean ->
+            if (!answered.getAndSet(true) && !succeeded) {
+                retryScheduler.schedule(retryDelayMillis(attempt)) {
+                    attemptDeviceRegister(attempt + 1, generation)
+                }
             }
         }
+        if (runCatching { step(onResult) }.isFailure) onResult(false)
     }
 
     companion object {
@@ -381,11 +412,12 @@ private fun orderedInitSteps(steps: List<Pair<String, () -> Unit>>): List<Pair<S
 
 /**
  * 生产用初始化步骤：第三方 SDK 的初始化调用只能写在这里（本文件），由 [PrivacyGate.onConsented] 按顺序调用。
- * 本任务各步骤都是空实现，各自任务接入时填写；设备注册失败时抛异常以触发退避重试。
+ * 设备注册（APP-03b）由 App 传入；其余步骤是空实现，各自任务接入时填写。设备注册失败（回调 false）触发退避重试。
  */
-fun PrivacyGate.registerProductionInitSteps() {
-    // TODO(APP-03): POST /v1/devices 设备注册；成功后上报本地同意记录（client_at = consentedAtMillis，BR-ID-12）与推送 token。
-    registerInitStep(PrivacyGate.DEVICE_REGISTER) {}
+fun PrivacyGate.registerProductionInitSteps(deviceRegistration: (onResult: (Boolean) -> Unit) -> Unit) {
+    // POST /v1/devices 设备注册（APP-03b DeviceRegistry.registerAsync，后台执行，失败退避重试）。
+    // TODO(APP-12): 注册成功后上报本地同意记录（client_at = consentedAtMillis，BR-ID-12）；TODO(APP-15): 推送 token。
+    registerDeviceStep(deviceRegistration)
     // TODO(APP-15): MobPush（同意后调用其隐私授权接口，03 §3.5）。
     registerInitStep(PrivacyGate.PUSH) {}
     // TODO(APP-09): 联盟 SDK（百川 / 京东 / 拼多多，03 §3.5）。

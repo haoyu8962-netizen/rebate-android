@@ -4,10 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.couli.core.config.CouliPreferenceNamespaces
+import java.security.GeneralSecurityException
+import java.security.InvalidKeyException
 import java.security.KeyStore
+import java.security.ProviderException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -19,6 +23,15 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+
+/**
+ * 安全存储此刻读不出（Keystore 暂时不可用等），不是内容损坏：调用方不能当成「没有记录」，也不删除（lessons 38、APP-03b
+ * session_unreadable）。[SecretCipher] 遇到这类失败时抛它；其余解密失败（密钥已删、标签不符、数据损坏）按内容损坏处理。
+ */
+class SecureStorageReadException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
 
 /** 对称加解密（生产：[AndroidKeystoreCipher]；单测注入假实现，Robolectric 没有 AndroidKeyStore）。 */
 interface SecretCipher {
@@ -60,11 +73,36 @@ class AndroidKeystoreCipher(
         return cipher.iv + cipher.doFinal(plain)
     }
 
+    /**
+     * 密文过短、标签不符（密钥已删后重新生成、数据损坏）、密钥永久失效 → 原样抛出（内容损坏）；Keystore 本身出错（取不到密钥、
+     * 服务暂时不可用）→ [SecureStorageReadException]（读取失败，APP-03b session_unreadable）。
+     */
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount") // Keystore 的错误类型分散，按「损坏 / 读取失败」两类重新抛出
     override fun decrypt(sealed: ByteArray): ByteArray {
         require(sealed.size > IV_BYTES) { "密文过短" }
+        val key =
+            try {
+                key()
+            } catch (error: GeneralSecurityException) {
+                throw SecureStorageReadException("取不到 Keystore 密钥", error)
+            } catch (error: ProviderException) {
+                throw SecureStorageReadException("Keystore 不可用", error)
+            }
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, sealed, 0, IV_BYTES))
-        return cipher.doFinal(sealed, IV_BYTES, sealed.size - IV_BYTES)
+        try {
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, sealed, 0, IV_BYTES))
+        } catch (error: KeyPermanentlyInvalidatedException) {
+            throw error
+        } catch (error: InvalidKeyException) {
+            throw SecureStorageReadException("Keystore 密钥暂时不可用", error)
+        } catch (error: ProviderException) {
+            throw SecureStorageReadException("Keystore 不可用", error)
+        }
+        return try {
+            cipher.doFinal(sealed, IV_BYTES, sealed.size - IV_BYTES)
+        } catch (error: ProviderException) {
+            throw SecureStorageReadException("Keystore 不可用", error)
+        }
     }
 
     @Synchronized
@@ -87,9 +125,23 @@ class UnreadableRecordException(
     message: String,
 ) : IllegalStateException(message)
 
+/** 一次读取的结果：不存在、明文、内容损坏（解不开或不能解码）、读取失败（[SecureStorageReadException]）。 */
+sealed interface StoredValue {
+    data object Absent : StoredValue
+
+    data class Present(
+        val text: String,
+    ) : StoredValue
+
+    data object Corrupt : StoredValue
+
+    data object Failed : StoredValue
+}
+
 /**
  * 加密的键值存储：值用 [cipher] 加密后 Base64 存进 SharedPreferences（[CouliPreferenceNamespaces.SESSION]，切换环境时随命名空间清）。
- * [get] 对解不开的值（密钥已删、数据损坏）按不存在处理并删除；[getStrict] 不删、抛 [UnreadableRecordException]。
+ * [get] 对解不开的值（密钥已删、数据损坏）按不存在处理并删除；[getStrict] 不删、抛 [UnreadableRecordException]；
+ * [read] 区分不存在、内容损坏与读取失败（APP-03b）。
  *
  * 写入一律 commit。Android 的 SharedPreferences 在 commit 写盘之前就已改了内存值：commit 返回 false 时这里先把本次改过的键
  * 写回上一次成功提交的值，并把这些键的「最后成功提交值」记在 [committed] 里，之后的读取以它为准（R3-05：写盘失败不让
@@ -110,16 +162,37 @@ class EncryptedPreferences(
 
     private fun raw(key: String): String? = if (key in committed) committed[key] else preferences.getString(key, null)
 
+    /** 宽松读取：内容损坏的删除后按不存在；读取失败（[StoredValue.Failed]）按不存在返回但不删除。需要区分时用 [read]。 */
     @Synchronized
-    @Suppress("ReturnCount") // 不存在、解不开（删除后返回 null）、正常
-    fun get(key: String): String? {
-        val stored = raw(key) ?: return null
-        val plain = runCatching { cipher.decrypt(Base64.decode(stored, Base64.NO_WRAP)) }.getOrNull()
-        if (plain == null) {
-            remove(key)
-            return null
+    fun get(key: String): String? =
+        when (val value = read(key)) {
+            is StoredValue.Present -> {
+                value.text
+            }
+
+            StoredValue.Corrupt -> {
+                remove(key)
+                null
+            }
+
+            StoredValue.Absent, StoredValue.Failed -> {
+                null
+            }
         }
-        return plain.toString(Charsets.UTF_8)
+
+    /** 读出明文，区分不存在、内容损坏与读取失败（APP-03b：读取失败不当成没有，也不删除）。 */
+    @Synchronized
+    @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount") // 解密失败一律归入损坏，读取失败单独返回
+    fun read(key: String): StoredValue {
+        val stored = raw(key) ?: return StoredValue.Absent
+        val bytes = runCatching { Base64.decode(stored, Base64.NO_WRAP) }.getOrNull() ?: return StoredValue.Corrupt
+        return try {
+            StoredValue.Present(cipher.decrypt(bytes).toString(Charsets.UTF_8))
+        } catch (error: SecureStorageReadException) {
+            StoredValue.Failed
+        } catch (error: Exception) {
+            StoredValue.Corrupt
+        }
     }
 
     /** 读出明文；不存在为 null；解不开抛 [UnreadableRecordException]（不删除，lessons 38）。 */
@@ -179,6 +252,32 @@ data class SessionSnapshot(
     val userId: String?,
     val generation: Long,
 )
+
+/**
+ * 一次完整的会话读取（APP-03b，与 iOS 同一裁定）：[Present] 读到了（[SessionSnapshot] 四项可能都为空 = 没有会话；内容损坏的条目
+ * 按没有并尽力删除）；[Unreadable] 读取失败（可能有会话）：不能当成没有会话匿名发出，需要会话的接口本地拒绝（session_unreadable）。
+ */
+sealed interface SessionRead {
+    data class Present(
+        val snapshot: SessionSnapshot,
+    ) : SessionRead
+
+    data class Unreadable(
+        val generation: Long,
+    ) : SessionRead
+}
+
+/**
+ * 能区分「读取失败」的会话存储（APP-03b session_unreadable）：[KeystoreSessionTokens] 实现它。没实现的 [SessionTokens]（内存实现、
+ * 测试替身）按 [SessionTokens.snapshot] 读到处理（[readSessionOf]）。
+ */
+interface SessionReader {
+    /** 一次读出完整会话，区分读取失败。 */
+    fun readSession(): SessionRead
+}
+
+/** 一次读出完整会话：实现了 [SessionReader] 的按它，否则按 [SessionTokens.snapshot] 读到。 */
+fun SessionTokens.readSessionOf(): SessionRead = (this as? SessionReader)?.readSession() ?: SessionRead.Present(snapshot())
 
 /**
  * 会话令牌（03 §4.2；BR-ID-07）：access、refresh、当前会话的作用域（session_scope）与登录时记下的账号（LoginData.user_id）。
@@ -314,21 +413,48 @@ class MemorySessionTokens(
  */
 class KeystoreSessionTokens(
     private val storage: EncryptedPreferences,
-) : SessionTokens {
+) : SessionTokens,
+    SessionReader {
     private val lock = Any()
 
     @Volatile
     private var counter = 0L
 
-    override val accessToken: String? get() = synchronized(lock) { storage.get(KEY_ACCESS) }
-    override val refreshToken: String? get() = synchronized(lock) { storage.get(KEY_REFRESH) }
-    override val scope: String? get() = synchronized(lock) { storage.get(KEY_SCOPE) }
-    override val userId: String? get() = synchronized(lock) { storage.get(KEY_USER_ID) }
+    override val accessToken: String? get() = snapshot().accessToken
+    override val refreshToken: String? get() = snapshot().refreshToken
+    override val scope: String? get() = snapshot().scope
+    override val userId: String? get() = snapshot().userId
     override val generation: Long get() = counter
 
+    /** 读取失败时按没有会话给出（不删除）；需要区分读取失败的地方用 [readSession]。 */
     override fun snapshot(): SessionSnapshot =
+        when (val read = readSession()) {
+            is SessionRead.Present -> read.snapshot
+            is SessionRead.Unreadable -> SessionSnapshot(null, null, null, null, read.generation)
+        }
+
+    /**
+     * 同一把锁里读四项：任何一项读取失败 → [SessionRead.Unreadable]（不删除）；任何一项内容损坏 → 整组不能用，尽力删除四项后按
+     * 没有会话（删不掉下次读还会再试）；否则读到的会话。
+     */
+    override fun readSession(): SessionRead =
         synchronized(lock) {
-            SessionSnapshot(storage.get(KEY_ACCESS), storage.get(KEY_REFRESH), storage.get(KEY_SCOPE), storage.get(KEY_USER_ID), counter)
+            val values = SESSION_KEYS.associateWith(storage::read)
+            when {
+                values.values.any { it == StoredValue.Failed } -> {
+                    SessionRead.Unreadable(counter)
+                }
+
+                values.values.any { it == StoredValue.Corrupt } -> {
+                    runCatching { storage.remove(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID) }
+                    SessionRead.Present(SessionSnapshot(null, null, null, null, counter))
+                }
+
+                else -> {
+                    fun text(key: String) = (values[key] as? StoredValue.Present)?.text
+                    SessionRead.Present(SessionSnapshot(text(KEY_ACCESS), text(KEY_REFRESH), text(KEY_SCOPE), text(KEY_USER_ID), counter))
+                }
+            }
         }
 
     override fun save(
@@ -396,6 +522,7 @@ class KeystoreSessionTokens(
         const val KEY_REFRESH = "refresh_token"
         const val KEY_SCOPE = "session_scope"
         const val KEY_USER_ID = "session_user_id"
+        private val SESSION_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID)
     }
 }
 

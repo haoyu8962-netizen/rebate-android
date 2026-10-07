@@ -43,10 +43,12 @@ class EnvironmentSwitcher(
     fun switchTo(target: AppEnvironment): Boolean {
         val from = current
         if (from == target) return false
-        cleaners.cleanAll(from, target)
-        // 先写选择、再记「已生效」：两步之间进程被杀，下次启动 current=target 而记录仍是旧环境，会再清理一次，不会漏清。
-        check(preferences.edit().putString(KEY_ENVIRONMENT, target.key).commit()) { "保存环境选择失败" }
-        reconciler.markApplied(target)
+        // 开始前通知（App 关环境闸门），清理、提交新环境之后再通知结束（App 开闸门、在新环境重新注册设备与拉配置，APP-03b R1-05）
+        cleaners.switching(from, target) {
+            // 先写选择、再记「已生效」：两步之间进程被杀，下次启动 current=target 而记录仍是旧环境，会再清理一次，不会漏清。
+            check(preferences.edit().putString(KEY_ENVIRONMENT, target.key).commit()) { "保存环境选择失败" }
+            reconciler.markApplied(target)
+        }
         return true
     }
 

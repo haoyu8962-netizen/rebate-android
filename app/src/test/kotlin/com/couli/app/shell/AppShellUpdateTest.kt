@@ -224,6 +224,25 @@ class AppShellUpdateTest {
         composeRule.onNodeWithTag(FORCE_UPDATE_PAGE_TAG).assertIsDisplayed()
     }
 
+    /** F-ALL-06：强更页上叠的隐私重新同意弹窗里，协议链接带强更来源标记，能打开 Agreement，返回后回到强更页与弹窗。 */
+    @Test
+    fun agreementLinkInPrivacyPromptOverForceUpdateOpens() {
+        wire(consentedVersion = "0", store = cachedStore("1.1.0"), checker = { UpdateCheckOutcome.Failure })
+        showShell()
+        assertEquals(UpdateCheck.BELOW_MIN, routing.update.value)
+        composeRule.onNodeWithTag(LAUNCH_PRIVACY_TAG).assertIsDisplayed()
+
+        val decision = composeRule.runOnIdle { openAgreement(routing, AgreementLink.PRIVACY) }
+        composeRule.waitForIdle()
+
+        assertEquals(GuardKind.OPEN_READONLY, decision.kind)
+        composeRule.onNodeWithTag(ROUTE_PAGE_TAG_PREFIX + "Agreement").assertIsDisplayed()
+        composeRule.runOnIdle { navController.popBackStack() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag(FORCE_UPDATE_PAGE_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(LAUNCH_PRIVACY_TAG).assertIsDisplayed()
+    }
+
     @Test
     fun coldStartFailureWithCachedOkGivesRouterUnknownNotOk() {
         val answer = CompletableDeferred<UpdateCheckOutcome>()

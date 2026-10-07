@@ -52,6 +52,12 @@ enum class ErrorEffectKind(
     FIELD_ERROR("field_error"),
 
     /**
+     * 20001 且 data.fields 含 device_hash（设备注册的哈希无效，BR-ID-09 细则「设备标识的无效值」）：不向用户提示（textKey 为 null），
+     * 由设备注册重新读取设备标识再注册，不带原值重试（与 iOS 同名，lessons 名字追加）。
+     */
+    REREAD_DEVICE_HASH("reread_device_hash"),
+
+    /**
      * 20004：第三方授权凭证失效，由用户重新发起第三方授权（重新取授权尝试，不复用原尝试与原凭证），不自动重放（A-R2-08）。
      * [ErrorEffect.route] 为 Login（第三方登录：回到登录页）；为 null 时是二次验证（stepUp）：回到二次验证面板重新授权。
      */
@@ -138,6 +144,7 @@ object ErrorActionMapper {
     private const val REAL_NAME = "RealName"
     private const val PAYOUT_ACCOUNT = "PayoutAccount"
     private const val SEARCH = "Search"
+    private const val DEVICE_HASH_FIELD = "device_hash"
     private const val DEFAULT_RETRY_AFTER_MILLIS = 5_000L
     private const val MILLIS_PER_SECOND = 1_000L
     private const val SERVER_ERROR_MIN = 50_000
@@ -303,7 +310,12 @@ object ErrorActionMapper {
             }
 
             20001 -> {
-                context.effect(ErrorEffectKind.FIELD_ERROR).copy(fields = input.data.textList("fields"))
+                val fields = input.data.textList("fields")
+                if (fields?.contains(DEVICE_HASH_FIELD) == true) {
+                    context.effect(ErrorEffectKind.REREAD_DEVICE_HASH, key = null).copy(fields = fields)
+                } else {
+                    context.effect(ErrorEffectKind.FIELD_ERROR).copy(fields = fields)
+                }
             }
 
             20004 -> {

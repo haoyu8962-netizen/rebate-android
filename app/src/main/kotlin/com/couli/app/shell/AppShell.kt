@@ -33,6 +33,7 @@ import com.couli.app.update.ForceUpdatePage
 import com.couli.app.update.UpdatePromptDialog
 import com.couli.app.update.UpdateUi
 import com.couli.core.router.EntryGuard
+import com.couli.core.router.GuardDecision
 import com.couli.core.router.GuardKind
 import com.couli.core.router.GuardState
 import com.couli.core.router.PrivacyState
@@ -290,11 +291,20 @@ private fun onTabClick(
     routing.router.open(inAppRequest(tab.route))
 }
 
-private fun openAgreement(
+/**
+ * 隐私弹窗里的协议链接（只读打开 Agreement）。强更状态下（确需强更时强更页总在最下层，弹窗叠在它上面）带强更来源标记：Router 只放行
+ * 从强更页进入的 PrivacyCenter、Agreement、Login、DeleteAccount，不带标记会被重定向回强更页、协议打不开（F-ALL-06，03 §4.1）。
+ */
+internal fun openAgreement(
     routing: AppRouting,
     link: AgreementLink,
-) {
-    routing.router.open(RouteRequest(AGREEMENT_ROUTE, JsonObject(mapOf("type" to JsonPrimitive(link.type))), RouteSource.IN_APP))
+): GuardDecision {
+    val state = routing.guardState()
+    val fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN
+    return routing.router.open(
+        RouteRequest(AGREEMENT_ROUTE, JsonObject(mapOf("type" to JsonPrimitive(link.type))), RouteSource.IN_APP),
+        if (fromForceUpdate) state.copy(fromForceUpdatePage = true) else state,
+    )
 }
 
 internal fun inAppRequest(route: String): RouteRequest = RouteRequest(route, JsonObject(emptyMap()), RouteSource.IN_APP)

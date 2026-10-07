@@ -45,8 +45,14 @@ object CouliPreferenceNamespaces {
      */
     const val PRIVACY_DECISION = "couli_privacy"
 
+    /**
+     * 系统权限申请记录（APP-03b PermissionRequester：BR-ID-13 被拒时刻的节流记录、是否已申请过）。**故意不以 [PREFIX] 开头**：
+     * 它记的是本机用户对系统授权框的决定，与连哪个服务器无关，切换环境不清；「清除缓存」也不清（03 §4.3）。
+     */
+    const val PERMISSION = "couli_permission"
+
     /** 已登记、但切换环境时保留的 SharedPreferences（不在命名空间内）。 */
-    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION)
+    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION)
 
     init {
         registered.forEach { name ->

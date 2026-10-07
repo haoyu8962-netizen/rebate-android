@@ -22,6 +22,10 @@ object HeaderNames {
     const val RETRY_AFTER = "Retry-After"
     const val DATE = "Date"
 
+    /** 配置拉取的条件请求（03 §4.3，APP-03b）。 */
+    const val IF_NONE_MATCH = "If-None-Match"
+    const val ETAG = "ETag"
+
     /** 公共头里不含凭据与设备标识的部分：基本模式、撤回清理未完成时也带。 */
     val ANONYMOUS: List<String> = listOf(APP_ID, PLATFORM, APP_VERSION, BUILD, CHANNEL, TRACE_ID)
 
@@ -83,6 +87,15 @@ object LocalRejectReason {
 
     /** 登录响应 code=0，但 data.tokens 缺项（[ApiResult.SessionNotSaved]，与 iOS 同名）。 */
     const val INVALID_SESSION_TOKENS = "invalid_session_tokens"
+
+    /**
+     * 会话读取失败（安全存储此刻读不出，可能有会话；与 iOS 同名，编排者裁定 2026-10-07）：x-auth 不是 none 的接口本地拒绝，不能当成
+     * 没有会话匿名发出；不刷新、不清会话。读到「不存在」或内容损坏（按没有会话、尽力删除）不是这种情况。
+     */
+    const val SESSION_UNREADABLE = "session_unreadable"
+
+    /** 等待中的刷新失败、原请求不发出（[ApiResult.SessionEnded.reason]，三端统一名，编排者裁定 2026-10-07）。 */
+    const val SESSION_CLEARED = "session_cleared"
 }
 
 /**

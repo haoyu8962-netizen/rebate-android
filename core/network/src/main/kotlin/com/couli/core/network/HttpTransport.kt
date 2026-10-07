@@ -31,6 +31,11 @@ internal sealed interface Exchange {
         val headers: Map<String, String>,
     ) : Exchange
 
+    /** HTTP 304（带 If-None-Match 的读请求，内容未变，03 §4.3）：没有统一外壳。 */
+    data class NotModified(
+        val headers: Map<String, String>,
+    ) : Exchange
+
     /** 超时、断连，或响应不是统一外壳（网关错误页等）。 */
     data class Transport(
         val kind: String,
@@ -98,10 +103,7 @@ internal class HttpTransport(
         val call = client(timeoutMillis).newCall(builder.build())
         if (!inFlight.register(call, guard.epochs)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
         return try {
-            call.execute().use { response ->
-                val text = response.body.string()
-                parseEnvelope(text, response.headers.toMap()) ?: Exchange.Transport(KIND_NO_ENVELOPE, response.code)
-            }
+            call.execute().use(::toExchange)
         } catch (timeout: InterruptedIOException) {
             // 超时（含 callTimeout）：结果未知，调用方按「没有统一外壳」处理
             attempt.notSent() ?: Exchange.Transport(if (attempt.invalidated()) KIND_CANCELLED else KIND_TIMEOUT, null)
@@ -192,6 +194,13 @@ internal class HttpTransport(
 
     private fun okhttp3.Headers.toMap(): Map<String, String> = names().associateWith { get(it).orEmpty() }
 
+    /** 收到的响应 → 结果：304（带 If-None-Match 的读请求，03 §4.3）没有统一外壳；其余按统一外壳解包。 */
+    private fun toExchange(response: Response): Exchange {
+        if (response.code == HTTP_NOT_MODIFIED) return Exchange.NotModified(response.headers.toMap())
+        val text = response.body.string()
+        return parseEnvelope(text, response.headers.toMap()) ?: Exchange.Transport(KIND_NO_ENVELOPE, response.code)
+    }
+
     companion object {
         const val KIND_TIMEOUT = "timeout"
         const val KIND_DISCONNECT = "disconnect"
@@ -199,6 +208,7 @@ internal class HttpTransport(
 
         /** 写出之后被取消（撤回同意、切换环境）：结果未知，不自动重试。 */
         const val KIND_CANCELLED = "cancelled"
+        private const val HTTP_NOT_MODIFIED = 304
         private const val BYTE_MASK = 0xff
         private const val ASCII_LIMIT = 0x80
         private val JSON = "application/json; charset=utf-8".toMediaType()

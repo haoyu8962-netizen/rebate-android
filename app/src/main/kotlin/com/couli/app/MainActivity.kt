@@ -8,6 +8,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.couli.app.clientcore.ActivityPermissionHost
+import com.couli.app.clientcore.AppConfig
+import com.couli.app.clientcore.PermissionPromptHost
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
@@ -15,6 +18,8 @@ import com.couli.app.shell.AppShell
 import com.couli.app.update.AppUpdate
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.designsystem.CouliTheme
+import com.couli.core.privacy.AndroidPermissionRequester
+import com.couli.core.privacy.AndroidPermissionSystem
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -37,9 +42,25 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var update: AppUpdate
 
+    @Inject
+    lateinit var config: AppConfig
+
+    @Inject
+    lateinit var startup: AppStartup
+
+    @Inject
+    lateinit var permissionSystem: AndroidPermissionSystem
+
+    @Inject
+    lateinit var permissions: AndroidPermissionRequester
+
+    private val permissionHost = ActivityPermissionHost(this)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 系统权限申请只经 PermissionRequester（APP-03b，03 §4.9）；这里只提供当前 Activity 的系统授权框
+        permissionSystem.host = permissionHost
         // 重建（旋转、进程恢复）时不重放启动意图：它是一次性的。
         if (savedInstanceState == null) appRouting.onLaunchIntent(intent?.dataString, coldStart = true)
         // 原始 data 已交给 Router；Navigation 只能看到清洗后的 Intent（不带 data 与框架导航 extras，R1-01）
@@ -49,10 +70,8 @@ class MainActivity : ComponentActivity() {
             val trace by appRouting.lastTrace.collectAsStateWithLifecycle()
             LaunchedEffect(gateState) {
                 appRouting.drain()
-                // 环境闸门【重试】成功后：已同意当前版本则此时才初始化（闸门保证只一次）
-                privacy.initializeIfReady()
-                // 环境闸门【重试】成功后补冷启动的强更检查（APP-02c）
-                update.onCheckAllowedChanged()
+                // 环境闸门【重试】成功后：补隐私初始化、强更检查、配置冷启动、Tracker 定时上报（各自只生效一次，APP-03b R2-04）
+                startup.onEnvironmentGateChanged()
             }
             CouliTheme {
                 RootScreen(
@@ -67,6 +86,8 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                 )
+                // 系统权限的用途说明浮层与【去设置】引导（APP-03b）
+                PermissionPromptHost(prompts = permissions.prompts)
             }
         }
     }
@@ -74,8 +95,17 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // 回前台：距上次成功检查超过复查间隔才查（03 §4.1）；冷启动那次由 Application 发起
-        if (!skipNextForeground) update.onForeground()
+        if (!skipNextForeground) {
+            update.onForeground()
+            // 回前台带 If-None-Match 拉配置（APP-03b，03 §4.3）
+            config.onForeground()
+        }
         skipNextForeground = false
+    }
+
+    override fun onDestroy() {
+        if (permissionSystem.host === permissionHost) permissionSystem.host = null
+        super.onDestroy()
     }
 
     override fun onStop() {

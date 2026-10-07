@@ -19,10 +19,16 @@ complexity:
       - '**/core/config/src/test/kotlin/com/couli/core/update/UpdateGateVectorTest.kt'
       # APP-03a 的网络向量测试同样由 Codex 先写、本仓库不改
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
+      # APP-03b 的客户端内核向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
       - '**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt'
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
+      - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
+  NestedBlockDepth:
+    excludes:
+      - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 

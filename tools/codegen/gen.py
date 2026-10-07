@@ -16,6 +16,12 @@ APP-03a 加：openapi 每个 operation 的登记表 → ApiOperations（包 com.
 （分别归 APP-03、APP-03、APP-04/06）。API 形状见 APP-01-android 任务书 §5。
 APP-02c 加：商店对照表 specs/app-stores.yaml → AppStores（main）；openapi GET /v1/app-versions/check 的 200 响应示例
 → AppVersionCheckExample（debugFeatures，调试面板的版本检查假数据，Release 里没有）。
+APP-03b 加（包 com.couli.core.clientcore，三端测试接线约定）：
+  - specs/events.yaml → ClientEvents（事件构造函数，业务代码只能调用它们）与各枚举字段的类型；字段名命中
+    FORBIDDEN_EVENT_FIELD 即失败（03 §4.7：不为完整推广 URL、口令、推广位、relation_id、令牌等设字段）；
+  - specs/device-hash.vectors.json 的 invalid_hash_seeds → DeviceHashSeeds（BR-ID-09 无效设备哈希清单的种子）；
+  - openapi GET /v1/config 的 200 响应示例 data → 资源 default_config.json 与读取它的 BundledConfig（包内默认配置；
+    去掉示例里的非生产地址，TODO(N-21)：发布构建改为取生产配置当时的值生成）。
 只用 Python 3 标准库；输出不含时间戳，可重复。
 
 命名规则（防止契约里的名字遮蔽 Kotlin 标准类型或生成器自用名；tools/codegen/test_gen.py 用探针输入覆盖）：
@@ -59,7 +65,10 @@ RESOURCES = "core/generated/src/main/resources"
 # APP-03a：openapi 操作登记表（ApiOperations）。包名按三端测试接线约定（NetworkVectorTest：com.couli.core.generated）。
 API_PACKAGE = "com.couli.core.generated"
 API_KOTLIN = "core/generated/src/main/kotlin/" + API_PACKAGE.replace(".", "/")
-OWNED_DIRS = [MAIN_KOTLIN, DEBUG_KOTLIN, RESOURCES, API_KOTLIN]
+# APP-03b：Tracker 事件构造函数、设备哈希种子、包内默认配置（三端测试接线约定的包 com.couli.core.clientcore）。
+CLIENT_CORE_PACKAGE = "com.couli.core.clientcore"
+CLIENT_CORE_KOTLIN = "core/generated/src/main/kotlin/" + CLIENT_CORE_PACKAGE.replace(".", "/")
+OWNED_DIRS = [MAIN_KOTLIN, DEBUG_KOTLIN, RESOURCES, API_KOTLIN, CLIENT_CORE_KOTLIN]
 
 HEADER = "// 生成物，禁止手改；来源 contract.lock（tools/codegen/gen.py 由 contracts/snapshot/ 生成）\n"
 
@@ -87,6 +96,10 @@ GENERATOR_TYPE_NAMES = {
     "ApiOperation",
     "ApiOperations",
     "ApiMinVersionGate",
+    "ClientEvent",
+    "ClientEvents",
+    "DeviceHashSeeds",
+    "BundledConfig",
 }
 # Kotlin 默认导入（kotlin.*、kotlin.collections.* 等）里常见的类型名；同包声明会遮蔽它们。
 KOTLIN_STANDARD_TYPE_NAMES = {
@@ -1118,6 +1131,270 @@ def gen_api_operations(out_root: str):
     content = kotlin_file("\n".join(lines) + "\n", package=API_PACKAGE)
     return [write(out_root, f"{API_KOTLIN}/ApiOperations.kt", content)]
 
+# ---------------------------------------------------------------- Tracker 事件（APP-03b）
+
+# 03 §4.7、02 §12.6：事件字段不带完整推广 URL、口令、推广位或 relation_id 等渠道标识，也不带令牌、密钥与设备原始标识。
+# 字段名（按 _ 分段）命中任一即失败。
+FORBIDDEN_EVENT_FIELD = re.compile(
+    r"(^|_)(url|uri|href|tpwd|kouling|password|passwd|pwd|pid|adzone|adzone_id|position_id|relation_id|special_id|"
+    r"token|access_token|refresh_token|h5_token|secret|install_secret|sign|phone|mobile|id_card|idfa|idfv|oaid|odid|"
+    r"android_id|imei)($|_)"
+)
+EVENT_FIELD_TYPES = {"string": "kotlin.String", "integer": "kotlin.Long", "boolean": "kotlin.Boolean"}
+# 生成函数的公共参数（events.yaml common_fields 里由业务传入的部分；其余由 Tracker 补齐）。
+EVENT_CALLER_COMMON = ["page", "spm", "trace_id"]
+
+
+def check_event_field_name(name: str, where: str) -> None:
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+        raise GenError(f"{where} 字段名不是小写蛇形：{name!r}")
+    if FORBIDDEN_EVENT_FIELD.search(name):
+        raise GenError(f"{where} 字段名 {name!r} 命中禁用规则（03 §4.7：不为推广 URL、口令、推广位、relation_id、令牌、密钥、设备原始标识设字段）")
+
+
+def kparam(name: str) -> str:
+    camel = lower_camel(name)
+    return f"`{camel}`" if camel in KOTLIN_HARD_KEYWORDS else camel
+
+
+def gen_client_events(out_root: str):
+    data = load("specs/events.json")
+    common = data.get("common_fields")
+    events = data.get("events")
+    if not isinstance(common, dict) or not isinstance(events, dict) or not events:
+        raise GenError("events.json 缺 common_fields 或 events")
+    for name in common:
+        check_event_field_name(name, "events.json common_fields")
+    for name in EVENT_CALLER_COMMON:
+        if name not in common:
+            raise GenError(f"events.json common_fields 缺 {name}")
+    enum_types = {}
+    enum_blocks = []
+    functions = []
+    names = []
+    for event, spec in events.items():
+        where = f"events.json events.{event}"
+        if not isinstance(event, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", event):
+            raise GenError(f"{where} 事件名不是小写蛇形")
+        if not isinstance(spec, dict) or not isinstance(spec.get("fields"), dict):
+            raise GenError(f"{where} 缺 fields")
+        names.append(event)
+        required = []
+        optional = []
+        checks = []
+        puts = []
+        for field, fspec in spec["fields"].items():
+            fwhere = f"{where}.fields.{field}"
+            check_event_field_name(field, fwhere)
+            if field in common:
+                raise GenError(f"{fwhere} 与公共字段同名")
+            if not isinstance(fspec, dict):
+                raise GenError(f"{fwhere} 不是对象")
+            ftype = fspec.get("type")
+            param = kparam(field)
+            if ftype == "enum":
+                values = fspec.get("values")
+                if not isinstance(values, list) or not values or not all(isinstance(v, str) for v in values):
+                    raise GenError(f"{fwhere} 的 values 不是非空字符串列表")
+                type_name = upper_camel(event) + upper_camel(field)
+                folded = type_name.casefold()
+                if folded in RESERVED_TYPE_NAMES_FOLDED or folded in enum_types:
+                    raise GenError(f"{fwhere} 的类型名 {type_name} 与其他类型名冲突")
+                enum_types[folded] = type_name
+                entries = []
+                seen_entries = set()
+                for value in values:
+                    entry = entry_name(value)
+                    if entry.casefold() in seen_entries:
+                        raise GenError(f"{fwhere} 的取值 {value!r} 转成 entry 名后重复")
+                    seen_entries.add(entry.casefold())
+                    entries.append(f"    {entry}({kstr(value)}),")
+                enum_blocks.append(
+                    "\n".join(
+                        [
+                            f"/** events.yaml {event}.{field}：{comment_text(fspec.get('note', ''))} */",
+                            f"enum class {type_name}(",
+                            "    val raw: kotlin.String,",
+                            ") {",
+                            *entries,
+                            "}",
+                        ]
+                    )
+                )
+                ktype = type_name
+                value_expr = f"{param}.raw"
+            elif ftype in EVENT_FIELD_TYPES:
+                ktype = EVENT_FIELD_TYPES[ftype]
+                value_expr = param
+            else:
+                raise GenError(f"{fwhere} 的 type 不认识：{ftype!r}")
+            is_required = fspec.get("required") is True
+            required_when = fspec.get("required_when")
+            if required_when is not None:
+                if is_required or not isinstance(required_when, dict) or len(required_when) != 1:
+                    raise GenError(f"{fwhere} 的 required_when 只能是单个条件")
+                (cond_field, cond_value), = required_when.items()
+                cond = spec["fields"].get(cond_field)
+                if not isinstance(cond, dict) or cond.get("type") != "enum" or cond.get("required") is not True:
+                    raise GenError(f"{fwhere} 的 required_when 只能引用必填的枚举字段")
+                if cond_value not in cond.get("values", []):
+                    raise GenError(f"{fwhere} 的 required_when 取值 {cond_value!r} 不在 {cond_field} 的取值里")
+                cond_type = upper_camel(event) + upper_camel(cond_field)
+                checks.append(
+                    f"        require({kparam(cond_field)} != {cond_type}.{entry_name(cond_value)} || {param} != null) "
+                    f"{{ {kstr(f'{event}.{field} 在 {cond_field}={cond_value} 时必填')} }}"
+                )
+            if is_required:
+                required.append(f"        {param}: {ktype},")
+                puts.append(f"                put({kstr(field)}, kotlinx.serialization.json.JsonPrimitive({value_expr}))")
+            else:
+                optional.append(f"        {param}: {ktype}? = null,")
+                nullable_expr = value_expr.replace(f"{param}.raw", f"{param}?.raw")
+                puts.append(
+                    f"                {nullable_expr}?.let {{ put({kstr(field)}, kotlinx.serialization.json.JsonPrimitive(it)) }}"
+                    if ftype == "enum"
+                    else f"                {param}?.let {{ put({kstr(field)}, kotlinx.serialization.json.JsonPrimitive(it)) }}"
+                )
+        fn = [
+            f"    /** {event}：{comment_text(spec.get('description', ''))}（{comment_text(spec.get('source', ''))}） */",
+            f"    fun {lower_camel(event)}(",
+            "        page: kotlin.String,",
+            *required,
+            *optional,
+            "        spm: kotlin.String? = null,",
+            "        traceId: kotlin.String? = null,",
+            "    ): ClientEvent {",
+            *checks,
+            "        val fields =",
+            "            kotlin.collections.buildMap<kotlin.String, kotlinx.serialization.json.JsonPrimitive> {",
+            *puts,
+            "            }",
+            f"        return ClientEvent({kstr(event)}, page, spm, traceId, fields)",
+            "    }",
+        ]
+        functions.append("\n".join(fn))
+    lines = [
+        "/**",
+        " * 一个待采集的事件（specs/events.yaml）：事件名、业务传入的公共字段（page、spm、trace_id）与事件字段。",
+        " * 其余公共字段（event_id、client_at、session_id、device_id、user_id、platform、app_version、channel）由 Tracker 补齐。",
+        " * 构造函数不公开：业务代码只能调用 [ClientEvents] 的生成函数（03 §4.7、拍板第二批 TECH-21）。",
+        " */",
+        "class ClientEvent internal constructor(",
+        "    val name: kotlin.String,",
+        "    val page: kotlin.String,",
+        "    val spm: kotlin.String?,",
+        "    val traceId: kotlin.String?,",
+        "    val fields: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonPrimitive>,",
+        ")",
+        "",
+        "/** specs/events.yaml 的事件构造函数（events.yaml version " + comment_text(str(data.get("version"))) + "）。事件族（families）随各自任务补。 */",
+        "object ClientEvents {",
+        "    /** 全部事件名（契约顺序）。 */",
+        "    val names: kotlin.collections.List<kotlin.String> =",
+        "        listOf(" + ", ".join(kstr(n) for n in names) + ")",
+        "",
+        "\n\n".join(functions),
+        "}",
+        "",
+        "\n\n".join(enum_blocks),
+    ]
+    content = kotlin_file("\n".join(lines) + "\n", package=CLIENT_CORE_PACKAGE)
+    return [write(out_root, f"{CLIENT_CORE_KOTLIN}/ClientEvents.kt", content)]
+
+
+# ---------------------------------------------------------------- 设备哈希种子（APP-03b）
+
+
+def gen_device_hash_seeds(out_root: str):
+    data = load("specs/device-hash.vectors.json")
+    seeds = data.get("invalid_hash_seeds")
+    if not isinstance(seeds, list) or not seeds:
+        raise GenError("device-hash.vectors.json 缺 invalid_hash_seeds")
+    hashes = []
+    for index, item in enumerate(seeds):
+        value = item.get("device_hash") if isinstance(item, dict) else None
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise GenError(f"device-hash.vectors.json invalid_hash_seeds[{index}] 的 device_hash 不是 64 位小写十六进制")
+        hashes.append(value)
+    lines = [
+        "/**",
+        " * 无效设备哈希清单的种子（specs/device-hash.vectors.json invalid_hash_seeds；BR-ID-09 细则「设备标识的无效值」，",
+        " * 即配置 device.invalid_hashes 的初始值）。客户端在上报前排除命中的值（已知公共固定值等），不求哈希上报。",
+        " */",
+        "object DeviceHashSeeds {",
+        "    val invalidHashes: kotlin.collections.Set<kotlin.String> =",
+        "        setOf(",
+        *[f"            {kstr(h)}," for h in hashes],
+        "        )",
+        "}",
+    ]
+    return [write(out_root, f"{CLIENT_CORE_KOTLIN}/DeviceHashSeeds.kt", kotlin_file("\n".join(lines) + "\n", package=CLIENT_CORE_PACKAGE))]
+
+
+# ---------------------------------------------------------------- 包内默认配置（APP-03b）
+
+CONFIG_PATH = "/v1/config"
+# 示例里的地址类字段（示例域名不是生产地址，不进包）。
+BUNDLED_CONFIG_DROPPED_KEYS = ["h5_base_url", "share_domains", "kf", "external_hosts"]
+NON_PROD_ADDRESS = re.compile(r"(?i)https?://|\.test\b|\.invalid\b|\.example\b|\.local\b|example\.(com|net|org)\b")
+
+
+def string_leaves(node, path="$"):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from string_leaves(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from string_leaves(value, f"{path}[{index}]")
+    elif isinstance(node, str):
+        yield path, node
+
+
+def gen_bundled_config(out_root: str):
+    data = load("contracts/openapi.json")
+    try:
+        example = data["paths"][CONFIG_PATH]["get"]["responses"]["200"]["content"]["application/json"]["example"]
+    except (KeyError, TypeError) as error:
+        raise GenError(f"openapi.json 里没有 GET {CONFIG_PATH} 的 200 响应示例（{error}）") from error
+    body = example.get("data") if isinstance(example, dict) else None
+    if not isinstance(body, dict):
+        raise GenError(f"GET {CONFIG_PATH} 的响应示例没有 data 对象")
+    config = {key: value for key, value in body.items() if key not in BUNDLED_CONFIG_DROPPED_KEYS}
+    patterns = config.get("link_patterns")
+    if not isinstance(patterns, dict) or not isinstance(patterns.get("version"), str):
+        raise GenError(f"GET {CONFIG_PATH} 的响应示例缺 link_patterns.version")
+    # 示例规则里的主机是示例域名：包内快照只留版本，规则为空（TODO(N-21)：发布构建取生产链接形态表）
+    config["link_patterns"] = {"version": patterns["version"], "rules": []}
+    for path, text in string_leaves(config):
+        if NON_PROD_ADDRESS.search(text):
+            raise GenError(f"包内默认配置 {path} 含非生产地址：{text!r}")
+    claim_output(f"{RESOURCES}/default_config.json")
+    dest = os.path.join(out_root, RESOURCES, "default_config.json")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+    body_kt = """/**
+ * 包内默认配置（03 §4.3）：没有当前配置与 LKG 时使用。读取 Java 资源 default_config.json（由 openapi GET /v1/config 的
+ * 200 响应示例的 data 生成，去掉示例里的地址类字段，link_patterns 只留版本、规则为空）。
+ * TODO(N-21): 发布构建时按生产配置当时的值生成（features.search_status、link_patterns 等，03 §4.3），不用契约示例。
+ */
+object BundledConfig {
+    private const val RESOURCE = "default_config.json"
+
+    /** data 对象的 JSON 文本。 */
+    val dataJson: kotlin.String by lazy {
+        val stream =
+            BundledConfig::class.java.classLoader?.getResourceAsStream(RESOURCE)
+                ?: error("missing resource $RESOURCE")
+        stream.use { it.readBytes().decodeToString() }
+    }
+}
+"""
+    return [
+        write(out_root, f"{CLIENT_CORE_KOTLIN}/BundledConfig.kt", kotlin_file(body_kt, package=CLIENT_CORE_PACKAGE)),
+        f"{RESOURCES}/default_config.json",
+    ]
+
 
 # ---------------------------------------------------------------- 入口
 
@@ -1133,6 +1410,9 @@ def generate(out_root: str) -> list:
     written += gen_app_stores(out_root)
     written += gen_app_version_check_example(out_root)
     written += gen_api_operations(out_root)
+    written += gen_client_events(out_root)
+    written += gen_device_hash_seeds(out_root)
+    written += gen_bundled_config(out_root)
     return sorted(written)
 
 

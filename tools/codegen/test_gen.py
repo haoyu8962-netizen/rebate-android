@@ -260,6 +260,62 @@ class RouteSchemaTest(SnapshotCase):
             self.generate()
 
 
+class EventsSchemaTest(SnapshotCase):
+    """APP-03b：events.yaml → ClientEvents；字段名禁用规则命中即失败（03 §4.7）。"""
+
+    def edit_events(self, mutate):
+        path = os.path.join(self.snapshot, "specs", "events.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        mutate(data)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    def test_app_launch_constructor_is_generated(self):
+        self.generate()
+        source = self.read(f"{gen.CLIENT_CORE_KOTLIN}/ClientEvents.kt")
+        self.assertIn("fun appLaunch(", source)
+        self.assertIn("class ClientEvent internal constructor(", source)
+
+    def test_forbidden_field_names_fail(self):
+        for name in ("click_url", "tpwd", "relation_id", "pid", "access_token", "install_secret", "android_id", "phone"):
+            with self.subTest(field=name):
+                def mutate(data, field=name):
+                    data["events"]["click"]["fields"] = {field: {"type": "string", "required": True}}
+                self.edit_events(mutate)
+                with self.assertRaises(gen.GenError) as caught:
+                    self.generate()
+                self.assertIn("禁用规则", str(caught.exception))
+
+    def test_allowed_field_names_pass(self):
+        def mutate(data):
+            data["events"]["click"]["fields"] = {
+                "link_id": {"type": "string", "required": True},
+                "registered_domain": {"type": "string", "required": False},
+            }
+        self.edit_events(mutate)
+        self.generate()
+
+    def test_field_shadowing_common_field_fails(self):
+        def mutate(data):
+            data["events"]["click"]["fields"] = {"page": {"type": "string", "required": True}}
+        self.edit_events(mutate)
+        with self.assertRaises(gen.GenError):
+            self.generate()
+
+    def test_bundled_config_rejects_non_prod_address(self):
+        path = os.path.join(self.snapshot, "contracts", "openapi.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        example = data["paths"]["/v1/config"]["get"]["responses"]["200"]["content"]["application/json"]["example"]
+        example["data"]["help_links"] = {"x": {"route": "https://staging.couli.invalid/a"}}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        with self.assertRaises(gen.GenError) as caught:
+            self.generate()
+        self.assertIn("非生产地址", str(caught.exception))
+
+
 def find_jar(gradle_home: str, group: str, artifact: str, version: str | None):
     base = os.path.join(gradle_home, "caches", "modules-2", "files-2.1", group, artifact)
     versions = [version] if version else sorted(os.listdir(base)) if os.path.isdir(base) else []
