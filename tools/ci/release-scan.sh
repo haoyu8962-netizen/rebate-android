@@ -10,6 +10,10 @@
 #         - 快照 routes.json 里 debug_only 路由的名字
 #         - 组件目录页的唯一长标记（COMPONENT_CATALOG_MARKER，取自 app/src/debugFeatures 的 ComponentCatalog.kt；DS-01）
 #         - 版本检查调试假数据的唯一长标记（AppVersionCheckExample.MARKER，取自生成物 AppVersionCheckExample.kt；APP-02c）
+#         - 桥一致性页入口的唯一长标记（BRIDGE_CONFORMANCE_MARKER，取自 app/src/debugFeatures 的 DebugConformance.kt；APP-04）
+#         - 一致性页的假登录账号（conformance-harness）、adb 入口 extra（couli.conformance）、替换配置用的示例域（example.test）；
+#         - Debug 本机一致性测试源的地址 10.0.2.2 / 127.0.0.1 / http(s)://localhost（模拟器访问宿主机 loopback；APP-04「Debug 本机 loopback 例外」，只在 debug：
+#           --self-test 要求 debug 命中、staging 与 release 都不命中）
 #       另用 aapt2 检查不可调试（badging 没有 application-debuggable，清单没有 android:debuggable=true）。
 #   tools/ci/release-scan.sh --self-test [debug.apk] [release.apk] [staging.apk]
 #       证明扫描有牙齿：debug、staging 制品必须命中（含 DebugRoutes 标记；debug 还必须命中 debuggable），
@@ -32,6 +36,10 @@ ROUTES="$ROOT/contracts/snapshot/contracts/routes.json"
 DEBUG_ROUTES_KT="$ROOT/core/generated/src/debugFeatures/kotlin/com/couli/generated/DebugRoutes.kt"
 CATALOG_KT="$ROOT/app/src/debugFeatures/kotlin/com/couli/app/catalog/ComponentCatalog.kt"
 UPDATE_EXAMPLE_KT="$ROOT/core/generated/src/debugFeatures/kotlin/com/couli/generated/AppVersionCheckExample.kt"
+CONFORMANCE_KT="$ROOT/app/src/debugFeatures/kotlin/com/couli/app/web/DebugConformance.kt"
+# HTTP 回环（APP-04 三端共性第 2 条）：模拟器访问宿主机的 10.0.2.2、127.0.0.1、带 scheme 的 localhost（裸词 localhost 会命中 OkHttp
+# 自带的公共后缀表，不用它）
+LOOPBACK_PATTERN='10\.0\.2\.2|127\.0\.0\.1|https?://localhost'
 
 DEFAULT_DEBUG_APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
 DEFAULT_RELEASE_APK="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"
@@ -87,6 +95,7 @@ scan_apk() {
   [ -f "$DEBUG_ROUTES_KT" ] || fail "找不到生成物 $DEBUG_ROUTES_KT"
   [ -f "$CATALOG_KT" ] || fail "找不到组件目录页源码 $CATALOG_KT"
   [ -f "$UPDATE_EXAMPLE_KT" ] || fail "找不到生成物 $UPDATE_EXAMPLE_KT"
+  [ -f "$CONFORMANCE_KT" ] || fail "找不到一致性页入口源码 $CONFORMANCE_KT"
 
   local aapt2
   aapt2="$(resolve_aapt2)"
@@ -108,6 +117,10 @@ scan_apk() {
   update_marker="$(sed -n 's/^ *const val MARKER: kotlin\.String = "\([A-Za-z0-9_]*\)"$/\1/p' "$UPDATE_EXAMPLE_KT")" ||
     fail "读取版本检查假数据标记失败（$UPDATE_EXAMPLE_KT）"
   [ "${#update_marker}" -ge 24 ] || fail "AppVersionCheckExample.kt 里没有足够长的 MARKER 常量（读到 '${update_marker}'）"
+  local conformance_marker
+  conformance_marker="$(sed -n 's/^const val BRIDGE_CONFORMANCE_MARKER = "\([A-Za-z0-9_]*\)"$/\1/p' "$CONFORMANCE_KT")" ||
+    fail "读取一致性页标记失败（$CONFORMANCE_KT）"
+  [ "${#conformance_marker}" -ge 24 ] || fail "DebugConformance.kt 里没有足够长的 BRIDGE_CONFORMANCE_MARKER 常量（读到 '${conformance_marker}'）"
 
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/couli-scan.XXXXXX")" || fail "mktemp 失败"
@@ -139,8 +152,13 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker"; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test'; do
     case "$pattern" in
+      "$conformance_marker") label="bridge_conformance" ;;
+      "$LOOPBACK_PATTERN") label="loopback_origin" ;;
+      conformance-harness) label="test_login" ;;
+      'couli\.conformance') label="conformance_entry" ;;
+      'example\.test') label="config_override_sample" ;;
       "$marker") label="debug_routes_marker" ;;
       "$catalog_marker") label="component_catalog" ;;
       "$update_marker") label="update_check_example" ;;
@@ -233,6 +251,11 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "debug_panel"
   require_label "debug" "component_catalog"
   require_label "debug" "update_check_example"
+  require_label "debug" "bridge_conformance"
+  require_label "debug" "loopback_origin"
+  require_label "debug" "test_login"
+  require_label "debug" "conformance_entry"
+  require_label "debug" "config_override_sample"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -242,6 +265,11 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "debug_panel"
   require_label "staging" "component_catalog"
   require_label "staging" "update_check_example"
+  require_label "staging" "bridge_conformance"
+  require_label "staging" "test_login"
+  require_label "staging" "conformance_entry"
+  require_label "staging" "config_override_sample"
+  forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"
 

@@ -351,6 +351,29 @@ class ApiClientReviewR2Test {
         assertEquals(1, server.requestCount)
     }
 
+    /** APP-04 三端共性第 22 条：桥发出的请求带桥调用的有效性；页面已关闭（或换了文档）的调用一个字节都不发出。 */
+    @Test
+    fun bridgeValidity_closedPageSendsNothing() {
+        server.enqueue(envelope(0, "{}"))
+        val api = client()
+        val call = ApiCall("getMe", ownership = CallOwnership(api.inFlight.epochs()) { false })
+        assertEquals(ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED), api.execute(call))
+        assertEquals(0, server.requestCount)
+    }
+
+    /** 第 22 条：重试的等待期间页面关闭 / 导航，等待结束后不再续发。 */
+    @Test
+    fun bridgeValidity_pageClosedDuringRetryBackoffStopsTheResend() {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        server.enqueue(envelope(0, "{}"))
+        val fast = { operation: ApiOperation -> RetryPolicy.forOperation(operation).copy(timeoutMillis = 300) }
+        var pageOpen = true
+        val api = client(retryPolicy = fast, sleeper = { pageOpen = false })
+        val call = ApiCall("getMe", query = "order=a-1", ownership = CallOwnership(api.inFlight.epochs()) { pageOpen })
+        assertEquals(ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED), api.execute(call))
+        assertEquals(1, server.requestCount)
+    }
+
     // ---------- 「调用归属」：10002 重放、10402 重放、10401 校时重签 ----------
 
     @Test
@@ -389,7 +412,7 @@ class ApiClientReviewR2Test {
         val hooks =
             NetworkHooks(
                 onEffect = { effects += it },
-                reRegisterDevice = {
+                reRegisterDevice = { _, _ ->
                     tokens.switchToB()
                     true
                 },

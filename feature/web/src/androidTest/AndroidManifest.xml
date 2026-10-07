@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 仪器测试的宿主 Activity（只进测试 APK）：真实 WebView 挂在窗口上跑包内测试 HTML。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 本机 HTTPS 测试服务（LoopbackHttpsServer）：测试专用 CA 只对 127.0.0.1、localhost 生效 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:networkSecurityConfig="@xml/loopback_test_network_security">
+        <activity
+            android:name="com.couli.feature.web.WebTestHostActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.couli.feature.web.ComposeHostActivity"
+            android:exported="false" />
+    </application>
+</manifest>

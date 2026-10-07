@@ -46,6 +46,12 @@ class RoutingPrivacyHooks(
     val credentialsReadable: () -> Boolean = { true },
 )
 
+/** Router 的目标网页白名单（03 §4.4「WebPage」「ExternalPage」）。 */
+data class WebTargets(
+    val externalHosts: List<String> = emptyList(),
+    val bridgeOrigins: List<String> = emptyList(),
+)
+
 /** 最近一次入站请求的处理结果（调试首屏显示，冒烟截图用）。 */
 data class RoutingTrace(
     val source: String,
@@ -105,6 +111,12 @@ class AppRouting
 
         // TODO(APP-05): 接会话。
         val session = MutableStateFlow(SessionState.GUEST)
+
+        /**
+         * 目标网页白名单的来源（APP-04）：ExternalPage 的 external_hosts、WebPage 的可信 H5 源，生产由 AppModule 接到生效配置
+         * （current → LKG → 包内）。缺省空 = 全拒。
+         */
+        var webTargets: () -> WebTargets = { WebTargets() }
 
         private val mutableTrace = MutableStateFlow<RoutingTrace?>(null)
         val lastTrace: StateFlow<RoutingTrace?> = mutableTrace.asStateFlow()
@@ -202,10 +214,10 @@ class AppRouting
                 environmentSettled = environmentGate.isSettled,
                 appVersion = BuildConfig.VERSION_NAME,
                 isDebugBuild = BuildConfig.DEBUG_FEATURES,
-                // TODO(APP-05): 实名状态来自会话；TODO(APP-03): external_hosts、bridge_origins 来自 /v1/config（LKG）。
+                // TODO(APP-05): 实名状态来自会话。external_hosts、可信 H5 源来自生效配置（APP-04，[webTargets]）。
                 realnameVerified = false,
-                externalHosts = emptyList(),
-                bridgeOrigins = emptyList(),
+                externalHosts = webTargets().externalHosts,
+                bridgeOrigins = webTargets().bridgeOrigins,
             )
 
         /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */

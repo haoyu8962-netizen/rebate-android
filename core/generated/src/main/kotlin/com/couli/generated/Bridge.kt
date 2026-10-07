@@ -280,3 +280,10 @@ object BridgeErrors {
             90500 to "Native internal error; also for calls not executed under the force-update guard (03 §4.4)",
         )
 }
+
+/** ext.openApp 的目标（contracts/apps.json apps）：[all] 全部目标，[tradeOnly] 标 trade_only 的电商平台（90403，BR-ATTR-29）。 */
+object BridgeAppTargets {
+    val all: kotlin.collections.Set<kotlin.String> = linkedSetOf("taobao", "jd", "pdd")
+
+    val tradeOnly: kotlin.collections.Set<kotlin.String> = linkedSetOf("taobao", "jd", "pdd")
+}

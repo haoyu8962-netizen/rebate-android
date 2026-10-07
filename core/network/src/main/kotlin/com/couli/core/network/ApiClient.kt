@@ -208,7 +208,12 @@ class ApiClient(
         val generation: Long?,
         val session: SessionSnapshot?,
         val stillOwned: (() -> Boolean)? = null,
-    )
+        /** 调用方整次调用的截止时刻（[CallOwnership.deadlineNanos]，R2-01）；没有为 null。 */
+        val deadlineNanos: Long? = null,
+    ) {
+        /** 调用方自带的归属已失效：调用方核对为 false，或截止时间已到（R2-01）。 */
+        fun disowned(): Boolean = deadlineNanos?.let { System.nanoTime() - it >= 0 } == true || stillOwned?.invoke() == false
+    }
 
     /**
      * 一次逻辑调用：[owner] 归属；[holder] 占用未决键的调用标识；[pendingKey] 已登记的未决键（四个 step-up 操作）。
@@ -589,9 +594,10 @@ class ApiClient(
             }
             return Step.Done(ApiResult.Success(envelope.data, envelope.traceId, key, envelope.headers.header(HeaderNames.ETAG)))
         }
-        // 10401 校时重签：单独计数，不占业务重放预算（R3-06）；之后的 10002 等仍按首次处理
+        // 10401 校时重签：单独计数，不占业务重放预算（R3-06）；之后的 10002 等仍按首次处理。
+        // 校时也是恢复分支：已失效的调用（含桥调用有效性，APP-04 三端共性第 30 条）不校时、不重签
         val resignable = envelope.code == INVALID_SIGNATURE && !budget.resigned && operation.signed
-        if (resignable && correctClock(envelope.headers)) return Step.Resign
+        if (resignable && stale(logical) == null && correctClock(envelope.headers)) return Step.Resign
         val data = envelope.data as? JsonObject ?: JsonObject(emptyMap())
         var effect =
             ErrorActionMapper.map(
@@ -608,13 +614,24 @@ class ApiClient(
         val envelopeKind = PendingKeyStore.envelopeKind(envelope.code)
         // 处理响应这一刻的调用归属（R3-03）：由统一出口 [deliver] 据此拦下旧调用的会话类副作用
         val ownership = ownerReject(logical.owner, context())
+        // F-ALL-08（APP-03b 共性第 25 条）：有效世代的 10402——含重放里再次收到的——都立刻隔离这次请求所用的设备凭据；
+        // 与重新注册、重放预算分开：预算用完时原调用照常结束，之后的恢复只交给设备注册的退避链
+        if (envelope.code == DEVICE_REJECTED && ownership == null) {
+            val usedDeviceId = sent.request.request.headers[HeaderNames.DEVICE_ID]
+            hooks.quarantineDevice(usedDeviceId)
+            // 第 25 条补全（Android 第 1 轮评审 R1-02、共性第 34 条）：重放里再次收到 10402、重放预算已用完，这次调用不会再进入重新注册；
+            // 刚被隔离的凭据交给设备注册按清理世代登记一次恢复（唯一的退避注册链）。registerDevice 自己的 10402 由注册流程处理
+            val noReRegister = effect.kind != ErrorEffectKind.REGISTER_DEVICE_REPLAY
+            if (noReRegister && operation.operationId != REGISTER_DEVICE) hooks.recoverDevice(usedDeviceId)
+        }
         // 刷新类与清会话已按自己的结论核对过归属（刷新失败清的正是本世代，lessons 37）
         var resolved = false
         when (effect.kind) {
             ErrorEffectKind.REFRESH_REPLAY, ErrorEffectKind.REFRESH_ONLY -> {
                 // 10002 刷新后重放；10405 + 受支持版本 + deletion_only 只刷新（R1-09）。旧调用不发起刷新：refreshAfter 只为本次所用
-                // 令牌仍是当前令牌的会话刷新，会话已换代为 Stale，本世代被刷新失败清掉为 Failed
-                cancelled(logical)?.let {
+                // 令牌仍是当前令牌的会话刷新，会话已换代为 Stale，本世代被刷新失败清掉为 Failed。
+                // 进入刷新之前先查调用有效性（含桥调用的页面世代，APP-04 三端共性第 30 条）：已失效的迟到 10002 不发起刷新
+                stale(logical)?.let {
                     settle(logical, envelopeKind)
                     return Step.Done(it)
                 }
@@ -624,7 +641,7 @@ class ApiClient(
                     } else {
                         null
                     }
-                val refreshed = refreshAfter(sent.request.accessToken, request)
+                val refreshed = refreshAfter(sent.request.accessToken, request, logical.owner.deadlineNanos) { stale(logical) == null }
                 if (refreshed is RefreshResult.Replay && request != null) return Step.Replay
                 cancelled(logical)?.let {
                     settle(logical, envelopeKind)
@@ -655,7 +672,10 @@ class ApiClient(
             ErrorEffectKind.REGISTER_DEVICE_REPLAY -> {
                 // 10402：单飞重新注册后沿用原键重放 1 次（BR-ID-09）；registerDevice 自己收到 10402 不再递归注册
                 val usedDeviceId = sent.request.request.headers[HeaderNames.DEVICE_ID]
-                val reRegistered = operation.operationId != REGISTER_DEVICE && ownership == null && hooks.reRegisterDevice(usedDeviceId)
+                // 调用方的有效性与剩余预算一路传进设备注册（R3-03、共性第 58 条）：注册在取锁后、读标识前、写出前都核对
+                val caller = RecoveryCaller(logical.owner.deadlineNanos) { stale(logical) == null }
+                val reRegistered =
+                    operation.operationId != REGISTER_DEVICE && ownership == null && hooks.reRegisterDevice(usedDeviceId, caller)
                 if (reRegistered) return Step.Replay
                 effect = effect.copy(kind = ErrorEffectKind.GENERIC_ERROR, replay = ReplayMode.NONE, includeTrace6 = true)
             }
@@ -753,6 +773,14 @@ class ApiClient(
         ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED).takeIf { inFlight.epochs() != logical.owner.epochs }
 
     /**
+     * 进入任何恢复分支（10002 刷新、10401 校时、10402 重新注册）之前的有效性核对（APP-04 三端共性第 30 条）：隐私 / 环境世代变了，
+     * 或调用方自带的归属（桥调用的页面世代、设备注册的清理世代）已失效 → call_cancelled，不发起新的恢复链。
+     */
+    private fun stale(logical: Logical): ApiResult? =
+        cancelled(logical)
+            ?: ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED).takeIf { logical.owner.disowned() }
+
+    /**
      * 绑定调用归属（任何屏障等待之前，lessons 30）。调用方自带归属的（[ApiCall.ownership]，R2-02）按它的世代绑定：开始前世代已变的，
      * 第一次核对就是 call_cancelled，不会绑定到当前（切换后的）环境。
      */
@@ -769,7 +797,7 @@ class ApiClient(
                 is RawRead.Present -> read.snapshot.generation
                 is RawRead.Unreadable -> read.generation
             }
-        return CallOwner(epochs, generation, live(read), ownership?.stillOwned)
+        return CallOwner(epochs, generation, live(read), ownership?.stillOwned, ownership?.deadlineNanos)
     }
 
     /**
@@ -783,7 +811,7 @@ class ApiClient(
     ): String? {
         if (inFlight.epochs() != owner.epochs) return LocalRejectReason.CALL_CANCELLED
         // 调用方自带的归属（设备注册的清理世代、隐私状态，R2-02）已失效：结束，不再写出
-        if (owner.stillOwned?.invoke() == false) return LocalRejectReason.CALL_CANCELLED
+        if (owner.disowned()) return LocalRejectReason.CALL_CANCELLED
         // 凭据此刻不可读：这次发送不读不带任何凭据（放行判定只放匿名白名单），不会替别的账号发出
         if (!readable(state)) return null
         val read = rawRead(state)
@@ -867,6 +895,12 @@ class ApiClient(
             }
             val retriable = result is Exchange.Transport && result.kind in RETRIABLE_KINDS
             if (!retriable || attempt >= retry.autoRetries) return Sent.Done(result, request)
+            // 退避之前先核对调用归属（R2-01、共性第 45 条）：调用方截止时间已到、或退避结束时会超过截止时间，不再退避重试
+            val expiry = ownerReject(logical.owner, context()) ?: deadlineReject(logical.owner, retry.backoffMillis)
+            if (expiry != null) {
+                settle(logical, PendingKeyStore.NO_ENVELOPE)
+                return Sent.Rejected(expiry)
+            }
             attempt += 1
             sleeper(retry.backoffMillis)
             val state = context()
@@ -894,6 +928,16 @@ class ApiClient(
         }
     }
 
+    /** 再等 [waitMillis] 就会越过调用方的截止时间（R2-01）：返回 call_cancelled；没有截止时间或来得及为 null。 */
+    private fun deadlineReject(
+        owner: CallOwner,
+        waitMillis: Long,
+    ): String? {
+        val deadline = owner.deadlineNanos ?: return null
+        val remaining = deadline - System.nanoTime()
+        return LocalRejectReason.CALL_CANCELLED.takeIf { remaining <= TimeUnit.MILLISECONDS.toNanos(waitMillis) }
+    }
+
     /** 写出前的核对（网络拦截器，连接建立之后）：调用归属 → 环境基址 → 放行判定 → 凭据仍可读（A-R2-01）。 */
     private fun guardFor(
         owner: CallOwner,
@@ -901,7 +945,8 @@ class ApiClient(
         call: ApiCall,
         prepared: Prepared.Ready,
     ): SendGuard =
-        SendGuard(owner.epochs) {
+        // 调用方自带归属的（桥调用、设备注册）：写出之后归属失效（页面关闭、注册的最后一个调用方失效）同样取消在途请求（R3-03）
+        SendGuard(owner.epochs, owner.deadlineNanos, abandoned = owner.stillOwned?.let { { owner.disowned() } }) {
             val now = context()
             ownerReject(owner, now) ?: admission(operation, call, prepared, now)
         }
@@ -1172,6 +1217,18 @@ class ApiClient(
         }
     }
 
+    /** 共享刷新窗口里登记的调用方有效性（第 41 条）。 */
+    private val refreshCallers: MutableList<() -> Boolean> = java.util.Collections.synchronizedList(mutableListOf())
+
+    /**
+     * 还有有效的调用方在等这次刷新；登记过调用方而一个有效的都没有了，就停止续发（不再发送、校时重发、重新注册）。
+     * 没有登记调用方的刷新（强更恢复、受限会话升级等由 App 自己发起的屏障刷新）不受此限，照常由世代与会话核对。
+     */
+    private fun refreshHasLiveCaller(): Boolean {
+        val callers = synchronized(refreshCallers) { refreshCallers.toList() }
+        return callers.isEmpty() || callers.any { it() }
+    }
+
     /** 刷新失败时交给等待者的信号：暂时失败或被拒。只在刷新结算（[refreshLock] 下）时调用。 */
     private fun failureSignal(): WaitSignal = settlingTransient?.let(WaitSignal::Transient) ?: WaitSignal.Failed
 
@@ -1184,8 +1241,30 @@ class ApiClient(
     private fun refreshAfter(
         usedToken: String?,
         request: RefreshRequest?,
+        deadlineNanos: Long?,
+        stillValid: () -> Boolean,
     ): RefreshResult {
         val waiter = CompletableFuture<WaitSignal>()
+        // 登记为刷新窗口的调用方（APP-04 三端共性第 41 条）：刷新的每次发送、校时重发与重新注册之前都确认还有有效的调用方
+        refreshCallers += stillValid
+        try {
+            return awaitRefreshWindow(usedToken, request, waiter, deadlineNanos)
+        } finally {
+            // 等不到结论就离开的调用方（等待超时）：刷新若还在途，留一个「已失效」的占位，最后一个调用方离开后刷新同样停止续发
+            // （R2-02）；占位在本次刷新结算时清掉
+            synchronized(refreshCallers) {
+                refreshCallers -= stillValid
+                if (refreshCoordinator.refreshing) refreshCallers += ABANDONED_CALLER
+            }
+        }
+    }
+
+    private fun awaitRefreshWindow(
+        usedToken: String?,
+        request: RefreshRequest?,
+        waiter: CompletableFuture<WaitSignal>,
+        deadlineNanos: Long?,
+    ): RefreshResult {
         synchronized(refreshLock) {
             outcomeFor(usedToken)?.let { return it }
             val read = rawRead(context())
@@ -1205,13 +1284,19 @@ class ApiClient(
                 }
             }
         }
-        val signal = waitFor(waiter) ?: WaitSignal.Transient(HttpTransport.KIND_TIMEOUT)
+        // 调用方有截止时间的（桥调用，R2-01）：等刷新结论最多等到截止时刻
+        val signal = waitFor(waiter, refreshWaitMillis(deadlineNanos)) ?: WaitSignal.Transient(HttpTransport.KIND_TIMEOUT)
         request?.let { waiters.remove(it.id) }
         if (signal is WaitSignal.Transient) return RefreshResult.Transient(signal.kind)
         synchronized(refreshLock) {
             return outcomeFor(usedToken) ?: RefreshResult.Stale
         }
     }
+
+    /** 等刷新结论最多等多久：调用方有截止时间的（桥调用，R2-01）到截止时刻为止，且不超过 [REFRESH_WAIT_MILLIS]。 */
+    private fun refreshWaitMillis(deadlineNanos: Long?): Long =
+        deadlineNanos?.let { TimeUnit.NANOSECONDS.toMillis(it - System.nanoTime()).coerceIn(0L, REFRESH_WAIT_MILLIS) }
+            ?: REFRESH_WAIT_MILLIS
 
     /**
      * 本次所用令牌那一代的刷新结论（只在 [refreshLock] 下调用；结论按令牌记下，不随之后的窗口变化，lessons 36）：沿刷新链
@@ -1231,9 +1316,12 @@ class ApiClient(
     }
 
     @Suppress("SwallowedException", "TooGenericExceptionCaught") // 等待超时或被中断：按暂时失败处理（不放行旧令牌）
-    private fun waitFor(waiter: CompletableFuture<WaitSignal>): WaitSignal? =
+    private fun waitFor(
+        waiter: CompletableFuture<WaitSignal>,
+        waitMillis: Long = REFRESH_WAIT_MILLIS,
+    ): WaitSignal? =
         try {
-            waiter.get(REFRESH_WAIT_MILLIS, TimeUnit.MILLISECONDS)
+            waiter.get(waitMillis, TimeUnit.MILLISECONDS)
         } catch (error: Exception) {
             null
         }
@@ -1281,6 +1369,7 @@ class ApiClient(
             } catch (error: Exception) {
                 RefreshAttempt.Rejected
             }
+        synchronized(refreshCallers) { refreshCallers.removeAll { it === ABANDONED_CALLER } }
         synchronized(refreshLock) {
             val access = start?.accessToken
             // 被拒：记下结论供晚到的同一旧令牌复用；保存失败时已按「本世代被清」记下的不覆盖
@@ -1415,6 +1504,8 @@ class ApiClient(
         var prepared: Prepared.Ready
         var envelope: Exchange.Envelope
         while (true) {
+            // 每次发送（含校时重签、重新注册后的重放）之前确认仍有有效的调用方（第 41 条）；没有就停止续发
+            if (!refreshHasLiveCaller()) return RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
             // 每次发送（含校时重签）都重新组头、重新签名；刷新对象始终是入队时的快照 start
             prepared =
                 prepare(ApiCall(REFRESH, body = body), operation, context(), start) as? Prepared.Ready ?: return RefreshAttempt.Rejected
@@ -1434,9 +1525,10 @@ class ApiClient(
                 }
             // 刷新请求自身遇到可校时的 10401：校时后换 X-Timestamp、X-Nonce 重签 1 次，仍在同一个单飞窗口里（R3-07、BR-ID-09）
             // 10402：见 [reRegisterForRefresh]；重放仍是 10402 按暂时失败结束（不清会话）
+            // 校时、重新注册、登记恢复都是续发 / 恢复分支：入口先确认仍有有效的调用方（R2-02、共性第 46 条）
             val again =
                 when {
-                    envelope.code == INVALID_SIGNATURE && !resigned && correctClock(envelope.headers) -> {
+                    envelope.code == INVALID_SIGNATURE && !resigned && refreshHasLiveCaller() && correctClock(envelope.headers) -> {
                         resigned = true
                         true
                     }
@@ -1445,8 +1537,22 @@ class ApiClient(
                         false
                     }
 
+                    inFlight.epochs() == epochs &&
+                        hooks.quarantineDevice(
+                            prepared.request.headers[HeaderNames.DEVICE_ID],
+                        ) && reRegistered -> {
+                        // 第 25 条：重放里再次收到 10402 也先隔离这次所用的凭据（保护性动作，不看调用方），再登记一次恢复（唯一的
+                        // 退避注册链，R1-02）——恢复只在仍有有效调用方时登记（R2-02）；之后按暂时失败结束
+                        if (refreshHasLiveCaller()) hooks.recoverDevice(prepared.request.headers[HeaderNames.DEVICE_ID])
+                        return RefreshAttempt.Transient(LocalRejectReason.DEVICE_NOT_READY)
+                    }
+
                     reRegistered -> {
                         return RefreshAttempt.Transient(LocalRejectReason.DEVICE_NOT_READY)
+                    }
+
+                    !refreshHasLiveCaller() -> {
+                        return RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
                     }
 
                     else -> {
@@ -1491,10 +1597,12 @@ class ApiClient(
         epochs: CallEpochs,
     ): RefreshAttempt? =
         when {
-            inFlight.epochs() != epochs -> RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
+            inFlight.epochs() != epochs || !refreshHasLiveCaller() -> RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
 
+            // 调用方是整个共享刷新窗口：还有有效调用方（各自的截止时间与页面世代）就继续，最后一个失效即停（R3-03）
             !hooks.reRegisterDevice(
                 prepared.request.headers[HeaderNames.DEVICE_ID],
+                RecoveryCaller { refreshHasLiveCaller() },
             ) -> RefreshAttempt.Transient(LocalRejectReason.DEVICE_NOT_READY)
 
             else -> null
@@ -1506,9 +1614,15 @@ class ApiClient(
         epochs: CallEpochs,
         prepared: Prepared.Ready,
     ): SendGuard =
-        SendGuard(epochs) {
+        // 写出之后、回包之前最后一个有效的调用方到期或失效：取消这次刷新请求（共性第 54 条），不只是停止续发
+        SendGuard(epochs, abandoned = { !refreshHasLiveCaller() }) {
             val now = context()
             when {
+                // 实际写出前（连接已建立）再确认本刷新窗口仍有有效的调用方（R2-02、共性第 46 条）：等连接期间最后一个调用方失效，不写出
+                !refreshHasLiveCaller() -> {
+                    LocalRejectReason.CALL_CANCELLED
+                }
+
                 !readable(now) || !now.environmentSettled || baseUrl() != prepared.base -> {
                     LocalRejectReason.CALL_CANCELLED
                 }
@@ -1741,6 +1855,9 @@ class ApiClient(
         private const val MAX_SKEW_MILLIS = 300_000L
         private const val REFRESH_WAIT_MILLIS = 30_000L
         private const val OUTCOME_MEMORY = 8
+
+        /** 共享刷新窗口里已离开（等待超时）的调用方占位：永远无效（R2-02）。 */
+        private val ABANDONED_CALLER: () -> Boolean = { false }
 
         /** 2xxxx 非终结码的范围与 20903（已作废，终结）：未知键收到时统一为「暂时确认不了」（lessons 39）。 */
         private const val CLIENT_ERROR_MIN = 20000

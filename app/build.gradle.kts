@@ -77,6 +77,8 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     testImplementation(libs.junit4)
+    // 桥调用截止时间走真实 ApiClient 的链路测试（APP-04 R2-01）
+    testImplementation(libs.okhttp.mockwebserver)
     // RootScreen 阻断页的 Robolectric Compose 测试（R2-01）
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)

@@ -27,6 +27,10 @@ import com.couli.app.debug.DebugPanel
 import com.couli.app.debug.rememberEnvironmentSwitcher
 import com.couli.app.routing.RoutingTrace
 import com.couli.app.update.DebugUpdateSection
+import com.couli.app.web.BRIDGE_CONFORMANCE_MARKER
+import com.couli.app.web.CONFORMANCE_EXTRA
+import com.couli.app.web.CONFORMANCE_SOURCE
+import com.couli.app.web.DebugConformancePage
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
@@ -47,6 +51,15 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
     var catalog by rememberSaveable { mutableStateOf(requested) }
     catalog?.let { page ->
         ComponentCatalog(initial = page, onClose = { catalog = null })
+        return
+    }
+    // 桥一致性页（APP-04，03 §5.5）：从调试面板进入；adb 可用字符串 extra couli.conformance（任意值）直接打开
+    val conformanceMode = remember(context) { context.findActivity()?.intent?.getStringExtra(CONFORMANCE_EXTRA) }
+    // 本机测试源只在 debug（staging 为 null：不显示入口，extra 也不生效）
+    val conformanceSource = CONFORMANCE_SOURCE
+    var conformance by rememberSaveable { mutableStateOf(conformanceMode != null && conformanceSource != null) }
+    if (conformance && conformanceSource != null) {
+        DebugConformancePage(source = conformanceSource, mode = conformanceMode, onClose = { conformance = false })
         return
     }
 
@@ -79,6 +92,11 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
         if (panelOpen) {
             TextButton(onClick = { catalog = CatalogPage.INDEX }) {
                 Text(text = "Component catalog")
+            }
+            conformanceSource?.let { source ->
+                TextButton(onClick = { conformance = true }, modifier = Modifier.testTag(BRIDGE_CONFORMANCE_MARKER)) {
+                    Text(text = "Bridge conformance (${source.url})")
+                }
             }
             DebugPanel(
                 switcher = switcher,

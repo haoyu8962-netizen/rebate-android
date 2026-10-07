@@ -16,6 +16,7 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
 import com.couli.app.shell.AppShell
 import com.couli.app.update.AppUpdate
+import com.couli.app.web.AppWeb
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.designsystem.CouliTheme
 import com.couli.core.privacy.AndroidPermissionRequester
@@ -54,6 +55,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var permissions: AndroidPermissionRequester
 
+    @Inject
+    lateinit var web: AppWeb
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +86,7 @@ class MainActivity : ComponentActivity() {
                             routing = appRouting,
                             privacy = privacy,
                             update = update,
+                            web = web,
                             homeContent = { VariantRootContent(trace = trace) },
                         )
                     },

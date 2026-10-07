@@ -6,6 +6,7 @@
   core/generated/src/debugFeatures/kotlin/com/couli/generated/DebugRoutes.kt   （只被 debug、staging 加入）
   core/generated/src/debugFeatures/kotlin/com/couli/generated/AppVersionCheckExample.kt （同上；APP-02c 调试假数据）
   core/generated/src/main/resources/texts.default.json                         （快照原样复制）
+  core/generated/src/main/resources/bridge.schema.json                         （快照原样复制；APP-04 BridgeProtocol 按它校验参数）
 
 用法：
   python3 tools/codegen/gen.py           生成（覆盖上述文件，删除输出目录里多余的旧文件）
@@ -22,6 +23,8 @@ APP-03b 加（包 com.couli.core.clientcore，三端测试接线约定）：
   - specs/device-hash.vectors.json 的 invalid_hash_seeds → DeviceHashSeeds（BR-ID-09 无效设备哈希清单的种子）；
   - openapi GET /v1/config 的 200 响应示例 data → 资源 default_config.json 与读取它的 BundledConfig（包内默认配置；
     去掉示例里的非生产地址，TODO(N-21)：发布构建改为取生产配置当时的值生成）。
+APP-04 加：contracts/bridge.schema.json 原样复制为资源 bridge.schema.json（BridgeProtocol 按方法的 params schema 校验、
+按 levels / signed_paths / events / not_exposed 判定）；contracts/apps.json 的 trade_only 目标 → BridgeAppTargets（ext.openApp 的 90403）。
 只用 Python 3 标准库；输出不含时间戳，可重复。
 
 命名规则（防止契约里的名字遮蔽 Kotlin 标准类型或生成器自用名；tools/codegen/test_gen.py 用探针输入覆盖）：
@@ -88,6 +91,7 @@ GENERATOR_TYPE_NAMES = {
     "BridgeMethodSpec",
     "BridgeMethods",
     "BridgeErrors",
+    "BridgeAppTargets",
     "DefaultTexts",
     "DesignTokens",
     "AppStoreSpec",
@@ -758,7 +762,33 @@ def gen_bridge(out_root: str):
             raise GenError(f"桥错误码 {code!r} 不是十进制整数")
         lines.append(f"            {int(code)} to {kstr(str(meaning))},")
     lines += ["        )", "}"]
-    return [write(out_root, f"{MAIN_KOTLIN}/Bridge.kt", kotlin_file("\n".join(lines) + "\n"))]
+    # APP-04：ext.openApp 的 trade_only 目标（contracts/apps.json apps.*.trade_only，必填布尔）
+    apps = load("contracts/apps.json").get("apps")
+    if not isinstance(apps, dict) or not apps:
+        raise GenError("apps.json 没有 apps")
+    trade_only = []
+    for key, app in apps.items():
+        flag = app.get("trade_only") if isinstance(app, dict) else None
+        if not isinstance(flag, bool):
+            raise GenError(f"apps.json 的 {key} 缺布尔 trade_only")
+        if flag:
+            trade_only.append(key)
+    lines += [
+        "",
+        "/** ext.openApp 的目标（contracts/apps.json apps）：[all] 全部目标，[tradeOnly] 标 trade_only 的电商平台（90403，BR-ATTR-29）。 */",
+        "object BridgeAppTargets {",
+        "    val all: kotlin.collections.Set<kotlin.String> = linkedSetOf(" + ", ".join(kstr(k) for k in apps) + ")",
+        "",
+        "    val tradeOnly: kotlin.collections.Set<kotlin.String> = linkedSetOf(" + ", ".join(kstr(k) for k in trade_only) + ")",
+        "}",
+    ]
+    # 桥契约原样复制为 Java 资源（BridgeProtocol 读它；JVM 单测与 Robolectric 都能经 classloader 读到）
+    src = os.path.join(SNAPSHOT, "contracts", "bridge.schema.json")
+    claim_output(f"{RESOURCES}/bridge.schema.json")
+    dest = os.path.join(out_root, RESOURCES, "bridge.schema.json")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copyfile(src, dest)
+    return [write(out_root, f"{MAIN_KOTLIN}/Bridge.kt", kotlin_file("\n".join(lines) + "\n")), f"{RESOURCES}/bridge.schema.json"]
 
 
 # ---------------------------------------------------------------- 文案

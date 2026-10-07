@@ -78,12 +78,19 @@ class AndroidPermissionSystem(
         }
     }
 
-    /** 弹系统授权框（只在 [status] 为 not_asked / denied 之后调用）。 */
-    @Suppress("ReturnCount") // 不需要运行时权限、没有 Activity、没声明逐项返回
-    suspend fun request(type: String): String {
+    /**
+     * 弹系统授权框（只在 [status] 为 not_asked / denied 之后调用）。[isValid] 在真正调系统接口之前最后查一次（APP-04 三端共性
+     * 第 14 条）：调用已失效时不弹框、不记「申请过」，按 unavailable 结束。
+     */
+    @Suppress("ReturnCount") // 不需要运行时权限、没有 Activity、没声明、已失效逐项返回
+    suspend fun request(
+        type: String,
+        isValid: () -> Boolean = { true },
+    ): String {
         val permission = androidPermission(type) ?: return status(type)
         val activity = host ?: return PermissionStatusRaw.UNAVAILABLE
         if (!declared(permission)) return PermissionStatusRaw.UNAVAILABLE
+        if (!isValid()) return PermissionStatusRaw.UNAVAILABLE
         markAsked(permission)
         return when {
             activity.request(permission) -> PermissionStatusRaw.GRANTED
@@ -176,6 +183,10 @@ class AndroidPermissionRequester(
     @Volatile
     private var currentType: String = PermissionTypeRaw.PUSH
 
+    /** 正在处理的申请的有效性（桥调用带进来的；原生页面恒为有效）。只在 [mutex] 内换。 */
+    @Volatile
+    private var currentValid: () -> Boolean = { true }
+
     private val core =
         PermissionRequester(
             readFile = { preferences.getString(KEY_THROTTLE, null) },
@@ -187,29 +198,43 @@ class AndroidPermissionRequester(
             clock = clock,
             platform = ClientPlatformRaw.ANDROID,
             status = system::status,
-            showRationale = { purpose, _ -> prompts.show(PermissionPrompt.Rationale(purpose)) },
+            showRationale = { purpose, _ -> if (currentValid()) prompts.show(PermissionPrompt.Rationale(purpose)) },
             systemRequest = { type ->
                 try {
-                    system.request(type)
+                    // 用途说明之后、调系统接口之前再查一次（Android 的说明浮层与系统框同时出现，两处检查落在同一时刻）
+                    if (currentValid()) system.request(type, currentValid) else PermissionStatusRaw.UNAVAILABLE
                 } finally {
                     // 系统返回结果后收起用途说明
                     (prompts.current.value as? PermissionPrompt.Rationale)?.let(prompts::dismiss)
                 }
             },
             showSettingsGuide = { message, button ->
+                if (!currentValid()) return@PermissionRequester
                 val purpose = PermissionRequester.PURPOSE_KEYS[currentType] ?: return@PermissionRequester
                 prompts.show(PermissionPrompt.SettingsGuide(message, purpose, button))
             },
         )
 
-    /** 申请 [type]（push / photos）。[fromSettings]：用户从设置类入口主动点击，不受节流（BR-ID-13）。 */
+    /**
+     * 申请 [type]（push / photos）。[fromSettings]：用户从设置类入口主动点击，不受节流（BR-ID-13）。
+     * [isValid]：调用方的有效性（桥调用的隐私、环境、会话、页面世代；APP-04 三端共性第 14 条）。排队轮到时（出队）、用途说明之后、
+     * 调系统接口前各查一次；失效就不显示任何界面、不调系统接口、不记被拒，按 unavailable 结束。
+     */
     suspend fun request(
         type: String,
         fromSettings: Boolean = false,
+        isValid: () -> Boolean = { true },
     ): PermissionResult =
         mutex.withLock {
+            // 出队：排队期间已失效的申请不再处理
+            if (!isValid()) return@withLock PermissionResult(PermissionStatusRaw.UNAVAILABLE)
             currentType = type
-            core.request(type, fromSettings)
+            currentValid = isValid
+            try {
+                core.request(type, fromSettings)
+            } finally {
+                currentValid = { true }
+            }
         }
 
     /** 只读状态（perm.getPushStatus、隐私中心的系统权限一节），不触发申请。 */

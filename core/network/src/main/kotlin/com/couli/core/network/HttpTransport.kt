@@ -2,6 +2,9 @@ package com.couli.core.network
 
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.Json
@@ -54,6 +57,13 @@ internal sealed interface Exchange {
  */
 internal class SendGuard(
     val epochs: CallEpochs,
+    /** 调用方整次调用的截止时刻（[System.nanoTime] 口径，R2-01）；Call 的超时截到剩余预算，到期不再发出。 */
+    val deadlineNanos: Long? = null,
+    /**
+     * 写出之后仍在等回包时，这次发送是否已没有人要（共享刷新：最后一个有效的调用方已失效或到期，APP-04 共性第 54 条）。不为 null 时
+     * 发送期间每 [HttpTransport.ABANDON_POLL_MS] 毫秒核对一次，为 true 即取消这个 Call（按 cancelled 结束）。
+     */
+    val abandoned: (() -> Boolean)? = null,
     val admit: () -> String?,
 )
 
@@ -101,7 +111,12 @@ internal class HttpTransport(
             }
         builder.method(prepared.method, body)
         val call = client(timeoutMillis).newCall(builder.build())
+        // 与调用方的截止时间绑定（R2-01、共性第 45 条）：Call 的整体超时取「本次超时」与「剩余预算」中较小的，到期由 OkHttp
+        // 取消这个 Call（阻塞中的 execute 立即结束）；预算已用完的不发出
+        if (!bindDeadline(call, guard.deadlineNanos, timeoutMillis)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
         if (!inFlight.register(call, guard.epochs)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
+        // 没人要了就取消（共性第 54 条）：共享刷新的最后一个调用方到期或失效时，连同在途的刷新请求一起取消
+        val watch = guard.abandoned?.let { abandoned -> watchAbandoned(call, abandoned) }
         return try {
             call.execute().use(::toExchange)
         } catch (timeout: InterruptedIOException) {
@@ -111,9 +126,33 @@ internal class HttpTransport(
             // 断连、连接失败、被拦下的底层重发；写出之后被取消（撤回同意、切换环境）
             attempt.notSent() ?: Exchange.Transport(if (attempt.invalidated()) KIND_CANCELLED else KIND_DISCONNECT, null)
         } finally {
+            watch?.cancel(false)
             inFlight.unregister(call)
         }
     }
+
+    /** 把 Call 的整体超时截到调用方剩余预算（R2-01）；预算已用完返回 false（不发出）。没有截止时间的照常。 */
+    private fun bindDeadline(
+        call: okhttp3.Call,
+        deadlineNanos: Long?,
+        timeoutMillis: Long,
+    ): Boolean {
+        val remaining = deadlineNanos?.let { it - System.nanoTime() } ?: return true
+        if (remaining > 0) call.timeout().timeout(minOf(remaining, TimeUnit.MILLISECONDS.toNanos(timeoutMillis)), TimeUnit.NANOSECONDS)
+        return remaining > 0
+    }
+
+    /** 发送期间定时核对 [abandoned]，为 true 即取消 [call]（共性第 54 条）。 */
+    private fun watchAbandoned(
+        call: okhttp3.Call,
+        abandoned: () -> Boolean,
+    ): ScheduledFuture<*> =
+        ABANDON_WATCH.scheduleWithFixedDelay(
+            { if (abandoned()) call.cancel() },
+            ABANDON_POLL_MS,
+            ABANDON_POLL_MS,
+            TimeUnit.MILLISECONDS,
+        )
 
     @Synchronized
     private fun client(timeoutMillis: Long): OkHttpClient =
@@ -146,8 +185,11 @@ internal class HttpTransport(
         @Volatile
         var committed = false
 
-        /** 撤回同意或切换环境作废了这次发送（不看 Call.isCanceled：callTimeout 到期也会取消 Call）。 */
-        fun invalidated(): Boolean = inFlight.epochs() != guard.epochs
+        /** 撤回同意、切换环境或调用方截止时间已到，作废了这次发送（不看 Call.isCanceled：callTimeout 到期也会取消 Call）。 */
+        fun invalidated(): Boolean =
+            inFlight.epochs() != guard.epochs ||
+                guard.deadlineNanos?.let { System.nanoTime() - it >= 0 } == true ||
+                guard.abandoned?.invoke() == true
 
         /** 没写出就结束了：写出前核对不放行，或写出前被作废取消。已写出（或连接失败、超时）为 null。 */
         fun notSent(): Exchange.NotSent? =
@@ -208,6 +250,13 @@ internal class HttpTransport(
 
         /** 写出之后被取消（撤回同意、切换环境）：结果未知，不自动重试。 */
         const val KIND_CANCELLED = "cancelled"
+
+        /** [SendGuard.abandoned] 的核对间隔。 */
+        const val ABANDON_POLL_MS = 50L
+
+        /** 核对「是否已没人要」的后台线程（守护线程，只做核对与 Call.cancel）。 */
+        private val ABANDON_WATCH: ScheduledExecutorService =
+            Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "couli-abandon-watch").apply { isDaemon = true } }
         private const val HTTP_NOT_MODIFIED = 304
         private const val BYTE_MASK = 0xff
         private const val ASCII_LIMIT = 0x80

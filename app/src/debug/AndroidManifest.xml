@@ -6,7 +6,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <application>
+    <!-- 桥一致性页只在 debug：本机地址可用明文（见 network_security_config_debug.xml）；usesCleartextTraffic 仍为 false -->
+    <application android:networkSecurityConfig="@xml/network_security_config_debug">
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>bridge trusted test page</title></head>
+<body>
+<p>TrustedWebView instrumented test page (bundled in the test APK).</p>
+<script>
+  window.results = { done: false };
+  function call(method, params) {
+    var bridge = window.__REBATE_BRIDGE__;
+    var id = 'main-' + Math.random().toString(36).slice(2);
+    return bridge.postMessage({ v: 1, id: id, method: method, params: params || {} }).then(function (r) { return r.code; });
+  }
+  window.callForTest = function (method, params, key) {
+    call(method, params).then(function (code) { window.results[key] = code; });
+  };
+  window.addEventListener('message', function (event) {
+    if (!event.data) return;
+    if (event.data.type === 'subframe') window.results.subframe = event.data.outcome;
+    if (event.data.type === 'sameurl') { window.results.sameUrl = event.data.outcome; window.results.sameUrlHref = event.data.href; }
+    if (event.data.type === 'sandboxed') window.results.sandboxed = event.data.outcome;
+  });
+  window.addEventListener('load', function () {
+    window.results.present = !!window.__REBATE_BRIDGE__;
+    window.results.channelExposedAsBridge = typeof window.__REBATE_BRIDGE__ === 'object';
+    if (!window.results.present) { window.results.done = true; return; }
+    window.results.methods = window.__REBATE_BRIDGE__.methods.length;
+    call('app.getEnv').then(function (code) {
+      window.results.mainFrame = code;
+      return call('clipboard.write', { text: 'x' });
+    }).then(function (code) {
+      window.results.noGesture = code;
+      window.results.done = true;
+    });
+  });
+</script>
+<iframe id="child" srcdoc="<script>
+  (function () {
+    var bridge = window.__REBATE_BRIDGE__;
+    if (!bridge) { parent.postMessage({ type: 'subframe', outcome: 'absent' }, '*'); return; }
+    bridge.postMessage({ v: 1, id: 'sub-1', method: 'app.getEnv', params: {} }).then(function (r) {
+      parent.postMessage({ type: 'subframe', outcome: r.code }, '*');
+    });
+  })();
+</script>"></iframe>
+<!-- 同地址子框架：地址与主框架完全相同（测试替身按地址提供内容），证明原生不按 URL 判断主框架（APP-04 三端共性第 1 条） -->
+<iframe id="sameurl" src="https://h5.example.test/test"></iframe>
+<!-- sandbox 子框架（不透明 origin） -->
+<iframe id="sandboxed" sandbox="allow-scripts" srcdoc="<script>
+  (function () {
+    var bridge = window.__REBATE_BRIDGE__;
+    if (!bridge) { parent.postMessage({ type: 'sandboxed', outcome: 'absent' }, '*'); return; }
+    bridge.postMessage({ v: 1, id: 'sandbox-1', method: 'app.getEnv', params: {} }).then(function (r) {
+      parent.postMessage({ type: 'sandboxed', outcome: r.code }, '*');
+    });
+  })();
+</script>"></iframe>
+</body>
+</html>

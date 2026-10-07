@@ -1,5 +1,6 @@
 package com.couli.app.routing
 
+import android.annotation.SuppressLint
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import com.couli.core.router.GuardDecision
 import com.couli.core.router.RouteNames
 import com.couli.core.router.RouteNavigator
 import com.couli.core.router.RouteRequest
+import com.couli.feature.web.WebContainers
 import com.couli.generated.DefaultTexts
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -90,6 +92,12 @@ fun AppNavHost(
         routing.attach(navigator)
         onDispose { routing.detach(navigator) }
     }
+    // 路由一确定移出回退栈（清栈、被替换、强更替换导航栈）就同步拆除其中的 WebView 容器，不等退场过渡（APP-04 R2-03、共性第 47 条）
+    // 完整回退栈只有 currentBackStack 给得出（标了 RestrictTo(LIBRARY_GROUP)，只读 StateFlow）：visibleEntries 不含被盖住、仍在栈中的
+    // 条目，currentBackStackEntryFlow 只有栈顶，都不能用来判断「已移出回退栈」
+    @SuppressLint("RestrictedApi")
+    val backStack = navController.currentBackStack
+    WebContainers.FollowBackStack(backStack)
     NavHost(navController = navController, startDestination = HomeDestination) {
         composable<HomeDestination> { home() }
         composable<RouteDestination> { entry ->

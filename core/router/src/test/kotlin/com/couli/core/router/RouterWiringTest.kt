@@ -147,23 +147,34 @@ class RouterWiringTest {
     @Test
     fun externalAndWebPagesRequireAllowlistedTargets() {
         fun url(value: String) = JsonObject(mapOf("url" to JsonPrimitive(value)))
-        val external = RouteRequest("ExternalPage", url("https://shop.example.invalid/a"), RouteSource.IN_APP)
+        val deeplinkExternal = RouteRequest("ExternalPage", url("https://shop.example.invalid/a"), RouteSource.DEEPLINK)
         val web = RouteRequest("WebPage", url("https://h5.example.invalid/x"), RouteSource.IN_APP)
-        assertEquals("缺省空名单：全拒", GuardReason.TARGET_NOT_ALLOWED, EntryGuard.decide(external, state()).reason)
+        assertEquals("缺省空名单：深链全拒", GuardReason.TARGET_NOT_ALLOWED, EntryGuard.decide(deeplinkExternal, state()).reason)
         assertEquals(GuardReason.TARGET_NOT_ALLOWED, EntryGuard.decide(web, state()).reason)
         val allowed = state().copy(externalHosts = listOf("SHOP.example.invalid"), bridgeOrigins = listOf("https://h5.example.invalid"))
-        assertEquals(GuardKind.OPEN, EntryGuard.decide(external, allowed).kind)
-        assertEquals(GuardKind.OPEN, EntryGuard.decide(web, allowed).kind)
-        val pushExternal = external.copy(source = RouteSource.PUSH.raw)
-        assertEquals(GuardKind.REJECT, EntryGuard.decide(pushExternal, state()).kind)
-        val deeplinkExternal = external.copy(source = RouteSource.DEEPLINK.raw)
         assertEquals(GuardKind.OPEN, EntryGuard.decide(deeplinkExternal, allowed).kind)
-        val subdomain = RouteRequest("ExternalPage", url("https://evil.shop.example.invalid/"), RouteSource.IN_APP)
+        assertEquals(GuardKind.OPEN, EntryGuard.decide(web, allowed).kind)
+        val subdomain = RouteRequest("ExternalPage", url("https://evil.shop.example.invalid/"), RouteSource.DEEPLINK)
         assertEquals(GuardKind.REJECT, EntryGuard.decide(subdomain, allowed).kind)
-        val userInfo = RouteRequest("ExternalPage", url("https://shop.example.invalid@evil.invalid/"), RouteSource.IN_APP)
-        assertEquals(GuardKind.REJECT, EntryGuard.decide(userInfo, allowed).kind)
         val otherPort = RouteRequest("WebPage", url("https://h5.example.invalid:8443/x"), RouteSource.IN_APP)
         assertEquals(GuardKind.REJECT, EntryGuard.decide(otherPort, allowed).kind)
+    }
+
+    /**
+     * APP-04 三端共性第 10 条（03 §4.4、§5.1）：external_hosts 只约束从深链进入 ExternalPage。可信页内的跨域跳转（in_app）、推送等
+     * App 内来源不受这张表限制（进容器后走 ExternalWebView 自己的导航判定）；url 本身仍须是 https、有主机、不带 userinfo。
+     */
+    @Test
+    fun externalHostsOnlyConstrainDeepLinks() {
+        fun url(value: String) = JsonObject(mapOf("url" to JsonPrimitive(value)))
+        for (source in listOf(RouteSource.IN_APP, RouteSource.PUSH)) {
+            val external = RouteRequest("ExternalPage", url("https://shop.example.invalid/a"), source)
+            assertEquals("$source 不查 external_hosts", GuardKind.OPEN, EntryGuard.decide(external, state()).kind)
+            val userInfo = RouteRequest("ExternalPage", url("https://shop.example.invalid@evil.invalid/"), source)
+            assertEquals("$source userinfo 仍拒", GuardKind.REJECT, EntryGuard.decide(userInfo, state()).kind)
+            val plain = RouteRequest("ExternalPage", url("http://shop.example.invalid/a"), source)
+            assertEquals("$source 非 https 仍拒", GuardKind.REJECT, EntryGuard.decide(plain, state()).kind)
+        }
     }
 
     @Test

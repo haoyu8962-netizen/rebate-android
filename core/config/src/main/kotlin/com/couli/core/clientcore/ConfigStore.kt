@@ -120,6 +120,16 @@ class ConfigStore(
                 ?: ConfigResolver.searchStatusIn(bundledObject, platformKey)
         }
 
+    /**
+     * 各层的链接形态表，按优先级排列：当前 → 上一次成功 → 包内（JSON 文本，缺层不列）。调用方按自己的口径整表校验，取第一张有效的
+     * （APP-04 三端共性第 18 条：坏表整表回落，不逐条合并）。
+     */
+    fun linkPatternLayers(): List<String> =
+        synchronized(lock) {
+            listOfNotNull(current?.let(ConfigResolver::linkPatternsIn), lastPatterns, ConfigResolver.linkPatternsIn(bundledObject))
+                .map { it.toString() }
+        }
+
     /** 带版本的链接形态表：当前 → 上一次成功 → 包内（JSON 文本）。 */
     fun linkPatterns(): String? =
         synchronized(lock) {

@@ -5,6 +5,14 @@
     <!-- 只申请网络权限；其余系统权限按 specs/system-permissions 在各功能任务里登记（03 §4.9）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- 第三方页容器的【在浏览器打开】（APP-04）：只查有没有浏览器（CATEGORY_APP_BROWSER），没有就不显示这个出口。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_BROWSER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".CouliApplication"
         android:allowBackup="false"

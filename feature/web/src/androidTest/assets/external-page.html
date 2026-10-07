@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>external test page</title></head>
+<body>
+<p>ExternalWebView instrumented test page (bundled in the test APK).</p>
+<script>
+  window.results = {
+    bridge: typeof window.__REBATE_BRIDGE__,
+    channel: typeof window.__couliBridgeChannel
+  };
+  window.go = function (url) { window.location.href = url; };
+  window.frameTo = function (url) {
+    var frame = document.createElement('iframe');
+    frame.src = url;
+    document.body.appendChild(frame);
+  };
+</script>
+</body>
+</html>

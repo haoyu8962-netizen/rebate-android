@@ -71,7 +71,7 @@ internal object RouteResolution {
             // 所有来源都按 params schema 校验（编排者裁定；资金与实名四页先丢弃全部参数）
             !dropAll && !RouteParams.isValid(spec, context.request.params) -> reject(GuardReason.PARAMS_INVALID)
 
-            !TargetAllowlist.allows(spec.name, params, context.state) -> reject(GuardReason.TARGET_NOT_ALLOWED)
+            !TargetAllowlist.allows(spec.name, params, context.state, context.request.source) -> reject(GuardReason.TARGET_NOT_ALLOWED)
 
             else -> authCheck(context, spec) ?: openDecision(context, spec.name, params, dropped)
         }

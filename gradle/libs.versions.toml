@@ -27,6 +27,9 @@ roborazzi = "1.76.0"
 # 取能以 compileSdk 36 编译的最新稳定版：5.5.0 的 okhttp-android 要求 compileSdk 37（AAR 元数据 minCompileSdk）。
 okhttp = "5.4.0"
 detekt = "1.23.8"
+# WebView 传输层（APP-04 任务书 §0 允许的新依赖）：WebViewCompat.addWebMessageListener、addDocumentStartJavaScript、
+# 多配置文件（ExternalWebView 不共享 Cookie）。1.17.1 是能以 compileSdk 36 编译的最新稳定版（AAR minCompileSdk 33）。
+androidx-webkit = "1.17.1"
 
 # Android SDK 级别（不是依赖，放这里便于统一调整）
 android-compileSdk = "36"
@@ -66,6 +69,7 @@ androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core",
 roborazzi = { module = "io.github.takahirom.roborazzi:roborazzi", version.ref = "roborazzi" }
 roborazzi-compose = { module = "io.github.takahirom.roborazzi:roborazzi-compose", version.ref = "roborazzi" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "androidx-webkit" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
 
 # 静态检查工具（经 JavaExec 运行 CLI，不进 App 依赖）

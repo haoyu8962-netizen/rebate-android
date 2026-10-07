@@ -11,10 +11,14 @@ import com.couli.app.clientcore.trackerCanUpload
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
+import com.couli.app.routing.WebTargets
 import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
 import com.couli.app.update.variantUpdateStore
+import com.couli.app.web.AppWeb
+import com.couli.app.web.BridgeHostRegistry
+import com.couli.core.bridge.WebConfigReader
 import com.couli.core.clientcore.AtomicTextFile
 import com.couli.core.clientcore.BundledConfig
 import com.couli.core.clientcore.ClientPlatformRaw
@@ -95,6 +99,7 @@ object AppModule {
         tracker: Provider<TrackerQueue>,
         environmentGate: Provider<EnvironmentGate>,
         privacyGate: Provider<PrivacyGate>,
+        bridges: BridgeHostRegistry,
     ): EnvironmentSwitchCleanerRegistry =
         EnvironmentSwitchCleanerRegistry().apply {
             // 运行中切换环境（调试面板，在主线程）：开始时同步关环境闸门，并在任何等待之前同步作废网络世代、取消全部在途请求
@@ -117,9 +122,14 @@ object AppModule {
             )
             // 第一步：作废并取消全部在途请求（含还在等连接的），旧环境的请求不再发出、迟到的响应不再写入（APP-03a A-R2-01）
             register { _, _ -> inFlight.onEnvironmentSwitching() }
+            // APP-04：作废全部容器里在途的桥调用（旧环境的结果不交回页面）
+            register { _, _ -> bridges.invalidateAll() }
             // APP-03b：device_id、install_secret（内存与安全存储）、LKG 配置文件、埋点队列（带旧环境的 device_id）
             register { _, _ -> device.get().clear() }
             register { _, _ -> config.get().store.clearForEnvironmentSwitch() }
+            // 埋点队列（F-ALL-08 / APP-03b 共性第 23 条）：先直接删队列文件与 .tmp（不依赖队列对象能否建出来；覆盖安装导致的
+            // 冷启动环境对账也走这里），再清内存里的队列
+            register { _, _ -> trackerQueueFile(context).write(null) }
             register { _, _ -> tracker.get().clear() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
@@ -197,6 +207,10 @@ object AppModule {
                     onForceUpdate = { min -> main.post { update.on10405(min) } },
                     // 10402：单飞重新注册设备后沿用原键重放 1 次（BR-ID-09）
                     reRegisterDevice = device::reRegister,
+                    // 有效世代的 10402（含重放里的）一律先隔离所用凭据（F-ALL-08，共性第 25 条）
+                    quarantineDevice = device::quarantine,
+                    // 重放里再次 10402、预算用完：按清理世代登记一次恢复，启动唯一的退避注册链（R1-02）
+                    recoverDevice = device::recoverAfterRejection,
                 ),
             inFlight = inFlight,
         ).also { client ->
@@ -222,23 +236,30 @@ object AppModule {
      */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 各清理对象逐项注入
     fun credentialCleaners(
         @ApplicationContext context: Context,
         tokens: SessionTokens,
         inFlight: InFlightCalls,
         device: Provider<DeviceRegistry>,
         tracker: Provider<TrackerQueue>,
+        bridges: BridgeHostRegistry,
     ): CredentialCleanerRegistry =
         CredentialCleanerRegistry().apply {
             // 第一步：作废并取消全部在途请求（含还在等连接、TLS 的），已捕获凭据的请求不再写出（APP-03a A-R2-01）
             register(IN_FLIGHT_CALLS_CLEANER) { inFlight.onPrivacyRevoked() }
+            // APP-04：作废全部容器里在途的桥调用（撤回之后晚到的结果不交回页面）
+            register(BRIDGE_CALLS_CLEANER) { bridges.invalidateAll() }
             registerPlaceholderCredentialCleaners(context)
             // 真实的会话令牌（APP-03a，含 session_scope）；h5_token 仍由占位项按键删（APP-05）
             register(SESSION_TOKENS_CLEANER) { tokens.clear() }
             // 设备注册（APP-03b）：内存里的 device_id、install_secret 与安全存储（占位项按同名键也删一次）；作废在途注册
             register(DEVICE_REGISTRY_CLEANER) { device.get().clear() }
-            // 埋点队列（APP-03b，BR-ID-13）：撤回同意立即清空，之后不再采集、不再上报
-            register(TRACKER_QUEUE_CLEANER) { tracker.get().clear() }
+            // 埋点队列（APP-03b，BR-ID-13）：撤回同意立即清空，之后不再采集、不再上报；文件与 .tmp 先直接删（F-ALL-08）
+            register(TRACKER_QUEUE_CLEANER) {
+                trackerQueueFile(context).write(null)
+                tracker.get().clear()
+            }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -329,7 +350,7 @@ object AppModule {
         client: Provider<ApiClient>,
         inFlight: InFlightCalls,
     ): TrackerQueue {
-        val file = AtomicTextFile(File(context.filesDir, TRACKER_QUEUE_FILE))
+        val file = trackerQueueFile(context)
         val current = { clientPrivacyRaw(privacy.conclusion, privacy.credentialAccess.cleanupPending) }
         return TrackerQueue(
             readFile = file::read,
@@ -435,12 +456,14 @@ object AppModule {
     /** 路由接线（APP-02a）：启动意图排队、统一入口守卫、pending_action；隐私结论来自 [AppPrivacy]（APP-02b），强更来自 [AppUpdate]（APP-02c）。 */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 环境、隐私、强更与配置逐项注入
     fun appRouting(
         @ApplicationContext context: Context,
         environmentGate: EnvironmentGate,
         cleaners: EnvironmentSwitchCleanerRegistry,
         privacy: AppPrivacy,
         update: AppUpdate,
+        config: AppConfig,
     ): AppRouting =
         AppRouting(
             context,
@@ -453,6 +476,11 @@ object AppModule {
                 ),
             initialUpdate = update.routerUpdate,
         ).also { routing ->
+            // 目标网页白名单（APP-04）：external_hosts 与可信 H5 源取生效配置（current → LKG → 包内）
+            routing.webTargets = {
+                val data = config.store.snapshots.value.data
+                WebTargets(WebConfigReader.externalHosts(data), WebConfigReader.trustedOrigins(data).toList())
+            }
             // 强更结论每次变化：写入 Router 的 update 状态源（重排 pending_action 恢复并 drain；below_min 时守卫删待办，F-AND-07）
             update.onRouterUpdate { routing.update.value = it }
             // 切换环境：作废进行中的推送回查、清 pending_action（R1-03）
@@ -462,6 +490,29 @@ object AppModule {
             // 主动同意 = 完成一个前置步骤；明确仍不同意 = 丢弃本次待办（APP-02b R1-03、R1-04）
             privacy.onConsentEvent(routing::onConsentEvent)
         }
+
+    /** 活着的 BridgeHost（APP-04）：撤回同意、切换环境时作废在途桥调用。 */
+    @Provides
+    @Singleton
+    fun bridgeHostRegistry(): BridgeHostRegistry = BridgeHostRegistry()
+
+    /** 两类 WebView 容器与 JSBridge 的接线（APP-04）。 */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 各能力的来源逐项注入
+    fun appWeb(
+        @ApplicationContext context: Context,
+        config: AppConfig,
+        client: Provider<ApiClient>,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+        update: AppUpdate,
+        tracker: Provider<TrackerQueue>,
+        permissions: AndroidPermissionRequester,
+        bridges: BridgeHostRegistry,
+        tokens: SessionTokens,
+        inFlight: InFlightCalls,
+    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight)
 
     /**
      * 包内隐私政策版本（整数，BR-ID-12）。TODO(N-16): 法务定稿的包内协议副本与版本号；接入 /v1/config.legal 后
@@ -473,11 +524,26 @@ object AppModule {
     private const val DEVICE_REGISTRY_CLEANER = "device_registry"
     private const val TRACKER_QUEUE_CLEANER = "tracker_queue"
     private const val LKG_CONFIG_FILE = "couli_config/lkg.json"
-    private const val TRACKER_QUEUE_FILE = "couli_tracker/queue.json"
 
     /** 埋点的 session_id：本进程一次（03 §4.7 公共字段）。 */
     private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
     private const val IN_FLIGHT_CALLS_CLEANER = "in_flight_calls"
+    private const val BRIDGE_CALLS_CLEANER = "bridge_calls"
+}
+
+/**
+ * 埋点队列文件（filesDir，「清除缓存」不清）；写 null 同时删 .tmp（AtomicTextFile）。队列与两个清理入口共用同一个实例（读写互斥）。
+ */
+internal fun trackerQueueFile(context: Context): AtomicTextFile {
+    val path = File(context.filesDir, TrackerQueueFile.PATH)
+    return synchronized(TrackerQueueFile) { TrackerQueueFile.instances.getOrPut(path.absolutePath) { AtomicTextFile(path) } }
+}
+
+private object TrackerQueueFile {
+    const val PATH = "couli_tracker/queue.json"
+
+    /** 按绝对路径各一份（生产只有一个 filesDir；单测每个用例的 filesDir 不同）。 */
+    val instances = mutableMapOf<String, AtomicTextFile>()
 }
 
 /** Router 的强更进度 → 网络层的强更状态（检查中按未知）。 */

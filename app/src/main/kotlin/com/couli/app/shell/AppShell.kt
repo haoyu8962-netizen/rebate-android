@@ -32,6 +32,9 @@ import com.couli.app.update.ForceUpdateActions
 import com.couli.app.update.ForceUpdatePage
 import com.couli.app.update.UpdatePromptDialog
 import com.couli.app.update.UpdateUi
+import com.couli.app.web.AppWeb
+import com.couli.app.web.ExternalPageRoute
+import com.couli.app.web.WebPageRoute
 import com.couli.core.router.EntryGuard
 import com.couli.core.router.GuardDecision
 import com.couli.core.router.GuardKind
@@ -69,6 +72,7 @@ import kotlinx.serialization.json.jsonObject
  *
  * @param homeContent 首页 Tab 的根内容（首页 Feature 的占位；debug / staging 是调试首屏）。
  * @param update 强更检查（APP-02c）；为 null 时不显示强更页与更新提示（只测外壳的单测）。
+ * @param web 两类 WebView 容器与 JSBridge 的接线（APP-04）；为 null 时 WebPage / ExternalPage 是占位页（只测外壳的单测）。
  */
 @Composable
 fun AppShell(
@@ -77,6 +81,7 @@ fun AppShell(
     homeContent: @Composable () -> Unit,
     navController: NavHostController = rememberNavController(),
     update: AppUpdate? = null,
+    web: AppWeb? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -87,9 +92,16 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update) {
+        remember(homeContent, update, web) {
             RoutePageRegistry(
                 mapOf(
+                    // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
+                    RouteNames.WEB_PAGE to { page ->
+                        web?.let { WebPageRoute(page, it, routing) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
+                    RouteNames.EXTERNAL_PAGE to { page ->
+                        web?.let { ExternalPageRoute(page, it) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
                     ShellTab.HOME.route to { _ -> homeContent() },
                     RouteNames.FORCE_UPDATE to { _ -> update?.let { ForceUpdateRoute(it, routing) } },
                     // 强更状态下能到登录页只有一条路：从强更页进入（受限登录，BR-ID-01「受限会话」）

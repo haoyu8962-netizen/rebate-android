@@ -128,9 +128,10 @@ class RouterReviewFixesTest {
         val extra = RouteRequest("Wallet", params("phone" to "13800000000"), RouteSource.IN_APP)
         assertEquals(GuardKind.REQUIRE_CONSENT, router.open(extra).kind)
         assertNull("多余参数（schema additionalProperties=false）不登记", backend.read())
-        val external = RouteRequest("ExternalPage", params("url" to "https://evil.invalid/"), RouteSource.IN_APP)
+        // external_hosts 只约束深链（APP-04 三端共性第 10 条）
+        val external = RouteRequest("ExternalPage", params("url" to "https://evil.invalid/"), RouteSource.DEEPLINK)
         router.open(external)
-        assertNull("目标不在白名单不登记", backend.read())
+        assertNull("深链目标不在白名单不登记", backend.read())
         val good = RouteRequest("OrderDetail", params("order_id" to "o-1"), RouteSource.IN_APP)
         router.open(good)
         val saved = PendingActionStore(backend) { 0L }.load()

@@ -33,7 +33,7 @@ internal object PendingRegistration {
                 target.route !in Router.noPendingRoutes
         val spec = if (registrable) RouteCatalog.spec(target.route, includeDebugRoutes = state.isDebugBuild) else null
         val params = target.params
-        val clean = spec != null && RouteParams.isValid(spec, params) && TargetAllowlist.allows(spec.name, params, state)
+        val clean = spec != null && RouteParams.isValid(spec, params) && TargetAllowlist.allows(spec.name, params, state, request.source)
         return when {
             spec == null || !clean -> null
             params.isEmpty() -> JsonObject(mapOf(KEY_ROUTE to JsonPrimitive(spec.name)))

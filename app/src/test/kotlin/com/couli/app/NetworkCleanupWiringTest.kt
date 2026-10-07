@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.clientcore.AppConfig
+import com.couli.app.web.BridgeHostRegistry
 import com.couli.core.clientcore.ClientEvents
 import com.couli.core.clientcore.ClientPlatformRaw
 import com.couli.core.clientcore.ConfigReply
@@ -26,6 +27,7 @@ import com.couli.core.network.StoredDevice
 import com.couli.core.privacy.PrivacyGate
 import com.couli.core.privacy.RetryScheduler
 import com.couli.core.privacy.SharedPreferencesPrivacyStore
+import java.io.File
 import javax.inject.Provider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -120,7 +122,7 @@ class NetworkCleanupWiringTest {
     @Test
     fun withdrawalCleanupCancelsInFlightCallsFirst() {
         val inFlight = InFlightCalls()
-        val registry = AppModule.credentialCleaners(context, MemorySessionTokens(), inFlight, provider(device), provider(tracker))
+        val registry = withdrawalCleaners(inFlight)
         assertEquals("in_flight_calls", registry.registeredNames().first())
         val before = inFlight.epochs()
         registry.cleanAll()
@@ -129,7 +131,7 @@ class NetworkCleanupWiringTest {
 
     @Test
     fun withdrawalCleanupClearsDeviceCredentialsAndTrackerQueue() {
-        val registry = AppModule.credentialCleaners(context, MemorySessionTokens(), InFlightCalls(), provider(device), provider(tracker))
+        val registry = withdrawalCleaners(InFlightCalls())
         assertEquals("device-fixture", device.deviceId)
         assertTrue(tracker.track(ClientEvents.appLaunch(page = "Home")))
         assertEquals(1, tracker.queueSize)
@@ -162,8 +164,8 @@ class NetworkCleanupWiringTest {
         assertTrue("拉取成功写了 LKG", lkgFile.value != null)
         assertTrue(tracker.track(ClientEvents.appLaunch(page = "Home")))
 
-        // 第一项只作废在途请求；其余三项是 APP-03b 登记的
-        environmentCleaners(MemorySessionTokens(), InFlightCalls()).registered().take(4).forEach {
+        // 前两项只作废在途请求与桥调用（APP-04）；其后是 APP-03b 登记的设备、LKG、队列文件、内存队列
+        environmentCleaners(MemorySessionTokens(), InFlightCalls()).registered().take(6).forEach {
             it.clean(AppEnvironment.TEST, AppEnvironment.STAGING)
         }
 
@@ -225,6 +227,36 @@ class NetworkCleanupWiringTest {
         assertEquals("current", config.store.sourceRaw)
     }
 
+    /**
+     * F-ALL-08（APP-03b 共性第 23 条）：埋点队列的清理在环境清理注册表里（冷启动的环境对账与运行中切换共用），直接删磁盘上的
+     * 队列文件与残留的 .tmp，不依赖队列对象能否建出来（覆盖安装后冷启动对账时队列对象还没建，也要清掉旧环境的队列）。
+     */
+    @Test
+    fun fAll08_environmentCleanupDeletesQueueFileAndTempEvenWhenQueueCannotBeBuilt() {
+        val file = trackerQueueFile(context)
+        file.write("[\"old-environment-event\"]")
+        val dir = File(context.filesDir, "couli_tracker")
+        File(dir, "queue.json.tmp").writeText("half-written")
+        val registry =
+            AppModule.environmentSwitchCleaners(
+                context,
+                MemorySessionTokens(),
+                NoCipher,
+                InFlightCalls(),
+                provider(device),
+                provider(config),
+                Provider { error("queue not constructed during startup reconcile") },
+                provider(environmentGate),
+                provider(privacyGate),
+                BridgeHostRegistry(),
+            )
+
+        assertTrue(runCatching { registry.cleanAll(AppEnvironment.TEST, AppEnvironment.STAGING) }.isFailure)
+
+        assertNull("队列文件已删", file.read())
+        assertTrue("没有残留的 .tmp", !File(dir, "queue.json.tmp").exists() && !File(dir, "queue.json").exists())
+    }
+
     /** lessons 17：关环境闸门的同时（任何清理、等待之前）同步作废网络的环境世代。 */
     @Test
     fun lessons17_switchStartInvalidatesInFlightCallsBeforeAnyCleaner() {
@@ -247,6 +279,16 @@ class NetworkCleanupWiringTest {
         assertEquals(listOf("start gate=false epoch=1"), seen)
     }
 
+    private fun withdrawalCleaners(inFlight: InFlightCalls) =
+        AppModule.credentialCleaners(
+            context,
+            MemorySessionTokens(),
+            inFlight,
+            provider(device),
+            provider(tracker),
+            BridgeHostRegistry(),
+        )
+
     private fun environmentCleaners(
         tokens: MemorySessionTokens,
         inFlight: InFlightCalls,
@@ -260,5 +302,6 @@ class NetworkCleanupWiringTest {
         provider(tracker),
         provider(environmentGate),
         provider(privacyGate),
+        BridgeHostRegistry(),
     )
 }

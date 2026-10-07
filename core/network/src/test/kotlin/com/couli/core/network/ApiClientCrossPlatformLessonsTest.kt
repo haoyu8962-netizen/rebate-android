@@ -204,7 +204,7 @@ class ApiClientCrossPlatformLessonsTest {
         val tokens = MemorySessionTokens("access-A", "refresh-A", SessionScopeRaw.FULL, userId = "account-A")
         val hooks =
             NetworkHooks(
-                reRegisterDevice = {
+                reRegisterDevice = { _, _ ->
                     // 重新注册期间切换了账号
                     tokens.save("access-B", "refresh-B", SessionScopeRaw.FULL, "account-B")
                     true

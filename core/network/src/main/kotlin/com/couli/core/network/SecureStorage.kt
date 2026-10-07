@@ -300,6 +300,13 @@ interface SessionTokens {
     /** 会话世代（本进程内单调递增）。 */
     val generation: Long
 
+    /**
+     * 登录世代（本进程内单调递增）：每次登录（[save] / [saveIf]）与清除（[clear] / [clearIf]）加 1，刷新令牌（[replaceIf]）不变。
+     * 桥调用按它绑定会话（APP-04 三端共性第 15 条：同一账号退出后重新登录也是新的世代；刷新不算换会话）。缺省用 [generation]（保守：
+     * 刷新也算换代）。
+     */
+    val loginEpoch: Long get() = generation
+
     fun snapshot(): SessionSnapshot
 
     /** 登录：整组替换（[userId] 为登录响应的 data.user_id）。 */
@@ -348,6 +355,10 @@ class MemorySessionTokens(
     userId: String? = null,
 ) : SessionTokens {
     private var current = SessionSnapshot(accessToken, refreshToken, scope, userId, 0L)
+    private var epoch = 0L
+
+    override val loginEpoch: Long
+        @Synchronized get() = epoch
 
     override val accessToken: String? get() = snapshot().accessToken
     override val refreshToken: String? get() = snapshot().refreshToken
@@ -366,11 +377,13 @@ class MemorySessionTokens(
         userId: String?,
     ) {
         current = SessionSnapshot(accessToken, refreshToken, scope, userId, current.generation + 1)
+        epoch += 1
     }
 
     @Synchronized
     override fun clear() {
         current = SessionSnapshot(null, null, null, null, current.generation + 1)
+        epoch += 1
     }
 
     @Synchronized
@@ -419,6 +432,11 @@ class KeystoreSessionTokens(
 
     @Volatile
     private var counter = 0L
+
+    @Volatile
+    private var epoch = 0L
+
+    override val loginEpoch: Long get() = epoch
 
     override val accessToken: String? get() = snapshot().accessToken
     override val refreshToken: String? get() = snapshot().refreshToken
@@ -469,6 +487,7 @@ class KeystoreSessionTokens(
             )
         } finally {
             counter += 1
+            epoch += 1
         }
     }
 
@@ -478,6 +497,7 @@ class KeystoreSessionTokens(
                 storage.remove(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID)
             } finally {
                 counter += 1
+                epoch += 1
             }
         }
 

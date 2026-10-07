@@ -61,8 +61,19 @@ class NetworkHooks(
     /**
      * 10402：重新注册设备（APP-03b [DeviceRegistry.reRegister]）；参数为这次请求带的 X-Device-Id（被服务端拒绝的那个，单飞判重用）。
      * 成功返回 true 后沿用原键重放 1 次。registerDevice 自己收到 10402 不调它（不递归）。
+     * [RecoveryCaller]：触发这次重新注册的调用方的有效性与剩余预算（APP-04 Android 第 3 轮评审 R3-03、共性第 58 条）。
      */
-    val reRegisterDevice: (usedDeviceId: String?) -> Boolean = { false },
+    val reRegisterDevice: (usedDeviceId: String?, caller: RecoveryCaller) -> Boolean = { _, _ -> false },
+    /**
+     * 有效世代的 10402（含重放里再次收到的）：立刻把这次请求带的 device_id 从可读凭据里隔离（APP-03b 共性第 25 条，F-ALL-08）。
+     * 返回 true 方便在条件表达式里串联；隔离与否不影响返回值。
+     */
+    val quarantineDevice: (usedDeviceId: String?) -> Boolean = { true },
+    /**
+     * 有效世代的 10402 隔离了凭据、而这次调用不会再进入重新注册（重放里再次收到 10402，重放预算已用完）：按清理世代登记一次恢复，
+     * 由设备注册启动唯一的退避注册链（APP-03b 共性第 25 条的补全，Android APP-04 第 1 轮评审 R1-02）。
+     */
+    val recoverDevice: (usedDeviceId: String?) -> Unit = {},
 )
 
 /**
@@ -95,11 +106,37 @@ data class ApiCall(
 /**
  * 调用方的归属（APP-03b R2-02）：[epochs] 是调用方任务开始时绑定的隐私 / 环境世代；[stillOwned] 由调用方在自己的同步区里核对
  * 其余世代（如设备注册的清理世代）与隐私状态。ApiClient 在绑定调用归属、每次写出前（网络拦截器）都核对两者。
+ *
+ * [deadlineNanos]（APP-04 Android 第 2 轮评审 R2-01、共性第 45 条）：调用方整次调用的截止时刻（[System.nanoTime] 口径），没有为 null。
+ * 有它时每个 OkHttp Call 的超时都截到剩余预算（到期由 OkHttp 取消 Call），到期之后这次调用一律按失效处理：不再退避、不再重试、
+ * 不进入任何恢复分支，写出前的守卫同样拒绝。
  */
 class CallOwnership(
     val epochs: CallEpochs,
+    val deadlineNanos: Long? = null,
     val stillOwned: () -> Boolean,
-)
+) {
+    /** 截止时刻已过。 */
+    fun expired(now: Long = System.nanoTime()): Boolean = deadlineNanos != null && now - deadlineNanos >= 0
+}
+
+/**
+ * 触发设备重新注册（10402）的调用方（APP-04 Android 第 3 轮评审 R3-03、共性第 58 条）：[deadlineNanos] 是它整次调用的截止时刻
+ * （[System.nanoTime] 口径，没有为 null），[live] 由调用方核对自己仍有效（页面世代、共享刷新窗口里仍有有效调用方等）。
+ * 设备注册在取得注册锁后、读取设备标识前、注册请求实际写出前都核对；写出之后失效的，连同在途的注册请求一起取消。
+ */
+class RecoveryCaller(
+    val deadlineNanos: Long? = null,
+    private val live: () -> Boolean,
+) {
+    /** 截止时刻未到且调用方核对仍有效。 */
+    fun valid(now: Long = System.nanoTime()): Boolean = (deadlineNanos == null || now - deadlineNanos < 0) && live()
+
+    companion object {
+        /** 没有调用方约束（直接调用、测试）：始终有效、没有截止时间。 */
+        val UNBOUNDED = RecoveryCaller { true }
+    }
+}
 
 /** 调用结果。 */
 sealed interface ApiResult {
