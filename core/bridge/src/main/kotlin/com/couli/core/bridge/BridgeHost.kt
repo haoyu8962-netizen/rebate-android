@@ -19,8 +19,20 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /** 一个能力的结果：成功带 data（缺省 {}），失败带桥错误码。 */
 sealed interface BridgeOutcome {
+    /**
+     * [afterReply]：回复交出且在页面里执行完之后才执行的动作（APP-04 共性第 59、60 条）——会让本容器出栈、推页面或清栈的导航放这里。
+     * BridgeHost 等传输层确认回复脚本已执行，再复核这次调用所属的页面世代、会话与隐私，仍有效才执行；导航本身用执行那一刻的状态
+     * 重新过 Router 守卫。没有为 null。
+     */
     data class Ok(
         val data: JsonObject = JsonObject(emptyMap()),
+        val afterReply: (() -> Unit)? = null,
+        /**
+         * 这次调用自己引起了会话变化（auth.login 完成登录，APP-04 共性第 66 条）：结算时会话核对改为「此刻的登录世代仍是这次登录保存的
+         * [boundSessionEpoch]」，不再要求与调用开始时同一会话——本次登录引起的会话变化不把这次调用作废；其后又变了（登出、再换号）
+         * 照样不交回。没有为 null（按调用开始时的会话核对）。
+         */
+        val boundSessionEpoch: Long? = null,
     ) : BridgeOutcome
 
     data class Fail(
@@ -100,6 +112,19 @@ interface BridgeServices {
      * auth.login：打开登录页同样以桥来源经 Router（[update] 同 [navOpen]），不当成原生主动操作。
      */
     suspend fun login(update: String): BridgeOutcome
+
+    /**
+     * auth.login 的完整流程（APP-04 共性第 66 条，bridge.schema.json auth.login「resolves when the user finishes or leaves」）：
+     * 打开登录页，等用户完成登录（会话已保存，logged_in = true，结果带 [BridgeOutcome.Ok.boundSessionEpoch]）或取消、离开登录页
+     * （logged_in = false）之后再结算。[opening] 包住「打开登录页」这一步：只有这一步享有导航调用的作废豁免（共性第 43 条），等待期间
+     * 被作废（撤回同意、切换环境、页面换文档、容器销毁）照常取消。[validity] 是等待期间的归属核对（宿主世代与隐私；不含会话——
+     * 会话会因这次登录而变化）。缺省实现沿用 [login]（不等待），供还没接入登录流程的宿主与测试替身使用。
+     */
+    suspend fun login(
+        update: String,
+        validity: BridgeCallValidity,
+        opening: suspend (suspend () -> BridgeOutcome) -> BridgeOutcome,
+    ): BridgeOutcome = opening { login(update) }
 
     /** net.signedRequest：已过 signed_paths 白名单；原生签名代发。 */
     suspend fun signedRequest(
@@ -207,12 +232,18 @@ class BridgeHost(
      * 处理一条 H5 消息（主线程）。[reply] 收到标准响应体；信封里没有合法 id 时无法配对，不回。
      * [origin]、[isMainFrame] 来自传输层（不是页面自报），[userGesture] 来自原生记录的触摸。
      */
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "LongParameterList")
     fun handle(
         raw: String,
         origin: String,
         isMainFrame: Boolean,
         userGesture: Boolean,
+        /**
+         * 交出带 [BridgeOutcome.Ok.afterReply] 的回复：把回复交给页面，结束时调一次 settled——拿到「脚本已在页面里执行完」的确认为
+         * settled(true)，等待超时、没有执行、文档已换为 settled(false)（共性第 59、62 条：只有 true 才导航，false 放弃这次导航）。
+         * 缺省（单测、没有执行确认的宿主）= 交给 [reply] 后立即算执行完。
+         */
+        deliver: ((text: String, settled: (executed: Boolean) -> Unit) -> Unit)? = null,
         reply: (String) -> Unit,
     ) {
         val envelope = BridgeProtocol.parseStructure(raw)
@@ -226,7 +257,7 @@ class BridgeHost(
         if (!decision.allow) return reject(id, method, decision.errorCode ?: BridgeCode.NOT_ALLOWED, reply)
         val contract = BridgeContract.methods.getValue(method)
         if (contract.sinceAndroid == null || method !in IMPLEMENTED) return reject(id, method, BridgeCode.NOT_SUPPORTED, reply)
-        start(id, contract, params, state, reply)
+        start(id, contract, params, state, Reply(reply, deliver))
     }
 
     /**
@@ -310,8 +341,9 @@ class BridgeHost(
         contract: BridgeMethodContract,
         params: JsonObject,
         state: BridgeCallerState,
-        reply: (String) -> Unit,
+        replies: Reply,
     ) {
+        val reply = replies.reply
         var startGeneration = 0L
         val job =
             calls.launch(start = CoroutineStart.LAZY) {
@@ -320,7 +352,7 @@ class BridgeHost(
                     outcome = run(contract, params, state, startGeneration)
                 } finally {
                     // 被取消（invalidate）的调用 outcome 为 null：同样回 90500，不让页面一直等
-                    settle(id, coroutineContext.job, Owner(contract.name, startGeneration, state), outcome, reply)
+                    settle(id, coroutineContext.job, Owner(contract.name, startGeneration, state), outcome, replies)
                 }
             }
         val accepted =
@@ -347,21 +379,92 @@ class BridgeHost(
         self: Job,
         owner: Owner,
         outcome: BridgeOutcome?,
-        reply: (String) -> Unit,
+        replies: Reply,
     ) {
+        val reply = replies.reply
         val owned =
             synchronized(lock) {
                 // 只移除自己的登记：invalidate 之后同一个 id 可能已被新的调用占用
                 val mine = inFlight[id] === self
                 if (mine) inFlight.remove(id)
                 mine && (generation == owner.generation || self === exempt)
-            } && caller().sameSession(owner.state)
+            } && sessionHolds(owner, outcome)
+        val after = (outcome as? BridgeOutcome.Ok)?.afterReply
         when {
-            !owned || outcome == null -> reply(BridgeProtocol.response(id, BridgeCode.NATIVE_ERROR))
-            outcome is BridgeOutcome.Ok -> reply(BridgeProtocol.response(id, BridgeCode.OK, outcome.data))
-            outcome is BridgeOutcome.Fail -> reject(id, owner.method, outcome.code, reply)
+            !owned || outcome == null -> {
+                reply(BridgeProtocol.response(id, BridgeCode.NATIVE_ERROR))
+            }
+
+            outcome is BridgeOutcome.Ok && after != null -> {
+                replyThenNavigate(
+                    BridgeProtocol.response(id, BridgeCode.OK, outcome.data),
+                    owner,
+                    after,
+                    replies,
+                )
+            }
+
+            outcome is BridgeOutcome.Ok -> {
+                reply(BridgeProtocol.response(id, BridgeCode.OK, outcome.data))
+            }
+
+            outcome is BridgeOutcome.Fail -> {
+                reject(id, owner.method, outcome.code, reply)
+            }
         }
     }
+
+    /**
+     * 结算时的会话核对：通常要求仍是调用开始时的会话；结果自带 [BridgeOutcome.Ok.boundSessionEpoch]（这次调用自己完成了登录）时，
+     * 要求此刻的登录世代仍是那次登录保存的世代（共性第 66 条）。
+     */
+    private fun sessionHolds(
+        owner: Owner,
+        outcome: BridgeOutcome?,
+    ): Boolean {
+        val bound = (outcome as? BridgeOutcome.Ok)?.boundSessionEpoch
+        val now = caller()
+        return if (bound != null) now.sessionEpoch == bound && now.privacy == owner.state.privacy else now.sameSession(owner.state)
+    }
+
+    /**
+     * 共性第 59、60、62 条：先交出回复，等它在页面里执行完，再复核这次调用所属的宿主世代（撤回同意、切换环境、页面换文档、容器出栈都会
+     * 推进它）、会话与隐私，仍有效才执行导航；导航本身由 [after] 用当时的状态重新过 Router 守卫。结束只算一次：传输层报「没有执行」
+     * （回复脚本执行超时等）时放弃这次导航，不当作执行成功。
+     */
+    private fun replyThenNavigate(
+        text: String,
+        owner: Owner,
+        after: () -> Unit,
+        replies: Reply,
+    ) {
+        val done =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        val settled = { executed: Boolean ->
+            if (done.compareAndSet(false, true) && executed && stillCurrent(owner)) after()
+        }
+        val channel = replies.deliver
+        if (channel == null) {
+            replies.reply(text)
+            settled(true)
+        } else {
+            channel(text, settled)
+        }
+    }
+
+    /** 回复执行完之后的复核：宿主世代没变（没有被作废）、会话与隐私仍是调用开始时的。 */
+    private fun stillCurrent(owner: Owner): Boolean {
+        val sameGeneration = synchronized(lock) { generation == owner.generation }
+        val now = caller()
+        return sameGeneration && now.privacy == owner.state.privacy && now.sameSession(owner.state)
+    }
+
+    /** 一次调用的回复通道：[reply] 交出回复；[deliver] 交出并在结束时报告是否已在页面里执行完（共性第 59、62 条），没有为 null。 */
+    private class Reply(
+        val reply: (String) -> Unit,
+        val deliver: ((String, (Boolean) -> Unit) -> Unit)?,
+    )
 
     /** 一次调用的归属：方法名、开始时的宿主世代与调用方状态。 */
     private class Owner(
@@ -421,6 +524,16 @@ class BridgeHost(
         if (!stillOwned(startGeneration, state)) return BridgeOutcome.Fail(BridgeCode.NATIVE_ERROR)
         val guard = updateGuard(contract.name, update, state.fromForceUpdatePage)
         if (guard != null) return BridgeOutcome.Fail(guard)
+        if (contract.name == AUTH_LOGIN) {
+            // auth.login 等到登录页结束才结算（共性第 66 条）：等待期间核对宿主世代、隐私与截止时间，不核对会话（会因这次登录而变化）
+            val waiting =
+                BridgeCallValidity {
+                    validity.deadlineNanos().let { it == null || System.nanoTime() - it < 0 } &&
+                        synchronized(lock) { generation == startGeneration } &&
+                        caller().privacy == state.privacy
+                }
+            return services.login(update, waiting) { step -> navigation(self, step) }
+        }
         return dispatch(contract.name, params, update, validity, self)
     }
 
@@ -474,10 +587,6 @@ class BridgeHost(
                 services.h5Token(readOnly = readOnlyMode, validity = validity)
             }
 
-            "auth.login" -> {
-                navigation(self) { services.login(update) }
-            }
-
             "net.signedRequest" -> {
                 services.signedRequest(params.text("method").orEmpty(), params.text("path").orEmpty(), params["body"], validity)
             }
@@ -504,7 +613,8 @@ class BridgeHost(
             }
 
             "nav.close" -> {
-                navigation(self) { ok { ui.close() } }
+                // 关闭本容器：回复在页面里执行完、复核归属之后才关闭（共性第 59、60 条）
+                navigation(self) { BridgeOutcome.Ok(afterReply = ui::close) }
             }
 
             "clipboard.write" -> {
@@ -544,6 +654,7 @@ class BridgeHost(
 
     companion object {
         private const val ASYNC = "async"
+        private const val AUTH_LOGIN = "auth.login"
 
         /** 本任务实现的方法（APP-04 任务书 §2.2）。 */
         val IMPLEMENTED: Set<String> =

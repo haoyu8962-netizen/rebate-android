@@ -8,6 +8,7 @@ import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
 import com.couli.app.clientcore.pendingEventsSink
 import com.couli.app.clientcore.trackerCanUpload
+import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
@@ -61,6 +62,7 @@ import com.couli.core.privacy.registerProductionInitSteps
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.update.UpdateGate
+import com.couli.feature.login.LegalVersions
 import com.couli.generated.ClientPlatform
 import com.couli.generated.InstallChannel
 import dagger.Module
@@ -173,6 +175,7 @@ object AppModule {
         cipher: SecretCipher,
         inFlight: InFlightCalls,
         device: DeviceRegistry,
+        login: Provider<AppLogin>,
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -205,14 +208,21 @@ object AppModule {
             hooks =
                 NetworkHooks(
                     onForceUpdate = { min -> main.post { update.on10405(min) } },
+                    // 刷新失败清会话（clear_session_login / clear_session_stay_force_update）：同步守卫的会话状态，普通状态下跳登录
+                    // （LoginSessionExpired，APP-05a）
+                    onEffect = { effect -> main.post { login.get().onNetworkEffect(effect) } },
                     // 10402：单飞重新注册设备后沿用原键重放 1 次（BR-ID-09）
                     reRegisterDevice = device::reRegister,
                     // 有效世代的 10402（含重放里的）一律先隔离所用凭据（F-ALL-08，共性第 25 条）
                     quarantineDevice = device::quarantine,
                     // 重放里再次 10402、预算用完：按清理世代登记一次恢复，启动唯一的退避注册链（R1-02）
                     recoverDevice = device::recoverAfterRejection,
+                    // 会话保存、刷新、清理完成（APP-05a 共性第 14 条）：带世代切到主线程，同步 Router（受限转 full 时经守卫恢复待办）
+                    onSessionStored = { generation -> main.post { login.get().onSessionStored(generation) } },
                 ),
             inFlight = inFlight,
+            // debug / staging：Debug 专用的本机假登录服务（打开时整段在本机回答，不连任何地址）；release 是普通 OkHttpClient
+            http = variantHttpClient(context),
         ).also { client ->
             // 强更状态恢复为受支持时，受限会话屏障到期（R1-10、lessons 19）：状态源一变就通知，不只靠下一个请求观察
             update.onRouterUpdate { client.onUpdateStateChanged(it.toNetworkUpdate()) }
@@ -491,6 +501,31 @@ object AppModule {
             privacy.onConsentEvent(routing::onConsentEvent)
         }
 
+    /**
+     * 登录（APP-05a）：LoginService（ApiClient 保存会话、Router 恢复 pending_action）、守卫的会话状态、登出。协议版本取包内默认配置的
+     * legal.*.version（BR-ID-04）。隐私结论、强更状态变化后重新同步会话状态（撤回清理、受限会话刷新会改变它）。
+     */
+    @Provides
+    @Singleton
+    fun appLogin(
+        client: ApiClient,
+        tokens: SessionTokens,
+        routing: AppRouting,
+        update: AppUpdate,
+        privacy: AppPrivacy,
+    ): AppLogin =
+        AppLogin(
+            client = client,
+            tokens = tokens,
+            routing = routing,
+            updateCheck = { update.routerUpdate },
+            markBelow = { update.on10405(null) },
+            legal = LegalVersions.parse(BundledConfig.dataJson),
+        ).also { login ->
+            privacy.onConclusionChanged { login.syncSession() }
+            update.onRouterUpdate { login.syncSession() }
+        }
+
     /** 活着的 BridgeHost（APP-04）：撤回同意、切换环境时作废在途桥调用。 */
     @Provides
     @Singleton
@@ -512,7 +547,8 @@ object AppModule {
         bridges: BridgeHostRegistry,
         tokens: SessionTokens,
         inFlight: InFlightCalls,
-    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight)
+        login: Provider<AppLogin>,
+    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight, login)
 
     /**
      * 包内隐私政策版本（整数，BR-ID-12）。TODO(N-16): 法务定稿的包内协议副本与版本号；接入 /v1/config.legal 后

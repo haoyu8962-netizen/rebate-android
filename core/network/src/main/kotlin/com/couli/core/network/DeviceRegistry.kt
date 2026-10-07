@@ -2,8 +2,12 @@ package com.couli.core.network
 
 import com.couli.core.clientcore.DeviceIdPolicy
 import com.couli.core.clientcore.PrivacyStateRaw
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -136,9 +140,12 @@ internal class DeviceRegistryHooks(
  *   请求带原始归属（[CallOwnership]），ApiClient 按开始时的世代绑定并在写出前再核对，撤回、切换环境（InFlightCalls 取消在途
  *   请求）之后不会发到新环境。
  * - **调用方有效性**（APP-04 Android 第 3 轮评审 R3-03、共性第 58 条）：[reRegister] 带上触发它的调用方（[RecoveryCaller]：有效性与
- *   剩余预算），登记进本次单飞窗口。取得注册锁后、读取设备标识前、注册请求实际写出前都核对「窗口里还有有效的调用方」；注册请求的
- *   超时截到有效调用方里最晚的截止时刻，写出之后最后一个调用方失效即取消在途请求。共享注册仍有别的有效调用方时照常继续；一个都
- *   没有了就停止，不记结果——但被拒的凭据已经隔离、当前没有可用凭据的，仍按清理世代交给唯一的退避链一次（设备恢复，与 iOS 同）。
+ *   剩余预算），登记进本次单飞窗口。取得注册锁后、读取设备标识前、注册请求实际写出前都核对「窗口里还有有效的调用方」；写出之后
+ *   最后一个调用方失效即取消在途请求。共享注册仍有别的有效调用方时照常继续；一个都没有了就停止，不记结果——但被拒的凭据已经隔离、
+ *   当前没有可用凭据的，仍按清理世代交给唯一的退避链一次（设备恢复，与 iOS 同）。
+ * - **共享窗口与各自的预算**（APP-04 共性第 64 条，Android APP-05a 第 1 轮评审 R1-07）：同一被拒 device_id、同一归属世代的重新注册
+ *   只有一个共享任务，在 [reRegisterExecutor] 上执行，用 ApiClient 对 registerDevice 的独立网络超时，不带任何调用方的截止时刻；
+ *   每个调用方只在自己的预算与有效性内等待共享结果，到期或失效就自己返回 false（并离开窗口），不影响仍有效的调用方。
  *
  * 注册请求是阻塞的网络调用，在 [executor]（后台线程）上执行；[deviceId] / [installSecret] 只读内存，不碰存储以外的东西。
  */
@@ -154,6 +161,9 @@ class DeviceRegistry(
     /** 隐私 / 环境世代（InFlightCalls.epochs）：注册开始后变了（撤回同意、切换环境）就丢弃结果。 */
     private val epochs: () -> CallEpochs,
     private val executor: Executor = Executors.newSingleThreadExecutor { Thread(it, "couli-device-register").apply { isDaemon = true } },
+    /** 共享重新注册任务的线程（与 [executor] 分开：调用方各自等待，任务不占用任何调用方的线程）。 */
+    private val reRegisterExecutor: Executor =
+        Executors.newCachedThreadPool { Thread(it, "couli-device-reregister").apply { isDaemon = true } },
 ) : DeviceCredentials {
     /** 凭据丢失（10402 后重新注册失败）：App 接到 PrivacyGate 重新开始退避注册。 */
     @Volatile
@@ -168,12 +178,15 @@ class DeviceRegistry(
     /** 单飞窗口里还有有效的调用方。 */
     private fun hasLiveCaller(): Boolean = synchronized(recoveryCallers) { recoveryCallers.any { it.valid() } }
 
-    /** 注册请求的预算：有效调用方里最晚的截止时刻；有不设截止时间的有效调用方（或一个都没有）为 null。 */
-    private fun callerDeadline(): Long? =
-        synchronized(recoveryCallers) {
-            val live = recoveryCallers.filter { it.valid() }
-            if (live.isEmpty() || live.any { it.deadlineNanos == null }) null else live.maxOf { checkNotNull(it.deadlineNanos) }
-        }
+    /** 共享重新注册窗口的键：被拒的 device_id 与归属世代（撤回、切换环境、清理之后的调用不加入旧窗口）。 */
+    private data class WindowKey(
+        val usedDeviceId: String?,
+        val epochs: CallEpochs,
+        val clear: Long,
+    )
+
+    /** 进行中的共享重新注册（R1-07）。只在 recoveryCallers 的同步区里读写。 */
+    private val windows = mutableMapOf<WindowKey, CompletableFuture<Boolean>>()
 
     /** 测试用的时序钩子（R2-01、R2-02：在读取标识、发送请求的前后暂停，复现与撤回、切换环境的交错）。 */
     internal var hooks: DeviceRegistryHooks = DeviceRegistryHooks()
@@ -279,11 +292,73 @@ class DeviceRegistry(
         val ticket = ticket()
         // F-ALL-08（共性第 21 条）：被拒的 device_id 在等单飞锁之前就隔离，等锁期间别的请求也不再带它
         quarantine(usedDeviceId, ticket)
-        synchronized(recoveryCallers) { recoveryCallers += caller }
+        val key = WindowKey(usedDeviceId, ticket.epochs, ticket.clear)
+        var started: CompletableFuture<Boolean>? = null
+        val shared =
+            synchronized(recoveryCallers) {
+                // 先登记为窗口调用方，再加入或发起共享任务：任务开始核对时一定看得到这个调用方（共性第 61 条）
+                recoveryCallers += caller
+                windows[key]?.takeIf { !it.isDone } ?: CompletableFuture<Boolean>().also {
+                    windows[key] = it
+                    started = it
+                }
+            }
+        started?.let { future -> launchShared(key, ticket, future) }
         return try {
-            synchronized(registerLock) { reRegisterLocked(usedDeviceId, ticket) }
+            awaitShared(shared, caller)
         } finally {
             synchronized(recoveryCallers) { recoveryCallers -= caller }
+        }
+    }
+
+    /** 在 [reRegisterExecutor] 上执行共享重新注册（单飞锁内），结果交给窗口里的全部调用方。 */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException") // 任何异常都按失败结束窗口
+    private fun launchShared(
+        key: WindowKey,
+        ticket: Ticket,
+        future: CompletableFuture<Boolean>,
+    ) {
+        val task =
+            Runnable {
+                val ok =
+                    try {
+                        synchronized(registerLock) { reRegisterLocked(key.usedDeviceId, ticket) }
+                    } catch (error: Exception) {
+                        false
+                    }
+                synchronized(recoveryCallers) { windows.remove(key, future) }
+                future.complete(ok)
+            }
+        try {
+            reRegisterExecutor.execute(task)
+        } catch (error: Exception) {
+            synchronized(recoveryCallers) { windows.remove(key, future) }
+            future.complete(false)
+        }
+    }
+
+    /**
+     * 调用方各自的等待（共性第 64 条）：共享任务结束就取结果；调用方自己的截止时刻到了或失效了就返回 false（离开窗口），共享任务照常
+     * 为别的有效调用方继续——只有窗口里全部调用方都失效，写出前的核对与在途请求的取消才会让它停下。
+     */
+    @Suppress("SwallowedException", "ReturnCount") // 等待超时只是再核对一次调用方；结束、失效、各类等待结果逐项返回
+    private fun awaitShared(
+        shared: CompletableFuture<Boolean>,
+        caller: RecoveryCaller,
+    ): Boolean {
+        while (true) {
+            if (shared.isDone) return shared.getNow(false)
+            if (!caller.valid()) return false
+            try {
+                return shared.get(CALLER_POLL_MS, TimeUnit.MILLISECONDS)
+            } catch (error: TimeoutException) {
+                continue
+            } catch (error: ExecutionException) {
+                return false
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
         }
     }
 
@@ -304,7 +379,7 @@ class DeviceRegistry(
             if (!ownsLocked(ticket)) return false
             if (usedDeviceId != null) revokedDeviceId = usedDeviceId
         }
-        val ok = runCatching { removeStored(ticket) }.getOrDefault(false) && register(ticket, ::hasLiveCaller, ::callerDeadline)
+        val ok = runCatching { removeStored(ticket) }.getOrDefault(false) && register(ticket, ::hasLiveCaller)
         // 注册途中最后一个调用方失效（读标识前、写出前被拦下，或在途请求被取消）：不记结果，交给退避链一次
         if (!ok && !hasLiveCaller()) return abandon(usedDeviceId, ticket)
         return settle(usedDeviceId, ticket, ok)
@@ -432,17 +507,16 @@ class DeviceRegistry(
     private fun register(
         ticket: Ticket,
         live: () -> Boolean,
-        deadline: () -> Long? = { null },
     ): Boolean {
         val first = readHash(ticket, live) ?: return false
-        when (send(first, ticket, live, deadline)) {
+        when (send(first, ticket, live)) {
             Outcome.Saved -> return true
             Outcome.Failed -> return false
             Outcome.RereadHash -> if (!rejectHash(first.hash, ticket)) return false
         }
         // 重读一次设备标识；读到本世代被拒过的值就不发（不带原值重试），按退避再读
         val again = readHash(ticket, live) ?: return false
-        return when (send(again, ticket, live, deadline)) {
+        return when (send(again, ticket, live)) {
             Outcome.Saved -> {
                 true
             }
@@ -508,13 +582,13 @@ class DeviceRegistry(
         hashed: Hashed,
         ticket: Ticket,
         live: () -> Boolean,
-        deadline: () -> Long?,
     ): Outcome {
         val body = JsonObject(mapOf("device_hash" to JsonPrimitive(hashed.hash), "id_source" to JsonPrimitive(hashed.source))).toString()
         hooks.beforeSend()
         // R2-02：请求带上本任务的原始归属：ApiClient 按开始时的世代绑定，写出前的守卫再核对清理世代与隐私（不重新绑定到当前环境）
-        // R3-03 第三处：写出前的守卫同样核对「仍有有效调用方」；超时截到有效调用方的剩余预算，写出后失效即取消在途请求
-        val ownership = CallOwnership(ticket.epochs, deadline()) { owns(ticket) && live() }
+        // R3-03 第三处：写出前的守卫同样核对「仍有有效调用方」，写出后窗口里最后一个调用方失效即取消在途请求。
+        // 共性第 64 条（R1-07）：共享请求不带任何调用方的截止时刻，用 registerDevice 自己的网络超时；各调用方的预算只管它自己的等待
+        val ownership = CallOwnership(ticket.epochs) { owns(ticket) && live() }
         val call = ApiCall(REGISTER_DEVICE, body = body, ownership = ownership)
         return when (val result = client().execute(call)) {
             is ApiResult.Success -> {
@@ -559,6 +633,9 @@ class DeviceRegistry(
 
         /** 退避链自己的注册（[ensureRegistered]）：没有页面调用方，不受调用方有效性约束。 */
         val ALWAYS: () -> Boolean = { true }
+
+        /** 调用方等待共享结果时核对自己预算与有效性的间隔。 */
+        const val CALLER_POLL_MS = 20L
 
         /** 记住的重新注册结果条数（每条对应一个被拒的 device_id）。 */
         const val RESULT_MEMORY = 8

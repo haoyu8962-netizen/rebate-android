@@ -120,15 +120,54 @@ internal class BridgeTransport(
             return
         }
         val generation = documentGeneration
-        host.handle(data, origin, isMainFrame, gesture.recent()) { reply ->
-            val current = generation == documentGeneration && !disposed
-            if (current && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) proxy.postMessage(reply)
+        val current = { generation == documentGeneration && !disposed }
+        host.handle(
+            data,
+            origin,
+            isMainFrame,
+            gesture.recent(),
+            deliver = { reply, settled -> deliverAndConfirm(reply, current(), settled) },
+        ) { reply ->
+            if (current() && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) proxy.postMessage(reply)
         }
+    }
+
+    /**
+     * 会触发导航的那次调用的回复（APP-04 共性第 59、62 条，Android 在 APP-05a 补上）：JavaScriptReplyProxy.postMessage 没有「已执行」回调，
+     * 这条回复改用 evaluateJavascript 交给主框架启动脚本里的接收函数（与消息通道同一份处理），见 [ReplyConfirmation]。文档已换、已拆时
+     * 不交回复，按「没有执行」结束（放弃导航）。
+     */
+    private fun deliverAndConfirm(
+        reply: String,
+        current: Boolean,
+        settled: (Boolean) -> Unit,
+    ) {
+        if (!current) return settled(false)
+        ReplyConfirmation.deliver(
+            script = receiveScript(reply),
+            evaluate = { script, callback -> webView.evaluateJavascript(script) { value -> callback(value) } },
+            schedule = { delay, task -> main.postDelayed(task, delay) },
+            settled = settled,
+        )
     }
 
     companion object {
         /** 传输对象名（只在可信源的框架里出现）。 */
         const val CHANNEL = "__couliBridgeChannel"
+
+        /** 启动脚本定义的回复接收函数（evaluateJavascript 交回复用，共性第 59 条）。 */
+        const val RECEIVE = "__couliBridgeReceive"
+
+        /** 等回复脚本执行完的上限（之后按结束处理）。 */
+        const val CONFIRM_TIMEOUT_MS = 3_000L
+
+        /**
+         * 交回复的脚本：回复文本按 JSON 字符串字面量嵌入（不拼接未转义内容）。接收函数在时执行它并得到 true（[ReplyConfirmation.EXECUTED]），
+         * 不在（启动脚本没注入、文档已换）得到 false。
+         */
+        fun receiveScript(reply: String): String =
+            "(function(){if(!window.$RECEIVE)return false;window.$RECEIVE(" + JsonPrimitive(reply).toString() + ");return true;})();"
+
         private const val HELLO = "__couli_hello__"
         private const val DUPLICATE_ID_PLACEHOLDER = ""
 
@@ -146,6 +185,7 @@ internal class BridgeTransport(
                 .replace("__VERSION__", version.toString())
                 .replace("__METHODS__", methodList)
                 .replace("__CHANNEL__", CHANNEL)
+                .replace("__RECEIVE__", RECEIVE)
                 .replace("__HELLO__", HELLO)
                 .replace("__DUPLICATE__", BridgeProtocol.response(DUPLICATE_ID_PLACEHOLDER, BridgeCode.INVALID_PARAMS))
         }
@@ -160,9 +200,9 @@ internal class BridgeTransport(
               // no prototype: ids such as __proto__ or constructor are plain own keys (A-R2-07, lesson 50)
               var pending = Object.create(null);
               var listeners = [];
-              channel.onmessage = function (event) {
+              function receive(data) {
                 var message;
-                try { message = JSON.parse(event.data); } catch (error) { return; }
+                try { message = JSON.parse(data); } catch (error) { return; }
                 if (!message || typeof message !== 'object') return;
                 if (typeof message.event === 'string') {
                   listeners.slice().forEach(function (listener) {
@@ -175,7 +215,10 @@ internal class BridgeTransport(
                   delete pending[message.id];
                   resolve(message);
                 }
-              };
+              }
+              channel.onmessage = function (event) { receive(event.data); };
+              // replies of navigating calls arrive via evaluateJavascript, so the host knows when they have run (lesson 59)
+              Object.defineProperty(window, '__RECEIVE__', { value: function (data) { receive(data); }, writable: false, configurable: false });
               var bridge = {
                 version: __VERSION__,
                 methods: Object.freeze(__METHODS__),
@@ -203,5 +246,30 @@ internal class BridgeTransport(
               if (window === window.top) channel.postMessage('__HELLO__');
             })();
             """.trimIndent()
+    }
+}
+
+/**
+ * 回复脚本的执行确认（APP-04 共性第 59、62 条；Android 第 1 轮评审 R1-05）：把 [script] 交给 evaluate，结束时调一次 settled——
+ * - evaluate 的结果回调兑现且结果是 [EXECUTED]（接收函数确实在页面里执行完）→ settled(true)，BridgeHost 随后复核并导航；
+ * - 回调结果不是 [EXECUTED]（接收函数不在）→ settled(false)；
+ * - [timeoutMillis] 内没有回调（渲染线程繁忙、进程卡住）→ settled(false)：放弃这次导航，不当作执行成功；之后迟到的回调不再算数。
+ */
+internal object ReplyConfirmation {
+    const val EXECUTED = "true"
+
+    fun deliver(
+        script: String,
+        evaluate: (script: String, callback: (String?) -> Unit) -> Unit,
+        schedule: (delayMillis: Long, task: () -> Unit) -> Unit,
+        settled: (executed: Boolean) -> Unit,
+        timeoutMillis: Long = BridgeTransport.CONFIRM_TIMEOUT_MS,
+    ) {
+        val once =
+            java.util.concurrent.atomic
+                .AtomicBoolean(false)
+        val finish = { executed: Boolean -> if (once.compareAndSet(false, true)) settled(executed) }
+        evaluate(script) { value -> finish(value == EXECUTED) }
+        schedule(timeoutMillis) { finish(false) }
     }
 }

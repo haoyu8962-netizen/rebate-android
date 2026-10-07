@@ -86,6 +86,7 @@ data class RoutingTrace(
  * - [onConsentEvent]：主动同意 = 完成一个前置步骤：续时，并在启动闸门允许时以 enterPrerequisite = true 恢复一次
  *   （进入仍缺的前置页，R1-03）；明确【仍不同意】→ 丢弃本次登记的待办（R1-04）。
  */
+@Suppress("TooManyFunctions") // 启动意图、状态源与会话（APP-05a updateSession）的入口集中在一处
 class AppRouting
     @Suppress("LongParameterList") // 环境闸门、深链配置、时钟与三组状态源初值逐项注入（单测替身）
     constructor(
@@ -109,8 +110,14 @@ class AppRouting
          */
         val update = MutableStateFlow(initialUpdate)
 
-        // TODO(APP-05): 接会话。
+        /**
+         * 守卫的会话状态（APP-05a：生产由 AppLogin 按 ApiClient 的有效会话现算并经 [updateSession] 写入；单测可直接写）。
+         * 由已登录变为游客时调 [Router.onSessionEnded]。
+         */
         val session = MutableStateFlow(SessionState.GUEST)
+
+        /** 已处理过的会话状态（[updateSession] 同步处理过的变化，收集器不再重复处理）。只在主线程读写。 */
+        private var handledSession: SessionState = session.value
 
         /**
          * 目标网页白名单的来源（APP-04）：ExternalPage 的 external_hosts、WebPage 的可信 H5 源，生产由 AppModule 接到生效配置
@@ -159,10 +166,10 @@ class AppRouting
                 }
             }
             scope.launch {
-                var previous = session.value
                 session.drop(1).collect { current ->
-                    val ended = previous != SessionState.GUEST && current == SessionState.GUEST
-                    previous = current
+                    if (current == handledSession) return@collect
+                    val ended = handledSession != SessionState.GUEST && current == SessionState.GUEST
+                    handledSession = current
                     if (ended) router.onSessionEnded()
                     scheduleResume()
                     drain()
@@ -199,7 +206,24 @@ class AppRouting
             drain()
         }
 
-        /** 切换账号（不经过游客态）：TODO(APP-05) 会话层切换账号时调用。 */
+        /**
+         * 会话变化（APP-05a，主线程，同步处理）：写入守卫的会话状态；由已登录变为游客时 [Router.onSessionEnded]。
+         * [resumePending] = true 时按当前状态排一次 pending_action 自动恢复（enterPrerequisite = false）；false 时只同步状态
+         * （APP-05a 共性第 10 条：已作废的登录尝试只能通知会话变了，不能顺带恢复待办）。两种都 drain。
+         */
+        fun updateSession(
+            state: SessionState,
+            resumePending: Boolean,
+        ) {
+            val ended = handledSession != SessionState.GUEST && state == SessionState.GUEST
+            handledSession = state
+            session.value = state
+            if (ended) router.onSessionEnded()
+            if (resumePending) queue.offer(StartupIntent.ResumePending, coldStart = false, readiness, clock())
+            drain()
+        }
+
+        /** 切换账号（不经过游客态）：TODO(APP-05b) 会话层切换账号时调用。 */
         fun onAccountSwitched() = router.onSessionEnded()
 
         /** 切换环境：由环境切换清理入口调用（AppModule 登记）。 */

@@ -15,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -31,6 +32,8 @@ import com.couli.core.router.RouteNavigator
 import com.couli.core.router.RouteRequest
 import com.couli.feature.web.WebContainers
 import com.couli.generated.DefaultTexts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -98,6 +101,10 @@ fun AppNavHost(
     @SuppressLint("RestrictedApi")
     val backStack = navController.currentBackStack
     WebContainers.FollowBackStack(backStack)
+    // 登录页确定出栈的同步出口（APP-05a 共性第 9 条）：同一个回退栈流、同一条主线程消息里交给外壳（作废本次登录尝试）
+    LaunchedEffect(backStack, shellHooks) {
+        withContext(Dispatchers.Main.immediate) { backStack.collect { shellHooks.onBackStack(it) } }
+    }
     NavHost(navController = navController, startDestination = HomeDestination) {
         composable<HomeDestination> { home() }
         composable<RouteDestination> { entry ->
@@ -125,6 +132,8 @@ class ShellHooks(
     val onOpenTab: (route: String, readonly: Boolean) -> Unit = { _, _ -> },
     val onRequestConsent: (RouteRequest) -> Unit = {},
     val pageAllowed: (RouteDestination) -> Boolean = { true },
+    /** 回退栈变化（主线程，回退栈一更新就调；APP-05a：登录页出栈即作废登录尝试）。 */
+    val onBackStack: (List<NavBackStackEntry>) -> Unit = {},
 )
 
 /** Router 结论 → Navigation Compose。 */

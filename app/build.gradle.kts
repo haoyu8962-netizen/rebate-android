@@ -67,12 +67,15 @@ dependencies {
     implementation(project(":feature:wallet"))
     implementation(project(":feature:me"))
     implementation(project(":feature:auth"))
+    implementation(project(":feature:login"))
     implementation(project(":feature:web"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
+    // ApiClient 的 OkHttpClient 由 App 按构建类型给（debug / staging 带本机假登录服务，APP-05a）
+    implementation(libs.okhttp)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

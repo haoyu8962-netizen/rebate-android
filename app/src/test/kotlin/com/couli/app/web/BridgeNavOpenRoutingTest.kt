@@ -78,12 +78,12 @@ class BridgeNavOpenRoutingTest {
 
     private val services =
         object : BridgeServices by NoServices {
-            // 与 AppWeb.Services.navOpen 相同：BridgeRouting.open(router, routing.guardState(), …)
+            // 与 AppWeb.Services.navOpen 相同：BridgeRouting.open(router, routing::guardState, …)
             override suspend fun navOpen(
                 route: String,
                 params: JsonObject,
                 update: String,
-            ): BridgeOutcome = BridgeRouting.open(router, live, route, params, update)
+            ): BridgeOutcome = BridgeRouting.open(router, { live }, route, params, update)
         }
 
     private val host =

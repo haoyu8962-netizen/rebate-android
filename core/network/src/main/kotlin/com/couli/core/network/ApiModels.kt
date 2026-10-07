@@ -74,6 +74,11 @@ class NetworkHooks(
      * 由设备注册启动唯一的退避注册链（APP-03b 共性第 25 条的补全，Android APP-04 第 1 轮评审 R1-02）。
      */
     val recoverDevice: (usedDeviceId: String?) -> Unit = {},
+    /**
+     * 会话已保存、刷新或清理（APP-05a 共性第 14 条）：登录保存、令牌刷新（含受限会话异步刷新成 full）、按世代清除之后各调一次，参数是
+     * 这一刻的会话世代（[SessionTokens.generation]，单调递增，接收方据此丢弃乱序的旧通知）。在网络线程上调用，接收方自己切到主线程。
+     */
+    val onSessionStored: (generation: Long) -> Unit = {},
 )
 
 /**
@@ -114,6 +119,12 @@ data class ApiCall(
 class CallOwnership(
     val epochs: CallEpochs,
     val deadlineNanos: Long? = null,
+    /**
+     * 登录响应保存会话时的同步区（APP-05a 共性第 1 条）：不为 null 时，ApiClient 在这把锁里先核对 [stillOwned]、再保存会话；调用方作废
+     * 这次尝试（换号、取消、登录页出栈）也在同一把锁里推进自己的序号——作废之后到达的登录响应一定不保存会话，不会出现「核对通过、
+     * 随即被作废、仍然写入」。
+     */
+    val commitLock: Any? = null,
     val stillOwned: () -> Boolean,
 ) {
     /** 截止时刻已过。 */
@@ -207,4 +218,34 @@ sealed interface ApiResult {
         val idempotencyKey: String?,
         val pendingKeyUnknown: Boolean,
     ) : ApiResult
+}
+
+/** [ApiClient.clearSessionIf] 的结果（APP-05a 共性第 23 条）。 */
+enum class SessionEnd {
+    /** 登录世代未变，本次清除了原会话。 */
+    CLEARED,
+
+    /** 原会话之前已被清除（10404、刷新失败等），此刻没有新会话：只做收尾。 */
+    ALREADY_ENDED,
+
+    /** 已换成新登录保存的会话：不清、不做原会话的收尾。 */
+    REPLACED,
+}
+
+/** [ApiClient.refreshRestrictedSession] 的结果（APP-05a 共性第 4、10 条）。 */
+enum class RestrictedRecheck {
+    /** 复查完成（刷新成功，或会话本来就不是 deletion_only）：按此刻的作用域与强更结论重新计划。 */
+    DONE,
+
+    /** 刷新被拒，会话已清（或复查前会话已没有）。 */
+    CLEARED,
+
+    /** 刷新超时、断连等暂时失败：会话不动。 */
+    TRANSIENT,
+
+    /** 复查期间会话已换成别的会话。 */
+    CHANGED,
+
+    /** 调用方已作废（取消、换号、登录页出栈）或截止时间已到。 */
+    CANCELLED,
 }

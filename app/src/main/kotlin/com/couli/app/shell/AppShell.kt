@@ -18,6 +18,10 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.couli.app.login.AppLogin
+import com.couli.app.login.LoginNoticeHost
+import com.couli.app.login.LoginRoute
+import com.couli.app.login.SettingsRoute
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.privacy.toRouterPrivacy
 import com.couli.app.routing.AppNavHost
@@ -75,6 +79,7 @@ import kotlinx.serialization.json.jsonObject
  * @param web 两类 WebView 容器与 JSBridge 的接线（APP-04）；为 null 时 WebPage / ExternalPage 是占位页（只测外壳的单测）。
  */
 @Composable
+@Suppress("CyclomaticComplexMethod") // 外壳按可选接线（强更、桥、登录）逐项组合
 fun AppShell(
     routing: AppRouting,
     privacy: AppPrivacy,
@@ -82,6 +87,7 @@ fun AppShell(
     navController: NavHostController = rememberNavController(),
     update: AppUpdate? = null,
     web: AppWeb? = null,
+    login: AppLogin? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -92,7 +98,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web) {
+        remember(homeContent, update, web, login) {
             RoutePageRegistry(
                 mapOf(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -106,7 +112,12 @@ fun AppShell(
                     RouteNames.FORCE_UPDATE to { _ -> update?.let { ForceUpdateRoute(it, routing) } },
                     // 强更状态下能到登录页只有一条路：从强更页进入（受限登录，BR-ID-01「受限会话」）
                     RouteNames.LOGIN to { page ->
-                        PlaceholderRoutePage(page, restrictedLogin = routing.update.value == UpdateCheck.BELOW_MIN)
+                        val restricted = routing.update.value == UpdateCheck.BELOW_MIN
+                        login?.let { LoginRoute(it, restricted) } ?: PlaceholderRoutePage(page, restrictedLogin = restricted)
+                    },
+                    // 设置页占位：APP-05a 只放【退出登录】（SettingsLogoutConfirm）
+                    SETTINGS_ROUTE to { page ->
+                        login?.let { SettingsRoute(it, routing) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
                     // 隐私中心占位（TODO(APP-12)）：强更状态下只可能从强更页进入，带强更状态标记（R1-05）
                     PRIVACY_CENTER_ROUTE to { page ->
@@ -116,12 +127,13 @@ fun AppShell(
             )
         }
     val hooks =
-        remember(privacy) {
+        remember(privacy, login) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly -> ShellTab.ofRoute(route)?.let { selection = TabSelection(it, readonly) } },
                 onRequestConsent = { privacy.requestFullFunction() },
                 pageAllowed = { page -> stillAllowedWithUpdate(page, routing.guardState()) },
+                onBackStack = { entries -> login?.followBackStack(entries) },
             )
         }
     val activity = LocalActivity.current
@@ -146,6 +158,14 @@ fun AppShell(
                     }
             }
         onDispose { unsubscribe() }
+    }
+
+    // 登录（APP-05a）：执行器关闭登录页、恢复待办都经这个 NavController
+    if (login != null) {
+        DisposableEffect(login, navController) {
+            login.attach(navController)
+            onDispose { login.detach(navController) }
+        }
     }
 
     // 强更（APP-02c）：进入 below_min → 进强更页（已在强更页或它上面的次要入口时不动）；解除 → 清掉强更页回到起点。
@@ -188,6 +208,8 @@ fun AppShell(
     BackHandler(enabled = showPrompt) {}
     // 可关闭更新提示：不在首启弹窗、强更页之上弹
     if (update != null) UpdatePromptHost(update, updateUi, hidden = showPrompt || topRoute == RouteNames.FORCE_UPDATE)
+    // 登录成功后的邀请绑定结果（LoginInviteBound / LoginInviteFailed）：显示在恢复的页面之上
+    if (login != null && !showPrompt) LoginNoticeHost(login) { routing.router.open(inAppRequest(ME_ROUTE)) }
     if (showPrompt) {
         PrivacyPromptDialog(
             stage = privacyState.promptStage,
@@ -325,4 +347,5 @@ internal const val AGREEMENT_ROUTE = "Agreement"
 internal const val PRIVACY_CENTER_ROUTE = "PrivacyCenter"
 private const val SEARCH_ROUTE = "Search"
 private const val SETTINGS_ROUTE = "Settings"
+private const val ME_ROUTE = "Me"
 private const val EMPTY_PARAMS = "{}"

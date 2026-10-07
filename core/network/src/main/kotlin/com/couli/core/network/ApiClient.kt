@@ -210,6 +210,8 @@ class ApiClient(
         val stillOwned: (() -> Boolean)? = null,
         /** 调用方整次调用的截止时刻（[CallOwnership.deadlineNanos]，R2-01）；没有为 null。 */
         val deadlineNanos: Long? = null,
+        /** 调用方自带的归属对象（在途 Call 的标记、登录保存会话的同步区，APP-05a 共性第 1 条）；没有为 null。 */
+        val ownership: CallOwnership? = null,
     ) {
         /** 调用方自带的归属已失效：调用方核对为 false，或截止时间已到（R2-01）。 */
         fun disowned(): Boolean = deadlineNanos?.let { System.nanoTime() - it >= 0 } == true || stillOwned?.invoke() == false
@@ -305,6 +307,79 @@ class ApiClient(
 
     /** 切换环境（清理的第一步）：作废并取消全部在途请求（A-R2-01）。 */
     fun onEnvironmentSwitching() = inFlight.onEnvironmentSwitching()
+
+    /**
+     * 调用方作废了 [ownership]（它的 [CallOwnership.stillOwned] 已返回 false）：同步取消它已交给传输层的请求（APP-05a 共性第 1 条：
+     * 换号、取消、登录页出栈）。之后的重试、续发、保存会话都由归属核对结束。
+     */
+    fun cancelOwned(ownership: CallOwnership) = inFlight.cancelTagged(ownership)
+
+    /**
+     * 当前有效会话的 session_scope（经过与请求相同的会话读取：凭据不可读、隔离中、读不出、没有令牌都为 null）。登录执行器与守卫的
+     * 会话状态用它（APP-05a）。
+     */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException") // 读取出错按没有会话
+    fun activeSessionScope(): String? =
+        try {
+            session(context())?.scope
+        } catch (error: Exception) {
+            null
+        }
+
+    /**
+     * 本机清会话（登出，APP-05a 共性第 3、13、23 条）：登录世代仍是 [expectedLoginEpoch]（登出开始时那一代）才删除。世代核对与删除
+     * 在保存登录所用的同一把锁（[refreshLock]）里一次完成，核对之后、删除之前不会插进新登录的保存；写盘失败按 lessons 38 隔离旧会话、
+     * 之后重试删除，同样按已清处理。
+     *
+     * [onEnded] 是绑定原会话的收尾（Router 清 pending_action 等）：原会话确已结束（本次清除，或之前已被 10404、刷新失败等清掉且此刻
+     * 没有新会话）时，在同一把锁里执行——它执行时不会已经存在新登录保存的会话，之后保存的新会话也不会被它清掉待办。[onEnded] 不得
+     * 回调进本类之外会等待其他线程的逻辑（它在锁内执行）。
+     */
+    fun clearSessionIf(
+        expectedLoginEpoch: Long,
+        onEnded: () -> Unit = {},
+    ): SessionEnd =
+        synchronized(refreshLock) {
+            val outcome =
+                when {
+                    tokens.loginEpoch == expectedLoginEpoch -> {
+                        clearGenerationIf(tokens.generation)
+                        SessionEnd.CLEARED
+                    }
+
+                    sessionQuarantined || tokens.accessToken == null -> {
+                        SessionEnd.ALREADY_ENDED
+                    }
+
+                    else -> {
+                        SessionEnd.REPLACED
+                    }
+                }
+            if (outcome != SessionEnd.REPLACED) onEnded()
+            outcome
+        }
+
+    /**
+     * 登录拿到 deletion_only 而强更结论是受支持时的受限会话复查（APP-05a 共性第 4、10 条，AfterLogin 的 refresh_restricted）：
+     * 刚登录时网络层已记下「不需要冷启动屏障」，这里显式做一次单飞刷新。[ownership] 是这次登录尝试的归属：登记为刷新窗口的调用方，
+     * 尝试作废（取消、换号、登录页出栈）时最后一个有效调用方离开，刷新的续发与在途请求随之停止，这里的等待也随之结束（返回 CANCELLED）。
+     * 阻塞调用，不在主线程用。
+     */
+    @Suppress("ReturnCount")
+    fun refreshRestrictedSession(ownership: CallOwnership): RestrictedRecheck {
+        val live = { !ownership.expired() && inFlight.epochs() == ownership.epochs && ownership.stillOwned() }
+        if (!live()) return RestrictedRecheck.CANCELLED
+        val snapshot = session(context()) ?: return RestrictedRecheck.CLEARED
+        if (snapshot.scope != SessionScopeRaw.DELETION_ONLY || snapshot.refreshToken == null) return RestrictedRecheck.DONE
+        val result = refreshAfter(snapshot.accessToken, null, ownership.deadlineNanos, live)
+        if (!live()) return RestrictedRecheck.CANCELLED
+        return when (result) {
+            is RefreshResult.Replay -> RestrictedRecheck.DONE
+            RefreshResult.Failed -> RestrictedRecheck.CLEARED
+            RefreshResult.Stale -> if (session(context()) == null) RestrictedRecheck.CLEARED else RestrictedRecheck.CHANGED
+            is RefreshResult.Transient -> RestrictedRecheck.TRANSIENT
+        }
+    }
 
     /**
      * 冷启动、登录成功、切回前台：按当前会话的账号恢复未决记录（只读，不发）。本进程仍在执行的请求保持在途（R1-15）。
@@ -753,7 +828,7 @@ class ApiClient(
             val now = context()
             val current = rawSession(now)?.takeIf(::hasTokens) ?: return false
             if (ownerReject(owner, now) != null) return false
-            clearSessionIf(current.generation)
+            clearGenerationIf(current.generation)
         }
 
     private fun transportFailure(
@@ -797,7 +872,7 @@ class ApiClient(
                 is RawRead.Present -> read.snapshot.generation
                 is RawRead.Unreadable -> read.generation
             }
-        return CallOwner(epochs, generation, live(read), ownership?.stillOwned, ownership?.deadlineNanos)
+        return CallOwner(epochs, generation, live(read), ownership?.stillOwned, ownership?.deadlineNanos, ownership)
     }
 
     /**
@@ -946,7 +1021,7 @@ class ApiClient(
         prepared: Prepared.Ready,
     ): SendGuard =
         // 调用方自带归属的（桥调用、设备注册）：写出之后归属失效（页面关闭、注册的最后一个调用方失效）同样取消在途请求（R3-03）
-        SendGuard(owner.epochs, owner.deadlineNanos, abandoned = owner.stillOwned?.let { { owner.disowned() } }) {
+        SendGuard(owner.epochs, owner.deadlineNanos, abandoned = owner.stillOwned?.let { { owner.disowned() } }, tag = owner.ownership) {
             val now = context()
             ownerReject(owner, now) ?: admission(operation, call, prepared, now)
         }
@@ -1398,18 +1473,18 @@ class ApiClient(
     private fun clearSettlingSession() {
         if (settlingTransient != null) return
         val generation = settlingGeneration ?: return
-        if (clearSessionIf(generation)) settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true) }
+        if (clearGenerationIf(generation)) settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true) }
     }
 
     /** 按世代 CAS 清会话，返回是否清的是这一代。写盘失败：隔离会话（内存里继续阻断旧令牌），之后每次读会话前重试删除（lessons 38）。 */
     @Suppress("TooGenericExceptionCaught", "SwallowedException")
-    private fun clearSessionIf(generation: Long): Boolean =
+    private fun clearGenerationIf(generation: Long): Boolean =
         try {
             tokens.clearIf(generation)
         } catch (error: Exception) {
             quarantine()
             true
-        }
+        }.also { cleared -> if (cleared) sessionStored() }
 
     /**
      * 在 [refreshLock] 下隔离删除失败的会话（F-AND-10）：记下存储里此刻的会话身份（access / refresh）。存储里已没有会话（删除其实已落盘）
@@ -1698,7 +1773,13 @@ class ApiClient(
         val pair = tokenPair(root?.get("tokens") as? JsonObject) ?: return LocalRejectReason.INVALID_SESSION_TOKENS
         if (!stillOwned(owner.epochs, prepared.base)) return LocalRejectReason.CALL_CANCELLED
         val generation = owner.generation ?: return LocalRejectReason.SESSION_CHANGED
-        saveLogin(owner, generation, pair, root?.text("user_id"))?.let { return it }
+        // 调用方自带归属的（短信登录的一次尝试，APP-05a 共性第 1 条）：在它的同步区里先核对归属、再保存——尝试已作废（换号、取消、
+        // 登录页出栈）的迟到响应不保存会话
+        val commit = owner.ownership?.commitLock ?: Any()
+        synchronized(commit) {
+            if (owner.disowned()) return LocalRejectReason.CALL_CANCELLED
+            saveLogin(owner, generation, pair, root?.text("user_id"))?.let { return it }
+        }
         // 刚登录拿到的会话是新的一代：不需要冷启动屏障再刷新一次
         synchronized(barrierLock) { barrierDue = false }
         afterSessionSaved(pair.scope)
@@ -1745,7 +1826,11 @@ class ApiClient(
      */
     private fun afterSessionSaved(scope: String) {
         if (scope == SessionScopeRaw.DELETION_ONLY && context().update == UpdateRaw.UNKNOWN) hooks.onForceUpdate(null)
+        sessionStored()
     }
+
+    /** 会话保存、刷新或清理完成：带世代通知（APP-05a 共性第 14 条，App 在主线程据此同步 Router 的会话状态）。 */
+    private fun sessionStored() = hooks.onSessionStored(tokens.generation)
 
     /** 10401：响应头 Date 与本机时钟相差超过 300 秒时校正偏移（BR-ID-09）。 */
     private fun correctClock(headers: Map<String, String>): Boolean {

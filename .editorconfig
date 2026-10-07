@@ -79,3 +79,9 @@ ktlint_standard_when-entry-bracing = disabled
 [core/bridge/src/test/kotlin/com/couli/core/bridge/BridgeVectorTest.kt]
 ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_function-signature = disabled
+
+# APP-05a 的登录向量测试同样由 Codex 先写、本仓库不改；它的格式与下面三条规则不一致，只对这一个文件关掉。
+[feature/login/src/test/kotlin/com/couli/feature/login/LoginVectorTest.kt]
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_when-entry-bracing = disabled

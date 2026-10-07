@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,6 +26,7 @@ import com.couli.app.catalog.CatalogPage
 import com.couli.app.catalog.ComponentCatalog
 import com.couli.app.debug.COULI_DEBUG_PANEL
 import com.couli.app.debug.DebugPanel
+import com.couli.app.debug.DebugPanelEntryPoint
 import com.couli.app.debug.rememberEnvironmentSwitcher
 import com.couli.app.routing.RoutingTrace
 import com.couli.app.update.DebugUpdateSection
@@ -34,7 +37,11 @@ import com.couli.app.web.DebugConformancePage
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.router.RouteRequest
+import com.couli.core.router.RouteSource
 import com.couli.generated.DesignTokens
+import dagger.hilt.android.EntryPointAccessors
+import kotlinx.serialization.json.JsonObject
 
 /**
  * debug / staging 首屏内容（src/debugFeatures，release 里没有）：令牌版本、构建类型、当前环境与调试面板入口。
@@ -68,6 +75,7 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
             Modifier
                 .fillMaxSize()
                 .safeDrawingPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
@@ -90,6 +98,42 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
             Text(text = if (panelOpen) "Close debug panel" else "Debug panel")
         }
         if (panelOpen) {
+            // 设置页入口（APP-05a：「我的」还是占位，退出登录从这里进设置页；经 Router 以 App 内来源打开）
+            TextButton(onClick = {
+                EntryPointAccessors
+                    .fromApplication(context.applicationContext, DebugPanelEntryPoint::class.java)
+                    .appRouting()
+                    .router
+                    .open(RouteRequest("Settings", JsonObject(emptyMap()), RouteSource.IN_APP))
+            }) {
+                Text(text = "Open Settings")
+            }
+            // LoginSessionExpired：与网络层刷新失败清会话（clear_session_login）同一入口
+            TextButton(onClick = {
+                EntryPointAccessors
+                    .fromApplication(context.applicationContext, DebugPanelEntryPoint::class.java)
+                    .appLogin()
+                    .onNetworkEffect(
+                        com.couli.core.network.ErrorEffect(
+                            code = SESSION_EXPIRED_CODE,
+                            kind = com.couli.core.network.ErrorEffectKind.CLEAR_SESSION_LOGIN,
+                            replay = com.couli.core.network.ReplayMode.NONE,
+                            registerPending = false,
+                            route = "Login",
+                        ),
+                    )
+            }) {
+                Text(text = "Login: session expired")
+            }
+            // 本机假登录服务（APP-05a）：开关文件在应用私有目录，打开后发码、登录、登出都在本机回答
+            val fakeSwitch = remember(context) { fakeLoginServerSwitch(context) }
+            var fakeOn by remember { mutableStateOf(fakeSwitch.exists()) }
+            TextButton(onClick = {
+                if (fakeOn) fakeSwitch.delete() else fakeSwitch.createNewFile()
+                fakeOn = fakeSwitch.exists()
+            }) {
+                Text(text = "Fake login server: " + if (fakeOn) "on" else "off")
+            }
             TextButton(onClick = { catalog = CatalogPage.INDEX }) {
                 Text(text = "Component catalog")
             }
@@ -108,6 +152,8 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
         }
     }
 }
+
+private const val SESSION_EXPIRED_CODE = 10404
 
 /** 调试首屏上「最近一次路由结论」那一行。 */
 internal const val ROUTE_TRACE_TAG = "route_trace"

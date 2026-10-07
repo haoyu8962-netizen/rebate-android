@@ -52,5 +52,6 @@ listOf(
     "wallet",
     "me",
     "auth",
+    "login",
     "web",
 ).forEach { include(":feature:$it") }

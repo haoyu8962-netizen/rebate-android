@@ -29,6 +29,12 @@ const val COULI_DEBUG_PANEL = "COULI_DEBUG_PANEL"
 @InstallIn(SingletonComponent::class)
 internal interface DebugPanelEntryPoint {
     fun environmentSwitchCleaners(): EnvironmentSwitchCleanerRegistry
+
+    /** 调试面板的「设置」入口（APP-05a：「我的」还是占位，退出登录从这里进设置页）。 */
+    fun appRouting(): com.couli.app.routing.AppRouting
+
+    /** 「Login: session expired」：与网络层刷新失败清会话同一入口（LoginSessionExpired 截图用，APP-05a）。 */
+    fun appLogin(): com.couli.app.login.AppLogin
 }
 
 /** 环境切换器：debug 默认 test，staging 默认 staging（BuildConfig.DEFAULT_ENVIRONMENT）。 */

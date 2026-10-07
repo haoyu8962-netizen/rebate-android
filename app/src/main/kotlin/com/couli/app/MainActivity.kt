@@ -11,6 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.app.clientcore.ActivityPermissionHost
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
+import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
@@ -58,6 +59,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var web: AppWeb
 
+    @Inject
+    lateinit var login: AppLogin
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +91,7 @@ class MainActivity : ComponentActivity() {
                             privacy = privacy,
                             update = update,
                             web = web,
+                            login = login,
                             homeContent = { VariantRootContent(trace = trace) },
                         )
                     },

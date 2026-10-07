@@ -77,6 +77,14 @@ class AppUpdate
         /** 本进程发出的检查还没有结果（冷启动、回前台复查、【重试】）。 */
         private var checkInFlight = false
 
+        /**
+         * 版本检查轮次（主线程）：每发起一轮检查加 1。桥调用等待之后、导航之前据此判断「检查中」是不是新的一轮（APP-04 共性第 63 条：
+         * 不拿上一轮的结论顶替新一轮的检查中）。
+         */
+        @Volatile
+        var checkRound: Long = 0L
+            private set
+
         /** 本进程最近一次检查失败（下一次成功检查之前 Router 按 unknown，F-AND-09）。 */
         private var lastCheckFailed = false
 
@@ -164,6 +172,7 @@ class AppUpdate
         private fun runCheck(thenPickStore: Boolean = false) {
             if (checkJob?.isActive == true) return
             mutableUi.value = mutableUi.value.copy(working = thenPickStore)
+            checkRound += 1
             checkInFlight = true
             checkJob =
                 scope.launch {

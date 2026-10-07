@@ -10,7 +10,7 @@ import org.gradle.work.DisableCachingByDefault
 
 /**
  * 本仓库自定义源码规则（APP-01 任务书 §2.6）：
- *   1. no-cjk-string-in-feature：feature/ 下 Kotlin 字符串字面量含 CJK 字符即失败（BR-TEXT-12）。
+ *   1. no-cjk-string-in-feature：feature/ 下 Kotlin 字符串字面量含 CJK 字符即失败（BR-TEXT-12）；测试源码集（src/test、src/androidTest）除外。
  *   2. sdk-init-only-in-privacy-gate：第三方 SDK 初始化调用只允许出现在 PrivacyGate.kt（03 §4.1）。
  * 规则 3（feature 互相依赖）在 couli.android.library 插件的配置阶段检查。
  *
@@ -49,7 +49,8 @@ abstract class CouliSourceRulesTask : DefaultTask() {
     ): Sequence<String> {
         val scanned = scanKotlinSource(file.readText())
         val cjk =
-            if (relative.startsWith("feature/") && file.extension == "kt") {
+            // 只管业务页面的源码（BR-TEXT-12）：测试源码（src/test、src/androidTest 的断言说明、Codex 先写的向量测试）不面向用户，不在此列
+            if (relative.startsWith("feature/") && file.extension == "kt" && TEST_SOURCE_DIRS.none { it in relative }) {
                 scanned.strings
                     .asSequence()
                     .filter { CJK.containsMatchIn(it.text) }
@@ -90,6 +91,9 @@ abstract class CouliSourceRulesTask : DefaultTask() {
         const val SDK_MESSAGE = "第三方 SDK 只能在 PrivacyGate.onConsented() 里初始化（03 §4.1）"
 
         val SKIPPED_DIRS = setOf("build", ".gradle", ".git", ".idea", ".kotlin")
+
+        /** 不受 no-cjk-string-in-feature 约束的测试源码集目录。 */
+        val TEST_SOURCE_DIRS = listOf("/src/test/", "/src/androidTest/")
 
         // 扫描仓库本身时跳过：违反样例（另行验证必须被拦）与构建逻辑。
         val SKIPPED_REPOSITORY_DIRS = setOf("tools", "build-logic")

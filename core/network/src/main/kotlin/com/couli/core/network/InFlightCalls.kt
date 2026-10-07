@@ -21,7 +21,9 @@ class InFlightCalls {
     private val lock = Any()
     private var privacy = 0L
     private var environment = 0L
-    private val calls = mutableSetOf<Call>()
+
+    /** 在途的 Call → 调用方的归属标记（[ApiClient.cancelOwned] 用；没有为 null）。 */
+    private val calls = mutableMapOf<Call, Any?>()
 
     /** 当前世代。 */
     fun epochs(): CallEpochs = synchronized(lock) { CallEpochs(privacy, environment) }
@@ -39,24 +41,34 @@ class InFlightCalls {
         val cancelled: List<Call>
         synchronized(lock) {
             bump()
-            cancelled = calls.toList()
+            cancelled = calls.keys.toList()
         }
         cancelled.forEach(Call::cancel)
     }
 
-    /** 登记一个即将执行的 Call；世代已不是 [epochs] 时不登记（调用方不执行它）。 */
+    /** 登记一个即将执行的 Call（[tag] 为调用方的归属标记）；世代已不是 [epochs] 时不登记（调用方不执行它）。 */
     internal fun register(
         call: Call,
         epochs: CallEpochs,
+        tag: Any? = null,
     ): Boolean =
         synchronized(lock) {
             if (CallEpochs(privacy, environment) != epochs) return false
-            calls += call
+            calls[call] = tag
             true
         }
 
     internal fun unregister(call: Call) {
         synchronized(lock) { calls -= call }
+    }
+
+    /**
+     * 取消归属标记为 [tag] 的全部在途 Call（APP-05a 共性第 1 条：换号、取消、登录页出栈时同步取消这次尝试已交给传输层的请求）。
+     * 调用方先让自己的归属核对失效，再调这里：还没写出的不再写出，已写出的不再等响应。
+     */
+    fun cancelTagged(tag: Any) {
+        val cancelled = synchronized(lock) { calls.filterValues { it === tag }.keys.toList() }
+        cancelled.forEach(Call::cancel)
     }
 
     /**

@@ -11,6 +11,7 @@
 #         - 组件目录页的唯一长标记（COMPONENT_CATALOG_MARKER，取自 app/src/debugFeatures 的 ComponentCatalog.kt；DS-01）
 #         - 版本检查调试假数据的唯一长标记（AppVersionCheckExample.MARKER，取自生成物 AppVersionCheckExample.kt；APP-02c）
 #         - 桥一致性页入口的唯一长标记（BRIDGE_CONFORMANCE_MARKER，取自 app/src/debugFeatures 的 DebugConformance.kt；APP-04）
+#         - Debug 本机假登录服务的标记 COULI_FAKE_LOGIN_SERVER_APP05A（app/src/debugFeatures 的 DebugFakeLoginServer.kt；APP-05a）
 #         - 一致性页的假登录账号（conformance-harness）、adb 入口 extra（couli.conformance）、替换配置用的示例域（example.test）；
 #         - Debug 本机一致性测试源的地址 10.0.2.2 / 127.0.0.1 / http(s)://localhost（模拟器访问宿主机 loopback；APP-04「Debug 本机 loopback 例外」，只在 debug：
 #           --self-test 要求 debug 命中、staging 与 release 都不命中）
@@ -152,13 +153,14 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test'; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A'; do
     case "$pattern" in
       "$conformance_marker") label="bridge_conformance" ;;
       "$LOOPBACK_PATTERN") label="loopback_origin" ;;
       conformance-harness) label="test_login" ;;
       'couli\.conformance') label="conformance_entry" ;;
       'example\.test') label="config_override_sample" ;;
+      COULI_FAKE_LOGIN_SERVER_APP05A) label="fake_login_server" ;;
       "$marker") label="debug_routes_marker" ;;
       "$catalog_marker") label="component_catalog" ;;
       "$update_marker") label="update_check_example" ;;
@@ -256,6 +258,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "test_login"
   require_label "debug" "conformance_entry"
   require_label "debug" "config_override_sample"
+  require_label "debug" "fake_login_server"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -269,6 +272,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "test_login"
   require_label "staging" "conformance_entry"
   require_label "staging" "config_override_sample"
+  require_label "staging" "fake_login_server"
   forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"

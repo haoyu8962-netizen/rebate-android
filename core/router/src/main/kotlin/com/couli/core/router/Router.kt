@@ -45,6 +45,7 @@ data class RouteOutcome(
  * 代次（R1-03）：退出登录、切换账号、切换环境都让代次加一；推送回查发起时记下代次，结果回来时代次已变即丢弃，
  * 不拿上一个账号或环境的回查结果打开页面。
  */
+@Suppress("TooManyFunctions") // 统一入口、恢复与各类状态变化的入口集中在一处（APP-05a 加了待办查询与丢弃）
 class Router(
     private val state: () -> GuardState,
     private val pendingStore: PendingActionStore,
@@ -176,6 +177,15 @@ class Router(
     fun onConsentDeclined() {
         awaitingConsentDecision = false
         if (state().privacyState != PrivacyState.CONSENTED) pendingStore.clear()
+    }
+
+    /** 本机有没有未过期的 pending_action（登录后计划 AfterLogin 用，APP-05a）。 */
+    val hasPendingAction: Boolean get() = pendingStore.load() != null
+
+    /** 删除 pending_action，不执行（登录拿到受限会话或强更低于时丢弃业务待办，APP-05a discard_pending）。 */
+    fun discardPendingAction() {
+        awaitingConsentDecision = false
+        pendingStore.clear()
     }
 
     /** 退出登录、切换账号：清除 pending_action（BR-ID-10），代次加一（进行中的推送回查结果作废）。 */

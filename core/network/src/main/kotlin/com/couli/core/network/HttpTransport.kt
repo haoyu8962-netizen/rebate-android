@@ -64,6 +64,8 @@ internal class SendGuard(
      * 发送期间每 [HttpTransport.ABANDON_POLL_MS] 毫秒核对一次，为 true 即取消这个 Call（按 cancelled 结束）。
      */
     val abandoned: (() -> Boolean)? = null,
+    /** 调用方的归属标记（[CallOwnership]）：[InFlightCalls.cancelTagged] 据此取消这次发送；没有为 null。 */
+    val tag: Any? = null,
     val admit: () -> String?,
 )
 
@@ -114,7 +116,7 @@ internal class HttpTransport(
         // 与调用方的截止时间绑定（R2-01、共性第 45 条）：Call 的整体超时取「本次超时」与「剩余预算」中较小的，到期由 OkHttp
         // 取消这个 Call（阻塞中的 execute 立即结束）；预算已用完的不发出
         if (!bindDeadline(call, guard.deadlineNanos, timeoutMillis)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
-        if (!inFlight.register(call, guard.epochs)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
+        if (!inFlight.register(call, guard.epochs, guard.tag)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
         // 没人要了就取消（共性第 54 条）：共享刷新的最后一个调用方到期或失效时，连同在途的刷新请求一起取消
         val watch = guard.abandoned?.let { abandoned -> watchAbandoned(call, abandoned) }
         return try {

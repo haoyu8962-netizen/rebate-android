@@ -242,6 +242,39 @@ class DeviceReRegisterCallerValidityTest {
         assertEquals(0, lost.get())
     }
 
+    /**
+     * APP-04 共性第 61 条（复用「进行中」窗口的分支）：注册请求已写出、服务端不回；第二个调用方复用这个进行中的窗口（登记为窗口调用方）。
+     * 只有发起者失效时在途请求照常等待；窗口里两个调用方都失效后才取消底层注册请求，两边都按失败结束、不记结果，恢复交给退避链一次。
+     */
+    @Test
+    fun aSharedReRegistrationIsCancelledOnlyWhenEveryCallerInTheWindowIsGone() {
+        laterRegisterReply = { MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) }
+        val entered = CountDownLatch(1)
+        registry.hooks = DeviceRegistryHooks(beforeSend = { entered.countDown() })
+        val firstOpen =
+            java.util.concurrent.atomic
+                .AtomicBoolean(true)
+        val secondOpen =
+            java.util.concurrent.atomic
+                .AtomicBoolean(true)
+        val first = pool.submit<Boolean> { registry.reRegister("device-1", RecoveryCaller { firstOpen.get() }) }
+        assertTrue(entered.await(SETTLE_MS, TimeUnit.MILLISECONDS))
+        val second = pool.submit<Boolean> { registry.reRegister("device-1", RecoveryCaller { secondOpen.get() }) }
+        Thread.sleep(WAIT_MS)
+
+        firstOpen.set(false)
+        Thread.sleep(WAIT_MS * 2)
+        assertFalse("还有有效的复用者：在途注册不取消", DEVICES in cancelledPaths)
+
+        secondOpen.set(false)
+        waitUntil("窗口里的调用方全部失效：取消底层注册请求") { DEVICES in cancelledPaths }
+        assertFalse(first.get(SETTLE_MS, TimeUnit.MILLISECONDS))
+        assertFalse(second.get(SETTLE_MS, TimeUnit.MILLISECONDS))
+        assertEquals("只写出过一次重新注册（第 1 次是同意时）", 2, registerRequests.get())
+        assertEquals("同一被拒凭据只交退避链一次", 1, lost.get())
+        assertNull(registry.deviceId)
+    }
+
     private fun envelope(
         code: Int,
         data: String = "null",

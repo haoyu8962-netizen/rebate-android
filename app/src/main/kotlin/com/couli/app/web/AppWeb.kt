@@ -8,6 +8,7 @@ import androidx.core.content.edit
 import com.couli.app.BuildConfig
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.clientPrivacyRaw
+import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.update.AppUpdate
@@ -77,7 +78,11 @@ class AppWeb(
     private val hosts: BridgeHostRegistry,
     private val tokens: SessionTokens,
     private val inFlight: InFlightCalls,
+    /** 登录（APP-05a）：桥调用 auth.login 等登录页结束再结算（APP-04 共性第 66 条）。 */
+    private val login: Provider<AppLogin>,
 ) {
+    private val bridgeLogin = BridgeLogin({ login.get() }, routing) { update.checkRound }
+
     val appVersion: String = BuildConfig.VERSION_NAME.substringBefore('-')
 
     private fun data(): JsonObject = config.store.snapshots.value.data
@@ -221,12 +226,14 @@ class AppWeb(
             }
         }
 
-        override suspend fun login(update: String): BridgeOutcome {
-            // TODO(APP-05)：登录页完成或离开时再结算；现在只以桥来源打开登录占位路由（共性第 33 条），按当时的会话返回
-            val opened = BridgeRouting.open(routing.router, routing.guardState(), LOGIN, JsonObject(emptyMap()), update)
-            if (opened is BridgeOutcome.Fail) return opened
-            return BridgeOutcome.Ok(JsonObject(mapOf("logged_in" to JsonPrimitive(client.get().activeUserId() != null))))
-        }
+        /** 只打开登录页、不等待（BridgeHost 走带等待的重载 [login]，这里是它的「打开」一步）。 */
+        override suspend fun login(update: String): BridgeOutcome = bridgeLogin.open(update).first
+
+        override suspend fun login(
+            update: String,
+            validity: BridgeCallValidity,
+            opening: suspend (suspend () -> BridgeOutcome) -> BridgeOutcome,
+        ): BridgeOutcome = bridgeLogin.run(update, validity, opening)
 
         override suspend fun signedRequest(
             method: String,
@@ -260,7 +267,8 @@ class AppWeb(
             route: String,
             params: JsonObject,
             update: String,
-        ): BridgeOutcome = BridgeRouting.open(routing.router, routing.guardState(), route, params, update)
+        ): BridgeOutcome =
+            BridgeRouting.open(routing.router, routing::guardState, route, params, update, round = { this@AppWeb.update.checkRound })
 
         override fun clipboardWrite(text: String): BridgeOutcome {
             // TODO(APP-09)：剪贴板识别模块接入后记下文本哈希、之后不再识别它（03 §4.6）
@@ -333,7 +341,6 @@ class AppWeb(
 
     companion object {
         private const val PAGE = "WebPage"
-        private const val LOGIN = "Login"
         private const val GET_ME = "getMe"
         private const val ISSUE_H5_TOKEN = "issueH5Token"
         private const val SCOPE_READ_ONLY = "read_only"
@@ -420,7 +427,7 @@ class AppWeb(
 internal fun bridgeOwnership(
     inFlight: InFlightCalls,
     validity: BridgeCallValidity,
-): CallOwnership = CallOwnership(inFlight.epochs(), validity.deadlineNanos(), validity::stillValid)
+): CallOwnership = CallOwnership(inFlight.epochs(), validity.deadlineNanos(), stillOwned = validity::stillValid)
 
 /** 回环源只在 debug 构建保留。 */
 private fun Set<String>.onlyInDebug(): Set<String> = if (BuildConfig.BUILD_KIND == DEBUG_BUILD_KIND) this else emptySet()

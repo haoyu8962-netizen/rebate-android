@@ -254,6 +254,7 @@ fun CouliDialog(
     onDismiss: () -> Unit = onDismissRequest,
     dismissible: Boolean = true,
     restoreFocusTo: FocusRequester? = null,
+    body: (@Composable () -> Unit)? = null,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
     Dialog(
@@ -280,6 +281,7 @@ fun CouliDialog(
                 dismissText = dismissText,
                 onDismiss = onDismiss,
                 titleFocus = titleFocus,
+                body = body,
             )
         }
     }
@@ -299,6 +301,7 @@ fun CouliDialogContent(
     dismissText: String? = null,
     onDismiss: () -> Unit = {},
     titleFocus: FocusRequester? = null,
+    body: (@Composable () -> Unit)? = null,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -316,8 +319,9 @@ fun CouliDialogContent(
                 modifier = Modifier.modalTitle(titleFocus),
             )
         },
+        // 正文：可交互的正文（如带协议链接的确认框，链接各自可点、读屏可单独聚焦）用 [body]，否则是纯文字 [message]
         body =
-            message?.let {
+            body ?: message?.let {
                 { Text(text = it, style = CouliTypography.footnote, color = CouliColors.textPrimary) }
             },
         footer = {
