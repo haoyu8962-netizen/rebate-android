@@ -15,6 +15,7 @@ import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
+import com.couli.app.search.AppSearch
 import com.couli.app.shell.AppShell
 import com.couli.app.update.AppUpdate
 import com.couli.app.web.AppWeb
@@ -62,6 +63,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var login: AppLogin
 
+    @Inject
+    lateinit var search: AppSearch
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,6 +96,7 @@ class MainActivity : ComponentActivity() {
                             update = update,
                             web = web,
                             login = login,
+                            search = search,
                             homeContent = { VariantRootContent(trace = trace) },
                         )
                     },

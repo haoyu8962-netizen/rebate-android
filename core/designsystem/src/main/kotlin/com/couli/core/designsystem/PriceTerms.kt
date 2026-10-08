@@ -75,6 +75,20 @@ object PriceTerms {
     /** 预售价格说明（BR-PRICE-22；BR-TEXT-12 细则 presale.price_note）。 */
     const val PRESALE_NOTE = "定金与尾款以下单页为准"
 
+    // 购买按钮动词（BR-TEXT-12 细则、TRADE-21：服务端 cta.text_key → 字）。TODO(N-11): 契约补 btn.buy* 键后改读字典
+
+    /** btn.buy.coupon「领券购买」。 */
+    const val BUY_COUPON = "领券购买"
+
+    /** btn.buy「去购买」。 */
+    const val BUY = "去购买"
+
+    /** btn.buy.no_rebate「去购买（无返利）」。 */
+    const val BUY_NO_REBATE = "去购买（无返利）"
+
+    /** 详情取价时间的前缀（Product 画板「取价 10:00」）。TODO(N-11) */
+    const val QUOTED = "取价"
+
     /** 购买按钮后缀模板（BR-TEXT-14 表 C btn.buy.rebate_suffix「· 预估返 {amount}」）。 */
     const val BUY_REBATE_SUFFIX_TEMPLATE = "· 预估返 {amount}"
 

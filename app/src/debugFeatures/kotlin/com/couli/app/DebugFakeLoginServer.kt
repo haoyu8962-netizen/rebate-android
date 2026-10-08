@@ -39,7 +39,10 @@ internal class DebugFakeLoginServer(
                 content.writeTo(buffer)
                 runCatching { Json.parseToJsonElement(buffer.readUtf8()) as? JsonObject }.getOrNull()
             } ?: JsonObject(emptyMap())
-        val (code, data, headers) = answer(request.url.encodedPath, body)
+        // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
+        val (code, data, headers) =
+            DebugFakeSearch.answer(request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
+                ?: answer(request.url.encodedPath, body)
         val envelope = """{"code":$code,"msg":"","data":$data,"trace_id":"fake-trace-${"%06d".format(++serial)}"}"""
         return Response
             .Builder()

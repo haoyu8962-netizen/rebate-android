@@ -43,6 +43,7 @@ const val TAB_SHELL_TAG = "tab_shell"
 const val BASIC_MODE_PAGE_TAG = "basic_mode_page"
 const val BASIC_MODE_ENABLE_TAG = "basic_mode_enable_full"
 const val BASIC_MODE_SETTINGS_TAG = "basic_mode_settings"
+const val HOME_SEARCH_ENTRY_TAG = "home_search_entry"
 
 /** 底部四个 Tab：路由名（routes.json）→ 图标与名称（名称取 [ShellDraftTexts]，TODO(N-16)）。 */
 enum class ShellTab(
@@ -157,6 +158,25 @@ private fun SearchEntry(
             modifier = Modifier.size(CouliSizes.iconMedium),
         )
         Text(text = ShellDraftTexts.BASIC_SEARCH_PLACEHOLDER, style = CouliTypography.body, color = CouliColors.textSecondary)
+    }
+}
+
+/** 首页 Tab（已同意）：顶部搜索入口，下面是首页内容（[content]，占位）。 */
+@Composable
+fun HomeWithSearch(
+    onSearch: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        SearchEntry(
+            onClick = onSearch,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
+                    .testTag(HOME_SEARCH_ENTRY_TAG),
+        )
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
     }
 }
 

@@ -1,8 +1,10 @@
 package com.couli.core.clientcore
 
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -83,6 +85,18 @@ class ConfigStore(
     /** 环境切换清理加 1：之前发出的拉取结果作废。 */
     private var generation = 0L
 
+    /**
+     * 当前配置（current 层）最近一次被服务端确认的拉取编号（APP-06a，H-R3-01）：200 成功换内容时、有效的 304 重新确认当前配置时
+     * 都推进；还没有成功拉取、环境切换后为 0。
+     */
+    private var appliedId = 0L
+
+    /** [requestFresh] 时有拉取在途：在途的这次结算后再发一次（保证有一次拉取在请求之后才发出）。 */
+    private var pendingFresh = false
+
+    /** 配置被确认或换内容时的监听（搜索页订阅，APP-06a）。 */
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
     private val mutableSnapshots = MutableStateFlow(ConfigSnapshot(bundledObject, ConfigSourceRaw.BUNDLED))
 
     /** 当前生效的配置（每次换层或换内容时发出）。 */
@@ -103,11 +117,58 @@ class ConfigStore(
             lastSearch = stored?.let { it.search ?: searchIn(it.data) }.orEmpty()
             publishLocked()
         }
+        notifyListeners()
         startFetch()
     }
 
     /** 回前台：带本进程最近一次成功响应的 ETag 拉取。 */
     fun onForeground() = startFetch()
+
+    /**
+     * 要一份「此刻之后才发出」的配置（APP-06a：50304 search_disabled 刷新配置，BR-PROD-10）：没有在途拉取就立即拉取；有在途拉取时，
+     * 它结算（成功、304 或失败）后再发一次——在途的那次是此刻之前发出的，结果不能当作更新的配置。
+     */
+    fun requestFresh() {
+        synchronized(lock) {
+            if (inFlight != null) {
+                pendingFresh = true
+                return
+            }
+        }
+        startFetch()
+    }
+
+    /** 已发出的拉取的最大编号（单调递增）：编号大于它的拉取一定在此刻之后才发出。 */
+    val issuedFetchId: Long get() = synchronized(lock) { sequence }
+
+    /** 当前配置最近一次被确认（200 或有效的 304）的拉取编号；还没有为 0。 */
+    val appliedFetchId: Long get() = synchronized(lock) { appliedId }
+
+    /**
+     * 订阅配置变化：换层、换内容、有效的 304 确认、环境清理之后各通知一次（不立即回调）。在拉取线程或调用方线程上调用，接收方自己
+     * 切线程。返回取消订阅的函数。
+     */
+    fun subscribe(listener: () -> Unit): () -> Unit {
+        listeners += listener
+        return { listeners -= listener }
+    }
+
+    /**
+     * 搜索 Tab 用的三层原始取值（APP-06a SearchTabs.resolve 的输入，JSON 对象 {current?, lkg, bundled?}）：current 为本进程最近一次
+     * 成功响应的 features.search_status 原样对象（未知取值保留，由 SearchTabs 按 off 处理、不回落）；lkg 为历次成功响应按平台合并的
+     * on / off；bundled 为包内原样对象。某层没有 search_status 对象时不放该层。
+     * TODO(N-27)：LKG 只存 on / off，历史响应里的未知取值不会留到 lkg 层（未知值三层口径待补）。
+     */
+    fun searchStatusLayers(): JsonObject =
+        synchronized(lock) {
+            val layers = linkedMapOf<String, JsonElement>()
+            current?.let(::rawSearchStatus)?.let { layers[LAYER_CURRENT] = it }
+            layers[LAYER_LKG] = JsonObject(lastSearch.mapValues { JsonPrimitive(it.value) })
+            rawSearchStatus(bundledObject)?.let { layers[LAYER_BUNDLED] = it }
+            JsonObject(layers)
+        }
+
+    private fun rawSearchStatus(layer: JsonObject): JsonObject? = (layer["features"] as? JsonObject)?.get("search_status") as? JsonObject
 
     /**
      * 按平台取搜索 Tab 状态：当前 → 上一次成功（逐平台取最近一次带了该平台取值的成功配置，R1-07）→ 包内（明确的 off 有效）；
@@ -146,6 +207,8 @@ class ConfigStore(
         synchronized(lock) {
             generation += 1
             inFlight = null
+            pendingFresh = false
+            appliedId = 0L
             try {
                 writeFile(null)
             } finally {
@@ -155,6 +218,18 @@ class ConfigStore(
                 lastPatterns = null
                 lastSearch = emptyMap()
                 publishLocked()
+            }
+        }
+        notifyListeners()
+    }
+
+    @Suppress("TooGenericExceptionCaught", "SwallowedException") // 监听方出错不影响配置本身与其他监听方
+    private fun notifyListeners() {
+        listeners.forEach { listener ->
+            try {
+                listener()
+            } catch (error: Exception) {
+                // 忽略
             }
         }
     }
@@ -179,29 +254,54 @@ class ConfigStore(
         }
     }
 
-    @Suppress("ReturnCount") // 作废、非成功、内容不是对象逐项提前结束
     private fun complete(
         id: Long,
         gen: Long,
         reply: ConfigReply,
     ) {
+        val changed: Boolean
+        val again: Boolean
         synchronized(lock) {
             if (inFlight != id || generation != gen) return
             inFlight = null
-            if (reply.kindRaw != ConfigReply.OK) return
-            val body = ConfigResolver.parseObject(reply.bodyJson) ?: return
-            val patterns = ConfigResolver.linkPatternsIn(body) ?: lastPatterns
-            // 每次成功都推进「上一次成功」这一层（R1-07）：带了取值的平台更新，缺的沿用更早一次成功的
-            val search = lastSearch + searchIn(body)
-            // 先写 LKG 再换内存。写盘失败时文件仍是上一份成功配置；本次响应本身有效，照样作为当前配置与最近一次成功配置使用
-            runCatching { writeFile(encode(body, patterns, search)) }
-            current = body
-            lkg = body
-            etag = reply.etag
-            lastPatterns = patterns
-            lastSearch = search
-            publishLocked()
+            changed = applyLocked(id, reply)
+            again = pendingFresh
+            pendingFresh = false
         }
+        if (changed) notifyListeners()
+        if (again) startFetch()
+    }
+
+    /**
+     * 结算一次拉取（在锁内）：200 换内容并推进确认编号；有效的 304（本进程已有当前配置时才会带 If-None-Match，同一时刻只有一个在途
+     * 拉取、环境切换会作废在途结果，所以结算时 current 仍是发出时那一份）只推进确认编号，内容、LKG、ETag 都不变（APP-06a H-R3-01：
+     * search_disabled 分界之后的确认据此恢复明确为 on 的平台）；没有当前配置时的 304 与失败不改任何内容。返回是否要通知监听方。
+     */
+    @Suppress("ReturnCount") // 304、非成功、内容不是对象逐项提前结束
+    private fun applyLocked(
+        id: Long,
+        reply: ConfigReply,
+    ): Boolean {
+        if (reply.kindRaw == ConfigReply.NOT_MODIFIED) {
+            if (current == null) return false
+            appliedId = id
+            return true
+        }
+        if (reply.kindRaw != ConfigReply.OK) return false
+        val body = ConfigResolver.parseObject(reply.bodyJson) ?: return false
+        val patterns = ConfigResolver.linkPatternsIn(body) ?: lastPatterns
+        // 每次成功都推进「上一次成功」这一层（R1-07）：带了取值的平台更新，缺的沿用更早一次成功的
+        val search = lastSearch + searchIn(body)
+        // 先写 LKG 再换内存。写盘失败时文件仍是上一份成功配置；本次响应本身有效，照样作为当前配置与最近一次成功配置使用
+        runCatching { writeFile(encode(body, patterns, search)) }
+        current = body
+        lkg = body
+        etag = reply.etag
+        lastPatterns = patterns
+        lastSearch = search
+        appliedId = id
+        publishLocked()
+        return true
     }
 
     private fun effective(): JsonObject = current ?: lkg ?: bundledObject
@@ -265,5 +365,8 @@ class ConfigStore(
         const val KEY_DATA = "data"
         const val KEY_PATTERNS = "link_patterns"
         const val KEY_SEARCH = "search_status"
+        const val LAYER_CURRENT = "current"
+        const val LAYER_LKG = "lkg"
+        const val LAYER_BUNDLED = "bundled"
     }
 }

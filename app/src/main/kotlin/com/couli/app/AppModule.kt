@@ -13,6 +13,7 @@ import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
+import com.couli.app.search.AppSearch
 import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
@@ -525,6 +526,19 @@ object AppModule {
             privacy.onConclusionChanged { login.syncSession() }
             update.onRouterUpdate { login.syncSession() }
         }
+
+    /**
+     * 搜索与商品详情（APP-06a）：经 ApiClient 搜索 / 取详情（请求带页面归属）；Tab 按 ConfigStore 的 search_status 三层取值；
+     * search_disabled 刷新配置（304 也算确认）；详情公开态按会话与隐私结论。
+     */
+    @Provides
+    @Singleton
+    fun appSearch(
+        client: ApiClient,
+        config: AppConfig,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion })
 
     /** 活着的 BridgeHost（APP-04）：撤回同意、切换环境时作废在途桥调用。 */
     @Provides

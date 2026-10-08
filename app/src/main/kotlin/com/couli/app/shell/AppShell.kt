@@ -31,6 +31,9 @@ import com.couli.app.routing.PlaceholderRoutePage
 import com.couli.app.routing.RouteDestination
 import com.couli.app.routing.RoutePageRegistry
 import com.couli.app.routing.ShellHooks
+import com.couli.app.search.AppSearch
+import com.couli.app.search.ProductDetailRoute
+import com.couli.app.search.SearchRoute
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.ForceUpdateActions
 import com.couli.app.update.ForceUpdatePage
@@ -88,6 +91,7 @@ fun AppShell(
     update: AppUpdate? = null,
     web: AppWeb? = null,
     login: AppLogin? = null,
+    search: AppSearch? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -98,7 +102,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login) {
+        remember(homeContent, update, web, login, search) {
             RoutePageRegistry(
                 mapOf(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -119,6 +123,13 @@ fun AppShell(
                     SETTINGS_ROUTE to { page ->
                         login?.let { SettingsRoute(it, routing) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
+                    // 搜索与商品详情（APP-06a）；没有接线（只测外壳的单测）时是占位页
+                    SEARCH_ROUTE to { page ->
+                        search?.let { SearchRoute(it, page) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
+                    PRODUCT_DETAIL_ROUTE to { page ->
+                        search?.let { ProductDetailRoute(it, page) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
                     // 隐私中心占位（TODO(APP-12)）：强更状态下只可能从强更页进入，带强更状态标记（R1-05）
                     PRIVACY_CENTER_ROUTE to { page ->
                         PlaceholderRoutePage(page, fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN)
@@ -127,13 +138,17 @@ fun AppShell(
             )
         }
     val hooks =
-        remember(privacy, login) {
+        remember(privacy, login, search) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly -> ShellTab.ofRoute(route)?.let { selection = TabSelection(it, readonly) } },
                 onRequestConsent = { privacy.requestFullFunction() },
                 pageAllowed = { page -> stillAllowedWithUpdate(page, routing.guardState()) },
-                onBackStack = { entries -> login?.followBackStack(entries) },
+                onBackStack = { entries ->
+                    login?.followBackStack(entries)
+                    // 搜索、详情页出栈的同步出口：立即作废其在途请求（APP-06a，APP-05a 共性第 9 条）
+                    search?.followBackStack(entries)
+                },
             )
         }
     val activity = LocalActivity.current
@@ -309,6 +324,9 @@ private fun TabRoot(
             onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
             onEnableFullFunction = onEnableFullFunction,
         ) { registry.Render(destination) }
+    } else if (tab == ShellTab.HOME) {
+        // 首页 Tab 顶部的搜索入口（经 Router 打开 Search，APP-06a 冒烟入口）；首页内容在首页任务（TODO(APP-11)）
+        HomeWithSearch(onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) }) { registry.Render(destination) }
     } else {
         registry.Render(destination)
     }
@@ -346,6 +364,7 @@ internal fun inAppRequest(route: String): RouteRequest = RouteRequest(route, Jso
 internal const val AGREEMENT_ROUTE = "Agreement"
 internal const val PRIVACY_CENTER_ROUTE = "PrivacyCenter"
 private const val SEARCH_ROUTE = "Search"
+private const val PRODUCT_DETAIL_ROUTE = "ProductDetail"
 private const val SETTINGS_ROUTE = "Settings"
 private const val ME_ROUTE = "Me"
 private const val EMPTY_PARAMS = "{}"

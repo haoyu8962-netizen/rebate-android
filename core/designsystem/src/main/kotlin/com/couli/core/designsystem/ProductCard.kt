@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -74,7 +75,17 @@ data class ProductCardData(
      * 购买按钮只显示动词；价格、口径 i、「以结算为准」照常。遮罩与读屏文案由调用方从字典给。
      */
     val amountMask: AmountMask? = null,
+    /**
+     * 价格不可用的提示（BR-PRICE-01、AC-S1-09「暂时查不到该商品价格」，APP-06a 共性第 1 条）：不为 null 时卡上不显示任何金额
+     * （主价、副行、返利、预估返后、取价），只显示这句；价格保持未知，不补 0。购买按钮由调用方置为「稍后再试」。
+     */
+    val priceUnavailableText: String? = null,
+    /** 取价处的价格变化提示（BR-PRICE-11：stale=true 或 age_sec > 300；APP-06a 共性第 3 条），接在取价时间后；没有为 null。 */
+    val staleNote: String? = null,
 ) {
+    /** 价格不可用：不显示任何金额（[priceUnavailableText]）。 */
+    val priceUnavailable: Boolean get() = priceUnavailableText != null
+
     val amountHidden: Boolean get() = amountMask?.hidden == true
 
     /** 卡上实际显示的返利标签（金额隐藏时已遮罩）。 */
@@ -95,7 +106,7 @@ data class ProductCardData(
         }
 
     /** 价格口径 i 跟着价格走：卡上有价格、有说明全文就显示，与返利区是否显示（暂无返利、隐藏）无关（F-AND-06）。 */
-    val showsDisclaimerButton: Boolean get() = price != null && disclaimer.isNotEmpty()
+    val showsDisclaimerButton: Boolean get() = price != null && disclaimer.isNotEmpty() && !priceUnavailable
 }
 
 /** 列表卡的两种用处：搜索卡（主价 22，底行左侧口径说明）与 AI 卡（主价 17，口径按钮在右上角）。 */
@@ -112,6 +123,7 @@ enum class ProductCardVariant {
  * 占整卡宽度（价格区降级）；金额本身从不拆开（R2-01）。
  * [ProductCardData.price] 为 null（金额未知）时只显示返利文案，不显示任何价格。
  */
+@Suppress("CyclomaticComplexMethod") // 卡片各区按数据逐项组合
 @Composable
 fun ProductCardList(
     data: ProductCardData,
@@ -121,8 +133,16 @@ fun ProductCardList(
     buyState: BuyButtonState = BuyButtonState.NORMAL,
     amountHidden: Boolean = data.amountHidden,
     context: String = if (variant == ProductCardVariant.AI) BuyButtonModel.CONTEXT_AGENT else BuyButtonModel.CONTEXT_LIST,
+    retryLaterText: String = data.buyBase,
+    /**
+     * 口径 i 的去向（APP-06a 共性第 5 条，SearchDisclaimerNote）：给了就由调用方弹出说明弹层（[DisclaimerNoteDialog]），不在卡内展开；
+     * [infoFocus] 挂在 i 上，弹层关闭后焦点回到这里。
+     */
+    onInfo: (() -> Unit)? = null,
+    infoFocus: FocusRequester? = null,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
+    val toggleInfo: () -> Unit = onInfo ?: { expanded = !expanded }
     val ai = variant == ProductCardVariant.AI
     // 整卡同一份隐藏状态：只传 amountHidden=true（没给遮罩）时返利标签、读屏、预估返后与按钮一起隐藏（R1-08）
     val shown = data.withAmountHidden(amountHidden)
@@ -151,10 +171,13 @@ fun ProductCardList(
                 }
             }
             if (priceFullWidth) ListPriceBlock(data = shown, size = priceSize)
+            shown.staleNote?.takeIf { !shown.priceUnavailable && shown.price != null }?.let {
+                Text(text = it, style = CouliTypography.caption, color = CouliColors.textSecondary)
+            }
             EndWrapRow(
                 modifier = Modifier.fillMaxWidth().heightIn(min = CouliSizes.touchTarget),
                 start = {
-                    if (!ai) SettleNoteWithInfo(data = shown, expanded = expanded, onToggle = { expanded = !expanded })
+                    if (!ai) SettleNoteWithInfo(data = shown, expanded = expanded, onToggle = toggleInfo, infoFocus = infoFocus)
                 },
                 end = {
                     BuyButton(
@@ -164,17 +187,18 @@ fun ProductCardList(
                         context = context,
                         state = buyState,
                         amountHidden = shown.amountHidden,
+                        retryLaterText = retryLaterText,
                     )
                 },
             )
-            if (expanded) DisclaimerFooter(lines = shown.disclaimer.map { DisclaimerLine(it, icon = null) })
+            if (expanded && onInfo == null) DisclaimerFooter(lines = shown.disclaimer.map { DisclaimerLine(it, icon = null) })
         }
         if (ai && shown.showsDisclaimerButton) {
             DisclaimerInfoButton(
                 label = shown.infoLabel,
                 expanded = expanded,
-                onToggle = { expanded = !expanded },
-                modifier = Modifier.align(Alignment.TopEnd),
+                onToggle = toggleInfo,
+                modifier = Modifier.align(Alignment.TopEnd).then(infoFocus?.let { Modifier.couliFocusTarget(it) } ?: Modifier),
             )
         }
     }
@@ -186,6 +210,10 @@ private fun ListPriceBlock(
     data: ProductCardData,
     size: PriceTagSize,
 ) {
+    if (data.priceUnavailableText != null) {
+        Text(text = data.priceUnavailableText, style = CouliTypography.body, color = CouliColors.textSecondary)
+        return
+    }
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
@@ -236,10 +264,11 @@ private fun SettleNoteWithInfo(
     data: ProductCardData,
     expanded: Boolean,
     onToggle: () -> Unit,
+    infoFocus: FocusRequester? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        // 比价区间时显示「以结算为准」（BR-PRICE-07 rebate_compare）；单一金额只有口径按钮
-        if (data.rebate.kind == RebateKind.RANGE) {
+        // 比价区间时显示「以结算为准」（BR-PRICE-07 rebate_compare）；单一金额只有口径按钮。价格不可用时没有返利区，也不显示
+        if (data.rebate.kind == RebateKind.RANGE && !data.priceUnavailable) {
             Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
         }
         // 48 命中区比 16 图标大，向左收 12 让图标贴近文字 / 卡片内边距（设计稿用负外边距达到同样效果，GUIDE §7.2.1）
@@ -248,7 +277,7 @@ private fun SettleNoteWithInfo(
                 label = data.infoLabel,
                 expanded = expanded,
                 onToggle = onToggle,
-                modifier = Modifier.offset(x = -CouliSpacing.space3),
+                modifier = Modifier.offset(x = -CouliSpacing.space3).then(infoFocus?.let { Modifier.couliFocusTarget(it) } ?: Modifier),
             )
         }
     }
@@ -419,29 +448,11 @@ fun ProductCardLarge(
         modifier = modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        if (data.price != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                PriceTagMain(content = data.price, size = PriceTagSize.LARGE)
-                PriceSubLines(lines = data.priceSubLines(estNet = null))
-            }
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-                itemVerticalAlignment = Alignment.CenterVertically,
-            ) {
-                RebateTag(content = data.displayedRebate, size = RebateTagSize.LARGE)
-                if (data.rebate.kind == RebateKind.RANGE) {
-                    Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
-                }
-            }
-            val meta = if (data.price == null) emptyList() else listOfNotNull(data.visibleEstNet, data.quotedAt)
-            if (meta.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                    meta.forEach { Text(text = it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }
-                }
-            }
+        if (data.priceUnavailableText != null) {
+            // 价格不可用：不显示任何金额（价格、返利、预估返后、取价），只有提示（BR-PRICE-01）
+            Text(text = data.priceUnavailableText, style = CouliTextStyles.bodySemibold, color = CouliColors.textSecondary)
+        } else {
+            LargePriceBlock(data)
         }
         BenefitTagRow(tags = data.benefitTags)
         Box(modifier = Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
@@ -450,6 +461,38 @@ fun ProductCardLarge(
             if (data.shopName != null) {
                 Text(text = data.shopName, style = CouliTypography.caption, color = CouliColors.textSecondary)
             }
+        }
+    }
+}
+
+/** 详情大卡的价格与返利区：价格（金额未知时没有）→ 大号返利标签 → 预估返后、取价时间与价格变化提示。 */
+@Composable
+private fun LargePriceBlock(data: ProductCardData) {
+    if (data.price != null) {
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
+            PriceTagMain(content = data.price, size = PriceTagSize.LARGE)
+            PriceSubLines(lines = data.priceSubLines(estNet = null))
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            RebateTag(content = data.displayedRebate, size = RebateTagSize.LARGE)
+            if (data.rebate.kind == RebateKind.RANGE) {
+                Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
+            }
+        }
+        val meta = if (data.price == null) emptyList() else listOfNotNull(data.visibleEstNet, data.quotedAt)
+        if (meta.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+                meta.forEach { Text(text = it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }
+            }
+        }
+        if (data.price != null && data.staleNote != null) {
+            Text(text = data.staleNote, style = CouliTypography.caption, color = CouliColors.statusWarningText)
         }
     }
 }

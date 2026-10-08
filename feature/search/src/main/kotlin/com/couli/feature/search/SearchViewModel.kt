@@ -1,0 +1,383 @@
+package com.couli.feature.search
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.couli.core.designsystem.ProductCardTexts
+import com.couli.core.network.PageApi
+import com.couli.generated.Sort
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+
+/** 搜索页的文案（App 给：契约字典 → 草稿表 SearchDraftTexts）。 */
+interface SearchTexts : ProductCardTexts {
+    /** 带 {变量} 的文案；变量为空或缺失时用 fallback（BR-TEXT-14）。 */
+    fun format(
+        key: String,
+        vars: Map<String, String>,
+    ): String
+}
+
+/** 搜索页的出口（App 给：经 Router 打开别的页、关闭本页）。 */
+class SearchPageActions(
+    val onBack: () -> Unit = {},
+    /** 点结果卡片：经 Router 打开 ProductDetail（routes.json：platform、product_key 必填，item_ref 原样透传）。 */
+    val onOpenProduct: (platform: String, productKey: String, itemRef: String?) -> Unit = { _, _, _ -> },
+    /** 卡片【购买】：只发出购买意图。TODO(APP-06b)：open 流程。 */
+    val onBuyIntent: (card: JsonObject) -> Unit = {},
+)
+
+/** 搜索历史（本进程内，新的在前，最多 [MAX] 条；App 里一份）。TODO(N-27)：是否持久化、条数上限未规定。 */
+class SearchHistory {
+    private val words = ArrayDeque<String>()
+    val items: List<String> get() = words.toList()
+
+    fun add(word: String) {
+        words.remove(word)
+        words.addFirst(word)
+        while (words.size > MAX) words.removeLast()
+    }
+
+    fun clear() = words.clear()
+
+    private companion object {
+        const val MAX = 10
+    }
+}
+
+/**
+ * 搜索页配置。[query] / [platform] 是路由参数（routes.json Search：可选 q、platform）。[bindLeave]：页面一确定出栈（回退栈移除的同步出口）
+ * 由 App 调用的作废入口（APP-05a 共性第 9 条）；ViewModel 清理时也会调一次（兜底）。
+ */
+@Suppress("LongParameterList") // 执行器依赖、文案、路由参数与出口逐项给
+class SearchPageConfig(
+    val api: PageApi,
+    val config: SearchConfigPort,
+    val texts: SearchTexts,
+    val history: SearchHistory,
+    val query: String? = null,
+    val platform: String? = null,
+    val actions: SearchPageActions = SearchPageActions(),
+    val bindLeave: (leave: () -> Unit) -> Unit = {},
+    val clock: () -> Long = System::currentTimeMillis,
+)
+
+/** 搜索页的弹层。 */
+sealed interface SearchOverlay {
+    /** 卡片口径说明（SearchDisclaimerNote）：[cardKey] 用来把焦点还给那张卡的 i。 */
+    data class Disclaimer(
+        val cardKey: String,
+        val lines: List<String>,
+    ) : SearchOverlay
+
+    /** 价格区间面板（SearchFilterPrice）。 */
+    data object PriceFilter : SearchOverlay
+}
+
+/**
+ * 价格区间面板里还没提交的输入（元的原文）。放在 ViewModel 里并写进 SavedStateHandle：折叠屏展开、窗口变化引起的配置重建，以及进程被
+ * 系统回收后的恢复都不丢（03 §10.4，A-R1-07、A-R2-03）。
+ * 生命周期：打开面板时按已应用的条件初始化；【重置】清空；【确定】成功或关闭面板时丢弃；【确定】不合法时保留并标 [invalid]。
+ */
+data class PriceDraft(
+    val min: String = "",
+    val max: String = "",
+    val invalid: Boolean = false,
+)
+
+/**
+ * 列表的滚动锚点：第一个可见项的下标与偏移（像素），以及当时最后一个可见项的下标（恢复时要把它也加载出来，否则在已加载项的末尾滚不到
+ * 原偏移，会被截到更靠上的位置）。
+ */
+data class ScrollAnchor(
+    val index: Int,
+    val offset: Int,
+    val lastVisible: Int = index,
+)
+
+/**
+ * 搜索页的 ViewModel（03 §3.3）：状态来自 [SearchController]；输入框文字、历史、弹层在这里。
+ *
+ * 页面状态写进 [saved]（SavedStateHandle，导航回退栈项的保存状态；APP-06a 共性第 17、20 条，A-R2-03）：输入框文字、已提交的关键词、平台、
+ * 排序、筛选、查询轮次、已为哪一轮滚回过顶部、价格面板是否打开与草稿、列表滚动锚点、是否已自动聚焦过。进程被系统回收后新建的 ViewModel
+ * 拿到同一份保存状态时，按保存的条件恢复（不看路由参数 q、platform），重搜第一页但不算新一轮查询，再按滚动锚点（必要时继续翻页）回到原位置。
+ * 搜索历史只在本进程内（rule-gaps：是否持久化未规定），口径说明弹层不保存（关掉即可重开）。
+ */
+@Suppress("TooManyFunctions") // 页面每个操作一个入口
+class SearchViewModel(
+    initial: SearchPageConfig,
+    private val saved: SavedStateHandle,
+) : ViewModel() {
+    var config: SearchPageConfig = initial
+        private set
+    val controller = SearchController(initial.api, initial.config, viewModelScope, initial.clock)
+    val state: StateFlow<SearchSnapshot> = controller.state
+
+    /** 本 ViewModel 是按保存状态恢复出来的（之前的 ViewModel 已被销毁，如进程被系统回收）。 */
+    val restored: Boolean = saved.contains(K_KEYWORD)
+
+    /** 输入框已经自动聚焦过（返回本页、恢复后不再弹键盘）。 */
+    var autoFocused: Boolean = saved[K_AUTO_FOCUSED] ?: false
+        set(value) {
+            field = value
+            saved[K_AUTO_FOCUSED] = value
+        }
+
+    /**
+     * 列表已经为哪一轮查询（[SearchSnapshot.round]）滚回过顶部。返回本页、配置重建、系统回收后恢复时轮次没变，不再滚回顶部，保留恢复的滚动
+     * 位置（03 §10.4、适配约定 §6，A-R1-06、A-R2-03）。
+     */
+    var scrolledRound: Long = saved[K_SCROLLED_ROUND] ?: -1L
+        set(value) {
+            field = value
+            saved[K_SCROLLED_ROUND] = value
+        }
+
+    /**
+     * 恢复后还没回到的滚动锚点（只在 [restored] 时有）：结果重新加载到锚点所在项之后滚过去；不够就继续翻页，到底或翻页失败就停在最后。
+     * 新一轮查询开始时放弃。
+     */
+    var pendingScroll: ScrollAnchor? = if (restored) savedAnchor() else null
+        private set
+
+    private fun savedAnchor(): ScrollAnchor? {
+        val index = saved.get<Int>(K_SCROLL_INDEX) ?: return null
+        return ScrollAnchor(index, saved[K_SCROLL_OFFSET] ?: 0, saved[K_SCROLL_LAST] ?: index)
+    }
+
+    private val mutablePriceDraft =
+        MutableStateFlow(PriceDraft(saved[K_DRAFT_MIN] ?: "", saved[K_DRAFT_MAX] ?: "", saved[K_DRAFT_INVALID] ?: false))
+    val priceDraft: StateFlow<PriceDraft> = mutablePriceDraft.asStateFlow()
+
+    private val mutableInput = MutableStateFlow(if (restored) saved[K_INPUT] ?: "" else initial.query.orEmpty())
+    val input: StateFlow<String> = mutableInput.asStateFlow()
+
+    private val mutableHistory = MutableStateFlow(initial.history.items)
+    val history: StateFlow<List<String>> = mutableHistory.asStateFlow()
+
+    private val mutableOverlay =
+        MutableStateFlow<SearchOverlay?>(if (saved.get<Boolean>(K_SHEET_OPEN) == true) SearchOverlay.PriceFilter else null)
+    val overlay: StateFlow<SearchOverlay?> = mutableOverlay.asStateFlow()
+
+    init {
+        initial.bindLeave(controller::leave)
+        controller.open(initial.query, initial.platform, savedConditions())
+        if (!restored) initial.query?.let(::remember)
+        saveInput(mutableInput.value)
+        saveConditions(state.value.conditions)
+        viewModelScope.launch { controller.state.collect { saveConditions(it.conditions) } }
+    }
+
+    private fun savedConditions(): SearchConditions? {
+        if (!restored) return null
+        return SearchConditions(
+            keyword = saved[K_KEYWORD] ?: "",
+            platform = saved[K_PLATFORM],
+            sort = saved[K_SORT] ?: Sort.RELEVANCE.raw,
+            hasCoupon = saved[K_COUPON] ?: false,
+            priceMinFen = saved[K_PRICE_MIN],
+            priceMaxFen = saved[K_PRICE_MAX],
+            round = saved[K_ROUND] ?: 0L,
+        )
+    }
+
+    private fun saveConditions(c: SearchConditions) {
+        saved[K_KEYWORD] = c.keyword
+        saved[K_PLATFORM] = c.platform
+        saved[K_SORT] = c.sort
+        saved[K_COUPON] = c.hasCoupon
+        saved[K_PRICE_MIN] = c.priceMinFen
+        saved[K_PRICE_MAX] = c.priceMaxFen
+        saved[K_ROUND] = c.round
+    }
+
+    private fun saveInput(text: String) {
+        mutableInput.value = text
+        saved[K_INPUT] = text
+    }
+
+    private fun setDraft(draft: PriceDraft) {
+        mutablePriceDraft.value = draft
+        saved[K_DRAFT_MIN] = draft.min
+        saved[K_DRAFT_MAX] = draft.max
+        saved[K_DRAFT_INVALID] = draft.invalid
+    }
+
+    private fun setOverlay(next: SearchOverlay?) {
+        mutableOverlay.value = next
+        saved[K_SHEET_OPEN] = next == SearchOverlay.PriceFilter
+    }
+
+    /** 列表滚动后记下锚点（恢复中的锚点还没回到时不覆盖）。 */
+    fun onScrolled(anchor: ScrollAnchor) {
+        if (pendingScroll != null) return
+        saved[K_SCROLL_INDEX] = anchor.index
+        saved[K_SCROLL_OFFSET] = anchor.offset
+        saved[K_SCROLL_LAST] = anchor.lastVisible
+    }
+
+    /** 恢复的滚动锚点已经回到（或已放弃）。 */
+    fun scrollRestored() {
+        pendingScroll = null
+    }
+
+    /** 每次组合给最新的配置（出口回调随导航宿主变化）；执行器不变。 */
+    fun update(next: SearchPageConfig) {
+        config = next
+    }
+
+    fun onInput(text: String) {
+        saveInput(text)
+    }
+
+    fun onClear() {
+        saveInput("")
+    }
+
+    /** 【搜索】或键盘搜索键：合法才记入历史。 */
+    fun onSubmit(): Boolean {
+        val text = mutableInput.value
+        val ok = controller.submit(text)
+        if (ok) {
+            val normalized = SearchQuery.normalizeKeyword(text)
+            saveInput(normalized)
+            remember(normalized)
+        }
+        return ok
+    }
+
+    fun onHistory(word: String) {
+        saveInput(word)
+        onSubmit()
+    }
+
+    fun onClearHistory() {
+        config.history.clear()
+        mutableHistory.value = config.history.items
+    }
+
+    fun onCouponToggle() {
+        val s = state.value
+        controller.setFilters(!s.hasCoupon, s.priceMinFen, s.priceMaxFen)
+    }
+
+    fun openPriceFilter() {
+        val s = state.value
+        if (s.blocked) return
+        setDraft(PriceDraft(s.priceMinFen?.let(PriceInput::yuanText).orEmpty(), s.priceMaxFen?.let(PriceInput::yuanText).orEmpty()))
+        setOverlay(SearchOverlay.PriceFilter)
+    }
+
+    fun onPriceMin(text: String) {
+        setDraft(mutablePriceDraft.value.copy(min = text, invalid = false))
+    }
+
+    fun onPriceMax(text: String) {
+        setDraft(mutablePriceDraft.value.copy(max = text, invalid = false))
+    }
+
+    fun resetPriceDraft() {
+        setDraft(PriceDraft())
+    }
+
+    /** 价格区间面板【确定】：按草稿换算成整数分；不合法返回 false（面板内提示，保留草稿，不发请求）。 */
+    fun applyPriceDraft(): Boolean {
+        val draft = mutablePriceDraft.value
+        val lo = PriceInput.toFen(draft.min)
+        val hi = PriceInput.toFen(draft.max)
+        val ok = lo != PriceInput.INVALID_FEN && hi != PriceInput.INVALID_FEN && applyPrice(lo, hi)
+        if (!ok) setDraft(draft.copy(invalid = true))
+        return ok
+    }
+
+    /** 价格区间：区间不合法返回 false（不发请求）；成功时关闭面板、丢弃草稿。 */
+    fun applyPrice(
+        minFen: Long?,
+        maxFen: Long?,
+    ): Boolean {
+        val ok = controller.setFilters(state.value.hasCoupon, minFen, maxFen)
+        if (ok) closePriceFilter()
+        return ok
+    }
+
+    private fun closePriceFilter() {
+        setOverlay(null)
+        setDraft(PriceDraft())
+    }
+
+    fun showDisclaimer(
+        cardKey: String,
+        lines: List<String>,
+    ) {
+        setOverlay(SearchOverlay.Disclaimer(cardKey, lines))
+    }
+
+    fun dismissOverlay() {
+        if (mutableOverlay.value == SearchOverlay.PriceFilter) closePriceFilter() else setOverlay(null)
+    }
+
+    private fun remember(word: String) {
+        if (word.isEmpty()) return
+        config.history.add(word)
+        mutableHistory.value = config.history.items
+    }
+
+    override fun onCleared() {
+        controller.leave()
+        super.onCleared()
+    }
+
+    private companion object {
+        const val K_INPUT = "search.input"
+        const val K_KEYWORD = "search.keyword"
+        const val K_PLATFORM = "search.platform"
+        const val K_SORT = "search.sort"
+        const val K_COUPON = "search.has_coupon"
+        const val K_PRICE_MIN = "search.price_min_fen"
+        const val K_PRICE_MAX = "search.price_max_fen"
+        const val K_ROUND = "search.round"
+        const val K_SCROLLED_ROUND = "search.scrolled_round"
+        const val K_AUTO_FOCUSED = "search.auto_focused"
+        const val K_SHEET_OPEN = "search.price_sheet_open"
+        const val K_DRAFT_MIN = "search.price_draft_min"
+        const val K_DRAFT_MAX = "search.price_draft_max"
+        const val K_DRAFT_INVALID = "search.price_draft_invalid"
+        const val K_SCROLL_INDEX = "search.scroll_index"
+        const val K_SCROLL_OFFSET = "search.scroll_offset"
+        const val K_SCROLL_LAST = "search.scroll_last_visible"
+    }
+}
+
+/** 价格输入（元，最多两位小数）→ 整数分，不经浮点（BR-PRICE-15 按分校验）。空为 null（不限）；格式不对返回 [INVALID_FEN]。 */
+object PriceInput {
+    const val INVALID_FEN = -1L
+    private val YUAN = Regex("^(\\d{1,8})(?:\\.(\\d{1,2}))?$")
+    private const val FEN_PER_YUAN = 100L
+    private const val TEN = 10L
+
+    @Suppress("ReturnCount") // 空、格式不对、换算三个出口
+    fun toFen(text: String): Long? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        val match = YUAN.matchEntire(trimmed) ?: return INVALID_FEN
+        val yuan = match.groupValues[1].toLong()
+        val decimals = match.groupValues[2]
+        val cents =
+            when (decimals.length) {
+                0 -> 0L
+                1 -> decimals.toLong() * TEN
+                else -> decimals.toLong()
+            }
+        return yuan * FEN_PER_YUAN + cents
+    }
+
+    /** 整数分 → 输入框里的元（去末尾 0）。 */
+    fun yuanText(fen: Long): String {
+        val yuan = fen / FEN_PER_YUAN
+        val cents = fen % FEN_PER_YUAN
+        return if (cents == 0L) yuan.toString() else "$yuan.${cents.toString().padStart(2, '0').trimEnd('0')}"
+    }
+}

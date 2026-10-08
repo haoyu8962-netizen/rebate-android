@@ -103,14 +103,8 @@ fun ErrorState(
     modifier: Modifier = Modifier,
     message: String? = null,
 ) {
-    val announcer = rememberCouliAnnouncer()
     val retryFocus = remember { FocusRequester() }
-    val announcement = ErrorStateFocus.announcement(title, message)
-    LaunchedEffect(announcement) {
-        announcer.announce(announcement)
-        delay(ErrorStateFocus.focusDelayMillis(announcement))
-        retryFocus.requestFocusSafely()
-    }
+    ErrorAnnouncement(ErrorStateFocus.announcement(title, message), retryFocus)
     StateLayout(
         title = title,
         message = message,
@@ -119,6 +113,25 @@ fun ErrorState(
         modifier = modifier,
         actionModifier = Modifier.couliFocusTarget(retryFocus),
     )
+}
+
+/**
+ * 加载失败的播报与移焦（adaptation-a11y-spec §10「加载失败：立即读，焦点到【重试】，assertive」；03 §10.5）：出现时立即播报
+ * [announcement]，读完后把焦点移到 [actionFocus]（挂 [couliFocusTarget] 的【重试】等动作）；没有动作时 [actionFocus] 给 null，只播报。
+ * 同一句重绘不重复，换了内容重新播报、重新移焦。[ErrorState] 与页面自己的错误块（搜索列表底部的翻页失败等）共用。
+ */
+@Composable
+fun ErrorAnnouncement(
+    announcement: String,
+    actionFocus: FocusRequester?,
+) {
+    val announcer = rememberCouliAnnouncer()
+    LaunchedEffect(announcement, actionFocus) {
+        announcer.announce(announcement)
+        if (actionFocus == null) return@LaunchedEffect
+        delay(ErrorStateFocus.focusDelayMillis(announcement))
+        actionFocus.requestFocusSafely()
+    }
 }
 
 @Composable

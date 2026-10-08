@@ -145,7 +145,9 @@ object ErrorActionMapper {
     private const val PAYOUT_ACCOUNT = "PayoutAccount"
     private const val SEARCH = "Search"
     private const val DEVICE_HASH_FIELD = "device_hash"
-    private const val DEFAULT_RETRY_AFTER_MILLIS = 5_000L
+
+    /** 42901 没有可用 Retry-After 时的禁用时长（error-codes：缺省 5 秒）。 */
+    const val DEFAULT_RETRY_AFTER_MILLIS = 5_000L
     private const val MILLIS_PER_SECOND = 1_000L
     private const val SERVER_ERROR_MIN = 50_000
     private const val SERVER_ERROR_MAX = 59_999
