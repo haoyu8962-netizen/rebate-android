@@ -179,7 +179,10 @@ class AppLoginReviewR1Test {
     @Test
     fun leavingSettingsWhileTheLogoutRequestIsSlowStillReturnsToGuest() {
         launch(SessionScopeRaw.FULL)
-        assertEquals(SessionState.PHONE_BOUND, routing.session.value)
+        // APP-05b R1-01：冷启动时本机不知道这个会话的 phone_bound（假服务的 getMe 不带 phone_bound）→ 按已登录未绑手机，不再当已绑
+        assertEquals(SessionState.LOGGED_IN, routing.session.value)
+        // APP-05b R1-01：冷启动会先查一次 getMe；等它被假服务应答之后再换应答（否则它会被当成 logout 请求）
+        idleUntil { server.requestCount >= 1 }
         open(SETTINGS)
         assertEquals(SETTINGS, routes().last())
         val arrived = CountDownLatch(1)
@@ -225,7 +228,8 @@ class AppLoginReviewR1Test {
         answer = { request -> if (request.path == REFRESH) envelope("{${pair("two", SessionScopeRaw.FULL)}}") else envelope("{}") }
         api.onUpdateStateChanged(UpdateRaw.SUPPORTED)
 
-        idleUntil { routing.session.value == SessionState.PHONE_BOUND }
+        // APP-05b R1-01：冷启动的受限会话刷新成 full 之后 phone_bound 仍未知（getMe 不带 phone_bound）→ 已登录未绑手机，不再当已绑
+        idleUntil { routing.session.value == SessionState.LOGGED_IN }
         composeRule.waitForIdle()
         assertEquals(SessionScopeRaw.FULL, tokens.scope)
         val resumed = checkNotNull(routing.router.lastOutcome.value)

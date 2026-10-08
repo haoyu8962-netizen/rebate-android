@@ -125,6 +125,12 @@ class CallOwnership(
      * 随即被作废、仍然写入」。
      */
     val commitLock: Any? = null,
+    /**
+     * 登录响应确已保存会话时，在 [commitLock] 的同一同步区里、保存之后立即调用一次，参数是保存后的登录世代（APP-05a 共性第 24 条、
+     * APP-04 共性第 68 条；APP-05b：第三方登录在这里记下新会话「未绑手机 / 待查」，早于网络层的会话通知）。只记录调用方自己的状态，
+     * 不得回调 ApiClient、不得等待其他线程。
+     */
+    val onSessionSaved: ((loginEpoch: Long) -> Unit)? = null,
     val stillOwned: () -> Boolean,
 ) {
     /** 截止时刻已过。 */

@@ -86,6 +86,7 @@ import org.robolectric.annotation.Config
  * - 桥登录成功：登录页打开期间不回复；用户完成短信登录、会话已保存之后才以 logged_in = true 回复——本次登录引起的会话变化不把调用作废；
  * - 桥登录取消：用户关掉登录页之后才以 logged_in = false 回复。
  * - 第 3 轮评审 R3-01：同一宿主取消后再次 auth.login（中间没有别的跳转，Router 的结论与上次相同）仍等这次的登录页结束才回复。
+ * - APP-05b R1-06：未绑手机的有效 full 会话（LOGGED_IN）算已登录。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class)
@@ -302,6 +303,29 @@ class BridgeAuthLoginTest {
         assertEquals("login-2", reply.getValue("id").jsonPrimitive.content)
         assertEquals(0, reply.getValue("code").jsonPrimitive.int)
         assertTrue("保存会话后 logged_in = true", loggedIn(replies.last()))
+    }
+
+    /**
+     * APP-05b 共性第 18 条（R1-06）：有效的 full 会话、守卫状态是 LOGGED_IN（未绑手机：第三方新号跳过引导、或冷启动 phone_bound 未知 /
+     * 查到 false）时，可信 H5 调 auth.login → 不打开登录页，直接 logged_in = true。
+     */
+    @Test
+    fun bridgeLoginWithAValidUnboundFullSessionResolvesTrueWithoutOpeningLogin() {
+        composeRule.runOnUiThread {
+            tokens.save("access-one", "refresh-one", SessionScopeRaw.FULL, "user-one")
+            login.phoneBinding.set(tokens.loginEpoch, false)
+            login.syncSession()
+        }
+        composeRule.waitForIdle()
+        assertEquals(SessionState.LOGGED_IN, routing.session.value)
+
+        callAuthLogin()
+        idleUntil { replies.isNotEmpty() }
+
+        assertFalse("不打开登录页", RouteNames.LOGIN in routes())
+        val reply = Json.parseToJsonElement(replies.single()).jsonObject
+        assertEquals(0, reply.getValue("code").jsonPrimitive.int)
+        assertTrue("有效 full 会话算已登录", loggedIn(replies.single()))
     }
 
     private fun loggedIn(raw: String): Boolean =

@@ -33,6 +33,8 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.router.SessionState
+import com.couli.feature.login.BindPhoneGuideDialog
+import com.couli.feature.login.BindPhoneScreen
 import com.couli.feature.login.LoginScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -50,6 +52,13 @@ fun LoginRoute(
 ) {
     val config = remember(restricted) { login.pageConfig(restricted) }
     LoginScreen(config)
+}
+
+/** BindPhone 路由：绑手机页（APP-05b；BindPhone / BindPhoneMerge）。 */
+@Composable
+fun BindPhoneRoute(login: AppLogin) {
+    val config = remember { login.bindPageConfig() }
+    BindPhoneScreen(config)
 }
 
 /**
@@ -143,6 +152,11 @@ fun LoginNoticeHost(
                     modifier = Modifier.padding(top = CouliSpacing.space12),
                 )
             }
+        }
+
+        // 第三方新号绑手机引导（LoginBindPhoneGuide）：【暂不】、遮罩、返回 → 只恢复待办；【去绑定】→ BindPhone
+        current is LoginNotice.BindPhoneGuide -> {
+            BindPhoneGuideDialog(texts = texts, onSkip = login::guideSkipped, onGo = login::guideGo)
         }
 
         current is LoginNotice.InviteFailed -> {

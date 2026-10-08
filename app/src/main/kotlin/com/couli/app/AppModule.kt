@@ -8,7 +8,9 @@ import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
 import com.couli.app.clientcore.pendingEventsSink
 import com.couli.app.clientcore.trackerCanUpload
+import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
+import com.couli.app.login.variantWechatAdapter
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
@@ -508,7 +510,9 @@ object AppModule {
      */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 各能力的来源逐项注入
     fun appLogin(
+        @ApplicationContext context: Context,
         client: ApiClient,
         tokens: SessionTokens,
         routing: AppRouting,
@@ -522,6 +526,8 @@ object AppModule {
             updateCheck = { update.routerUpdate },
             markBelow = { update.on10405(null) },
             legal = LegalVersions.parse(BundledConfig.dataJson),
+            // 第三方登录（APP-05b）：Release 微信适配器恒不可用；Debug / Staging 本机假服务打开时是假适配器
+            adapters = listOf(variantWechatAdapter(context, AndroidInstalledAppProbe(context))),
         ).also { login ->
             privacy.onConclusionChanged { login.syncSession() }
             update.onRouterUpdate { login.syncSession() }

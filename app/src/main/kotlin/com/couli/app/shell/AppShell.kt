@@ -19,6 +19,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.couli.app.login.AppLogin
+import com.couli.app.login.BindPhoneRoute
 import com.couli.app.login.LoginNoticeHost
 import com.couli.app.login.LoginRoute
 import com.couli.app.login.SettingsRoute
@@ -118,6 +119,10 @@ fun AppShell(
                     RouteNames.LOGIN to { page ->
                         val restricted = routing.update.value == UpdateCheck.BELOW_MIN
                         login?.let { LoginRoute(it, restricted) } ?: PlaceholderRoutePage(page, restrictedLogin = restricted)
+                    },
+                    // 绑手机（APP-05b）：第三方登录未绑手机时由守卫或绑手机引导打开
+                    RouteNames.BIND_PHONE to { page ->
+                        login?.let { BindPhoneRoute(it) } ?: PlaceholderRoutePage(page)
                     },
                     // 设置页占位：APP-05a 只放【退出登录】（SettingsLogoutConfirm）
                     SETTINGS_ROUTE to { page ->

@@ -201,6 +201,16 @@ object CouliIcons {
         )
     }
 
+    /** 并入（BindPhoneMerge 画板信息块：两条线汇成一条，APP-05b）。 */
+    val merge: ImageVector by lazy {
+        lineIcon(
+            "Merge",
+            "M7 4.5v4a4 4 0 0 0 4 4h6",
+            "M7 19.5v-4a4 4 0 0 1 4-4",
+            "m14.5 9 3 3-3 3",
+        )
+    }
+
     val link: ImageVector by lazy {
         lineIcon(
             "Link",

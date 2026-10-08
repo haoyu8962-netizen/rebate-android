@@ -119,6 +119,12 @@ data class ErrorEffect(
     val pendingKeyUnknown: Boolean = false,
     /** 20001 的 data.fields（要提示的字段名）；其余码为 null。 */
     val fields: List<String>? = null,
+    /**
+     * 清会话类 Effect（clear_session_login / clear_session_stay_force_update）所属的会话（APP-05a 共性第 26 条）：网络层在确定清理
+     * 已发生的那一刻、同一同步区里记下的清理之后的登录世代（[SessionTokens.loginEpoch]）。App 只在此刻的登录世代仍等于它（之后没有
+     * 新登录、没有别的清理）时按会话失效处理；不能在回调时读「当前世代」补作归属。其余 Effect 为 null。
+     */
+    val sessionEpoch: Long? = null,
 ) {
     val effectKindRaw: String get() = kind.raw
     val replayRaw: String get() = replay.raw

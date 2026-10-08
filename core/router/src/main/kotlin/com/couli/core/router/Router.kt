@@ -63,6 +63,43 @@ class Router(
     @Volatile
     private var awaitingConsentDecision = false
 
+    /**
+     * 会话标签来源（APP-05a 共性第 25 条）：此刻的登录世代（App 给 SessionTokens.loginEpoch：登录、清除各加 1）。登记 pending_action
+     * 时记下它，会话结束的清理只清原会话归属的待办。没有接（单测）时按旧口径整体清理。
+     */
+    @Volatile
+    var sessionTag: (() -> Long)? = null
+
+    /**
+     * 待办暂缓（APP-05b 共性第 3、9 条）：第三方登录后等绑手机引导结束 / phone_bound 查清期间为 true。这是持续状态：所有自动恢复入口
+     * （会话同步、版本检查完成、启动队列、受限会话升级）经 [resumePending] 时都只保留记录、不执行；只有调用方明确 [releaseHeldPending]
+     * （引导跳过、关闭、绑定完成、查清）后才恢复。会话结束、切换环境、丢弃待办时一并解除。只在内存（进程重启后由冷启动的 phone_bound
+     * 核对兜底，共性第 8 条）。
+     */
+    @Volatile
+    var pendingHeld: Boolean = false
+        private set
+
+    /**
+     * 恢复前的额外核对（APP-05b 共性第 8 条）：返回 false 时这次不恢复、保留记录（如手机号级路由要先查清当前会话的 phone_bound）。
+     * 调用方查清后自己再触发恢复。没有接时不核对。
+     */
+    @Volatile
+    var resumeGate: ((RouteRequest) -> Boolean)? = null
+
+    /** 开始暂缓待办（不改计时）。 */
+    fun holdPending() {
+        pendingHeld = true
+    }
+
+    /** 明确释放暂缓（之后的恢复照常执行）。 */
+    fun releaseHeldPending() {
+        pendingHeld = false
+    }
+
+    /** 本进程里登记的 pending_action 与登记时的会话标签（只在内存；进程重启后归属未知，清理时按原会话的处理）。 */
+    private var pendingTag: Pair<PendingAction, Long>? = null
+
     /** 最近一次 open 的结论。 */
     val lastOutcome: StateFlow<RouteOutcome?> = mutableLastOutcome.asStateFlow()
 
@@ -79,7 +116,10 @@ class Router(
         PendingRegistration.payload(request, decision, guardState)?.let { payload ->
             // 含令牌、验证码的参数 save 返回 false：不登记，前置完成后不自动打开。
             val saved = pendingStore.save(PendingActionStore.OPEN_ROUTE, payload, origin = request.source)
-            if (saved) awaitingConsentDecision = decision.kind == GuardKind.REQUIRE_CONSENT
+            if (saved) {
+                awaitingConsentDecision = decision.kind == GuardKind.REQUIRE_CONSENT
+                tagPending()
+            }
         }
         dispatch(request, decision)
         return decision
@@ -127,12 +167,15 @@ class Router(
      * @param enterPrerequisite 仍缺前置时是否进入前置页。用户刚完成一个前置步骤时为 true；冷启动或状态变化触发的自动
      *   恢复为 false——按 BR-ID-10「前置未满足则保留，继续等待前置步骤」只保留记录，不自动拉起登录等页面（R2-02）。
      */
+    @Suppress("CyclomaticComplexMethod", "ReturnCount") // 暂缓、核对、形状、守卫结论逐项判定
     fun resumePending(
         guardState: GuardState = state(),
         enterPrerequisite: Boolean = true,
     ): GuardDecision? {
         val current = guardState
         dropAgentPendingIfPrivacyBlocked(current)
+        // 待办暂缓期间：任何恢复入口都只保留记录（共性第 9 条）
+        if (pendingHeld) return null
         val pending = pendingStore.load()?.takeIf { it.action == PendingActionStore.OPEN_ROUTE }
         val route = (pending?.params?.get(KEY_ROUTE) as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (pending == null || route == null || route in noPendingRoutes) {
@@ -142,6 +185,8 @@ class Router(
         }
         val params = pending.params[KEY_PARAMS] as? JsonObject ?: JsonObject(emptyMap())
         val request = RouteRequest(route, params, RouteSource.PENDING_ACTION)
+        // 恢复前的额外核对没过（如手机号级路由的 phone_bound 还没查清，共性第 8 条）：保留记录，查清后由调用方再恢复
+        if (resumeGate?.invoke(request) == false) return null
         val decision = EntryGuard.decide(request, current)
         // 补同意的弹窗还没有结论：隐私阻断（基本模式 reject）不删这条待办，只记结论
         val heldForConsent = awaitingConsentDecision && current.privacyState != PrivacyState.CONSENTED
@@ -185,19 +230,58 @@ class Router(
     /** 删除 pending_action，不执行（登录拿到受限会话或强更低于时丢弃业务待办，APP-05a discard_pending）。 */
     fun discardPendingAction() {
         awaitingConsentDecision = false
+        pendingHeld = false
         pendingStore.clear()
     }
 
-    /** 退出登录、切换账号：清除 pending_action（BR-ID-10），代次加一（进行中的推送回查结果作废）。 */
-    fun onSessionEnded() {
+    /**
+     * 退出登录、切换账号、会话失效：清除原会话的 pending_action（BR-ID-10），代次加一（进行中的推送回查结果作废）。
+     *
+     * APP-05a 共性第 25 条：只清原会话归属的待办——登记时的会话标签不大于 [throughSession]（原会话那一代及更早），或归属未知
+     * （进程重启前登记、记录已改写）时删除；原会话被别处清掉（10404、刷新失败）之后用户新建的待办标签更大，保留给正在进行的登录。
+     * [throughSession] 缺省为「此刻的会话标签之前」（清理已经发生、登录世代已前进）。没有接会话标签来源时整体清理。
+     */
+    fun onSessionEnded(throughSession: Long? = null) {
         awaitingConsentDecision = false
+        pendingHeld = false
         generationCounter.incrementAndGet()
+        val tag = sessionTag
+        if (tag == null) {
+            pendingStore.clear()
+            pendingTag = null
+            return
+        }
+        val through = throughSession ?: (tag() - 1)
+        if (ownedByLaterSession(through)) return
         pendingStore.clear()
+        pendingTag = null
     }
+
+    /** 当前待办是本进程登记、且登记时的会话标签晚于 [through]（原会话结束之后新建的）。 */
+    @Suppress("ComplexCondition") // 记录在、标签在、同一条、标签更晚四项同时成立
+    private fun ownedByLaterSession(through: Long): Boolean {
+        val current = pendingStore.load()
+        val tagged = pendingTag
+        return current != null && tagged != null && sameRecord(tagged.first, current) && tagged.second > through
+    }
+
+    /** 刚登记的 pending_action 记下此刻的会话标签。 */
+    private fun tagPending() {
+        val tag = sessionTag?.invoke()
+        val record = pendingStore.load()
+        pendingTag = if (tag != null && record != null) record to tag else null
+    }
+
+    /** 同一条登记（计时起点会因完成前置步骤而重置，不参与比较）。 */
+    private fun sameRecord(
+        lhs: PendingAction,
+        rhs: PendingAction,
+    ): Boolean = lhs.action == rhs.action && lhs.params == rhs.params && lhs.origin == rhs.origin
 
     /** 切换环境（或环境闸门重新对账）：代次加一，清除 pending_action。 */
     fun onEnvironmentChanged() {
         awaitingConsentDecision = false
+        pendingHeld = false
         generationCounter.incrementAndGet()
         pendingStore.clear()
     }

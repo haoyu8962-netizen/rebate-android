@@ -201,6 +201,9 @@ class DeviceReRegisterCallerValidityTest {
         assertTrue("按失败结束：$result", result !is ApiResult.Success)
         assertEquals("页面关闭后不再读设备标识", readsBefore, idReads.get())
         assertEquals(1, registerRequests.get())
+        // F-AND-15：同上，退避链登记是异步回调
+        waitUntil("被拒凭据已隔离：交给退避链") { lost.get() >= 1 }
+        Thread.sleep(WAIT_MS)
         assertEquals("被拒凭据已隔离：交给退避链一次", 1, lost.get())
     }
 
@@ -210,6 +213,9 @@ class DeviceReRegisterCallerValidityTest {
         assertFalse(registry.reRegister("device-1", RecoveryCaller { false }))
         assertFalse("截止时间已过同样不注册", registry.reRegister("device-1", RecoveryCaller(System.nanoTime() - 1) { true }))
         assertEquals(1, registerRequests.get())
+        // F-AND-15：退避链的登记是异步回调，先等它到达再断言次数（之后稍等确认没有第二次）
+        waitUntil("被拒凭据交给退避链") { lost.get() >= 1 }
+        Thread.sleep(WAIT_MS)
         assertEquals("同一被拒凭据只交一次", 1, lost.get())
         assertTrue("没有记下失败结果：有效的调用方照常注册", registry.reRegister("device-1"))
         assertEquals("device-2", registry.deviceId)
@@ -230,12 +236,24 @@ class DeviceReRegisterCallerValidityTest {
                 .AtomicBoolean(true)
         val first = pool.submit<Boolean> { registry.reRegister("device-1", RecoveryCaller { firstOpen.get() }) }
         assertTrue(entered.await(SETTLE_MS, TimeUnit.MILLISECONDS))
-        val second = pool.submit<Boolean> { registry.reRegister("device-1", RecoveryCaller { true }) }
-        Thread.sleep(WAIT_MS)
+        // F-AND-15 同类：不靠固定睡眠猜第二个调用方何时进窗口——它第一次被核对有效性时一定已登记为窗口调用方
+        val joined = CountDownLatch(1)
+        val second =
+            pool.submit<Boolean> {
+                registry.reRegister(
+                    "device-1",
+                    RecoveryCaller {
+                        joined.countDown()
+                        true
+                    },
+                )
+            }
+        assertTrue(joined.await(SETTLE_MS, TimeUnit.MILLISECONDS))
         firstOpen.set(false)
         gate.countDown()
 
-        assertTrue(first.get(SETTLE_MS, TimeUnit.MILLISECONDS))
+        // 发起者已失效：它可能在共享任务结束前就离开窗口（返回 false），也可能拿到结果；关键是共享注册照常完成
+        first.get(SETTLE_MS, TimeUnit.MILLISECONDS)
         assertTrue(second.get(SETTLE_MS, TimeUnit.MILLISECONDS))
         assertEquals("共享注册照常写出一次", 2, registerRequests.get())
         assertEquals("device-2", registry.deviceId)

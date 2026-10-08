@@ -58,6 +58,32 @@ internal object LoginDraftTexts : LoginTexts {
             "login.risk_blocked.desc" to
                 "账号没有创建，填写的手机号保留在本页，验证码需要重新获取。如有疑问，可以联系客服申诉，客服核实后会帮你登记。",
             "login.risk_blocked.ok" to "知道了",
+            // ---- APP-05b：第三方登录按钮（Login 画板「微信」，读屏名称「微信登录」）、{provider_name} 的取值（三端同名）
+            "login.wechat" to "微信登录",
+            "login.wechat.short" to "微信",
+            "login.apple" to "通过 Apple 登录",
+            "login.apple.short" to "Apple",
+            "login.provider.wechat" to "微信",
+            "login.provider.apple" to "Apple",
+            "login.provider.huawei" to "华为账号",
+            // ---- APP-05b：LoginBindPhoneGuide 按钮（标题、正文用契约 invite.bind_phone_guide.*）
+            "invite.bind_phone_guide.skip" to "暂不",
+            "invite.bind_phone_guide.go" to "去绑定",
+            // ---- APP-05b：BindPhone / BindPhoneMerge（并号正文用契约 error.30411.mergeable）
+            "bind_phone.code.placeholder" to "6 位验证码",
+            "bind_phone.countdown" to "{sec} 秒后重新获取",
+            "bind_phone.submit" to "绑定",
+            "bind_phone.done" to "手机号已绑定",
+            // 共性第 11 条：倒计时走完、可以重新获取时的读屏播报（设计稿没有这句，措辞待定稿）
+            "bind_phone.can_resend" to "可以重新获取验证码",
+            "login.code.can_resend" to "可以重新获取验证码",
+            "bind_phone.merge.title" to "并入原账号",
+            "bind_phone.merge.into" to "并入到",
+            "bind_phone.merge.account" to "手机号账号 {phone}",
+            "bind_phone.merge.cancel" to "取消",
+            "bind_phone.merge.ok" to "并入",
+            // TODO(N-29) MERGE-SUCCESS：锁定契约没有并号接口，确认后给明确的「暂不可用」（不发请求、不并号）
+            "bind_phone.merge.unavailable" to "暂时无法并入原账号，请稍后再试，或退出后用手机号登录",
             "cs.appeal_entry" to "联系客服申诉",
             // ---- LoginDeletionProcessing（标题用 error.10007）
             "login.deletion.body" to

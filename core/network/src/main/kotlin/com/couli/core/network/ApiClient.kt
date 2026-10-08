@@ -166,6 +166,8 @@ class ApiClient(
     private class RefreshOutcome(
         val token: String?,
         val cleared: Boolean = false,
+        /** [cleared] 时：清理之后的登录世代（在 [refreshLock] 里确定，随清会话 Effect 传出，APP-05a 共性第 26 条）。 */
+        val clearedEpoch: Long? = null,
     )
 
     /** 等待单飞刷新的结论（等待者的 future）。 */
@@ -174,8 +176,10 @@ class ApiClient(
             val token: String,
         ) : WaitSignal
 
-        /** 刷新被拒（会话已清）。 */
-        data object Failed : WaitSignal
+        /** 刷新被拒（会话已清）。[clearedEpoch]：清理确已发生时，清理之后的登录世代；没有清（别处已清或已换代）为 null。 */
+        data class Failed(
+            val clearedEpoch: Long?,
+        ) : WaitSignal
 
         /** 超时、断连、被取消：不清会话，等待者按网络错误结束。 */
         data class Transient(
@@ -245,8 +249,10 @@ class ApiClient(
             val token: String,
         ) : RefreshResult
 
-        /** 刷新被拒（会话已清）：清会话后跳登录，强更状态下停在强更页。 */
-        data object Failed : RefreshResult
+        /** 刷新被拒（会话已清）：清会话后跳登录，强更状态下停在强更页。[clearedEpoch] 见 [RefreshOutcome.clearedEpoch]。 */
+        data class Failed(
+            val clearedEpoch: Long?,
+        ) : RefreshResult
 
         /** 会话已换代（重新登录、切换账号）：不重放、不再刷新、不清新会话。 */
         data object Stale : RefreshResult
@@ -375,7 +381,7 @@ class ApiClient(
         if (!live()) return RestrictedRecheck.CANCELLED
         return when (result) {
             is RefreshResult.Replay -> RestrictedRecheck.DONE
-            RefreshResult.Failed -> RestrictedRecheck.CLEARED
+            is RefreshResult.Failed -> RestrictedRecheck.CLEARED
             RefreshResult.Stale -> if (session(context()) == null) RestrictedRecheck.CLEARED else RestrictedRecheck.CHANGED
             is RefreshResult.Transient -> RestrictedRecheck.TRANSIENT
         }
@@ -724,8 +730,8 @@ class ApiClient(
                 }
                 resolved = true
                 when (refreshed) {
-                    RefreshResult.Failed -> {
-                        effect = sessionEndedEffect(effect)
+                    is RefreshResult.Failed -> {
+                        effect = sessionEndedEffect(effect, refreshed.clearedEpoch)
                     }
 
                     RefreshResult.Stale -> {
@@ -763,7 +769,9 @@ class ApiClient(
             ErrorEffectKind.CLEAR_SESSION_LOGIN -> {
                 // 10404：只清本次请求所属的那一代会话；旧世代的响应不动当前会话、不跳登录（lessons 34）
                 resolved = true
-                if (ownership != null || !clearOwnedSession(logical.owner)) effect = staleSessionEffect(effect)
+                // 共性第 26 条：清理之后的登录世代在 refreshLock 里确定，随 Effect 传出；没有清（旧世代）就不发清会话通知
+                val cleared = if (ownership == null) clearOwnedSession(logical.owner) else null
+                effect = if (cleared == null) staleSessionEffect(effect) else effect.copy(sessionEpoch = cleared)
             }
 
             else -> {
@@ -822,13 +830,16 @@ class ApiClient(
             effect.kind in SESSION_BOUND_KINDS ||
             (effect.route != null && effect.kind != ErrorEffectKind.FORCE_UPDATE)
 
-    /** 10404：在 [refreshLock] 下核对归属并按世代清会话（与刷新入队、登录保存同一把锁，R3-01）。返回是否清的是本调用的会话。 */
-    private fun clearOwnedSession(owner: CallOwner): Boolean =
+    /**
+     * 10404：在 [refreshLock] 下核对归属并按世代清会话（与刷新入队、登录保存同一把锁，R3-01）。清的是本调用的会话时返回清理之后的
+     * 登录世代（同一同步区里读出，APP-05a 共性第 26 条）；没有清返回 null。
+     */
+    private fun clearOwnedSession(owner: CallOwner): Long? =
         synchronized(refreshLock) {
             val now = context()
-            val current = rawSession(now)?.takeIf(::hasTokens) ?: return false
-            if (ownerReject(owner, now) != null) return false
-            clearGenerationIf(current.generation)
+            val current = rawSession(now)?.takeIf(::hasTokens) ?: return null
+            if (ownerReject(owner, now) != null) return null
+            if (clearGenerationIf(current.generation)) tokens.loginEpoch else null
         }
 
     private fun transportFailure(
@@ -1196,7 +1207,7 @@ class ApiClient(
                 ApiResult.TransportFailure(signal.kind, null, null, pendingKeyUnknown = false)
             }
 
-            WaitSignal.Failed -> {
+            is WaitSignal.Failed -> {
                 val now = context()
                 when {
                     inFlight.epochs() != owner.epochs -> {
@@ -1208,6 +1219,11 @@ class ApiClient(
                         ApiResult.LocalReject(LocalRejectReason.SESSION_CHANGED)
                     }
 
+                    // 共性第 26 条：这次屏障刷新没有确实清掉会话（别处已清、已换代）——不发清会话通知
+                    signal.clearedEpoch == null -> {
+                        ApiResult.LocalReject(LocalRejectReason.SESSION_CHANGED)
+                    }
+
                     else -> {
                         val effect =
                             ErrorEffect(
@@ -1216,6 +1232,7 @@ class ApiClient(
                                 replay = ReplayMode.NONE,
                                 registerPending = false,
                                 route = refreshFailureRoute(now),
+                                sessionEpoch = signal.clearedEpoch,
                             )
                         hooks.onEffect(effect)
                         ApiResult.SessionEnded(effect)
@@ -1305,7 +1322,9 @@ class ApiClient(
     }
 
     /** 刷新失败时交给等待者的信号：暂时失败或被拒。只在刷新结算（[refreshLock] 下）时调用。 */
-    private fun failureSignal(): WaitSignal = settlingTransient?.let(WaitSignal::Transient) ?: WaitSignal.Failed
+    private fun failureSignal(): WaitSignal =
+        settlingTransient?.let(WaitSignal::Transient)
+            ?: WaitSignal.Failed(settlingAccess?.let { refreshOutcomes[it] }?.takeIf { it.cleared }?.clearedEpoch)
 
     /**
      * 等单飞刷新（[request] 非 null = 10002 后要重放的请求；null = 只刷新）。在 [refreshLock] 下一次完成（R1-06、R3-01）：
@@ -1383,7 +1402,9 @@ class ApiClient(
         var outcome = usedToken?.let { refreshOutcomes[it] } ?: return null
         val current = session(context())
         repeat(OUTCOME_MEMORY) {
-            val token = outcome.token ?: return if (outcome.cleared && current == null) RefreshResult.Failed else RefreshResult.Stale
+            val token =
+                outcome.token
+                    ?: return if (outcome.cleared && current == null) RefreshResult.Failed(outcome.clearedEpoch) else RefreshResult.Stale
             if (token == current?.accessToken) return RefreshResult.Replay(token)
             outcome = refreshOutcomes[token] ?: return RefreshResult.Stale
         }
@@ -1402,13 +1423,19 @@ class ApiClient(
         }
 
     /** 刷新失败的 Effect：清会话后跳登录；强更状态下只清会话、停在强更页。按此刻的强更状态（lessons 20）。 */
-    private fun sessionEndedEffect(effect: ErrorEffect): ErrorEffect {
+    private fun sessionEndedEffect(
+        effect: ErrorEffect,
+        clearedEpoch: Long?,
+    ): ErrorEffect {
+        // 共性第 26 条：没有确实清掉那一代会话（世代未知）就不发清会话通知
+        if (clearedEpoch == null) return staleSessionEffect(effect)
         val now = context()
         return effect.copy(
             kind = refreshFailureKind(now),
             replay = ReplayMode.NONE,
             registerPending = false,
             route = refreshFailureRoute(now),
+            sessionEpoch = clearedEpoch,
         )
     }
 
@@ -1473,7 +1500,10 @@ class ApiClient(
     private fun clearSettlingSession() {
         if (settlingTransient != null) return
         val generation = settlingGeneration ?: return
-        if (clearGenerationIf(generation)) settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true) }
+        if (clearGenerationIf(generation)) {
+            val epoch = tokens.loginEpoch
+            settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true, clearedEpoch = epoch) }
+        }
     }
 
     /** 按世代 CAS 清会话，返回是否清的是这一代。写盘失败：隔离会话（内存里继续阻断旧令牌），之后每次读会话前重试删除（lessons 38）。 */
@@ -1652,7 +1682,8 @@ class ApiClient(
                     // 写盘失败：隔离并清掉这一代会话（内存里继续阻断旧令牌，lessons 38），结论是「本世代因刷新失败被清除」
                     quarantine()
                     retryQuarantineClear()
-                    start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true) }
+                    val epoch = tokens.loginEpoch
+                    start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true, clearedEpoch = epoch) }
                     return RefreshAttempt.Rejected
                 }
             if (!saved) return RefreshAttempt.Rejected
@@ -1778,7 +1809,10 @@ class ApiClient(
         val commit = owner.ownership?.commitLock ?: Any()
         synchronized(commit) {
             if (owner.disowned()) return LocalRejectReason.CALL_CANCELLED
-            saveLogin(owner, generation, pair, root?.text("user_id"))?.let { return it }
+            val saved = saveLogin(owner, generation, pair, root?.text("user_id"))
+            if (saved is SavedLogin.Rejected) return saved.reason
+            // 同一同步区里交给调用方记下这次保存的登录世代（APP-05a 共性第 24 条、APP-04 第 68 条）
+            owner.ownership?.onSessionSaved?.invoke((saved as SavedLogin.Saved).loginEpoch)
         }
         // 刚登录拿到的会话是新的一代：不需要冷启动屏障再刷新一次
         synchronized(barrierLock) { barrierDue = false }
@@ -1797,17 +1831,30 @@ class ApiClient(
         generation: Long,
         pair: TokenPair,
         userId: String?,
-    ): String? {
-        val saved =
-            try {
-                synchronized(refreshLock) {
-                    val target = if (sessionQuarantined && owner.session == null) tokens.generation else generation
-                    tokens.saveIf(target, pair.access, pair.refresh, pair.scope, userId).also { if (it) liftQuarantine() }
+    ): SavedLogin =
+        try {
+            synchronized(refreshLock) {
+                val target = if (sessionQuarantined && owner.session == null) tokens.generation else generation
+                if (tokens.saveIf(target, pair.access, pair.refresh, pair.scope, userId)) {
+                    liftQuarantine()
+                    SavedLogin.Saved(tokens.loginEpoch)
+                } else {
+                    SavedLogin.Rejected(LocalRejectReason.SESSION_CHANGED)
                 }
-            } catch (error: Exception) {
-                return LocalRejectReason.SESSION_SAVE_FAILED
             }
-        return if (saved) null else LocalRejectReason.SESSION_CHANGED
+        } catch (error: Exception) {
+            SavedLogin.Rejected(LocalRejectReason.SESSION_SAVE_FAILED)
+        }
+
+    /** [saveLogin] 的结果：保存成功（带保存后的登录世代，同一把锁里读出）或没保存的原因。 */
+    private sealed interface SavedLogin {
+        data class Saved(
+            val loginEpoch: Long,
+        ) : SavedLogin
+
+        data class Rejected(
+            val reason: String,
+        ) : SavedLogin
     }
 
     /** 处理响应这一刻：世代未变、凭据可读、环境已就绪且基址未变（迟到的令牌响应据此丢弃）。 */
@@ -1910,7 +1957,10 @@ class ApiClient(
                         ).copy(registerPending = false)
                 // 统一出口的归属核对（R3-03）：作废期间换了账号，原操作的结果不触发当前会话的会话类动作
                 val stale = LocalRejectReason.ACCOUNT_MISMATCH.takeIf { session(now)?.userId != record.account }
-                val effect = if (stale != null && sessionBound(mapped)) staleSessionEffect(mapped) else mapped
+                // 共性第 26 条：原操作存下的清会话类结果不是此刻发生的清理，不发清会话通知
+                val clearing =
+                    mapped.kind == ErrorEffectKind.CLEAR_SESSION_LOGIN || mapped.kind == ErrorEffectKind.CLEAR_SESSION_STAY_FORCE_UPDATE
+                val effect = if ((stale != null && sessionBound(mapped)) || clearing) staleSessionEffect(mapped) else mapped
                 hooks.onEffect(effect)
                 ApiResult.Failure(code, stored.text("msg").orEmpty(), storedData, success.traceId, effect, key)
             }

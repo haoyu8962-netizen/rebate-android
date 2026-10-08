@@ -25,6 +25,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 
 /** 登录执行器要 App 提供的出口（生产实现是 App 的 AppLogin，接 Router、导航栈与强更状态；集成测试用同一份接口）。 */
+@Suppress("TooManyFunctions") // 每个出口一个函数（APP-05b 加了暂缓与登出归属）
 interface LoginHost {
     /** 强更状态（[AfterLoginUpdate]：supported / below / unknown / checking），取这一刻的值。 */
     fun updateState(): String
@@ -57,11 +58,41 @@ interface LoginHost {
     fun sessionEnded()
 
     /**
+     * 登出收尾（APP-05a 共性第 25 条）：只清原会话（登录世代不晚于 [loginEpoch]）归属的待办与回查；原会话已被别处清掉之后用户新建的
+     * pending_action 保留。缺省按旧口径 [sessionEnded]。在 ApiClient 的会话锁里执行，不得回调 ApiClient。
+     */
+    fun sessionEndedThrough(loginEpoch: Long) = sessionEnded()
+
+    /**
+     * 完成了登录这一前置步骤、但暂缓执行待办（APP-05b 共性第 3 条：第三方新号要先看绑手机引导，老用户要先查清 phone_bound）：只把有效
+     * 待办的计时重置为此刻，不恢复。缺省什么都不做。
+     */
+    fun prerequisiteDoneHeld() = Unit
+
+    /**
+     * 暂缓的待办可以继续了（APP-05b：第三方老用户的 phone_bound 已查清）：按最新会话状态同步守卫，再经 Router 守卫恢复（不再重置计时，
+     * 需要手机号的目标由守卫先进绑手机页）。缺省 [resumePending]。
+     */
+    fun heldPendingReady() = resumePending()
+
+    /**
+     * 第三方老用户的 phone_bound 没能查清（getMe 失败、回包不是布尔）：解除这次登录的暂缓，让待办重新经过 Router（APP-05b 共性第 14 条）——
+     * 只需登录的目标正常恢复；需要手机号的目标按「未验证」保留（不自动拉起绑手机页）。缺省什么都不做。
+     */
+    fun heldPendingUnverified() = Unit
+
+    /**
      * 这次登录尝试有效地完成了（会话已保存、尝试未作废），在关闭登录页之前调用（APP-04 共性第 66 条：等待中的桥调用 auth.login 据此
      * 以 logged_in = true 结算，并绑定这次登录保存的登录世代 [loginEpoch]）。缺省什么都不做。
      */
     fun loginCompleted(loginEpoch: Long) = Unit
 }
+
+/** 第三方登录的一次尝试：尝试序号与它的请求归属（[LoginService.beginThirdParty]）。 */
+internal class AttemptTicket(
+    val issued: Long,
+    val owner: CallOwnership,
+)
 
 /**
  * 发码结果。[stateRaw]：code_sent / rate_limited / field_error / … / stale（页面已换号或离开，忽略）/ busy（已有在途请求）/
@@ -75,6 +106,8 @@ data class SendCodeOutcome(
     val field: String?,
     val phone: String?,
     val trace6: String = "",
+    /** 要经 Router 打开的页面（绑手机发码 10007 stage=cooling → DeleteAccount，APP-05b 共性第 16 条）；没有为 null。 */
+    val route: String? = null,
 )
 
 /**
@@ -199,6 +232,20 @@ class LoginService(
 
     /** 本次尝试已发出请求的归属（[invalidateAttempt] 时据此取消传输）。 */
     private val owners = mutableListOf<CallOwnership>()
+
+    /** 作废尝试时要同步通知的一方（第三方登录：本地授权尝试按「离开」终止，迟到的回调只丢弃）。只在主线程登记。 */
+    private val invalidationListeners = mutableListOf<() -> Unit>()
+
+    /**
+     * 最近一次登录响应确已保存时、在 ApiClient 的保存同步区里记下的登录世代（APP-04 共性第 68 条、APP-05a 共性第 24 条）：登录后计划
+     * 与桥调用 auth.login 的结算绑定这一代，不在之后另读「当前世代」。只在 [attemptLock] 下写。
+     */
+    @Volatile
+    private var savedEpoch: Long? = null
+
+    /** 第三方登录在途（与短信登录互斥）。 */
+    @Volatile
+    internal var thirdPartyBusy = false
     private var sending = false
     private var loggingIn = false
 
@@ -220,7 +267,7 @@ class LoginService(
      */
     fun ownsSession(loginEpoch: Long): Boolean = loginEpoch == flowEpoch
 
-    val busy: Boolean get() = sending || loggingIn
+    val busy: Boolean get() = sending || loggingIn || thirdPartyBusy
 
     /** 正在登出（网络层这期间清会话的跳登录 Effect 由 App 忽略：登出本来就回到游客）。 */
     val loggingOutNow: Boolean get() = loggingOut
@@ -233,6 +280,57 @@ class LoginService(
         synchronized(attemptLock) { serial += 1 }
         val cancelled = synchronized(owners) { owners.toList().also { owners.clear() } }
         cancelled.forEach(client::cancelOwned)
+        invalidationListeners.toList().forEach { it() }
+    }
+
+    /** 作废尝试时同步回调（第三方登录登记，APP-05b）。 */
+    internal fun onAttemptInvalidated(listener: () -> Unit) {
+        invalidationListeners += listener
+    }
+
+    /**
+     * 第三方登录的一次尝试（APP-05b 共性第 1 条）：与短信登录共用尝试序号与保存同步区。[stillBound] 是调用方在开始时固定的会话、隐私、
+     * 环境归属的复核（另一账号的会话在授权等待中保存、登出、撤回同意、切换环境 → false）；归属的隐私 / 环境世代取开始这一刻，整个
+     * 尝试的两个请求都用这一份，不会被重新绑定到新上下文。
+     */
+    internal fun beginThirdParty(
+        stillBound: () -> Boolean,
+        onSaved: (loginEpoch: Long) -> Unit,
+    ): AttemptTicket {
+        val issued = serial
+        val owner =
+            CallOwnership(
+                client.inFlight.epochs(),
+                commitLock = attemptLock,
+                onSessionSaved = { epoch ->
+                    savedEpoch = epoch
+                    onSaved(epoch)
+                },
+            ) { serial == issued && stillBound() }
+        synchronized(owners) { owners += owner }
+        return AttemptTicket(issued, owner)
+    }
+
+    /** 暂缓的待办可以继续了（第三方老用户 phone_bound 已查清；引导结束）：同步会话状态并经 Router 守卫恢复，不再重置计时。 */
+    internal fun resumeHeldPending() = host.heldPendingReady()
+
+    /** 第三方老用户 phone_bound 没查清：解除暂缓，经守卫按「未验证」恢复（共性第 14 条）。 */
+    internal fun releaseHeldUnverified() = host.heldPendingUnverified()
+
+    /** 尝试仍有效（没有被换号、离页、登出作废）。 */
+    internal fun ticketValid(ticket: AttemptTicket): Boolean = ticket.issued == serial
+
+    internal fun releaseTicket(ticket: AttemptTicket) = release(ticket.owner)
+
+    /** 发码截止时间（共性第 5 条）：绑手机发码与短信登录共用同一份按规范化号码的截止时间。 */
+    internal fun sendGate(phone: String): Pair<Long, String>? = active(phone)?.let { it.untilMillis to it.kind }
+
+    internal fun recordSendGate(
+        phone: String,
+        untilMillis: Long,
+        kind: String,
+    ) {
+        deadlines[phone] = SendDeadline(untilMillis, kind)
     }
 
     /** 这个号码（任意写法）距可以再发码还有几秒；0 = 可以发。 */
@@ -453,7 +551,8 @@ class LoginService(
      * （这里按「已换成新会话」不清、不清待办），要么因世代已变而保存失败，不会出现「核对通过、新会话保存、随即被删」。
      */
     private fun finishLogout(epoch: Long): Boolean {
-        val ended = client.clearSessionIf(epoch) { host.sessionEnded() }
+        // 共性第 25 条：Router 的清理绑定原会话（登出开始时的登录世代），原会话已被别处清掉时也只清它归属的待办
+        val ended = client.clearSessionIf(epoch) { host.sessionEndedThrough(epoch) }
         // 已换成新会话（新登录）：不清新会话，只通知会话变化
         host.sessionChanged()
         return ended != SessionEnd.REPLACED
@@ -467,20 +566,36 @@ class LoginService(
         result: ApiResult.Success,
         issued: Long,
         restricted: Boolean,
+        hold: Boolean = false,
     ): LoginOutcome {
-        val epoch = tokens.loginEpoch
+        // 这次登录保存的那一代（保存同步区里记下；APP-04 共性第 68 条）。没有记下（不应发生）按此刻的登录世代
+        val epoch = savedEpoch ?: tokens.loginEpoch
         flowEpoch = epoch
         try {
-            return runLoggedIn(result, issued, restricted)
+            return runLoggedIn(result, issued, restricted, hold)
         } finally {
             if (flowEpoch == epoch) flowEpoch = null
         }
     }
 
+    /**
+     * 第三方登录响应已由 ApiClient 保存会话之后（APP-05b）：沿用短信登录的登录后计划、世代检查与受限会话复查。[hold] = true 时
+     * （第三方新号先看绑手机引导；老用户先查清 phone_bound，共性第 2、3 条）：待办只重置计时、暂缓执行，会话变化只同步、不顺带恢复。
+     */
+    internal suspend fun finishThirdPartyLogin(
+        result: ApiResult.Success,
+        ticket: AttemptTicket,
+        hold: Boolean,
+    ): LoginOutcome = loggedIn(result, ticket.issued, restricted = false, hold = hold)
+
+    /** 第三方登录这次保存的登录世代（保存同步区里记下）。 */
+    internal fun lastSavedEpoch(): Long? = savedEpoch
+
     private suspend fun runLoggedIn(
         result: ApiResult.Success,
         issued: Long,
         restricted: Boolean,
+        hold: Boolean,
     ): LoginOutcome {
         // ApiClient 已核对归属并保存成功（作废的尝试在保存前就以 call_cancelled 结束）；再确认本机确有会话
         val scope = client.activeSessionScope() ?: return LoginOutcome(LoginErrorMapper.STATE_SERVICE_ERROR, GENERIC_KEY)
@@ -495,7 +610,10 @@ class LoginService(
         if (AfterLoginAction.REFRESH_RESTRICTED in actions) {
             actions = recheckRestricted(issued, isNew) ?: return recheckEnded(issued)
         }
-        execute(actions)
+        // 第三方登录暂缓待办（只对正常会话；受限会话、强更沿用 APP-05a 的计划）
+        val held = hold && AfterLoginAction.RESUME_PENDING in actions
+        if (held) actions = actions.map { if (it == AfterLoginAction.RESUME_PENDING) HOLD_PENDING_THIRD_PARTY else it }
+        execute(actions, held)
         val bind = (data["invite_bind"] as? JsonObject)?.takeUnless { restricted }
         val inviteResult = (bind?.get("result") as? JsonPrimitive)?.takeIf { it.isString }?.content
         val inviteCode = (bind?.get("code") as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
@@ -556,11 +674,20 @@ class LoginService(
      * 执行登录后计划（共性第 2 条）：先删要丢弃的待办（免得会话变化的路由同步把它执行掉）→ 明确移除登录页（含从强更页进入的受限登录）
      * → 通知会话变化 → 交 Router 恢复待办，或进入 / 同步强更页。
      */
-    private fun execute(actions: List<String>) {
+    private fun execute(
+        actions: List<String>,
+        held: Boolean = false,
+    ) {
         // 先报告登录完成（关闭登录页之前：等待中的桥调用 auth.login 不会把这次关页当成「离开」）
         flowEpoch?.let(host::loginCompleted)
         if (AfterLoginAction.DISCARD_PENDING in actions) host.discardPending()
         host.closeLogin()
+        if (held) {
+            // 第三方登录：登录这一步完成（重置计时），待办暂缓；会话状态只同步，不顺带恢复（APP-05b 共性第 2、3 条）
+            host.prerequisiteDoneHeld()
+            host.sessionSynced()
+            return
+        }
         host.sessionChanged()
         actions.forEach { action ->
             when (action) {
@@ -571,8 +698,23 @@ class LoginService(
     }
 
     private fun ownerFor(issued: Long): CallOwnership =
-        CallOwnership(client.inFlight.epochs(), commitLock = attemptLock) { serial == issued }
-            .also { synchronized(owners) { owners += it } }
+        CallOwnership(
+            client.inFlight.epochs(),
+            commitLock = attemptLock,
+            onSessionSaved = { epoch ->
+                savedEpoch = epoch
+                smsSessionSaved?.invoke(epoch)
+            },
+        ) {
+            serial == issued
+        }.also { synchronized(owners) { owners += it } }
+
+    /**
+     * 短信登录的会话确已保存时（保存同步区里）调用，参数是保存的登录世代（APP-05b 共性第 8 条：短信登录的会话手机号已知已绑，App 据此
+     * 记下 phone_bound = true，冷启动等没有记录的会话才按「未验证」先查 getMe）。不得回调 ApiClient。
+     */
+    @Volatile
+    var smsSessionSaved: ((loginEpoch: Long) -> Unit)? = null
 
     private fun release(owner: CallOwnership) {
         synchronized(owners) { owners.remove(owner) }
@@ -625,6 +767,9 @@ class LoginService(
     companion object {
         /** 发码入口的本地结果（三端对齐名）：倒计时还没结束，同一个号码不再发码。 */
         const val STATE_COUNTDOWN = "countdown_active"
+
+        /** 第三方登录：待办计时已重置、暂缓执行（等绑手机引导结束或 phone_bound 查清，APP-05b）。 */
+        const val HOLD_PENDING_THIRD_PARTY = "hold_pending_third_party"
 
         /** 受限会话复查后仍受限（三端对齐名，同 [AfterLoginAction.HOLD_PENDING]）。 */
         const val HOLD_PENDING = AfterLoginAction.HOLD_PENDING

@@ -12,18 +12,30 @@ import com.couli.core.network.ErrorEffect
 import com.couli.core.network.ErrorEffectKind
 import com.couli.core.network.SessionScopeRaw
 import com.couli.core.network.SessionTokens
+import com.couli.core.router.RouteCatalog
 import com.couli.core.router.RouteNames
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.AfterLoginUpdate
+import com.couli.feature.login.BindPhoneHost
+import com.couli.feature.login.BindPhonePageActions
+import com.couli.feature.login.BindPhonePageConfig
+import com.couli.feature.login.BindPhoneService
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginHost
 import com.couli.feature.login.LoginOutcome
 import com.couli.feature.login.LoginPageActions
 import com.couli.feature.login.LoginPageConfig
 import com.couli.feature.login.LoginService
+import com.couli.feature.login.OAuthLoginOutcome
+import com.couli.feature.login.OAuthLoginRoute
+import com.couli.feature.login.OAuthLoginService
+import com.couli.feature.login.OAuthProvider
+import com.couli.feature.login.PhoneBindingState
+import com.couli.feature.login.ThirdPartyAuthAdapter
+import com.couli.feature.login.UnavailableWechatAdapter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +43,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -47,6 +60,11 @@ sealed interface LoginNotice {
     data class Message(
         val text: String,
     ) : LoginNotice
+
+    /** 第三方新号登录成功：绑手机引导（LoginBindPhoneGuide，BR-INV-03 细则 ①），盖在恢复页之上。[provider]：登录方式。 */
+    data class BindPhoneGuide(
+        val provider: String,
+    ) : LoginNotice
 }
 
 /**
@@ -60,8 +78,9 @@ class BridgeLoginWait internal constructor() {
 
 /**
  * App 侧的登录（APP-05a）：组合 [LoginService]（ApiClient、会话令牌、本类作为 [LoginHost]），给登录页配置，给守卫会话状态，登出。
- * - 会话状态：按 ApiClient 的有效会话现算（经过隐私、撤回清理与会话隔离判断）：没有 → 游客；deletion_only → 受限；其余 → 已绑手机
- *   （TODO(APP-05b)：第三方登录的会话按 getMe.phone_bound 区分）。
+ * - 会话状态：按 ApiClient 的有效会话现算（经过隐私、撤回清理与会话隔离判断）：没有 → 游客；deletion_only → 受限；其余只有确认
+ *   phone_bound = true（本次短信登录完成、getMe、绑定成功）才是已绑手机，未知（冷启动、待查）与 false 都是已登录未绑手机（APP-05b
+ *   共性第 13 条）。未知时先查当前会话的 getMe（[verifyPhoneBinding]），主动打开与待办恢复两个入口都按守卫的状态走。
  * - 导航：登录页出栈的同步出口（回退栈一变就判断，[followBackStack]）立即作废本次登录尝试（共性第 9 条）；执行器的 closeLogin 明确
  *   把 Login 从回退栈移除（共性第 2 条，受限登录同样）。
  * - 网络层刷新失败清会话（clear_session_login）：同步会话状态、下次打开的登录页提示一次 error.10404（LoginSessionExpired）并打开登录页；
@@ -82,9 +101,25 @@ class AppLogin(
     private val markBelow: () -> Unit,
     legal: LegalVersions,
     /** App 级（会话级）作用域：登出及其收尾在这里执行（主线程），不随页面取消。 */
-    sessionScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-) : LoginHost {
+    private val sessionScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+    /** 第三方登录适配器（APP-05b）：Release 是恒不可用的微信适配器；Debug / Staging 在本机假服务打开时是假适配器。 */
+    adapters: List<ThirdPartyAuthAdapter> = listOf(UnavailableWechatAdapter()),
+) : LoginHost,
+    BindPhoneHost {
     val service: LoginService = LoginService(client, tokens, this, legal, sessionScope)
+
+    /** 本机已知的「是否绑了手机」（按会话；第三方登录未绑 → 守卫按已登录未绑手机，APP-05b）。 */
+    val phoneBinding = PhoneBindingState()
+
+    /** 第三方登录执行器（APP-05b）。 */
+    val oauth: OAuthLoginService =
+        OAuthLoginService(client, tokens, service, adapters, phoneBinding, legal, followUpScope = sessionScope)
+
+    /** 绑手机执行器（APP-05b）。 */
+    val bindPhone: BindPhoneService = BindPhoneService(client, tokens, service, phoneBinding, this)
+
+    /** 最近一次第三方登录的方式（并号确认正文的 {provider_name}；Android 只有微信）。 */
+    private var lastProvider: String = OAuthProvider.WECHAT
 
     /** 已处理过的最新会话世代（乱序到达的旧通知丢弃）。 */
     private var handledGeneration = -1L
@@ -100,21 +135,76 @@ class AppLogin(
     val notice: StateFlow<LoginNotice?> = mutableNotice.asStateFlow()
 
     init {
+        // APP-05a 共性第 25 条：pending_action 登记时记下此刻的登录世代，会话结束的清理只清原会话归属的待办
+        routing.router.sessionTag = { tokens.loginEpoch }
+        // APP-05b 共性第 8 条：恢复手机号级路由前，phone_bound 未知的会话（冷启动）先查清
+        routing.router.resumeGate = ::phoneLevelReady
+        // 短信登录的会话手机号已知已绑（保存同步区里记下）
+        service.smsSessionSaved = { epoch -> phoneBinding.set(epoch, true) }
         publish(sessionState(), resumePending = false)
+        // 共性第 13 条：冷启动有会话而 phone_bound 未知 → 守卫按已登录未绑手机，同时查当前会话的 getMe
+        verifyPhoneBinding()
     }
 
-    /** 守卫用的会话状态。 */
+    /** 正在查的会话（登录世代），避免重复查。 */
+    private var meCheckEpoch: Long? = null
+
+    /**
+     * phone_bound 未知时查清（APP-05b 共性第 8、13 条）：当前是正常会话、这个会话没有确认的 phone_bound、也没有在查 → 下一轮主线程消息里
+     * 查 getMe（不在 Router 的恢复调用里同步改状态）。结果只记到发起查询的会话（登录世代、更新世代都没变，[OAuthLoginService.refreshMe]），
+     * 查清后同步守卫并按冷启动口径经 Router 恢复待办（已绑 → 执行；未绑 → 保留，不自动拉起绑手机页）；查询失败保留待办，下次会话同步、
+     * 进绑手机页时再查（没有定时重查）。
+     */
+    private fun verifyPhoneBinding() {
+        val epoch = tokens.loginEpoch
+        // 第三方登录流程还在进行（刚保存的会话由它自己记 phone_bound：新号 false、老用户由它查 getMe）：不另查
+        val needed =
+            client.activeSessionScope() == SessionScopeRaw.FULL && phoneBinding.get(epoch) == null && meCheckEpoch != epoch && !oauth.busy
+        if (!needed) return
+        meCheckEpoch = epoch
+        sessionScope.launch(Dispatchers.Main) {
+            val known =
+                try {
+                    oauth.refreshMe(epoch)
+                } finally {
+                    if (meCheckEpoch == epoch) meCheckEpoch = null
+                }
+            if (known && tokens.loginEpoch == epoch) {
+                publish(sessionState(), resumePending = false)
+                routing.router.resumePending(enterPrerequisite = false)
+            }
+        }
+    }
+
+    /**
+     * 恢复前的核对（APP-05b 共性第 8 条）：目标是手机号级路由（auth=phone）、当前是正常会话、而这个会话的 phone_bound 还不知道（冷启动、
+     * 待查）→ 按「未验证」处理：这次不恢复、保留待办（也不拉起绑手机页），并查当前会话的 getMe；查清后再经 Router 恢复。
+     */
+    @Suppress("ReturnCount") // 逐项放行
+    private fun phoneLevelReady(request: RouteRequest): Boolean {
+        if (RouteCatalog.spec(request.route, includeDebugRoutes = false)?.auth != AUTH_PHONE) return true
+        if (client.activeSessionScope() != SessionScopeRaw.FULL) return true
+        if (phoneBinding.get(tokens.loginEpoch) != null) return true
+        verifyPhoneBinding()
+        return false
+    }
+
+    /**
+     * 守卫用的会话状态：没有有效会话 → 游客；deletion_only → 受限；确认 phone_bound = true（本次短信登录完成、getMe、绑定成功）→ 已绑
+     * 手机；其余（第三方未绑、待查、冷启动没有记录）→ 已登录未绑手机（APP-05b 共性第 13 条：未知不当已绑，主动打开与待办恢复同一口径）。
+     */
     fun sessionState(): SessionState =
         when (client.activeSessionScope()) {
             null -> SessionState.GUEST
             SessionScopeRaw.DELETION_ONLY -> SessionState.RESTRICTED
-            else -> SessionState.PHONE_BOUND
+            else -> if (phoneBinding.treatAsUnbound(tokens.loginEpoch)) SessionState.LOGGED_IN else SessionState.PHONE_BOUND
         }
 
     /** 隐私结论、强更状态变化（撤回清理、受限会话刷新后）：只同步会话状态，不额外恢复待办（那两处自己会排恢复）。 */
     fun syncSession() {
         val state = sessionState()
         if (state != routing.session.value) publish(state, resumePending = false)
+        verifyPhoneBinding()
     }
 
     /**
@@ -130,10 +220,11 @@ class AppLogin(
         val epoch = tokens.loginEpoch
         val upgraded =
             previous == SessionState.RESTRICTED &&
-                state == SessionState.PHONE_BOUND &&
+                (state == SessionState.PHONE_BOUND || state == SessionState.LOGGED_IN) &&
                 epoch == restrictedEpoch &&
                 !service.ownsSession(epoch)
         if (state != previous || upgraded) publish(state, resumePending = upgraded)
+        verifyPhoneBinding()
     }
 
     /** 写入守卫的会话状态（并记下受限会话所在的登录世代）。 */
@@ -173,6 +264,31 @@ class AppLogin(
         val present = logins.isNotEmpty()
         if (loginInStack && !present) service.invalidateAttempt()
         loginInStack = present
+        // 绑手机页出栈的同步出口（APP-05a 共性第 9 条同理）：作废在途请求与并号凭据；没有绑定就离开 → 暂缓的待办经守卫恢复
+        val binding = entries.any { isRoute(it, RouteNames.BIND_PHONE) }
+        // 进绑手机页时 phone_bound 还不知道（待查、冷启动后直接打开手机号级页面）：再查一次，查清已绑就关页并恢复待办（不算完成前置、
+        // 不重置计时）
+        if (!bindInStack && binding && phoneBinding.get(tokens.loginEpoch) == null) recheckOnBindPage()
+        if (bindInStack && !binding) {
+            bindPhone.invalidate()
+            if (phoneBinding.get(tokens.loginEpoch) != true) bindPhone.leftUnbound()
+        }
+        bindInStack = binding
+    }
+
+    private var bindInStack = false
+
+    private fun recheckOnBindPage() {
+        val epoch = tokens.loginEpoch
+        sessionScope.launch {
+            if (oauth.refreshMe(epoch) && tokens.loginEpoch == epoch && phoneBinding.get(epoch) == true) {
+                bindInStack = false
+                closeRoute(RouteNames.BIND_PHONE)
+                publish(sessionState(), resumePending = false)
+                routing.router.releaseHeldPending()
+                routing.router.resumePending(enterPrerequisite = false)
+            }
+        }
     }
 
     /** 回退栈里此刻的 Login 条目。 */
@@ -217,8 +333,9 @@ class AppLogin(
             texts = LoginDraftTexts,
             restricted = restricted,
             sessionExpired = expired,
-            // 第三方登录（APP-05b）：Android 只有微信，本机没装、或还没实现时不显示（任务书 §2）
-            showThirdParty = false,
+            // 第三方登录（APP-05b）：Android 只有微信；适配器不可用（正式包恒为不可用）或本机确知没装时不显示（任务书 §2.2）
+            oauth = oauth,
+            thirdParty = if (restricted) emptyList() else oauth.visibleProviders(),
             actions =
                 LoginPageActions(
                     onClose = ::closeLogin,
@@ -234,8 +351,48 @@ class AppLogin(
                         routing.drain()
                     },
                     onLoggedIn = ::onLoggedIn,
+                    onOAuthLoggedIn = ::onOAuthLoggedIn,
                 ),
         )
+    }
+
+    /** 绑手机页配置（APP-05b）。 */
+    fun bindPageConfig(): BindPhonePageConfig =
+        BindPhonePageConfig(
+            service = bindPhone,
+            texts = LoginDraftTexts,
+            providerName = LoginDraftTexts.text("login.provider.$lastProvider"),
+            actions =
+                BindPhonePageActions(
+                    onBack = { closeRoute(RouteNames.BIND_PHONE) },
+                    // TODO(N-26)：客服入口（cs.open）在客服任务实现；先打开帮助中心（同 APP-05a）
+                    onCustomerService = { open(HELP_ROUTE) },
+                    // 10007 stage=cooling：经 Router 打开可撤回的注销进度页（APP-05b 共性第 10 条）
+                    onOpenRoute = ::open,
+                ),
+        )
+
+    /**
+     * 第三方登录成功（登录页已关闭）：第三方新号弹绑手机引导（盖在恢复页之上，不新增路由，rule-gaps GUIDE-ROUTE）。待办此时已暂缓：
+     * 引导【暂不】/ 关闭只恢复不重置，【去绑定】进绑手机页，绑定成功再算一次完成前置（APP-05b 共性第 3 条）。
+     */
+    private fun onOAuthLoggedIn(outcome: OAuthLoginOutcome) {
+        lastProvider = outcome.provider.ifEmpty { OAuthProvider.WECHAT }
+        if (outcome.routeRaw == OAuthLoginRoute.BIND_PHONE_GUIDE) mutableNotice.value = LoginNotice.BindPhoneGuide(lastProvider)
+    }
+
+    /** 引导【暂不】、点遮罩、返回：暂缓的待办经 Router 守卫恢复（只恢复、不重置计时；仍需手机号的保留，不自动拉起绑手机页）。 */
+    fun guideSkipped() {
+        consumeNotice()
+        publish(sessionState(), resumePending = false)
+        routing.router.releaseHeldPending()
+        routing.router.resumePending(enterPrerequisite = false)
+    }
+
+    /** 引导【去绑定】：经 Router 打开已登记的 BindPhone（待办继续暂缓，绑定成功后恢复）。 */
+    fun guideGo() {
+        consumeNotice()
+        open(RouteNames.BIND_PHONE)
     }
 
     fun consumeNotice() {
@@ -246,11 +403,15 @@ class AppLogin(
      * 网络层的 Effect（ApiClient 的 NetworkHooks.onEffect，已切到主线程）：刷新失败清会话后跳登录。登出期间（logout 回 10404 等）只同步，
      * 登出本来就回到游客。
      */
+    @Suppress("ReturnCount") // 不是清会话、归属不符、不跳登录三个出口
     fun onNetworkEffect(effect: ErrorEffect) {
         val cleared =
             effect.kind == ErrorEffectKind.CLEAR_SESSION_LOGIN || effect.kind == ErrorEffectKind.CLEAR_SESSION_STAY_FORCE_UPDATE
         if (!cleared) return
         publish(sessionState(), resumePending = false)
+        // APP-05a 共性第 26 条：Effect 所属的世代由网络层在清理发生的同步区里定下；之后已有新登录（或别的清理）就不是这次失效的会话，
+        // 只同步状态，不跳登录、不提示失效。没有带世代的（清理没有发生）同样不跳
+        if (effect.sessionEpoch == null || effect.sessionEpoch != tokens.loginEpoch) return
         if (effect.kind != ErrorEffectKind.CLEAR_SESSION_LOGIN || service.loggingOutNow || loginInStack) return
         sessionExpiredPending = true
         open(RouteNames.LOGIN)
@@ -271,10 +432,13 @@ class AppLogin(
 
     override fun hasPendingAction(): Boolean = routing.router.hasPendingAction
 
+    override fun closeLogin() = closeRoute(RouteNames.LOGIN)
+
+    /** 从回退栈移除最上面的 [name] 路由页（登录页、绑手机页）。 */
     @SuppressLint("RestrictedApi") // 完整回退栈只有 currentBackStack 给得出（只读）
-    override fun closeLogin() {
+    private fun closeRoute(name: String) {
         val controller = navController ?: return
-        val entry = controller.currentBackStack.value.lastOrNull(::isLogin) ?: return
+        val entry = controller.currentBackStack.value.lastOrNull { isRoute(it, name) } ?: return
         controller.popBackStack(entry.toRoute<RouteDestination>(), inclusive = true)
     }
 
@@ -295,6 +459,52 @@ class AppLogin(
     override fun sessionSynced() = publish(sessionState(), resumePending = false)
 
     override fun sessionEnded() = routing.router.onSessionEnded()
+
+    /** 登出收尾（APP-05a 共性第 25 条）：只清原会话（登录世代不晚于 [loginEpoch]）归属的待办。 */
+    override fun sessionEndedThrough(loginEpoch: Long) = routing.router.onSessionEnded(throughSession = loginEpoch)
+
+    /** 第三方登录完成：登录这一步完成（重置计时），待办暂缓（APP-05b 共性第 3 条）。 */
+    override fun prerequisiteDoneHeld() {
+        routing.router.onPrerequisiteCompleted(resume = false)
+        // 共性第 9 条：暂缓是持续状态，所有自动恢复入口都遵守，直到明确释放
+        routing.router.holdPending()
+    }
+
+    /** 第三方老用户 phone_bound 已查清：按最新会话状态同步守卫，再经守卫恢复暂缓的待办（不再重置计时）。 */
+    override fun heldPendingReady() {
+        publish(sessionState(), resumePending = false)
+        routing.router.releaseHeldPending()
+        routing.router.resumePending()
+    }
+
+    /**
+     * 第三方老用户 phone_bound 没查清（APP-05b 共性第 14 条）：解除暂缓，待办经守卫按「未验证」恢复——只需登录的照常打开，需要手机号的
+     * 保留（不自动拉起绑手机页，恢复前的核对 [phoneLevelReady] 也会再查一次）。
+     */
+    override fun heldPendingUnverified() {
+        publish(sessionState(), resumePending = false)
+        routing.router.releaseHeldPending()
+        routing.router.resumePending(enterPrerequisite = false)
+    }
+
+    // ---- BindPhoneHost
+
+    /** 绑定成功、getMe 已刷新：守卫变为已绑手机，关闭绑手机页，绑定这一前置步骤完成（重置计时）并经守卫恢复待办。 */
+    override fun phoneBound() {
+        bindInStack = false
+        closeRoute(RouteNames.BIND_PHONE)
+        publish(sessionState(), resumePending = false)
+        mutableNotice.value = LoginNotice.Message(LoginDraftTexts.text("bind_phone.done"))
+        routing.router.releaseHeldPending()
+        routing.router.onPrerequisiteCompleted()
+    }
+
+    /** 没有绑定就离开绑手机页：暂缓的待办经守卫恢复（只恢复、不重置；仍需手机号的保留，不再拉起绑手机页）。 */
+    override fun leftUnbound() {
+        if (client.activeSessionScope() == null) return
+        routing.router.releaseHeldPending()
+        routing.router.resumePending(enterPrerequisite = false)
+    }
 
     /** 登录有效完成（关闭登录页之前）：等待中的桥调用 auth.login 以 logged_in = true 结算，绑定这次登录的登录世代。 */
     override fun loginCompleted(loginEpoch: Long) {
@@ -325,13 +535,19 @@ class AppLogin(
         routing.router.open(request, if (restricted) state.copy(fromForceUpdatePage = true) else state)
     }
 
-    private fun isLogin(entry: NavBackStackEntry): Boolean =
+    private fun isLogin(entry: NavBackStackEntry): Boolean = isRoute(entry, RouteNames.LOGIN)
+
+    private fun isRoute(
+        entry: NavBackStackEntry,
+        name: String,
+    ): Boolean =
         entry.destination.hasRoute(RouteDestination::class) &&
-            runCatching { entry.toRoute<RouteDestination>().name == RouteNames.LOGIN }.getOrDefault(false)
+            runCatching { entry.toRoute<RouteDestination>().name == name }.getOrDefault(false)
 
     private companion object {
         const val SETTINGS_ROUTE = "Settings"
         const val HELP_ROUTE = "Help"
+        const val AUTH_PHONE = "phone"
         const val AGREEMENT_ROUTE = "Agreement"
         const val INVITE_BOUND = "bound"
         const val INVITE_FAILED = "failed"

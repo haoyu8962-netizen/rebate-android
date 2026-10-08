@@ -11,7 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * 桥调用 auth.login（APP-04 共性第 66 条；bridge.schema.json auth.login「Opens Login; resolves when the user finishes or leaves」）：
- * - 已登录（完整会话）：不打开登录页，直接 logged_in = true；
+ * - 已登录（完整会话，含未绑手机的 LOGGED_IN）：不打开登录页，直接 logged_in = true；
  * - 否则先登记等待，再以桥来源经 Router 打开登录页（[open]，享有导航调用的作废豁免）；Router 没有打开登录页（被拒、要等待、复核时
  *   已过时）按此刻的会话结算；
  * - 打开了：等用户完成登录（会话已保存 → logged_in = true，结果绑定这次登录保存的登录世代，本次登录引起的会话变化不把调用作废），
@@ -65,7 +65,11 @@ internal class BridgeLogin(
         }
     }
 
-    private fun loggedIn(): Boolean = routing.session.value == SessionState.PHONE_BOUND
+    /**
+     * 已登录：有效的完整会话，不论是否绑了手机（第三方新号跳过绑手机引导后是 LOGGED_IN，APP-05b 共性第 18 条）。受限会话（deletion_only）
+     * 不算，照旧打开登录页（强更状态下由守卫处理）。
+     */
+    private fun loggedIn(): Boolean = routing.session.value.let { it == SessionState.PHONE_BOUND || it == SessionState.LOGGED_IN }
 
     private fun result(loggedIn: Boolean) = JsonObject(mapOf("logged_in" to JsonPrimitive(loggedIn)))
 

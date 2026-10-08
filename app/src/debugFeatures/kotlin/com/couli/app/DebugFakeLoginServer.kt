@@ -23,12 +23,21 @@ import okio.Buffer
  * - 发码：13900000000 → 42901（Retry-After 120）；13900000001 → 50401（依赖超时，结果不确定）；其余成功（resend_after_sec 60、expires_in_sec 300）；
  * - 登录：123456 新号成功（带邀请码时：语法合法 bound，否则 failed 30401）；222222 老用户成功；200020 → 20002；200030 → 20003；
  *   444444 → 44001；100070 → 10007 processing；104050 → 10405 no_account；999999 → 受限会话 deletion_only；
- * - 刷新：换一对令牌（full）；登出、getMe、其余：code 0。
+ * - 刷新：换一对令牌（full）；登出、其余：code 0。
+ * - 第三方登录（APP-05b）：取授权尝试 → 假的 attempt_id / nonce；微信登录 → 第三方新号（is_new_user=true）；
+ *   getMe → phone_bound（本进程里绑定成功之前为 false）；
+ * - 绑手机：13800005678 → 30411 mergeable（带假的 merge_ticket）；13800001111 → 30411；13800004444 → 44001；
+ *   验证码 123456 → 成功；200030 → 20003；其余 → 20002。绑手机发码（purpose=bind）同登录发码。
  */
+@Suppress("TooManyFunctions") // 每类接口一个场景函数
 internal class DebugFakeLoginServer(
     private val switch: File,
 ) : Interceptor {
     private var serial = 0
+
+    /** 本进程里假账号是否已绑手机（绑手机成功后 getMe 回 true；新的第三方登录重置）。 */
+    @Volatile
+    private var phoneBound = false
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -64,6 +73,10 @@ internal class DebugFakeLoginServer(
             "/v1/auth/sms-codes" -> sms(body.text("phone"))
             "/v1/auth/login/sms" -> login(body.text("code"), body.text("invite_code"))
             "/v1/auth/refresh" -> ok("""{${tokens("full")}}""")
+            "/v1/auth/oauth-attempts" -> ok(attempt())
+            "/v1/auth/login/wechat" -> wechatLogin()
+            "/v1/me" -> ok("""{"user_id":"fake-user-0002","phone_bound":$phoneBound}""")
+            "/v1/me/phone" -> bindPhone(body.text("phone"), body.text("code"))
             else -> ok("{}")
         }
 
@@ -88,6 +101,47 @@ internal class DebugFakeLoginServer(
             "100070" -> Triple(DELETION, """{"stage":"processing"}""", emptyMap())
             "104050" -> Triple(FORCE_UPDATE, """{"reason":"no_account","min_supported_version":"9.0.0"}""", emptyMap())
             else -> fail(WRONG_CODE)
+        }
+
+    private fun attempt(): String {
+        serial += 1
+        return """{"attempt_id":"fake-attempt-$serial","nonce":"fake-nonce-0000-0000-$serial","expire_at":"2099-01-01T00:00:00+08:00"}"""
+    }
+
+    private fun wechatLogin(): Triple<Int, String, Map<String, String>> {
+        phoneBound = false
+        return ok("""{"user_id":"fake-user-0002","is_new_user":true,"tokens":{${tokens("full")}}}""")
+    }
+
+    private fun bindPhone(
+        phone: String?,
+        code: String?,
+    ): Triple<Int, String, Map<String, String>> =
+        when {
+            phone == MERGEABLE_PHONE -> {
+                Triple(OCCUPIED, """{"reason":"mergeable","merge_ticket":"fake-merge-ticket"}""", emptyMap())
+            }
+
+            phone == OCCUPIED_PHONE -> {
+                fail(OCCUPIED)
+            }
+
+            phone == BLOCKED_PHONE -> {
+                fail(RISK_BLOCKED)
+            }
+
+            code == "123456" -> {
+                phoneBound = true
+                ok("{}")
+            }
+
+            code == "200030" -> {
+                fail(EXPIRED_CODE)
+            }
+
+            else -> {
+                fail(WRONG_CODE)
+            }
         }
 
     private fun loggedIn(
@@ -121,6 +175,10 @@ internal class DebugFakeLoginServer(
         val JSON = "application/json".toMediaType()
         val INVITE = Regex("[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}")
         const val LIMITED_PHONE = "13900000000"
+        const val MERGEABLE_PHONE = "13800005678"
+        const val OCCUPIED_PHONE = "13800001111"
+        const val BLOCKED_PHONE = "13800004444"
+        const val OCCUPIED = 30411
         const val RATE_LIMITED = 42901
         const val UNCERTAIN_PHONE = "13900000001"
         const val UPSTREAM_TIMEOUT = 50401

@@ -2,6 +2,7 @@ package com.couli.feature.login
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,12 +39,15 @@ class LoginPageActions(
     val onForceUpdate: (message: String) -> Unit = {},
     /** 登录成功（登录页已由执行器关闭）：邀请绑定结果等后续提示。 */
     val onLoggedIn: (LoginOutcome) -> Unit = {},
+    /** 第三方登录成功（登录页已由执行器关闭）：第三方新号弹绑手机引导（LoginBindPhoneGuide，BR-INV-03 细则 ①）。 */
+    val onOAuthLoggedIn: (OAuthLoginOutcome) -> Unit = {},
 )
 
 /**
  * 登录页的配置。[restricted]：从强更页进入的受限登录（APP-02c 已有的来源标记）——不显示设置、邀请码、第三方登录与帮助等业务入口
- * （BR-ID-01 细则）。[sessionExpired]：刷新失败清会话后跳来的登录（LoginSessionExpired，进页提示一次）。[showThirdParty]：
- * 第三方登录的位置（APP-05b 实现；本机没装微信时不显示）。
+ * （BR-ID-01 细则）。[sessionExpired]：刷新失败清会话后跳来的登录（LoginSessionExpired，进页提示一次）。[oauth]：第三方登录执行器
+ * （APP-05b）；[thirdParty] 要显示的第三方按钮（provider 名，[OAuthLoginService.visibleProviders]：适配器可用且本机已装 / 未知；
+ * Android 正式包的微信适配器恒为不可用 → 空，整块不显示）。
  */
 @Suppress("LongParameterList") // 执行器、文案、来源标记与出口逐项给
 class LoginPageConfig(
@@ -51,7 +55,8 @@ class LoginPageConfig(
     val texts: LoginTexts,
     val restricted: Boolean,
     val sessionExpired: Boolean = false,
-    val showThirdParty: Boolean = false,
+    val oauth: OAuthLoginService? = null,
+    val thirdParty: List<String> = emptyList(),
     val clock: () -> Long = System::currentTimeMillis,
     val actions: LoginPageActions = LoginPageActions(),
 )
@@ -72,6 +77,9 @@ enum class LoginDialog {
 
     /** LoginDeletionProcessing：10007 注销处理中。 */
     DELETION_PROCESSING,
+
+    /** 第三方登录 44001（BR-TEXT-14 表 A：给申诉入口；不套用短信登录的专用说明，APP-05b 共性第 5 条）。 */
+    OAUTH_BLOCKED,
 }
 
 /** 登录页的界面状态（StateFlow，03 §3.3）。时间相关的派生值（倒计时、限流）按 [nowMillis] 现算。 */
@@ -99,9 +107,16 @@ data class LoginUiState(
      * 入口（共性第 12、16 条），与能否重发无关。
      */
     val issuedCodeSec: Int = 0,
+    /** 第三方登录进行中（provider 名；没有为 null）。 */
+    val oauthBusy: String? = null,
+    /** 第三方登录 42901 的禁用剩余秒数。 */
+    val oauthLimitedSec: Int = 0,
     /** 轻提示文字与序号（同一句再次提示也换序号重新播报）。 */
     val toast: String? = null,
     val toastId: Int = 0,
+    /** 读屏播报（发码成功播报一次脱敏的发送对象；倒计时结束、可重发时播报一次；APP-05b 共性第 11 条）。 */
+    val announce: String? = null,
+    val announceId: Int = 0,
 )
 
 /**
@@ -117,6 +132,7 @@ class LoginViewModel(
     private val texts: LoginTexts get() = config.texts
     private val agreement = AgreementState(clock = { config.clock() })
     private val limits = LoginRateLimits()
+    private val oauthLimit = LoginRateLimits()
 
     /** 确认框同意之后要继续的动作。 */
     private var afterConfirm: (() -> Unit)? = null
@@ -201,6 +217,11 @@ class LoginViewModel(
 
     fun onLogin() = requireAgreement(::login)
 
+    /** 第三方登录按钮（与短信登录同一个协议确认框，BR-ID-04）。 */
+    fun onThirdParty(provider: String) = requireAgreement { oauthLogin(provider) }
+
+    val thirdParty: List<String> get() = if (config.restricted || config.oauth == null) emptyList() else config.thirdParty
+
     /** 验证码页返回手机号页：作废在途的登录（共性第 1 条）；已收到的码仍可在同号码下继续输入（共性第 12 条）。 */
     fun onBackToPhone() {
         service.invalidateAttempt()
@@ -276,6 +297,10 @@ class LoginViewModel(
         when (outcome.stateRaw) {
             SmsCountdown.STATE_SENT, LoginService.STATE_COUNTDOWN -> {
                 val masked = outcome.phone?.let(PhoneNumber::masked).orEmpty()
+                // 共性第 11 条：真正发出的那次播报一次脱敏的发送对象（倒计时内不再发出的不播报）
+                if (outcome.stateRaw == SmsCountdown.STATE_SENT && masked.isNotEmpty()) {
+                    announce(texts.format("login.code.sent_to", mapOf("phone" to masked)))
+                }
                 mutableState.update {
                     it.copy(
                         step = LoginStep.CODE,
@@ -324,6 +349,57 @@ class LoginViewModel(
             val outcome = service.login(current.phone, current.code, agreement.consentAtMillis, current.invite, config.restricted)
             mutableState.update { it.copy(loggingIn = false) }
             onLoginOutcome(outcome)
+        }
+    }
+
+    private fun oauthLogin(provider: String) {
+        val oauth = config.oauth ?: return
+        if (service.busy || oauth.busy || oauthLimit.loginBlocked(config.clock())) return
+        mutableState.update { it.copy(oauthBusy = provider) }
+        viewModelScope.launch {
+            val outcome = oauth.loginWith(provider, agreement.consentAtMillis)
+            mutableState.update { it.copy(oauthBusy = null) }
+            onOAuthOutcome(outcome)
+        }
+    }
+
+    /** 第三方登录的结果 → 页面（取消、迟到、忙不提示；BR-TEXT-14）。 */
+    @Suppress("CyclomaticComplexMethod")
+    private fun onOAuthOutcome(outcome: OAuthLoginOutcome) {
+        val providerName = texts.text("login.provider.${outcome.provider}")
+        when (outcome.stateRaw) {
+            OAuthLoginOutcome.LOGGED_IN -> {
+                config.actions.onOAuthLoggedIn(outcome)
+            }
+
+            OAuthLoginErrorAction.RISK_BLOCKED -> {
+                mutableState.update { it.copy(dialog = LoginDialog.OAUTH_BLOCKED) }
+            }
+
+            OAuthLoginErrorAction.RETRY_AFTER -> {
+                oauthLimit.limitLogin(config.clock(), outcome.disableMillis.takeIf { it > 0 } ?: DEFAULT_LIMIT_MILLIS)
+                tick()
+                toast(text(outcome.textKey))
+            }
+
+            OAuthLoginErrorAction.FORCE_UPDATE -> {
+                config.actions.onForceUpdate(text(outcome.textKey))
+            }
+
+            LoginOutcome.AGREEMENT_REQUIRED -> {
+                afterConfirm = { oauthLogin(outcome.provider) }
+                mutableState.update { it.copy(dialog = LoginDialog.AGREE_CONFIRM) }
+            }
+
+            OAuthLoginOutcome.CANCELLED, LoginOutcome.STALE, LoginOutcome.BUSY -> {
+                Unit
+            }
+
+            else -> {
+                val key = outcome.textKey ?: LoginService.GENERIC_KEY
+                val message = texts.format(key, mapOf("trace6" to outcome.trace6, "provider_name" to providerName))
+                toast(ResultSignals.withTrace6(message, outcome.trace6))
+            }
         }
     }
 
@@ -388,11 +464,26 @@ class LoginViewModel(
     /** 每秒：重发倒计时与两个限流的剩余秒数按当前时刻现算。 */
     private fun tick() {
         val now = config.clock()
+        val before = mutableState.value
+        updateTimers(now)
+        // 共性第 11 条：验证码步上同一号码的倒计时走完、可以重新获取时播报一次（不逐秒；换号不算）
+        val after = mutableState.value
+        val ended = after.phone == before.phone && before.resendSec > 0 && after.resendSec == 0
+        if (ended && after.step == LoginStep.CODE) announce(texts.text("login.code.can_resend"))
+    }
+
+    private fun announce(message: String) {
+        if (message.isEmpty()) return
+        mutableState.update { it.copy(announce = message, announceId = it.announceId + 1) }
+    }
+
+    private fun updateTimers(now: Long) {
         mutableState.update {
             it.copy(
                 resendSec = service.resendRemainingSec(it.phone),
                 sendLimitedSec = service.sendLimitedRemainingSec(it.phone),
                 loginLimitedSec = limits.loginRemainingSec(now),
+                oauthLimitedSec = oauthLimit.loginRemainingSec(now),
                 issuedCodeSec = service.issuedCodeRemainingSec(it.phone),
             )
         }
@@ -405,13 +496,15 @@ class LoginViewModel(
 
     private fun text(key: String?): String = key?.let(texts::text).orEmpty().ifEmpty { texts.text(LoginService.GENERIC_KEY) }
 
+    /** 错误正文与追踪编号统一生成（APP-06a 共性第 6、12 条：不依赖文案键里恰好有 {trace6}）。 */
     private fun formatted(
         key: String?,
         trace6: String,
-    ): String = texts.format(key ?: LoginService.GENERIC_KEY, mapOf("trace6" to trace6))
+    ): String = ResultSignals.withTrace6(texts.format(key ?: LoginService.GENERIC_KEY, mapOf("trace6" to trace6)), trace6)
 
     private companion object {
         const val TICK_MILLIS = 1000L
         const val MAX_INVITE_INPUT = 32
+        const val DEFAULT_LIMIT_MILLIS = 5_000L
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -102,6 +103,10 @@ object LoginTags {
     const val CONFIRM_LINK_AGREEMENT = "login_confirm_link_agreement"
     const val CONFIRM_LINK_PRIVACY = "login_confirm_link_privacy"
     const val THIRD_PARTY = "login_third_party"
+
+    /** 第三方登录按钮：`login_oauth_<provider>`。 */
+    const val OAUTH_PREFIX = "login_oauth_"
+    const val OAUTH_BLOCKED_APPEAL = "login_oauth_blocked_appeal"
 }
 
 /** 协议类型（Agreement 路由参数 type）。 */
@@ -185,6 +190,11 @@ fun LoginScreen(
         }
     }
     LoginDialogs(model, state, texts)
+    val view = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(state.announceId) {
+        @Suppress("DEPRECATION") // 与 CouliToast 同：需要立即读出
+        state.announce?.let(view::announceForAccessibility)
+    }
 }
 
 @Composable
@@ -288,7 +298,7 @@ private fun PhoneStep(
         }
     }
     if (!config.restricted) {
-        if (config.showThirdParty) ThirdPartySlot(texts)
+        if (model.thirdParty.isNotEmpty()) ThirdPartySlot(model, state, texts)
         HelpEntry(model, texts)
     }
 }
@@ -715,32 +725,87 @@ private fun InviteField(
 }
 
 /**
- * 第三方登录的位置（APP-05b 实现）：分隔线「其他登录方式」。Android 只有微信，本机没装微信时整块不显示（任务书 §2）；
- * TODO(APP-05b)：按钮与安装检测。
+ * 第三方登录（APP-05b，设计稿 Login「其他登录方式」）：分隔线 + 圆形描边图标按钮（48dp，图形不随字号放大）与下方名称。Android 只有微信
+ * 候选；没有可显示的按钮时整块不出现（正式包微信适配器不可用，BR-ID-04 / 任务书 §2.2）。读屏名称「微信登录」，按钮角色；42901 期间与
+ * 登录进行中禁用。
  */
 @Composable
-private fun ThirdPartySlot(texts: LoginTexts) {
-    Row(
+private fun ThirdPartySlot(
+    model: LoginViewModel,
+    state: LoginUiState,
+    texts: LoginTexts,
+) {
+    Column(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .testTag(LoginTags.THIRD_PARTY),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Box(
-            Modifier
-                .weight(1f)
-                .height(CouliSizes.hairline)
-                .background(CouliColors.borderSubtle),
-        )
-        Text(text = texts.text("login.other_methods"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Box(
-            Modifier
-                .weight(1f)
-                .height(CouliSizes.hairline)
-                .background(CouliColors.borderSubtle),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(CouliSizes.hairline)
+                    .background(CouliColors.borderSubtle),
+            )
+            Text(text = texts.text("login.other_methods"), style = CouliTypography.caption, color = CouliColors.textSecondary)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(CouliSizes.hairline)
+                    .background(CouliColors.borderSubtle),
+            )
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(OAUTH_GAP.dp, Alignment.CenterHorizontally)) {
+            model.thirdParty.forEach { provider ->
+                val enabled = state.oauthBusy == null && state.oauthLimitedSec == 0 && !state.sending && !state.loggingIn
+                Column(
+                    modifier =
+                        Modifier
+                            .widthIn(min = OAUTH_MIN_WIDTH.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                enabled = enabled,
+                                role = Role.Button,
+                                onClick = { model.onThirdParty(provider) },
+                            ).semantics(mergeDescendants = true) {
+                                // 读屏名称「微信登录」（下方的「微信」标签不再重复朗读）；点击动作由 clickable 提供
+                                contentDescription = texts.text("login.$provider")
+                            }.testTag(LoginTags.OAUTH_PREFIX + provider),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+                ) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(CouliSizes.touchTarget)
+                                .background(CouliColors.backgroundSurface, CircleShape)
+                                .border(CouliSizes.hairline, CouliColors.borderSubtle, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = CouliIcons.chat,
+                            contentDescription = null,
+                            tint = if (enabled) CouliColors.textSecondary else CouliColors.borderControl,
+                            modifier = Modifier.size(CouliSizes.iconMedium),
+                        )
+                    }
+                    Text(
+                        text = texts.text("login.$provider.short"),
+                        style = CouliTypography.caption,
+                        color = CouliColors.textSecondary,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -776,6 +841,19 @@ private fun LoginDialogs(
             CouliDialog(
                 title = texts.text("error.44001"),
                 message = texts.text("login.risk_blocked.desc"),
+                confirmText = texts.text("login.risk_blocked.ok"),
+                onConfirm = model::onDismissDialog,
+                onDismissRequest = model::onDismissDialog,
+                dismissText = texts.text("cs.appeal_entry"),
+                onDismiss = model::customerService,
+            )
+        }
+
+        // 第三方登录 44001：标题 error.44001（risk_msg 未下发时的默认句），【知道了】与【联系客服申诉】（统一客服出口）；第三方登录没有
+        // 短信登录那样的专用说明句，不配说明（APP-05b 共性第 5 条，rule-gaps RISK-APPEAL）
+        LoginDialog.OAUTH_BLOCKED -> {
+            CouliDialog(
+                title = texts.text("error.44001"),
                 confirmText = texts.text("login.risk_blocked.ok"),
                 onConfirm = model::onDismissDialog,
                 onDismissRequest = model::onDismissDialog,
@@ -837,6 +915,10 @@ private const val BRAND_FONT_DP = 20
 private const val BRAND_LINE = 1.43f
 private const val INPUT_MIN_HEIGHT = 52
 private const val CODE_CELL_MIN_HEIGHT = 56
+
+/** 第三方按钮：两个按钮间距 40、每个至少 64 宽（设计稿 Login）。 */
+private const val OAUTH_GAP = 40
+private const val OAUTH_MIN_WIDTH = 64
 
 /** 大屏上登录内容的最大宽度（03 §10.4「内容区限制最大宽度并水平居中」；共性第 17 条示例值 480dp）。 */
 private const val CONTENT_MAX_WIDTH = 480

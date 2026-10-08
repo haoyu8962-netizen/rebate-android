@@ -135,8 +135,27 @@ class WebScreensComposeTest {
         compose.waitForIdle()
         val webView = compose.runOnUiThreadValue { findWebView(compose.activity.window.decorView) }
         compose.runOnUiThread { webView.loadDataWithBaseURL("$THIRD_PARTY/video", FULLSCREEN_PAGE, "text/html", "utf-8", null) }
-        Thread.sleep(LOAD_MS)
-        // 真实触摸（系统派发的 MotionEvent）点到页面左上角的元素，onclick 里 requestFullscreen
+        // F-AND-16：不靠固定睡眠猜页面何时就绪——等文档里的全屏元素真的存在、并已排版，再点；高负载下页面慢、或第一次点击落在
+        // 排版之前没有触发全屏时，隔一段再点一次（每次都是真实的系统触摸事件），总等待放宽到 [FULLSCREEN_WAIT_MS]
+        compose.waitUntil(FULLSCREEN_WAIT_MS) { pageReady(webView) }
+        val deadline = System.currentTimeMillis() + FULLSCREEN_WAIT_MS
+        while (count(FULLSCREEN_TAG) == 0 && System.currentTimeMillis() < deadline) {
+            tap(webView)
+            runCatching { compose.waitUntil(TAP_RETRY_MS) { count(FULLSCREEN_TAG) > 0 } }
+        }
+        assertTrue("element fullscreen entered", count(FULLSCREEN_TAG) > 0)
+        // 共性第 42、52 条：普通元素（这里是一个包着 video 的 div）请求全屏也会走 onShowCustomView，原生分不出全屏的是不是视频元素
+        // 本身（视频尺寸大于 0 也说明不了）→ Android 对任何全屏都不隐藏标题栏（主机名、返回、关闭）
+        assertEquals("title bar stays in fullscreen", 1, count(TITLE_BAR_TAG))
+        assertEquals("close stays reachable", 1, count(CLOSE_TAG))
+
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.waitUntil(FULLSCREEN_WAIT_MS) { count(FULLSCREEN_TAG) == 0 }
+        assertEquals("title bar restored", 1, count(TITLE_BAR_TAG))
+    }
+
+    /** 真实触摸（系统派发的 MotionEvent）点到页面左上角的元素，onclick 里 requestFullscreen。 */
+    private fun tap(webView: WebView) {
         compose.runOnUiThread {
             val now = android.os.SystemClock.uptimeMillis()
             listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEach { action ->
@@ -145,15 +164,18 @@ class WebScreensComposeTest {
                 event.recycle()
             }
         }
-        compose.waitUntil(WAIT_MS) { count(FULLSCREEN_TAG) > 0 }
-        // 共性第 42、52 条：普通元素（这里是一个包着 video 的 div）请求全屏也会走 onShowCustomView，原生分不出全屏的是不是视频元素
-        // 本身（视频尺寸大于 0 也说明不了）→ Android 对任何全屏都不隐藏标题栏（主机名、返回、关闭）
-        assertEquals("title bar stays in fullscreen", 1, count(TITLE_BAR_TAG))
-        assertEquals("close stays reachable", 1, count(CLOSE_TAG))
+    }
 
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
-        compose.waitUntil(WAIT_MS) { count(FULLSCREEN_TAG) == 0 }
-        assertEquals("title bar restored", 1, count(TITLE_BAR_TAG))
+    /** 全屏测试页已加载完、全屏元素已排版（宽度大于 0）。 */
+    private fun pageReady(webView: WebView): Boolean {
+        val answer = java.util.concurrent.CompletableFuture<String>()
+        compose.runOnUiThread {
+            webView.evaluateJavascript(
+                "(function(){var v=document.getElementById('v');" +
+                    "return document.readyState==='complete'&&!!v&&v.getBoundingClientRect().width>0;})()",
+            ) { answer.complete(it) }
+        }
+        return runCatching { answer.get(TAP_RETRY_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrNull() == "true"
     }
 
     private fun <T> androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, *>.runOnUiThreadValue(block: () -> T): T {
@@ -182,7 +204,10 @@ class WebScreensComposeTest {
 
     private companion object {
         const val WAIT_MS = 10_000L
-        const val LOAD_MS = 1_500L
+
+        /** F-AND-16：元素全屏用例的等待上限（宿主机高负载时 WebView 加载与全屏回调都会变慢）。 */
+        const val FULLSCREEN_WAIT_MS = 30_000L
+        const val TAP_RETRY_MS = 3_000L
         const val TAP_PX = 10f
         const val TRUSTED = "https://h5.example.test"
         const val THIRD_PARTY = "https://page.example.test"
