@@ -17,6 +17,10 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.feature.web.ExternalWebScreen
 import com.couli.feature.web.TrustedWebScreen
+import com.couli.feature.web.TrustedWebTarget
+import com.couli.generated.RouteSpec
+import java.net.URI
+import java.net.URLEncoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -34,16 +38,48 @@ fun WebPageRoute(
     routing: AppRouting,
     onClose: () -> Unit,
 ) {
+    val url = page.param("url").orEmpty()
+    TrustedRoute(url, web, routing, onClose) { url }
+}
+
+/**
+ * H5 路由（routes.json kind=h5：FindOrder、Ledger、Help、Messages 等）：在同一个可信容器里打开，地址 = 生效配置的 h5_base_url + 契约的
+ * h5_path，路由参数（Router 已按 params schema 校验）作为查询串带上（[H5RouteUrl]）。地址拼不出（没有下发 h5_base_url、不是 https）时容器
+ * 按不可信地址处理（不加载、显示加载失败与重试），不退回占位页；可信源判定照旧只看 bridge_origins。地址与可信配置不在首次进入时固定：
+ * 【重试】时按生效配置重新生成（R3-03、共性第 29 条：冷启动配置晚到，原页面点重试即可恢复）。
+ */
+@Composable
+fun H5RoutePage(
+    page: RouteDestination,
+    spec: RouteSpec,
+    web: AppWeb,
+    routing: AppRouting,
+    onClose: () -> Unit,
+) {
+    val url = remember(page.paramsJson, spec, web) { web.h5Url(spec, page.paramsJson).orEmpty() }
+    TrustedRoute(url, web, routing, onClose) { web.h5Url(spec, page.paramsJson).orEmpty() }
+}
+
+/** 可信容器（WebPage 与 H5 路由共用）。[freshUrl] 在【重试】时按生效配置重新生成地址（可信配置同时重新读取）。 */
+@Composable
+private fun TrustedRoute(
+    url: String,
+    web: AppWeb,
+    routing: AppRouting,
+    onClose: () -> Unit,
+    freshUrl: () -> String,
+) {
     val config = remember(web) { web.trustedConfig() }
     // 容器所在的回退栈条目：clipboard.setAutoDetect 的临时抑制只对这个容器实例生效（APP-07 G06）
     val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
     TrustedWebScreen(
-        url = page.param("url").orEmpty(),
+        url = url,
         config = config,
         // 宿主用容器实例自己的作用域：被盖住不取消，出栈时随容器拆除取消
         hostFactory = { ui, scope -> web.newHost(ui, scope, entryId = entryId) },
         onOpenExternal = { url -> openExternal(routing, url) },
         onClose = onClose,
+        retarget = { TrustedWebTarget(freshUrl(), web.trustedConfig()) },
     )
 }
 
@@ -163,4 +199,38 @@ internal object BrowserExit {
         Intent(Intent.ACTION_VIEW, url.toUri())
             .addCategory(Intent.CATEGORY_BROWSABLE)
             .apply { browserPackage?.let(::setPackage) }
+}
+
+/**
+ * H5 路由的页面地址（03 §8.4：routes.json 的 h5_path 相对于 /v1/config 的 h5_base_url）。纯函数：
+ * - [base] 必须是带主机的 https 地址、不带查询串与片段，否则为 null（不加载）；末尾的「/」与 h5_path 开头的「/」只留一个；
+ * - [params] 只取字符串值，按参数名排序后编码成查询串（UTF-8，空格为 %20）；没有参数时不带「?」。
+ * TODO(N-31)：契约没写 h5_release.version 怎样进地址、路由参数是否走查询串（rule-gaps Android A15），这里不带版本号、参数走查询串。
+ */
+internal object H5RouteUrl {
+    fun of(
+        base: String?,
+        h5Path: String?,
+        params: JsonObject,
+    ): String? {
+        val root = usableBase(base)
+        val path = h5Path?.takeIf { it.startsWith("/") }
+        if (root == null || path == null) return null
+        val query =
+            params.entries
+                .mapNotNull { (key, value) -> (value as? JsonPrimitive)?.takeIf { it.isString }?.let { key to it.content } }
+                .sortedBy { it.first }
+                .joinToString("&") { (key, value) -> "${encode(key)}=${encode(value)}" }
+        return root.trimEnd('/') + path + if (query.isEmpty()) "" else "?$query"
+    }
+
+    /** 带主机的 https 地址、不带查询串与片段才可用。 */
+    private fun usableBase(base: String?): String? {
+        val root = base?.trim()?.takeIf { it.isNotEmpty() }
+        val uri = root?.let { runCatching { URI(it) }.getOrNull() }
+        val https = uri != null && uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrEmpty()
+        return root.takeIf { https && uri?.rawQuery == null && uri?.rawFragment == null }
+    }
+
+    private fun encode(text: String): String = URLEncoder.encode(text, Charsets.UTF_8.name()).replace("+", "%20")
 }

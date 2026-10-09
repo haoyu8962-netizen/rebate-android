@@ -130,6 +130,11 @@ fun AppNavHost(
 class ShellHooks(
     val tabRoutes: Set<String> = setOf(RouteNames.HOME),
     val onOpenTab: (route: String, readonly: Boolean) -> Unit = { _, _ -> },
+    /**
+     * Tab 根路由带了参数（OrderList {scope}，routes.json）：在切到该 Tab 之前把参数交给 Tab 根（订单列表切到对应子 Tab，APP-08）。
+     * 只有声明了参数的 Tab 根路由会带参数；Router 已按 routes.json 校验。
+     */
+    val onTabParams: (route: String, params: JsonObject) -> Unit = { _, _ -> },
     val onRequestConsent: (RouteRequest) -> Unit = {},
     val pageAllowed: (RouteDestination) -> Boolean = { true },
     /** 回退栈变化（主线程，回退栈一更新就调；APP-05a：登录页出栈即作废登录尝试）。 */
@@ -146,8 +151,9 @@ class NavControllerNavigator(
         params: JsonObject,
         readonly: Boolean,
     ) {
-        if (route in hooks.tabRoutes && params.isEmpty()) {
+        if (route in hooks.tabRoutes) {
             navController.popBackStack(HomeDestination, inclusive = false)
+            if (params.isNotEmpty()) hooks.onTabParams(route, params)
             hooks.onOpenTab(route, readonly)
         } else if (route == RouteNames.FORCE_UPDATE) {
             navigateToForceUpdate(navController)

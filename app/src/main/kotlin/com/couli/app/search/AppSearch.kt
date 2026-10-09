@@ -3,6 +3,7 @@ package com.couli.app.search
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -20,6 +21,8 @@ import androidx.navigation.NavBackStackEntry
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.SearchTypingPasteEntry
 import com.couli.app.clipboard.SearchTypingPasteResult
+import com.couli.app.orders.AppOrders
+import com.couli.app.orders.PendingPageLifecycle
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
 import com.couli.app.trade.AppTrade
@@ -32,6 +35,7 @@ import com.couli.core.designsystem.ProductDetailState
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.PageApi
+import com.couli.core.orders.PendingTrackCards
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
@@ -96,6 +100,8 @@ class AppSearch(
     val trade: AppTrade? = null,
     /** 剪贴板识别（APP-07）：SearchTyping 的「粘贴查返利」与 parse 卡片种子；没有接（只测外壳的单测）时不显示粘贴入口。 */
     private val clipboard: AppClipboard? = null,
+    /** 订单（APP-08）：发起购买的页面在外跳回到前台后显示同平台的待跟单卡（G07）；没有接时不显示。 */
+    val orders: AppOrders? = null,
 ) {
     /** 回退栈条目 id → 该页的购买执行器（随页面出栈作废）。 */
     private val purchases = mutableMapOf<String, PurchasePage>()
@@ -103,6 +109,7 @@ class AppSearch(
     /** 一个发起页的购买：执行器、它的协程作用域、卡片更新的落点。 */
     private inner class PurchasePage(
         trade: AppTrade,
+        private val entryId: String,
     ) : PurchaseEnv {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         var product: ProductDetailController? = null
@@ -149,6 +156,11 @@ class AppSearch(
 
         override fun helpLink(key: String): Pair<String, JsonObject>? = owner.helpLink(key)
 
+        /** 外跳已执行：回到前台后拉一次待跟单卡，只显示同平台那一张（APP-08 G07）。 */
+        override fun jumped(platform: String) {
+            orders?.pendingFor(entryId)?.jumped(platform)
+        }
+
         fun release() {
             owner.release(controller)
             scope.cancel()
@@ -160,7 +172,7 @@ class AppSearch(
         val trade = trade ?: return null
         val id = entryId ?: return null
         return purchases.getOrPut(id) {
-            PurchasePage(trade).also { page ->
+            PurchasePage(trade, id).also { page ->
                 bind(LEAVE_PURCHASE_PREFIX + id) {
                     purchases.remove(id)
                     page.release()
@@ -249,7 +261,7 @@ class AppSearch(
                     onSimilar = { card -> purchase?.controller?.similar(card) ?: openSimilar(card) },
                 ),
             bindLeave = { leave -> bind(entryId, leave) },
-            purchase = purchase?.let { searchSlots(it) } ?: SearchPurchaseSlots(),
+            purchase = purchase?.let { searchSlots(it, entryId) } ?: SearchPurchaseSlots(),
             bindController = { controller -> purchase?.search = controller },
             restoreGate = ::awaitUpdateCheck,
             // 「粘贴查返利」（APP-07）：基本模式不读剪贴板，不显示
@@ -265,11 +277,19 @@ class AppSearch(
         )
     }
 
-    private fun searchSlots(page: PurchasePage): SearchPurchaseSlots {
+    private fun searchSlots(
+        page: PurchasePage,
+        entryId: String?,
+    ): SearchPurchaseSlots {
         val texts = trade?.texts ?: TradeDraftTexts
         return SearchPurchaseSlots(
             overlay = { PurchaseOverlay(page.controller, texts, buyFocus = null) },
-            banner = { PurchaseTimeoutBanner(page.controller, texts) },
+            banner = {
+                Column {
+                    PendingCards(entryId)
+                    PurchaseTimeoutBanner(page.controller, texts)
+                }
+            },
             button = { card ->
                 val state by page.controller.state.collectAsStateWithLifecycle()
                 // 42901 置灰本页每一张卡（共性第 36 条）；加载、未安装提示只给正在购买的那张卡
@@ -278,15 +298,36 @@ class AppSearch(
         )
     }
 
-    private fun productSlots(page: PurchasePage): ProductPurchaseSlots {
+    private fun productSlots(
+        page: PurchasePage,
+        entryId: String?,
+    ): ProductPurchaseSlots {
         val texts = trade?.texts ?: TradeDraftTexts
         return ProductPurchaseSlots(
             overlay = { focus -> PurchaseOverlay(page.controller, texts, focus) },
-            banner = { PurchaseTimeoutBanner(page.controller, texts) },
+            // 待跟单卡（设计稿 ProductPendingTrack：内容与底栏之间）+ 超时提示条
+            banner = {
+                Column {
+                    PendingCards(entryId)
+                    PurchaseTimeoutBanner(page.controller, texts)
+                }
+            },
             button = {
                 val state by page.controller.state.collectAsStateWithLifecycle()
                 purchaseButton(state, texts)
             },
+        )
+    }
+
+    /** 发起页的待跟单卡（APP-08 G07）：外跳回到前台后拉到的同平台那一张；没有接订单时不显示。 */
+    @Composable
+    private fun PendingCards(entryId: String?) {
+        val page = orders?.pendingFor(entryId) ?: return
+        PendingTrackCards(
+            service = page.service,
+            texts = orders.texts,
+            onClaim = page::openFindOrder,
+            modifier = Modifier.padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2),
         )
     }
 
@@ -323,7 +364,7 @@ class AppSearch(
                 ),
             bindLeave = { leave -> bind(entryId, leave) },
             creditEnabled = ::creditEnabled,
-            purchase = purchase?.let { productSlots(it) } ?: ProductPurchaseSlots(),
+            purchase = purchase?.let { productSlots(it, entryId) } ?: ProductPurchaseSlots(),
             bindController = { controller -> purchase?.product = controller },
             subscribeConfig = { listener -> configPort.subscribe(listener) },
             restoreGate = ::awaitUpdateCheck,
@@ -477,6 +518,7 @@ fun SearchRoute(
     }
     config.purchase.overlay()
     PurchaseLifecycle(search.purchaseController(entryId))
+    PendingPageLifecycle(search.orders?.pendingFor(entryId))
     BuyIntentNotice(search)
 }
 
@@ -495,6 +537,7 @@ fun ProductDetailRoute(
     }
     ProductDetailScreen(config)
     PurchaseLifecycle(search.purchaseController(entryId))
+    PendingPageLifecycle(search.orders?.pendingFor(entryId))
     BuyIntentNotice(search)
 }
 

@@ -57,6 +57,7 @@ dependencies {
     implementation(project(":core:privacy"))
     implementation(project(":core:tracker"))
     implementation(project(":core:clipboard"))
+    implementation(project(":core:orders"))
     implementation(project(":core:push"))
     implementation(project(":core:storage"))
     implementation(project(":feature:home"))

@@ -131,6 +131,12 @@ class CallOwnership(
      * 不得回调 ApiClient、不得等待其他线程。
      */
     val onSessionSaved: ((loginEpoch: Long) -> Unit)? = null,
+    /**
+     * 发送前闸门（APP-08 Android R3-01、共性第 27 条）：不为 null 时，每次实际写出前（网络拦截器，含首次发送、GET 自动重试、
+     * 重签与刷新后的重放）都核对，为 false 即不写出（本地拒绝 call_cancelled）。它只拦后续发包、不属于归属：已写出的请求不因它
+     * 被取消，成功与错误响应（含 10405）照常处理。没有为 null（行为与之前相同）。
+     */
+    val sendAllowed: (() -> Boolean)? = null,
     val stillOwned: () -> Boolean,
 ) {
     /** 截止时刻已过。 */

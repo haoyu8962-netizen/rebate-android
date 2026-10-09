@@ -14,6 +14,7 @@ import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.login.AppLogin
+import com.couli.app.orders.AppOrders
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
@@ -76,6 +77,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var clipboard: AppClipboard
 
+    @Inject
+    lateinit var orders: AppOrders
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -110,6 +114,7 @@ class MainActivity : ComponentActivity() {
                                 login = login,
                                 search = search,
                                 clipboard = clipboard,
+                                orders = orders,
                                 homeContent = { VariantRootContent(trace = trace) },
                             )
                         },

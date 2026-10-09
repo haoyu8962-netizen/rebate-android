@@ -110,6 +110,21 @@ internal open class WebContainerHolder : ViewModel() {
         wrapper = null
     }
 
+    /**
+     * 换一份 WebView（可信容器首次没加载成、重试时按新配置重建，R3-03）：拆掉现有的（立即作废调用、停止加载，下一条消息里销毁），下一次
+     * [obtain] 再建新的。容器实例仍在（不是出栈拆除）；已拆除的不动。
+     */
+    fun replaceWebView() {
+        if (tornDown) return
+        webView?.detach()
+        invalidateAction?.invoke()
+        invalidateAction = null
+        teardownAction?.let { destroy -> main.post { destroy() } }
+        teardownAction = null
+        webView = null
+        wrapper = null
+    }
+
     override fun onCleared() = teardown()
 
     private fun View.detach() {

@@ -1,8 +1,10 @@
 package com.couli.app
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import androidx.core.app.NotificationManagerCompat
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
@@ -14,6 +16,7 @@ import com.couli.app.clipboard.connect
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
+import com.couli.app.orders.AppOrders
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
@@ -41,6 +44,7 @@ import com.couli.core.clientcore.TrackerQueue
 import com.couli.core.clientcore.TrackerSink
 import com.couli.core.clipboard.AndroidSystemClipboard
 import com.couli.core.clipboard.ClipboardSensitive
+import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.EnvironmentSwitchListener
@@ -64,6 +68,8 @@ import com.couli.core.network.SecretCipher
 import com.couli.core.network.SecurePendingKeyBackend
 import com.couli.core.network.SessionTokens
 import com.couli.core.network.UpdateRaw
+import com.couli.core.orders.AmountMaskStore
+import com.couli.core.orders.OrderStaleCache
 import com.couli.core.privacy.AndroidPermissionRequester
 import com.couli.core.privacy.AndroidPermissionSystem
 import com.couli.core.privacy.CredentialCleanerRegistry
@@ -151,6 +157,8 @@ object AppModule {
             // 冷启动环境对账也走这里），再清内存里的队列
             register { _, _ -> trackerQueueFile(context).write(null) }
             register { _, _ -> tracker.get().clear() }
+            // 订单缓存（APP-08，G10）：属于连接的那套服务器与账号，切换环境时删除（删不掉保留待清理、不读回）
+            register { _, _ -> orderCacheStore(context).clearAll() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -194,6 +202,7 @@ object AppModule {
         inFlight: InFlightCalls,
         device: DeviceRegistry,
         login: Provider<AppLogin>,
+        orders: Provider<AppOrders>,
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -236,7 +245,13 @@ object AppModule {
                     // 重放里再次 10402、预算用完：按清理世代登记一次恢复，启动唯一的退避注册链（R1-02）
                     recoverDevice = device::recoverAfterRejection,
                     // 会话保存、刷新、清理完成（APP-05a 共性第 14 条）：带世代切到主线程，同步 Router（受限转 full 时经守卫恢复待办）
-                    onSessionStored = { generation -> main.post { login.get().onSessionStored(generation) } },
+                    onSessionStored = { generation ->
+                        main.post {
+                            login.get().onSessionStored(generation)
+                            // 订单（APP-08）：会话换代即作废列表、详情、待跟单卡的在途请求，清掉旧账号的结果与缓存
+                            orders.get().onSessionChanged()
+                        }
+                    },
                 ),
             inFlight = inFlight,
             // debug / staging：Debug 专用的本机假登录服务（打开时整段在本机回答，不连任何地址）；release 是普通 OkHttpClient
@@ -290,6 +305,8 @@ object AppModule {
             }
             // 剪贴板（APP-07）：本机的自写记录与 24 小时提示记录（只有 hash）一并删除；设备级开关不在撤回清理范围（BR-ID-16）
             register(CLIPBOARD_HASHES_CLEANER) { ClipboardPreferences(context).clearHashes() }
+            // 订单缓存（APP-08，G10；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
+            register(AppOrders.ORDER_CACHE_CLEANER) { orderCacheStore(context).clearAll() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -559,6 +576,7 @@ object AppModule {
 
                     override val blocked: StateFlow<Boolean> get() = clipboard.get().blocked
                 }
+            loginBuilt = true
         }
 
     /**
@@ -575,7 +593,41 @@ object AppModule {
         privacy: AppPrivacy,
         trade: AppTrade,
         clipboard: AppClipboard,
-    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion }, trade = trade, clipboard = clipboard)
+        orders: AppOrders,
+    ): AppSearch =
+        AppSearch(client, config.store, routing, privacy = { privacy.conclusion }, trade = trade, clipboard = clipboard, orders = orders)
+
+    /**
+     * 订单（APP-08）：列表、详情、待跟单卡经 ApiClient（请求带页面归属与会话世代）；订单号复制经剪贴板唯一写入口（APP-07）；10405 强制进入强更
+     * （服务端已判定，AppUpdate.onServerForced）；断网缓存在 noBackupFilesDir 下按账号隔离（撤回、切换环境、登出、换账号时删除）；通知行按
+     * NotificationManagerCompat 与 PermissionRequester 的本机记录。会话状态每次变化（登录、退出、换账号）都通知它。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 网络、配置、路由、会话、剪贴板、权限与强更逐项注入
+    fun appOrders(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        config: AppConfig,
+        routing: AppRouting,
+        tokens: SessionTokens,
+        clipboard: AppClipboard,
+        permissions: AndroidPermissionRequester,
+        update: Provider<AppUpdate>,
+    ): AppOrders =
+        AppOrders(
+            api = ApiClientPageApi(client),
+            store = config.store,
+            routing = routing,
+            sessionEpoch = { tokens.loginEpoch },
+            account = { client.activeUserId() },
+            writer = { text -> clipboard.writer.write(text) },
+            permissions = permissions,
+            notificationsEnabled = { NotificationManagerCompat.from(context).areNotificationsEnabled() },
+            forceUpdate = { update.get().onServerForced() },
+            cache = orderCacheStore(context),
+            mask = AmountMaskStore(context),
+        ).also { orders -> orders.connectSession() }
 
     /**
      * 购买、外跳与授权（APP-06b）：open 经 ApiClient（请求带页面归属）；百川是不可用实现（SDK 未引入、AppKey 占位，TODO(N-28)）；
@@ -672,7 +724,9 @@ object AppModule {
             sessionEpoch = { tokens.loginEpoch },
         ).also { board ->
             board.overlay = {
-                trade.get().sensitiveOverlay() ?: ClipboardSensitive.OVERLAY_OAUTH.takeIf { login.get().oauth.busy }
+                // AppLogin 构造时（init 里发布会话状态）会同步触发剪贴板的会话回调：那时还不能取 AppLogin（Dagger 判循环依赖、已登录冷启动即崩），
+                // 也不可能有第三方登录在进行（APP-08 联调发现的既有问题）
+                trade.get().sensitiveOverlay() ?: ClipboardSensitive.OVERLAY_OAUTH.takeIf { loginBuilt && login.get().oauth.busy }
             }
             // parse 单条 / 多条结果里的 10405（外层成功）：强制进入强更界面（APP-07 共性第 20、21 条，不经按缓存最低版本比较的闸门）
             board.onForceUpdate = { update.get().onServerForced() }
@@ -685,6 +739,10 @@ object AppModule {
      * 按「实际展示的版本」记录（rule-gaps：§2.1 API 只有包内版本）。
      */
     private const val BUNDLED_PRIVACY_POLICY_VERSION = "1"
+
+    /** AppLogin 已构造完成（剪贴板浮层来源在此之前不取它，见 appClipboard）。 */
+    @Volatile
+    private var loginBuilt = false
 
     private const val SESSION_TOKENS_CLEANER = "session_tokens"
     private const val DEVICE_REGISTRY_CLEANER = "device_registry"
@@ -711,6 +769,36 @@ private object TrackerQueueFile {
 
     /** 按绝对路径各一份（生产只有一个 filesDir；单测每个用例的 filesDir 不同）。 */
     val instances = mutableMapOf<String, AtomicTextFile>()
+}
+
+/** 订单缓存（APP-08，G10）：noBackupFilesDir 下按账号分目录；订单页与两个清理入口共用同一个实例（同步、互斥）。 */
+internal fun orderCacheStore(context: Context): OrderStaleCache.Store {
+    val root = AppOrders.cacheRoot(context)
+    return synchronized(OrderCacheStores) {
+        OrderCacheStores.instances.getOrPut(root.absolutePath) { OrderStaleCache.Store(root, orderCachePendingFlag(context)) }
+    }
+}
+
+/**
+ * 订单缓存的「待清理」状态（R3-02）：缓存目录之外的 SharedPreferences，commit 确认写入；启动、读写缓存前由 Store 核验。
+ */
+@SuppressLint("ApplySharedPref", "UseKtx") // 必须 commit 并拿到返回值确认写入（KTX 的 edit(commit = true) 丢掉返回值）
+internal fun orderCachePendingFlag(context: Context): OrderStaleCache.PendingClearFlag {
+    val prefs = context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.ORDER_CACHE_PENDING, Context.MODE_PRIVATE)
+    return object : OrderStaleCache.PendingClearFlag {
+        override fun isSet(): Boolean = prefs.getBoolean(ORDER_CACHE_PENDING_KEY, false)
+
+        override fun set(): Boolean = prefs.edit().putBoolean(ORDER_CACHE_PENDING_KEY, true).commit()
+
+        override fun clear(): Boolean = prefs.edit().remove(ORDER_CACHE_PENDING_KEY).commit()
+    }
+}
+
+private const val ORDER_CACHE_PENDING_KEY = "pending_clear"
+
+private object OrderCacheStores {
+    /** 按绝对路径各一份（生产只有一个；单测每个用例的目录不同）。 */
+    val instances = mutableMapOf<String, OrderStaleCache.Store>()
 }
 
 /** Router 的强更进度 → 网络层的强更状态（检查中按未知）。 */

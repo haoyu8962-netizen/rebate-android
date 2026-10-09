@@ -206,7 +206,8 @@ enum class AmountValueSize {
 
 /**
  * 两列数字格（GUIDE §7.2）：两列等宽、左对齐；任一列放不下金额的一个不可拆分段时改上下排（第一格在上），
- * 系统字号 200% 一律纵排（adaptation-a11y-spec §2）。
+ * 系统字号 200% 一律纵排（adaptation-a11y-spec §2）。[stackOrder]：纵排时各格的先后（按 [cells] 下标；缺省同并排顺序）——订单卡并排时
+ * 实付在左、返利在右，纵排时返利在上（AdaptLargeTextOrderDetail，APP-08）。
  */
 @Composable
 fun AmountGrid(
@@ -215,6 +216,7 @@ fun AmountGrid(
     tone: AmountGridTone = AmountGridTone.ON_SURFACE,
     valueSize: AmountValueSize = AmountValueSize.TITLE,
     mask: AmountMask? = null,
+    stackOrder: List<Int>? = null,
 ) {
     val masked = mask?.hidden == true
     val cells = if (masked && mask != null) cells.map { it.masked(mask) } else cells
@@ -228,8 +230,18 @@ fun AmountGrid(
         val widestSegment = widestSegment(cells, masked) { measurer.measure(it, valueStyle).size.width }
         val stacked = density.fontScale >= CouliAlpha.LARGE_FONT_SCALE || widestSegment > columnWidthPx
         if (stacked) {
+            val ordered = stackOrder?.mapNotNull { cells.getOrNull(it) }?.takeIf { it.size == cells.size } ?: cells
             Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                cells.forEach { AmountCellView(it, tone, labelStyle, valueStyle, Modifier.fillMaxWidth(), masked = masked && it.isAmount) }
+                ordered.forEach {
+                    AmountCellView(
+                        it,
+                        tone,
+                        labelStyle,
+                        valueStyle,
+                        Modifier.fillMaxWidth(),
+                        masked = masked && it.isAmount,
+                    )
+                }
             }
         } else {
             // 并排时两列标签行等高（有问号按钮的一列标签行是 48 命中区高），数值对齐

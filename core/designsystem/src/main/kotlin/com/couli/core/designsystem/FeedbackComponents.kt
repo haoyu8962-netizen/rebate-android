@@ -74,9 +74,10 @@ fun AiLabel(
     CouliTag(text = text, tone = CouliTagTone.NEUTRAL, modifier = modifier)
 }
 
-/** 空态 / 错误态的操作按钮。 */
+/** 空态 / 错误态的操作按钮。[enabled] 为 false 时按钮置灰不可点（如 42901 禁用期内的【重试】）。 */
 data class StateAction(
     val label: String,
+    val enabled: Boolean = true,
     val onClick: () -> Unit,
 )
 
@@ -176,6 +177,7 @@ private fun StateLayout(
                 text = action.label,
                 onClick = action.onClick,
                 variant = CouliButtonVariant.SECONDARY,
+                enabled = action.enabled,
                 modifier = Modifier.padding(top = CouliSpacing.space2).then(actionModifier),
             )
         }

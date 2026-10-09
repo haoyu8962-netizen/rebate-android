@@ -1,5 +1,6 @@
 package com.couli.core.privacy
 
+import android.annotation.SuppressLint
 import android.app.NotificationManager
 import android.content.Context
 import android.content.SharedPreferences
@@ -101,6 +102,14 @@ class AndroidPermissionSystem(
 
     private fun asked(permission: String): Boolean = preferences.getBoolean(ASKED_PREFIX + permission, false)
 
+    /** 弹过 [type] 的系统授权框（本机记录；这个系统版本不需要运行时权限时为 false）。 */
+    @Suppress("ReturnCount") // 不认识的类型、不需要运行时权限、已申请三个出口
+    fun askedBefore(type: String): Boolean {
+        if (type !in KNOWN_TYPES) return false
+        val permission = androidPermission(type) ?: return false
+        return asked(permission)
+    }
+
     private fun markAsked(permission: String) {
         preferences.edit().putBoolean(ASKED_PREFIX + permission, true).apply()
     }
@@ -175,7 +184,7 @@ class PermissionPrompts {
 class AndroidPermissionRequester(
     private val system: AndroidPermissionSystem,
     val prompts: PermissionPrompts,
-    preferences: SharedPreferences,
+    private val preferences: SharedPreferences,
     clock: () -> Long = System::currentTimeMillis,
 ) {
     private val mutex = Mutex()
@@ -218,12 +227,14 @@ class AndroidPermissionRequester(
     /**
      * 申请 [type]（push / photos）。[fromSettings]：用户从设置类入口主动点击，不受节流（BR-ID-13）。
      * [isValid]：调用方的有效性（桥调用的隐私、环境、会话、页面世代；APP-04 三端共性第 14 条）。排队轮到时（出队）、用途说明之后、
-     * 调系统接口前各查一次；失效就不显示任何界面、不调系统接口、不记被拒，按 unavailable 结束。
+     * 调系统接口前各查一次；失效就不显示任何界面、不调系统接口、不记被拒，按 unavailable 结束。[purposeShown]：入口本身就是用途说明（待跟单卡的
+     * 通知行），不再显示说明浮层（APP-08 共性第 4 条）。
      */
     suspend fun request(
         type: String,
         fromSettings: Boolean = false,
         isValid: () -> Boolean = { true },
+        purposeShown: Boolean = false,
     ): PermissionResult =
         mutex.withLock {
             // 出队：排队期间已失效的申请不再处理
@@ -231,7 +242,7 @@ class AndroidPermissionRequester(
             currentType = type
             currentValid = isValid
             try {
-                core.request(type, fromSettings)
+                core.request(type, fromSettings, purposeShown)
             } finally {
                 currentValid = { true }
             }
@@ -240,8 +251,22 @@ class AndroidPermissionRequester(
     /** 只读状态（perm.getPushStatus、隐私中心的系统权限一节），不触发申请。 */
     fun status(type: String): String = system.status(type)
 
+    /**
+     * 本机有没有 [type] 的申请记录（APP-08 G22「从未决定过」只认本机记录）：弹过系统框、被拒的节流记录，或用户点过页面上的申请入口（[noteTapped]，
+     * 如待跟单卡的【开启通知】——点过之后那一行不再出现，无论结果）。
+     */
+    fun hasLocalRecord(type: String): Boolean =
+        system.askedBefore(type) || core.hasRecord(type) || preferences.getBoolean(TAPPED_PREFIX + type, false)
+
+    /** 用户点了页面上的申请入口（之后 [hasLocalRecord] 为 true）。同步落盘。 */
+    @SuppressLint("ApplySharedPref", "UseKtx")
+    fun noteTapped(type: String) {
+        preferences.edit().putBoolean(TAPPED_PREFIX + type, true).commit()
+    }
+
     private companion object {
         const val KEY_THROTTLE = "throttle"
+        const val TAPPED_PREFIX = "tapped."
     }
 }
 

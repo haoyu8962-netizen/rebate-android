@@ -30,6 +30,9 @@ import com.couli.app.login.BindPhoneRoute
 import com.couli.app.login.LoginNoticeHost
 import com.couli.app.login.LoginRoute
 import com.couli.app.login.SettingsRoute
+import com.couli.app.orders.AppOrders
+import com.couli.app.orders.OrderDetailRoute
+import com.couli.app.orders.OrderListRoute
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.privacy.toRouterPrivacy
 import com.couli.app.routing.AppNavHost
@@ -51,6 +54,7 @@ import com.couli.app.update.UpdatePromptDialog
 import com.couli.app.update.UpdateUi
 import com.couli.app.web.AppWeb
 import com.couli.app.web.ExternalPageRoute
+import com.couli.app.web.H5RoutePage
 import com.couli.app.web.WebPageRoute
 import com.couli.core.router.EntryGuard
 import com.couli.core.router.GuardDecision
@@ -92,6 +96,7 @@ import kotlinx.serialization.json.jsonObject
  * @param web 两类 WebView 容器与 JSBridge 的接线（APP-04）；为 null 时 WebPage / ExternalPage 是占位页（只测外壳的单测）。
  * @param clipboard 剪贴板识别（APP-07）：首页提示条与粘贴卡、设置页开关、parse 结果；外壳把「当前前台界面」（回退栈栈顶、选中的 Tab、
  *   基本模式页）同步告诉它。为 null 时都不显示（只测外壳的单测）。
+ * @param orders 订单（APP-08）：订单 Tab 根（OrderList）与 OrderDetail；为 null 时是占位页（只测外壳的单测）。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 外壳按可选接线（强更、桥、登录）逐项组合
@@ -105,6 +110,7 @@ fun AppShell(
     login: AppLogin? = null,
     search: AppSearch? = null,
     clipboard: AppClipboard? = null,
+    orders: AppOrders? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -115,9 +121,9 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search, clipboard) {
+        remember(homeContent, update, web, login, search, clipboard, orders) {
             RoutePageRegistry(
-                mapOf(
+                mapOf<String, @Composable (RouteDestination) -> Unit>(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
                     RouteNames.WEB_PAGE to { page ->
                         web?.let { WebPageRoute(page, it, routing) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
@@ -151,6 +157,13 @@ fun AppShell(
                     PRODUCT_DETAIL_ROUTE to { page ->
                         search?.let { ProductDetailRoute(it, page) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
+                    // 订单（APP-08）：订单 Tab 根与订单详情；没有接线（只测外壳的单测）时是占位页
+                    ShellTab.ORDERS.route to { page ->
+                        orders?.let { OrderListRoute(it, page) } ?: PlaceholderRoutePage(page)
+                    },
+                    ORDER_DETAIL_ROUTE to { page ->
+                        orders?.let { OrderDetailRoute(it, page) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
                     // 授权管理（APP-06b，BR-ID-17 细则「授权管理页」）：从「我的」与设置进入（需要登录，守卫负责）
                     AUTH_MANAGE_ROUTE to { page ->
                         search?.trade?.let { AuthManageRoute(it, search) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
@@ -159,11 +172,11 @@ fun AppShell(
                     PRIVACY_CENTER_ROUTE to { page ->
                         PlaceholderRoutePage(page, fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN)
                     },
-                ),
+                ) + h5RoutePages(web, routing) { navController.popBackStack() },
             )
         }
     val hooks =
-        remember(privacy, login, search, clipboard) {
+        remember(privacy, login, search, clipboard, orders) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly ->
@@ -174,12 +187,16 @@ fun AppShell(
                         selection = TabSelection(it, readonly)
                     }
                 },
+                // Router 打开 OrderList {scope}：切 Tab 之前把参数交给订单列表（切到对应子 Tab，APP-08）
+                onTabParams = { route, params -> if (route == ShellTab.ORDERS.route) orders?.requestScope(params) },
                 onRequestConsent = { privacy.requestFullFunction() },
                 pageAllowed = { page -> stillAllowedWithUpdate(page, routing.guardState()) },
                 onBackStack = { entries ->
                     login?.followBackStack(entries)
                     // 搜索、详情页出栈的同步出口：立即作废其在途请求（APP-06a，APP-05a 共性第 9 条）
                     search?.followBackStack(entries)
+                    // 订单详情、发起购买页的待跟单卡出栈的同步出口：立即作废其在途请求（APP-08）
+                    orders?.followBackStack(entries)
                     // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
                     clipboard?.let { followClipboard(it, entries) }
                 },
@@ -420,6 +437,7 @@ private const val SEARCH_ROUTE = "Search"
 private const val PRODUCT_DETAIL_ROUTE = "ProductDetail"
 private const val SETTINGS_ROUTE = "Settings"
 private const val AUTH_MANAGE_ROUTE = "AuthManage"
+private const val ORDER_DETAIL_ROUTE = "OrderDetail"
 private const val ME_ROUTE = "Me"
 private const val EMPTY_PARAMS = "{}"
 
@@ -451,3 +469,20 @@ internal fun followClipboard(
 
 /** 升级提示页（没有路由名，TODO(N-14)）。 */
 private const val UPGRADE_PAGE = "UpgradePrompt"
+
+/**
+ * routes.json 里 kind=h5 的路由（FindOrder、Ledger、Help 等）→ 可信容器按 h5_base_url + h5_path 加载（[H5RoutePage]）；没有接线（只测外壳的单测）
+ * 时是占位页。
+ */
+private fun h5RoutePages(
+    web: AppWeb?,
+    routing: AppRouting,
+    onClose: () -> Unit,
+): Map<String, @Composable (RouteDestination) -> Unit> =
+    com.couli.generated.Routes.all.values
+        .filter { it.kind == com.couli.generated.RouteKind.H5 }
+        .associate { spec ->
+            spec.name to { page: RouteDestination ->
+                web?.let { H5RoutePage(page, spec, it, routing, onClose) } ?: PlaceholderRoutePage(page)
+            }
+        }

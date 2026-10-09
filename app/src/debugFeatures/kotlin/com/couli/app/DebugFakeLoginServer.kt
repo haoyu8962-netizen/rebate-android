@@ -42,6 +42,9 @@ internal class DebugFakeLoginServer(
     /** 购买、外跳与授权（APP-06b，[DebugFakeTrade]）；状态开关文件与开关文件同目录。 */
     private val trade = DebugFakeTrade(File(switch.parentFile, FAKE_TRADE_STATE_FILE))
 
+    /** 订单（APP-08，[DebugFakeOrders]）；状态开关文件与开关文件同目录。 */
+    private val orders = DebugFakeOrders(File(switch.parentFile, FAKE_ORDERS_STATE_FILE))
+
     @Suppress("ReturnCount") // 开关关着、商品图、其余三个出口
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -66,7 +69,14 @@ internal class DebugFakeLoginServer(
         // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
         val loggedIn = request.header("Authorization") != null
         val (code, data, headers) =
-            trade.answer(request.method, request.url.encodedPath, body, request.headers.toMap(), loggedIn) { chain.call().isCanceled() }
+            orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
+                ?: trade.answer(
+                    request.method,
+                    request.url.encodedPath,
+                    body,
+                    request.headers.toMap(),
+                    loggedIn,
+                ) { chain.call().isCanceled() }
                 ?: DebugFakeSearch.answer(
                     request.url.encodedPath,
                     request.url.encodedQuery,

@@ -1034,8 +1034,12 @@ class ApiClient(
         // 调用方自带归属的（桥调用、设备注册）：写出之后归属失效（页面关闭、注册的最后一个调用方失效）同样取消在途请求（R3-03）
         SendGuard(owner.epochs, owner.deadlineNanos, abandoned = owner.stillOwned?.let { { owner.disowned() } }, tag = owner.ownership) {
             val now = context()
-            ownerReject(owner, now) ?: admission(operation, call, prepared, now)
+            ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, prepared, now)
         }
+
+    /** 调用方的发送前闸门（[CallOwnership.sendAllowed]，R3-01）：只在写出前核对，不进入归属（不取消已写出的请求、不丢弃响应）。 */
+    private fun sendGateReject(owner: CallOwner): String? =
+        LocalRejectReason.CALL_CANCELLED.takeIf { owner.ownership?.sendAllowed?.invoke() == false }
 
     private fun admission(
         operation: ApiOperation,

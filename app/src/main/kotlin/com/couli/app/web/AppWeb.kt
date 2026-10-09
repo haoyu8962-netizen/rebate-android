@@ -106,6 +106,16 @@ class AppWeb(
     fun trustedConfig(loopbackOrigins: Set<String> = emptySet()): TrustedWebConfig =
         TrustedWebConfig(WebConfigReader.trustedOrigins(data()), loopbackOrigins.onlyInDebug(), appVersion)
 
+    /** H5 路由 [spec] 的页面地址（生效配置的 h5_base_url + h5_path + 参数；[paramsJson] 为路由参数）；拼不出为 null。 */
+    fun h5Url(
+        spec: com.couli.generated.RouteSpec,
+        paramsJson: String,
+    ): String? {
+        val base = (data()["h5_base_url"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        val params = runCatching { Json.parseToJsonElement(paramsJson) as? JsonObject }.getOrNull() ?: JsonObject(emptyMap())
+        return H5RouteUrl.of(base, spec.h5Path, params)
+    }
+
     /** 第三方页容器的判定（包内快照来自 BundledConfig；TODO(N-21) 包内规则目前为空）。 */
     val externalPolicy: ExternalNavPolicy by lazy {
         val bundled = ConfigResolver.parseObject(BundledConfig.dataJson)?.let(ConfigResolver::linkPatternsIn)

@@ -48,7 +48,7 @@ data class PermissionResult(
  *
  * 同一时刻只处理一个申请（Mutex），并发申请排队。
  */
-@Suppress("LongParameterList") // 存储、时钟、端别与四个系统 / 界面回调逐项注入（三端测试接线约定）
+@Suppress("LongParameterList", "TooManyFunctions") // 存储、时钟、端别与四个系统 / 界面回调逐项注入（三端测试接线约定）；流程逐步一个小函数
 class PermissionRequester(
     private val readFile: () -> String?,
     private val writeFile: (String?) -> Unit,
@@ -64,15 +64,21 @@ class PermissionRequester(
     /** 本进程内的被拒时刻（写盘失败时仍按它节流）。 */
     private val memory = mutableMapOf<String, Long>()
 
+    /**
+     * [purposeShown]：发起入口本身就是这项权限的用途说明（如待跟单卡内的通知行「开启通知，跟单成功…会及时提醒你」+【开启通知】，BR-ID-13、
+     * AC-S1-84④）：不再重复显示用途说明，直接弹系统框；状态检查、永久拒绝引导与节流照常（APP-08 共性第 4 条）。
+     */
     suspend fun request(
         permission: String,
         fromSettings: Boolean = false,
-    ): PermissionResult = mutex.withLock { requestLocked(permission, fromSettings) }
+        purposeShown: Boolean = false,
+    ): PermissionResult = mutex.withLock { requestLocked(permission, fromSettings, purposeShown) }
 
     @Suppress("ReturnCount") // 按流程逐步返回
     private suspend fun requestLocked(
         permission: String,
         fromSettings: Boolean,
+        purposeShown: Boolean,
     ): PermissionResult {
         val current = status(permission)
         val purpose = PURPOSE_KEYS[permission] ?: return result(PermissionStatusRaw.UNAVAILABLE)
@@ -94,7 +100,7 @@ class PermissionRequester(
             showSettingsGuide(null, GO_SETTINGS)
             return result(PermissionStatusRaw.THROTTLED)
         }
-        showRationale(purpose, continueKey())
+        if (!purposeShown) showRationale(purpose, continueKey())
         return when (val outcome = systemRequest(permission)) {
             PermissionStatusRaw.GRANTED -> {
                 forgetDenial(permission)
@@ -111,6 +117,16 @@ class PermissionRequester(
             }
         }
     }
+
+    /**
+     * 本机有没有 [permission] 的申请记录（被拒时刻的节流记录；APP-08 G22：待跟单卡的通知行只在「从未决定过」时出现）。记录读不出或损坏时按
+     * 「有记录」（保守：不出通知行）。
+     */
+    fun hasRecord(permission: String): Boolean =
+        when (val stored = readRecords()) {
+            is Records.Loaded -> permission in stored.values || permission in memory
+            else -> true
+        }
 
     /** Android 用顶部说明浮层，没有继续按钮；iOS、鸿蒙先出一屏说明，点【继续】后弹系统框。 */
     private fun continueKey(): String? = if (platform == ClientPlatformRaw.ANDROID) null else CONTINUE

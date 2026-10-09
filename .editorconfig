@@ -105,3 +105,11 @@ ktlint_standard_blank-line-between-when-conditions = disabled
 ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_function-signature = disabled
 ktlint_standard_when-entry-bracing = disabled
+
+# APP-08 的订单向量测试同样由 Codex 先写、本仓库不改；它的格式与下面几条规则不一致，只对这一个文件关掉。
+[core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt]
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_when-entry-bracing = disabled

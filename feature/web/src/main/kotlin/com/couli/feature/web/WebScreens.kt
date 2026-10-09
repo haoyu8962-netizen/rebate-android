@@ -28,6 +28,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -88,7 +90,31 @@ internal class TrustedWebHolder : WebContainerHolder() {
     var loading by mutableStateOf<String?>(null)
     var controller by mutableStateOf<TrustedWebViewController?>(null)
     var onOpenExternal: (String) -> Unit = {}
+
+    /** 当前这份 WebView 用的地址与可信配置（第一次进入组合时取；首次没加载成、重试时换成重新生成的一份，R3-03）。 */
+    var target: TrustedWebTarget? = null
+
+    /** 当前 WebView 是否已按可信源开始加载过（没有的话重试要换新地址与配置重建，而不是 reload 空页）。 */
+    var loaded = false
+
+    /** WebView 的代次：重试时换新地址与配置要重建 WebView（桥的可信源规则在建控制器时装上），代次一变 AndroidView 随之重建。 */
+    var generation by mutableIntStateOf(0)
+
+    /** 换一份 [fresh] 目标重建 WebView 与控制器（拆掉旧的；不是出栈拆除，容器实例仍在）。 */
+    fun rebuild(fresh: TrustedWebTarget) {
+        target = fresh
+        controller = null
+        loaded = false
+        replaceWebView()
+        generation += 1
+    }
 }
+
+/** 可信容器一次加载的目标：地址与可信配置（H5 路由的地址由生效配置拼出，重试时重新生成，R3-03）。 */
+data class TrustedWebTarget(
+    val url: String,
+    val config: TrustedWebConfig,
+)
 
 /**
  * WebPage：可信容器页面（原生标题栏，H5 可经 ui.setNavBar 改标题与显隐）。[hostFactory] 用容器的 [BridgeUi] 和容器实例自己的协程
@@ -105,8 +131,14 @@ fun TrustedWebScreen(
     hostFactory: (BridgeUi, CoroutineScope) -> BridgeHost?,
     onOpenExternal: (String) -> Unit,
     onClose: () -> Unit,
+    /**
+     * 【重试】时重新读取生效配置、重新生成地址（R3-03、共性第 29 条）；null 为沿用 [url] 与 [config]。首次没加载成的，用新的一份重建
+     * WebView 并明确加载新地址；已加载过的照旧 reload。https、白名单与桥的可信源仍按新配置校验。
+     */
+    retarget: (() -> TrustedWebTarget)? = null,
 ) {
     val holder: TrustedWebHolder = viewModel(key = TRUSTED_HOLDER_KEY)
+    if (holder.target == null) holder.target = TrustedWebTarget(url, config)
     BindToBackStackEntry(holder)
     holder.onClose = onClose
     holder.onOpenExternal = onOpenExternal
@@ -130,22 +162,24 @@ fun TrustedWebScreen(
     ) {
         Box(modifier = Modifier.fillMaxSize().padding(top = contentTop)) {
             if (!holder.tornDown) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { context ->
-                        holder.obtain(context) { wrapped -> createTrustedWebView(wrapped, holder, url, config, hostFactory, factory) }
-                    },
-                )
+                key(holder.generation) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { context ->
+                            val target = holder.target ?: TrustedWebTarget(url, config)
+                            holder.obtain(context) { wrapped ->
+                                createTrustedWebView(wrapped, holder, target.url, target.config, hostFactory, factory)
+                            }
+                        },
+                    )
+                }
             }
             if (holder.failed) {
                 ErrorState(
                     modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas),
                     title = text("h5.load_failed"),
                     retry =
-                        StateAction(text("external_page.retry")) {
-                            holder.failed = !config.allows(url)
-                            if (!holder.failed) holder.controller?.reload()
-                        },
+                        StateAction(text("external_page.retry")) { retry(holder, retarget) },
                 )
             }
             holder.loading?.let { LoadingOverlay(it) }
@@ -199,8 +233,27 @@ private fun createTrustedWebView(
         holder.controller = controller
         holder.onTeardown(invalidate = controller::invalidateCalls, destroy = controller::destroy)
         holder.failed = !config.allows(url)
-        controller.load(url)
+        holder.loaded = controller.load(url)
     }
+
+/**
+ * 【重试】（R3-03）：首次没加载成的（地址拼不出、可信源还没下发），按重新读取的生效配置换新地址与配置重建 WebView 并加载；已加载过的
+ * 按当前这份的地址与配置再判一次后 reload。新的一份仍不可信（不是 https、不在白名单）时继续显示加载失败，不加载。
+ */
+private fun retry(
+    holder: TrustedWebHolder,
+    retarget: (() -> TrustedWebTarget)?,
+) {
+    val current = holder.target ?: return
+    val fresh = retarget?.invoke()
+    if (!holder.loaded && fresh != null) {
+        holder.failed = !fresh.config.allows(fresh.url)
+        holder.rebuild(fresh)
+        return
+    }
+    holder.failed = !current.config.allows(current.url)
+    if (!holder.failed) holder.controller?.reload()
+}
 
 /** 页面交来的全屏视图（WebChromeClient.onShowCustomView）与退出回调。 */
 internal class FullscreenView(

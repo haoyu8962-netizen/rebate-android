@@ -57,8 +57,20 @@ object CouliPreferenceNamespaces {
      */
     const val CLIPBOARD = "couli_clipboard"
 
+    /**
+     * 金额隐藏开关（APP-08，BR-TEXT-10 细则「金额隐藏」）：本机偏好，换账号沿用、卸载即清。**故意不以 [PREFIX] 开头**：与连哪个服务器、登录哪个
+     * 账号无关，切换环境不清，撤回同意也不清（不含个人信息）。
+     */
+    const val AMOUNT_MASK = "couli_amount_mask"
+
+    /**
+     * 订单断网缓存的「待清理」状态（APP-08 Android R3-02）：放在缓存目录之外，缓存目录故障时也能记下并在启动、读缓存前完成清理。**故意不以
+     * [PREFIX] 开头**：切换环境、撤回同意本身就要清订单缓存，这个状态必须保留到订单缓存确认删完（由订单缓存自己清掉），不能被命名空间清理先抹掉。
+     */
+    const val ORDER_CACHE_PENDING = "couli_order_cache_pending"
+
     /** 已登记、但切换环境时保留的 SharedPreferences（不在命名空间内）。 */
-    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION, CLIPBOARD)
+    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION, CLIPBOARD, AMOUNT_MASK, ORDER_CACHE_PENDING)
 
     init {
         registered.forEach { name ->

@@ -39,6 +39,7 @@ listOf(
     "privacy",
     "tracker",
     "clipboard",
+    "orders",
     "push",
     "storage",
 ).forEach { include(":core:$it") }

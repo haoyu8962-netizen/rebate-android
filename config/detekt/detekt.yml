@@ -21,8 +21,11 @@ complexity:
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
       # APP-03b 的客户端内核向量测试同样由 Codex 先写、本仓库不改
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
+      # APP-08 的订单向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
+      - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
       - '**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt'
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
@@ -40,7 +43,10 @@ naming:
 style:
   # APP-07 的剪贴板向量测试由 Codex 先写、本仓库不改：只对这一个文件放宽它触发的这一条
   ReturnCount:
-    excludes: ['**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardVectorTest.kt']
+    excludes:
+      - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardVectorTest.kt'
+      # APP-08 的订单向量测试由 Codex 先写、本仓库不改
+      - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
   # APP-06a 的搜索与详情向量测试由 Codex 先写、本仓库不改：只对这一个文件放宽它触发的这一条
   ThrowsCount:
     excludes: ['**/feature/search/src/test/kotlin/com/couli/feature/search/SearchProductVectorTest.kt']

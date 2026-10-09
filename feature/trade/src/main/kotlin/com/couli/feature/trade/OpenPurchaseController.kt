@@ -197,6 +197,12 @@ interface PurchaseEnv {
 
     /** 帮助入口（/v1/config.help_links.<key>：{route, params}），没有配置为 null（不显示入口）。 */
     fun helpLink(key: String): Pair<String, JsonObject>?
+
+    /**
+     * 外跳已执行（拉起了平台 App、交给了浏览器或已复制口令，BR-ATTR-27）：发起页在回到前台之后拉一次待跟单卡，只显示 [platform] 那一张
+     * （APP-08 G07，BR-ATTR-21「外跳返回 App 后展示」）。缺省不做。
+     */
+    fun jumped(platform: String) = Unit
 }
 
 /**
@@ -969,10 +975,11 @@ class OpenPurchaseController(
         }
         when (outcome.run.final) {
             JumpTypes.FINAL_OPENED, JumpTypes.FINAL_BROWSER -> {
-                Unit
+                env.jumped(jump.attempt.platform)
             }
 
             JumpTypes.FINAL_COPIED -> {
+                env.jumped(jump.attempt.platform)
                 toast(COPIED_KEY)
             }
 
