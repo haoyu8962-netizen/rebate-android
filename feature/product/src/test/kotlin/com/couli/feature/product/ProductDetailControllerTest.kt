@@ -181,6 +181,32 @@ class ProductDetailControllerTest {
         val result: CompletableDeferred<ApiResult>,
     )
 
+    /** R1-07 / R1-09（APP-06b 第 1 轮评审）：静默重取本页商品，不进加载态（不打断弹层），成功替换卡片，失败保留原卡。 */
+    @Test
+    fun r1_07_refreshCardReplacesTheProductWithoutLeavingContent() =
+        runTest {
+            val c = controller()
+            c.load("taobao", "tb:7Kq9LmN3pQ", "v1.r")
+            runCurrent()
+            api.complete(0, card())
+            runCurrent()
+            c.refreshCard()
+            runCurrent()
+            assertEquals("不进加载态", ProductPhase.CONTENT, c.state.value.phase)
+            val call = api.calls[1].call
+            assertEquals(mapOf("product_key" to "tb:7Kq9LmN3pQ"), call.pathParams)
+            assertEquals("item_ref=v1.r", call.query)
+            api.complete(1, card(price = 4999))
+            runCurrent()
+            assertEquals("替换为权威卡片", "3999", (c.state.value.product!!["final_price_fen"] as JsonPrimitive).content)
+            c.refreshCard()
+            runCurrent()
+            api.fail(2, 50001)
+            runCurrent()
+            assertEquals("失败保留原卡", ProductPhase.CONTENT, c.state.value.phase)
+            assertEquals("3999", (c.state.value.product!!["final_price_fen"] as JsonPrimitive).content)
+        }
+
     private class FakeApi : PageApi {
         val calls = mutableListOf<Pending>()
         val cancelled = mutableListOf<CallOwnership>()

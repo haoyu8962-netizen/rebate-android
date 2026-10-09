@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -31,12 +32,15 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.couli.core.designsystem.BuyButton
 import com.couli.core.designsystem.BuyButtonModel
+import com.couli.core.designsystem.BuyButtonOverride
 import com.couli.core.designsystem.BuyButtonState
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
@@ -63,13 +67,14 @@ import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 /** 详情页的文案（App 给：契约字典 → 草稿表）。 */
 interface ProductTexts : ProductCardTexts {
-    fun format(
+    override fun format(
         key: String,
         vars: Map<String, String>,
     ): String
@@ -78,8 +83,10 @@ interface ProductTexts : ProductCardTexts {
 /** 详情页的出口（App 给）。 */
 class ProductPageActions(
     val onBack: () -> Unit = {},
-    /** 【购买】：只发出购买意图（TODO(APP-06b)：open 流程、TradeJump、AuthSheet）。 */
+    /** 【购买】：交给 App 层的购买流程（APP-06b：feature:trade 的 OpenPurchaseController，open、外跳、授权）。 */
     val onBuyIntent: (product: JsonObject, publicMode: Boolean) -> Unit = { _, _ -> },
+    /** 比价无返利原因行的【看看相似商品】（BR-PRICE-08：同平台、原样标题，经 Router 打开 Search）。 */
+    val onSimilar: (product: JsonObject) -> Unit = {},
     /** 30143 商品信息已失效：【重新搜索】经 Router 打开 Search。 */
     val onResearch: () -> Unit = {},
     /** 【问问 AI】经 Router 打开 AgentChat。 */
@@ -104,11 +111,29 @@ class ProductPageConfig(
      * 下发这个开关，TODO(N-27)）。只有明确关闭时隐藏入账说明。
      */
     val creditEnabled: (platform: String) -> Boolean? = { null },
+    /** 购买流程的界面（App 给，APP-06b）：浮层、底栏上方提示条与购买按钮覆盖。缺省没有。 */
+    val purchase: ProductPurchaseSlots = ProductPurchaseSlots(),
+    /** 执行器建好后交给 App（按 open 响应更新卡片、30144 重取卡片）。 */
+    val bindController: (ProductDetailController) -> Unit = {},
+    /** 订阅配置变化（features.platform_status，主线程回调），返回取消订阅（APP-06a 共性第 27 条）。 */
+    val subscribeConfig: (listener: () -> Unit) -> (() -> Unit) = { { } },
+    /** 进程被回收后自动恢复本页：先等本轮版本检查结果（最长 5 秒，03 §4.4，APP-06a 共性第 28 条）再取详情；没有给时不等。 */
+    val restoreGate: (suspend () -> Unit)? = null,
+)
+
+/** 购买流程的界面插槽（App 用 feature:trade 的组件填；feature 之间不互相依赖）。 */
+class ProductPurchaseSlots(
+    /** 浮层（加载层、确认框、半屏、轻提示）；参数是购买按钮的焦点（弹层关闭后回到它）。 */
+    val overlay: @Composable (buyFocus: FocusRequester) -> Unit = {},
+    /** 底栏上方的提示条（超时【重试】）。 */
+    val banner: @Composable () -> Unit = {},
+    /** 购买按钮覆盖；没有为 null。 */
+    val button: @Composable () -> BuyButtonOverride? = { null },
 )
 
 /**
  * 详情页的入账说明「确认收货后随联盟月度结算入账」（BR-TEXT-04、F-PROD-05，A-R1-08）：有返利的商品显示（normal、price_compare_risk、
- * 金额未知的 amount_unknown；返利确定为 0 的不显示），入账开关明确关闭（credit.enabled.<platform>=off）时不显示；不写天数与日期。
+ * 金额未知的 amount_unknown，以及返利从无到有、口径待补的临时展示状态；返利确定为 0 的不显示），入账开关明确关闭（credit.enabled.<platform>=off）时不显示；不写天数与日期。
  */
 object CreditNote {
     const val TEXT_KEY = "product.credit_note"
@@ -121,21 +146,41 @@ object CreditNote {
         if (creditSwitch == false) return false
         val basis = (product["rebate_basis"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         val max = (product["rebate_max_fen"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
-        return basis in REBATE_BASES && max != 0L
+        // 返利从无到有、口径还没补上的临时展示状态（A-R2-01）也是有返利的商品
+        val provisional = ProductCardMapper.provisionalRebate(product) && (max ?: 0L) > 0L
+        return (basis in REBATE_BASES && max != 0L) || provisional
     }
 }
 
 /** 详情页 ViewModel：执行器随回退栈条目；清理时作废（出栈的同步出口由 App 经 [ProductPageConfig.bindLeave] 先调）。 */
 class ProductDetailViewModel(
     initial: ProductPageConfig,
+    saved: SavedStateHandle,
 ) : ViewModel() {
     var config: ProductPageConfig = initial
         private set
     val controller = ProductDetailController(initial.api, initial.context, viewModelScope, initial.clock)
 
+    /** 本 ViewModel 是进程被回收后按保存状态重建的（同一回退栈条目第二次建 ViewModel）。 */
+    val restored: Boolean = saved.contains(K_CREATED)
+    private var gone = false
+
     init {
-        initial.bindLeave(controller::leave)
-        controller.load(initial.platform, initial.productKey, initial.itemRef)
+        saved[K_CREATED] = true
+        initial.bindLeave {
+            gone = true
+            controller.leave()
+        }
+        initial.bindController(controller)
+        val gate = initial.restoreGate
+        if (restored && gate != null) {
+            viewModelScope.launch {
+                gate()
+                if (!gone) controller.load(initial.platform, initial.productKey, initial.itemRef)
+            }
+        } else {
+            controller.load(initial.platform, initial.productKey, initial.itemRef)
+        }
     }
 
     fun update(next: ProductPageConfig) {
@@ -143,8 +188,13 @@ class ProductDetailViewModel(
     }
 
     override fun onCleared() {
+        gone = true
         controller.leave()
         super.onCleared()
+    }
+
+    private companion object {
+        const val K_CREATED = "product_vm_created"
     }
 }
 
@@ -157,6 +207,7 @@ object ProductTags {
     const val RESEARCH = "product_research"
     const val LOADING = "product_loading"
     const val DISCLAIMER = "product_disclaimer"
+    const val COMPARE_REASON = "product_compare_reason"
 }
 
 private object ProductKeys {
@@ -168,16 +219,24 @@ private object ProductKeys {
     const val RETRY = "external_page.retry"
     const val GENERIC_ERROR = "error.50001"
     const val LOADING = "search.loading"
+    const val COMPARE_REASON = "no_rebate.price_compare"
+    const val COMPARE_SIMILAR = "no_rebate.price_compare.similar"
 }
 
 /** 商品详情（设计稿 Product、ProductPublic、ProductCardStress、A11yFocusProduct）。 */
 @Composable
 fun ProductDetailScreen(config: ProductPageConfig) {
-    val model: ProductDetailViewModel = viewModel { ProductDetailViewModel(config) }
+    val model: ProductDetailViewModel = viewModel { ProductDetailViewModel(config, createSavedStateHandle()) }
     model.update(config)
     val state by model.controller.state.collectAsStateWithLifecycle()
     val texts = config.texts
     BackHandler { config.actions.onBack() }
+    // 配置变化（platform_status）时重新判定按钮（APP-06a 共性第 27 条）
+    DisposableEffect(model) {
+        val unsubscribe = config.subscribeConfig { model.controller.refreshView() }
+        onDispose(unsubscribe)
+    }
+    val buyFocus = remember { FocusRequester() }
     Column(
         modifier =
             Modifier
@@ -192,10 +251,11 @@ fun ProductDetailScreen(config: ProductPageConfig) {
             when (state.phase) {
                 ProductPhase.LOADING -> Loading(texts)
                 ProductPhase.ERROR -> ErrorContent(state, model, texts)
-                else -> Content(state, model, texts)
+                else -> Content(state, model, texts, buyFocus)
             }
         }
     }
+    if (state.phase == ProductPhase.CONTENT) config.purchase.overlay(buyFocus)
 }
 
 @Composable
@@ -300,10 +360,18 @@ private fun ColumnScope.Content(
     state: ProductSnapshot,
     model: ProductDetailViewModel,
     texts: ProductTexts,
+    buyFocus: FocusRequester,
 ) {
     val product = state.product ?: return
     val view = state.view ?: return
-    val card = ProductCardMapper.map(product, texts, model.config.clock(), buyEnabled = view.buyEnabled)
+    val card =
+        ProductCardMapper.map(
+            product,
+            texts,
+            model.config.clock(),
+            buyEnabled = view.buyEnabled,
+            purchaseStatus = view.purchaseStatus,
+        )
     Column(
         modifier =
             Modifier
@@ -317,8 +385,13 @@ private fun ColumnScope.Content(
             label = card.data.imageLabel,
             modifier = Modifier.fillMaxWidth().aspectRatio(IMAGE_RATIO),
             description = texts.format(ProductKeys.IMAGE, mapOf("title" to card.data.title)),
+            imageUrl = card.data.imageUrl,
         )
         ProductCardLarge(data = card.data)
+        // 比价无返利（open 复核后卡片的 no_rebate_cause=price_compare）：原因行 +【看看相似商品】（ProductPriceCompareCancelled，BR-PRICE-08）
+        if (product.textOf("no_rebate_cause") == PRICE_COMPARE) {
+            CompareReasonRow(texts) { model.config.actions.onSimilar(product) }
+        }
         // 口径说明常驻全文（BR-PRICE-03：详情常驻）+ 入账说明（BR-TEXT-04、F-PROD-05）
         val credit =
             texts
@@ -333,8 +406,39 @@ private fun ColumnScope.Content(
             )
         }
     }
-    BottomBar(card, view, model, texts)
+    model.config.purchase.banner()
+    BottomBar(card, view, model, texts, buyFocus)
 }
+
+/** 比价无返利的原因行（no_rebate.price_compare +【看看相似商品】）。 */
+@Composable
+private fun CompareReasonRow(
+    texts: ProductTexts,
+    onSimilar: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().testTag(ProductTags.COMPARE_REASON),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+    ) {
+        Text(
+            text = texts.text(ProductKeys.COMPARE_REASON),
+            style = CouliTypography.footnote,
+            color = CouliColors.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        CouliButton(
+            text = texts.text(ProductKeys.COMPARE_SIMILAR),
+            onClick = onSimilar,
+            variant = CouliButtonVariant.TEXT,
+            size = CouliButtonSize.COMPACT,
+        )
+    }
+}
+
+private fun JsonObject.textOf(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+private const val PRICE_COMPARE = "price_compare"
 
 /** 底栏：【问问 AI】+【购买】（价格不可用为「稍后再试」禁用，下架 / 没有按钮键时禁用）。读屏按可见文字 + 返利区间（A11yFocusProduct）。 */
 @Composable
@@ -343,13 +447,25 @@ private fun BottomBar(
     view: ProductDetailView,
     model: ProductDetailViewModel,
     texts: ProductTexts,
+    buyFocus: FocusRequester,
 ) {
-    val buyState =
+    val purchaseOverride = model.config.purchase.button()
+    val cardState =
         when {
             card.priceUnavailable || view.priceUnavailable -> BuyButtonState.RETRY_LATER
+
+            // 平台维护 / 未开放（features.platform_status，共性第 27、31 条）：「稍后再试」/「X返利即将开放」禁用
+            card.buyState == BuyButtonState.RETRY_LATER -> BuyButtonState.RETRY_LATER
+
             view.buyEnabled -> BuyButtonState.NORMAL
+
             else -> BuyButtonState.DISABLED
         }
+    // 购买流程的覆盖只在卡片本来可买时生效（卡片的禁用优先）
+    val override = purchaseOverride?.takeIf { cardState == BuyButtonState.NORMAL }
+    val buyState = override?.state ?: cardState
+    val retryLater = override?.text?.takeIf { buyState == BuyButtonState.RETRY_LATER } ?: card.retryLaterText
+    val base = override?.text?.takeIf { buyState == BuyButtonState.NORMAL } ?: card.data.buyBase
     Box(Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
     Row(
         modifier = Modifier.fillMaxWidth().background(CouliColors.backgroundSurface).padding(CouliSpacing.space3),
@@ -363,16 +479,18 @@ private fun BottomBar(
             size = CouliButtonSize.COMPACT,
         )
         BuyButton(
-            base = card.data.buyBase,
+            base = base,
             rebate = card.data.displayedRebate,
             onClick = {
                 model.controller.state.value.product
                     ?.let { model.config.actions.onBuyIntent(it, view.publicMode) }
             },
-            modifier = Modifier.weight(1f).testTag(ProductTags.BUY),
+            modifier = Modifier.weight(1f).couliFocusTarget(buyFocus).testTag(ProductTags.BUY),
             context = BuyButtonModel.CONTEXT_DETAIL,
             state = buyState,
-            retryLaterText = card.retryLaterText,
+            // 覆盖文字（如「安装X后下单才有返利」）时不拼返利金额
+            amountHidden = override?.text != null,
+            retryLaterText = retryLater,
             size = CouliButtonSize.STANDARD,
         )
     }

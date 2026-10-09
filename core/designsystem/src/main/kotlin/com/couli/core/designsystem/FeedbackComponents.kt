@@ -268,6 +268,8 @@ fun CouliDialog(
     dismissible: Boolean = true,
     restoreFocusTo: FocusRequester? = null,
     body: (@Composable () -> Unit)? = null,
+    /** 主按钮可点（如 42901 限流期间置灰，到期恢复）。 */
+    confirmEnabled: Boolean = true,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
     Dialog(
@@ -295,6 +297,7 @@ fun CouliDialog(
                 onDismiss = onDismiss,
                 titleFocus = titleFocus,
                 body = body,
+                confirmEnabled = confirmEnabled,
             )
         }
     }
@@ -315,6 +318,7 @@ fun CouliDialogContent(
     onDismiss: () -> Unit = {},
     titleFocus: FocusRequester? = null,
     body: (@Composable () -> Unit)? = null,
+    confirmEnabled: Boolean = true,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -339,7 +343,9 @@ fun CouliDialogContent(
             },
         footer = {
             DialogButtons(
-                primary = { CouliButton(text = confirmText, onClick = onConfirm, modifier = Modifier.fillMaxWidth()) },
+                primary = {
+                    CouliButton(text = confirmText, onClick = onConfirm, enabled = confirmEnabled, modifier = Modifier.fillMaxWidth())
+                },
                 secondary =
                     if (dismissText != null) {
                         {
@@ -468,6 +474,7 @@ fun CouliSheet(
     onDismissRequest: () -> Unit,
     actions: (@Composable () -> Unit)? = null,
     restoreFocusTo: FocusRequester? = null,
+    closeLabel: String? = null,
     content: @Composable () -> Unit,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
@@ -481,7 +488,14 @@ fun CouliSheet(
     ) {
         val titleFocus = remember { FocusRequester() }
         FocusOnAppear(titleFocus)
-        CouliSheetBody(title = title, actions = actions, titleFocus = titleFocus, content = content)
+        CouliSheetBody(
+            title = title,
+            actions = actions,
+            titleFocus = titleFocus,
+            onClose = closeLabel?.let { { onDismissRequest() } },
+            closeLabel = closeLabel,
+            content = content,
+        )
     }
 }
 
@@ -492,6 +506,8 @@ fun CouliSheetBody(
     modifier: Modifier = Modifier,
     actions: (@Composable () -> Unit)? = null,
     titleFocus: FocusRequester? = null,
+    onClose: (() -> Unit)? = null,
+    closeLabel: String? = null,
     content: @Composable () -> Unit,
 ) {
     ScrollBodyLayout(
@@ -499,12 +515,25 @@ fun CouliSheetBody(
         gap = CouliSpacing.space4,
         dividerWhenScrollable = true,
         header = {
-            Text(
-                text = title,
-                style = CouliTextStyles.bodySemibold,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.modalTitle(titleFocus),
-            )
+            // 标题 → 关闭 → 正文 → 操作（adaptation-a11y-spec §8：关闭在 DOM 里排在标题之后，视觉在右上角）
+            if (onClose != null && closeLabel != null) {
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        text = title,
+                        style = CouliTextStyles.bodySemibold,
+                        color = CouliColors.textPrimary,
+                        modifier = Modifier.weight(1f).padding(top = CouliSpacing.space3).modalTitle(titleFocus),
+                    )
+                    CouliIconButton(icon = CouliIcons.close, label = closeLabel, onClick = onClose, tint = CouliColors.textSecondary)
+                }
+            } else {
+                Text(
+                    text = title,
+                    style = CouliTextStyles.bodySemibold,
+                    color = CouliColors.textPrimary,
+                    modifier = Modifier.modalTitle(titleFocus),
+                )
+            }
         },
         body = { Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) { content() } },
         footer = actions,

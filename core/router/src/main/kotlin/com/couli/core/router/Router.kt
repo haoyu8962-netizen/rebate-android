@@ -224,6 +224,32 @@ class Router(
         if (state().privacyState != PrivacyState.CONSENTED) pendingStore.clear()
     }
 
+    /**
+     * 登记一条不是「打开路由」的 pending_action（APP-06b：购买 open_link，BR-ID-10）：与路由待办共用同一份本地记录（只存 1 条、10 分钟、
+     * 完成一步重新计时、退出登录与换环境清除）。Router 的自动恢复不执行它（[resumePending] 只认 [PendingActionStore.OPEN_ROUTE]），
+     * 由登记它的功能在前置完成后自己执行一次并删除。含令牌、验证码的参数不登记（返回 false）。
+     */
+    fun registerAction(
+        action: String,
+        params: JsonObject,
+        origin: String = RouteSource.IN_APP.raw,
+    ): Boolean {
+        val saved = pendingStore.save(action, params, origin = origin)
+        if (saved) {
+            awaitingConsentDecision = false
+            tagPending()
+        }
+        return saved
+    }
+
+    /** 有效的、动作名为 [action] 的 pending_action；没有或已过期为 null（过期的读取时删除）。 */
+    fun pendingAction(action: String): PendingAction? = pendingStore.load()?.takeIf { it.action == action }
+
+    /** 删除动作名为 [action] 的 pending_action（别的动作的记录不动）。 */
+    fun clearAction(action: String) {
+        if (pendingStore.load()?.action == action) pendingStore.clear()
+    }
+
     /** 本机有没有未过期的 pending_action（登录后计划 AfterLogin 用，APP-05a）。 */
     val hasPendingAction: Boolean get() = pendingStore.load() != null
 

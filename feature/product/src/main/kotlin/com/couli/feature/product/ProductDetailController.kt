@@ -46,8 +46,10 @@ data class ProductSnapshot(
 /**
  * 商品详情执行器（APP-06a）：getProduct（product_key 路径参数、item_ref 原样透传，BR-PROD-11）→ [ProductDetailState]。
  * 与搜索同一套归属规则：重新加载、离开页面都让旧请求失效并取消（[CallOwnership] + cancelOwned），迟到响应只丢弃，不改界面。
- * 购买只到「发出购买意图」为止（TODO(APP-06b)：open 流程）。只在主线程使用。
+ * 购买（open、外跳、授权）由 App 层接 feature:trade 的 OpenPurchaseController（APP-06b）；本执行器只按 open 响应更新卡片（[updateProduct]）。
+ * 只在主线程使用。
  */
+@Suppress("TooManyFunctions") // 加载、重试、按响应更新、静默重取与离开各一个入口
 class ProductDetailController(
     private val api: PageApi,
     /** 详情判定的上下文：{ loggedIn, privacy: consented | basic }（取这一刻的值）。 */
@@ -57,6 +59,7 @@ class ProductDetailController(
 ) {
     private var counter = 0L
     private var current: Long? = null
+    private var refreshSeq = 0L
     private val gate = RetryAfterGate(clock)
     private var gateTimer: Job? = null
     private val owners = mutableListOf<CallOwnership>()
@@ -88,6 +91,57 @@ class ProductDetailController(
         if (mutableState.value.phase != ProductPhase.ERROR || gate.active) return false
         fetch()
         return true
+    }
+
+    /**
+     * 用 open 响应更新卡片（APP-06b：新价格、new_link_id、无返利状态，BR-PRICE-12）：只在内容态改，按此刻的上下文重新判定详情模型。
+     */
+    fun updateProduct(transform: (JsonObject) -> JsonObject) {
+        val current = mutableState.value
+        val product = current.product ?: return
+        if (left || current.phase != ProductPhase.CONTENT) return
+        val next = transform(product)
+        mutableState.value = current.copy(product = next, view = ProductDetailState.map(next, context()))
+    }
+
+    /** 配置变了（features.platform_status 等）：按此刻的上下文重新判定详情模型（APP-06a 共性第 27 条：订阅配置变化）。 */
+    fun refreshView() {
+        val current = mutableState.value
+        val product = current.product ?: return
+        if (left) return
+        mutableState.value = current.copy(view = ProductDetailState.map(product, context()))
+    }
+
+    /** 重新加载（进加载态）。 */
+    fun reload() {
+        if (left) return
+        fetch()
+    }
+
+    /**
+     * 静默重取本页商品（APP-06b：30144、open 响应给不全价格 / 返利字段时，A-R1-07 / 08 / 09）：不进加载态、不打断弹层；成功时用 [merge]
+     * （此刻的卡, 重取到的卡）→ 新卡 落到页面并重新判定详情模型（之后仍须用户再点购买）。[merge] 由购买流程给：补齐价格只补未知字段、保留
+     * 本次 open 确认的 link_id 与返利状态，重新加载带卡片版本校验（A-R2-02）。失败保留原卡；重新加载、离开之后到达的丢弃。
+     */
+    fun refreshCard(merge: (current: JsonObject, fresh: JsonObject) -> JsonObject = { _, fresh -> fresh }) {
+        if (left || productKey.isEmpty() || mutableState.value.phase != ProductPhase.CONTENT) return
+        refreshSeq += 1
+        val seq = refreshSeq
+        val shown = current
+        val owner = CallOwnership(api.epochs()) { !left && current == shown && refreshSeq == seq }
+        owners += owner
+        val query = itemRef?.let { "item_ref=${percentEncode(it)}" }
+        scope.launch {
+            val result = api.send(ApiCall(GET_PRODUCT, pathParams = mapOf("product_key" to productKey), query = query, ownership = owner))
+            if (left || current != shown || refreshSeq != seq) return@launch
+            owners -= owner
+            val product = (result as? ApiResult.Success)?.data as? JsonObject ?: return@launch
+            val now = mutableState.value
+            if (now.phase != ProductPhase.CONTENT) return@launch
+            val shownProduct = now.product ?: return@launch
+            val next = merge(shownProduct, product)
+            mutableState.value = now.copy(product = next, view = ProductDetailState.map(next, context()))
+        }
     }
 
     /** 页面出栈（同步出口）：作废当前请求并取消传输；之后迟到的响应一律丢弃。 */

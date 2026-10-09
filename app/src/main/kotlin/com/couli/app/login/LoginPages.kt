@@ -23,6 +23,8 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.app.routing.AppRouting
+import com.couli.app.trade.AuthManageEntry
+import com.couli.app.trade.openAuthManage
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
@@ -93,6 +95,8 @@ fun SettingsRoute(
                 modifier = Modifier.semantics { heading() },
             )
         }
+        // 授权管理的正式入口（BR-ID-17 细则，A-R1-14）：经 Router 打开，登录 / 隐私守卫照常
+        AuthManageEntry(onOpen = { openAuthManage(routing) })
         if (session != SessionState.GUEST) {
             CouliButton(
                 text = texts.text("settings.logout"),

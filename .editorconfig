@@ -98,3 +98,10 @@ ktlint_standard_when-entry-bracing = disabled
 ktlint_standard_blank-line-between-when-conditions = disabled
 ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_when-entry-bracing = disabled
+
+# APP-06b 的购买向量测试同样由 Codex 先写、本仓库不改；它的格式与下面四条规则不一致，只对这一个文件关掉。
+[feature/trade/src/test/kotlin/com/couli/feature/trade/OpenTradeVectorTest.kt]
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_when-entry-bracing = disabled

@@ -16,6 +16,12 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
 import com.couli.app.search.AppSearch
+import com.couli.app.trade.AndroidJumpPorts
+import com.couli.app.trade.AppProductImages
+import com.couli.app.trade.AppTrade
+import com.couli.app.trade.variantBrowserNoticeMillis
+import com.couli.app.trade.variantJumpPorts
+import com.couli.app.trade.variantWebCodeAuthorizer
 import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
@@ -37,6 +43,7 @@ import com.couli.core.config.SharedPreferencesNamespaceCleaner
 import com.couli.core.network.AndroidDeviceIdReader
 import com.couli.core.network.AndroidKeystoreCipher
 import com.couli.core.network.ApiClient
+import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.ApiConfigFetcher
 import com.couli.core.network.ClientIdentity
 import com.couli.core.network.DeviceRegistry
@@ -64,6 +71,7 @@ import com.couli.core.privacy.registerPlaceholderCredentialCleaners
 import com.couli.core.privacy.registerProductionInitSteps
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
+import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.core.update.UpdateGate
 import com.couli.feature.login.LegalVersions
 import com.couli.generated.ClientPlatform
@@ -284,6 +292,7 @@ object AppModule {
         @ApplicationContext context: Context,
         credentialCleaners: CredentialCleanerRegistry,
         device: Provider<DeviceRegistry>,
+        trade: Provider<AppTrade>,
     ): PrivacyGate =
         PrivacyGate(
             store = SharedPreferencesPrivacyStore(context),
@@ -293,7 +302,7 @@ object AppModule {
             retryScheduler = MainThreadRetryScheduler()
             withdrawalCleanup = { credentialCleaners.cleanAll() }
             // 设备注册（APP-03b）在后台执行，失败按已有退避重试
-            registerProductionInitSteps { onResult -> device.get().registerAsync(onResult) }
+            registerProductionInitSteps(union = { trade.get().initializeUnionSdk() }) { onResult -> device.get().registerAsync(onResult) }
             val main = Handler(Looper.getMainLooper())
             // 10402 后重新注册失败（凭据已丢）：回到主线程从第 1 次开始按退避重新注册
             device.get().onCredentialsLost = { main.post { restartDeviceRegistration() } }
@@ -544,7 +553,43 @@ object AppModule {
         config: AppConfig,
         routing: AppRouting,
         privacy: AppPrivacy,
-    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion })
+        trade: AppTrade,
+    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion }, trade = trade)
+
+    /**
+     * 购买、外跳与授权（APP-06b）：open 经 ApiClient（请求带页面归属）；百川是不可用实现（SDK 未引入、AppKey 占位，TODO(N-28)）；
+     * web_code 授权在回跳 scheme 登记前不可执行（release），debug / staging 用本机假授权；link_jump 进 Tracker 本地队列。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 购买接线的各项来源逐项注入
+    fun appTrade(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        config: AppConfig,
+        routing: AppRouting,
+        tracker: Provider<TrackerQueue>,
+        privacy: Provider<AppPrivacy>,
+    ): AppTrade =
+        AppTrade(
+            api = ApiClientPageApi(client),
+            store = config.store,
+            routing = routing,
+            tracker = tracker,
+            baichuan = UnavailableBaichuan(),
+            webCode = variantWebCodeAuthorizer(context),
+            ports = variantJumpPorts(context, AndroidJumpPorts(context)),
+            browserNoticeMillis = variantBrowserNoticeMillis(),
+            // 基本模式下点购买：弹补同意（与 Router 的补同意同一个弹窗，A-R1-04）
+            consentPrompt = { privacy.get().requestFullFunction() },
+        )
+
+    /** 商品图加载（APP-06a 共性第 22 条）：经 App 的 HTTP 客户端（debug 带本机假服务）取 https 图片。 */
+    @Provides
+    @Singleton
+    fun productImages(
+        @ApplicationContext context: Context,
+    ): AppProductImages = AppProductImages(variantHttpClient(context))
 
     /** 活着的 BridgeHost（APP-04）：撤回同意、切换环境时作废在途桥调用。 */
     @Provides

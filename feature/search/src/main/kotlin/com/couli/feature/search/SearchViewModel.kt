@@ -1,8 +1,10 @@
 package com.couli.feature.search
 
+import androidx.compose.runtime.Composable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.couli.core.designsystem.BuyButtonOverride
 import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.network.PageApi
 import com.couli.generated.Sort
@@ -15,7 +17,7 @@ import kotlinx.serialization.json.JsonObject
 /** 搜索页的文案（App 给：契约字典 → 草稿表 SearchDraftTexts）。 */
 interface SearchTexts : ProductCardTexts {
     /** 带 {变量} 的文案；变量为空或缺失时用 fallback（BR-TEXT-14）。 */
-    fun format(
+    override fun format(
         key: String,
         vars: Map<String, String>,
     ): String
@@ -26,8 +28,20 @@ class SearchPageActions(
     val onBack: () -> Unit = {},
     /** 点结果卡片：经 Router 打开 ProductDetail（routes.json：platform、product_key 必填，item_ref 原样透传）。 */
     val onOpenProduct: (platform: String, productKey: String, itemRef: String?) -> Unit = { _, _, _ -> },
-    /** 卡片【购买】：只发出购买意图。TODO(APP-06b)：open 流程。 */
-    val onBuyIntent: (card: JsonObject) -> Unit = {},
+    /** 卡片【购买】：交给 App 层的购买流程（APP-06b：feature:trade 的 OpenPurchaseController）。[spm] 为 search.result_list.<坑位>。 */
+    val onBuyIntent: (card: JsonObject, spm: String) -> Unit = { _, _ -> },
+    /** 卡片比价无返利原因行的【看看相似商品】（BR-PRICE-08：同平台、原样标题，经 Router 打开 Search）；参数是那张卡。 */
+    val onSimilar: (card: JsonObject) -> Unit = {},
+)
+
+/** 购买流程的界面插槽（App 用 feature:trade 的组件填；feature 之间不互相依赖）。 */
+class SearchPurchaseSlots(
+    /** 浮层（加载层、确认框、半屏、轻提示）。 */
+    val overlay: @Composable () -> Unit = {},
+    /** 页底提示条（超时【重试】）。 */
+    val banner: @Composable () -> Unit = {},
+    /** 某张卡的购买按钮覆盖（只对正在购买的那张卡）；没有为 null。 */
+    val button: @Composable (card: JsonObject) -> BuyButtonOverride? = { null },
 )
 
 /** 搜索历史（本进程内，新的在前，最多 [MAX] 条；App 里一份）。TODO(N-27)：是否持久化、条数上限未规定。 */
@@ -63,6 +77,14 @@ class SearchPageConfig(
     val actions: SearchPageActions = SearchPageActions(),
     val bindLeave: (leave: () -> Unit) -> Unit = {},
     val clock: () -> Long = System::currentTimeMillis,
+    val purchase: SearchPurchaseSlots = SearchPurchaseSlots(),
+    /** 执行器建好后交给 App（按 open 响应更新卡片）。 */
+    val bindController: (SearchController) -> Unit = {},
+    /**
+     * 自动恢复页面（进程被回收后重开）属于自动执行的动作：先等本轮版本检查结果（最长 5 秒，03 §4.4，APP-06a 共性第 28 条）再按保存的条件
+     * 重搜；用户主动打开不等。没有给（单测）时不等。
+     */
+    val restoreGate: (suspend () -> Unit)? = null,
 )
 
 /** 搜索页的弹层。 */
@@ -123,7 +145,7 @@ class SearchViewModel(
     var autoFocused: Boolean = saved[K_AUTO_FOCUSED] ?: false
         set(value) {
             field = value
-            saved[K_AUTO_FOCUSED] = value
+            persist { saved[K_AUTO_FOCUSED] = value }
         }
 
     /**
@@ -133,14 +155,24 @@ class SearchViewModel(
     var scrolledRound: Long = saved[K_SCROLLED_ROUND] ?: -1L
         set(value) {
             field = value
-            saved[K_SCROLLED_ROUND] = value
+            persist { saved[K_SCROLLED_ROUND] = value }
         }
 
     /**
      * 恢复后还没回到的滚动锚点（只在 [restored] 时有）：结果重新加载到锚点所在项之后滚过去；不够就继续翻页，到底或翻页失败就停在最后。
-     * 新一轮查询开始时放弃。
+     * 恢复任务绑定查询轮次（[pendingScrollRound]）与页面实例（A-R1-17、A-R2-03 / 04，APP-06a 共性第 32、33、38、39 条）：列表被别人移动
+     * （[restoreTakenOver]）、开始新一轮查询、页面出栈即取消；页面被覆盖（不在前台）时暂停，回到前台继续。是可观察状态：取消后页面上的恢复任务
+     * 随之结束。
      */
-    var pendingScroll: ScrollAnchor? = if (restored) savedAnchor() else null
+    private val mutablePendingScroll = MutableStateFlow(if (restored) savedAnchor() else null)
+    val pendingScrollFlow: StateFlow<ScrollAnchor?> = mutablePendingScroll.asStateFlow()
+    val pendingScroll: ScrollAnchor? get() = mutablePendingScroll.value
+
+    /** 恢复锚点所属的查询轮次（保存时的轮次）；当前轮次不再是它就放弃恢复。 */
+    val pendingScrollRound: Long = saved[K_ROUND] ?: 0L
+
+    /** 页面被覆盖或进入后台（ON_STOP 之后）：冻结位置记录，回到前台（ON_START）解冻（共性第 32 条）。 */
+    var recordingFrozen: Boolean = false
         private set
 
     private fun savedAnchor(): ScrollAnchor? {
@@ -162,13 +194,38 @@ class SearchViewModel(
         MutableStateFlow<SearchOverlay?>(if (saved.get<Boolean>(K_SHEET_OPEN) == true) SearchOverlay.PriceFilter else null)
     val overlay: StateFlow<SearchOverlay?> = mutableOverlay.asStateFlow()
 
+    /** 页面已出栈（等待恢复期间离开的，不再开始）。 */
+    private var gone = false
+
+    /**
+     * 页面实例仍有效（还没出栈）。恢复任务每次滚动、翻页前，以及所有持久化入口（位置记录、条件、输入、草稿、弹层）都先看它（A-R2-04，APP-06a
+     * 共性第 39 条）：出栈后组合可能还在（退出动画期间生命周期仍为 STARTED），迟到的布局、滚动、ON_STOP 回调一律不写。
+     */
+    val alive: Boolean get() = !gone
+
     init {
-        initial.bindLeave(controller::leave)
-        controller.open(initial.query, initial.platform, savedConditions())
-        if (!restored) initial.query?.let(::remember)
-        saveInput(mutableInput.value)
-        saveConditions(state.value.conditions)
-        viewModelScope.launch { controller.state.collect { saveConditions(it.conditions) } }
+        // 页面出栈的同步出口（App 在回退栈移除该条目的同一条主线程消息里调）：作废执行器、恢复任务与位置记录（A-R2-04）
+        initial.bindLeave(::leavePage)
+        initial.bindController(controller)
+        val conditions = savedConditions()
+
+        fun start() {
+            controller.open(initial.query, initial.platform, conditions)
+            if (!restored) initial.query?.let(::remember)
+            saveInput(mutableInput.value)
+            saveConditions(state.value.conditions)
+            viewModelScope.launch { controller.state.collect { saveConditions(it.conditions) } }
+        }
+        val gate = initial.restoreGate
+        if (conditions != null && gate != null) {
+            // 进程回收后的自动恢复：等版本检查有结果再重搜；等待期间保存的条件不动
+            viewModelScope.launch {
+                gate()
+                if (!gone) start()
+            }
+        } else {
+            start()
+        }
     }
 
     private fun savedConditions(): SearchConditions? {
@@ -184,7 +241,26 @@ class SearchViewModel(
         )
     }
 
-    private fun saveConditions(c: SearchConditions) {
+    /**
+     * 页面出栈（同步出口；ViewModel 清理时兜底再调一次，无副作用）：一次性作废执行器（在途请求）、恢复任务（清除待恢复锚点，页面上的恢复
+     * 协程下一步就结束，且每次滚动前复核 [alive]）并冻结位置记录；之后所有持久化入口拒绝写入（A-R2-04，APP-06a 共性第 39 条）。
+     */
+    private fun leavePage() {
+        if (gone) return
+        gone = true
+        mutablePendingScroll.value = null
+        recordingFrozen = true
+        controller.leave()
+    }
+
+    /** 持久化入口统一校验页面实例仍有效（已出栈的页面迟到的回调不写保存状态）。 */
+    private inline fun persist(block: () -> Unit) {
+        if (!gone) block()
+    }
+
+    private fun saveConditions(c: SearchConditions) = persist { writeConditions(c) }
+
+    private fun writeConditions(c: SearchConditions) {
         saved[K_KEYWORD] = c.keyword
         saved[K_PLATFORM] = c.platform
         saved[K_SORT] = c.sort
@@ -196,32 +272,63 @@ class SearchViewModel(
 
     private fun saveInput(text: String) {
         mutableInput.value = text
-        saved[K_INPUT] = text
+        persist { saved[K_INPUT] = text }
     }
 
     private fun setDraft(draft: PriceDraft) {
         mutablePriceDraft.value = draft
-        saved[K_DRAFT_MIN] = draft.min
-        saved[K_DRAFT_MAX] = draft.max
-        saved[K_DRAFT_INVALID] = draft.invalid
+        persist {
+            saved[K_DRAFT_MIN] = draft.min
+            saved[K_DRAFT_MAX] = draft.max
+            saved[K_DRAFT_INVALID] = draft.invalid
+        }
     }
 
     private fun setOverlay(next: SearchOverlay?) {
         mutableOverlay.value = next
-        saved[K_SHEET_OPEN] = next == SearchOverlay.PriceFilter
+        persist { saved[K_SHEET_OPEN] = next == SearchOverlay.PriceFilter }
     }
 
-    /** 列表滚动后记下锚点（恢复中的锚点还没回到时不覆盖）。 */
+    /** 列表滚动后记下锚点（恢复中的锚点还没回到时不覆盖；页面被覆盖、在后台时冻结不记；页面已出栈不记）。 */
     fun onScrolled(anchor: ScrollAnchor) {
-        if (pendingScroll != null) return
-        saved[K_SCROLL_INDEX] = anchor.index
-        saved[K_SCROLL_OFFSET] = anchor.offset
-        saved[K_SCROLL_LAST] = anchor.lastVisible
+        if (pendingScroll != null || recordingFrozen) return
+        write(anchor)
     }
 
-    /** 恢复的滚动锚点已经回到（或已放弃）。 */
+    /**
+     * 恢复任务发现列表被别人移动（实际位置偏离任务的预期、或有不属于任务的滚动在进行：触摸、惯性、读屏滚动、键盘 / 焦点移动都算，A-R2-03，
+     * APP-06a 共性第 38 条）：放弃恢复，按用户此刻的视口记下位置（页面已出栈、被覆盖时不记）。
+     */
+    fun restoreTakenOver(anchor: ScrollAnchor?) {
+        mutablePendingScroll.value = null
+        if (anchor != null) onScrolled(anchor)
+    }
+
+    /**
+     * 页面即将被覆盖或进入后台（ON_STOP，同步）：先把此刻视口的有效锚点写进保存状态，再冻结记录（共性第 33 条：进后台前同步保存最新位置）。
+     * 恢复中的锚点还没回到时保留它，不用恢复过程中的中间位置覆盖。
+     */
+    fun onPageStopped(anchor: ScrollAnchor?) {
+        if (pendingScroll == null && !recordingFrozen && anchor != null) write(anchor)
+        recordingFrozen = true
+    }
+
+    /** 回到前台（ON_START）：解冻位置记录（页面已出栈时保持冻结）。 */
+    fun onPageStarted() {
+        if (gone) return
+        recordingFrozen = false
+    }
+
+    private fun write(anchor: ScrollAnchor) =
+        persist {
+            saved[K_SCROLL_INDEX] = anchor.index
+            saved[K_SCROLL_OFFSET] = anchor.offset
+            saved[K_SCROLL_LAST] = anchor.lastVisible
+        }
+
+    /** 恢复的滚动锚点已经回到（或已放弃：用户拖动、新一轮查询、没有可显示的结果）。 */
     fun scrollRestored() {
-        pendingScroll = null
+        mutablePendingScroll.value = null
     }
 
     /** 每次组合给最新的配置（出口回调随导航宿主变化）；执行器不变。 */
@@ -326,7 +433,7 @@ class SearchViewModel(
     }
 
     override fun onCleared() {
-        controller.leave()
+        leavePage()
         super.onCleared()
     }
 

@@ -54,4 +54,5 @@ listOf(
     "auth",
     "login",
     "web",
+    "trade",
 ).forEach { include(":feature:$it") }

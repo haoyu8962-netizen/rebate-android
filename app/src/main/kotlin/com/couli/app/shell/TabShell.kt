@@ -26,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.couli.app.login.LoginDraftTexts
+import com.couli.app.trade.AuthManageEntry
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliColors
@@ -179,6 +181,53 @@ fun HomeWithSearch(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
     }
 }
+
+/** 「我的」Tab 的入口行：设置（ME_SETTINGS_ENTRY_TAG）。 */
+const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"
+
+/**
+ * 「我的」Tab：顶部账号入口（【授权管理】经 Router 打开 AuthManage，BR-ID-17 细则「授权管理页」，A-R1-14；【设置】），下面是「我的」页
+ * 正文（占位，后续任务）。
+ */
+@Composable
+fun MeWithEntries(
+    onAuthManage: () -> Unit,
+    onSettings: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2)
+                    .background(CouliColors.backgroundSurface, RoundedCornerShape(CouliRadius.card)),
+        ) {
+            AuthManageEntry(onOpen = onAuthManage)
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = CouliSizes.touchTarget)
+                        .clickable(role = Role.Button, onClick = onSettings)
+                        .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
+                        .testTag(ME_SETTINGS_ENTRY_TAG),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = LoginDraftTexts.text(SETTINGS_TEXT_KEY),
+                    style = CouliTypography.body,
+                    color = CouliColors.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(CouliIcons.chevron, contentDescription = null, tint = CouliColors.textSecondary)
+            }
+        }
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
+    }
+}
+
+private const val SETTINGS_TEXT_KEY = "login.settings"
 
 /** 提示条：品牌浅底、圆角 16、内边距 16；信息图标 + 说明，下面整行主按钮（紧凑尺寸）。 */
 @Composable

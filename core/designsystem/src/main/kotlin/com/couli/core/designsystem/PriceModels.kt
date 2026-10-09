@@ -163,6 +163,16 @@ object RebateTagModel {
         }
     }
 
+    /**
+     * 临时展示（A-R2-01，APP-06b 共性第 16 条）：open 复核确认返利从无到有、服务端给了返利区间但没给口径（rebate_basis）时，卡片带
+     * [ProductCardMapper.PROVISIONAL_REBATE]，按服务端区间显示（单值 / 区间），不落入「暂无返利」分支；等重取的权威卡片补上口径，重取失败就
+     * 一直保持。区间本身不合法（缺一端、负数、min > max、上限为 0）仍按异常数据处理。
+     */
+    fun provisional(
+        minFen: Long?,
+        maxFen: Long?,
+    ): RebateTagContent = amounts(minFen, maxFen)
+
     private fun amounts(
         minFen: Long?,
         maxFen: Long?,
@@ -208,6 +218,11 @@ object RebateTagModel {
             )
         }
     }
+
+    /**
+     * 替代返利标签的整句说明（ProductCardDegrade：平台返利即将开放等降级态）：不带任何金额，读屏只读这句；列表里照常显示（不是「暂无返利」）。
+     */
+    fun notice(text: String): RebateTagContent = textOnly(RebateKind.UNKNOWN, text)
 
     private fun textOnly(
         kind: RebateKind,

@@ -69,6 +69,7 @@ dependencies {
     implementation(project(":feature:auth"))
     implementation(project(":feature:login"))
     implementation(project(":feature:web"))
+    implementation(project(":feature:trade"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

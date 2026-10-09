@@ -7,6 +7,7 @@ import com.couli.core.network.CallOwnership
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
 import com.couli.core.network.RetryAfterGate
+import com.couli.core.network.percentEncode
 import com.couli.generated.Sort
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -38,6 +39,11 @@ interface SearchConfigPort {
 
     /** 订阅配置变化（主线程回调）；返回取消订阅的函数。 */
     fun subscribe(listener: () -> Unit): () -> Unit
+
+    /**
+     * 平台购买状态 features.platform_status.<platform>（on / maintenance / not_launched，缺失为 null 按 on；APP-06a 共性第 27、31 条）。
+     */
+    fun platformStatus(platform: String): String? = null
 }
 
 /** 一轮查询的条件（系统回收后按它恢复，A-R2-03）：已提交的关键词、平台、排序、筛选（整数分）与查询轮次。 */
@@ -122,6 +128,7 @@ class SearchController(
     private var gateTimer: Job? = null
     private var pager = SearchPager()
     private val owners = mutableListOf<CallOwnership>()
+    private val refetchOwners = mutableListOf<CallOwnership>()
     private var left = false
     private var unsubscribe: (() -> Unit)? = null
 
@@ -161,7 +168,21 @@ class SearchController(
             return
         }
         refreshTabs(platform)
-        if (q != null && SearchQuery.normalizeKeyword(q).isNotEmpty()) submit(q)
+        if (q != null && SearchQuery.normalizeKeyword(q).isNotEmpty()) submit(q) else idleOrUnavailable()
+    }
+
+    /**
+     * 还没搜（无关键词打开、输入态）时按 Tab 立即定页面状态（APP-06a 共性第 26 条）：没有任何可搜索平台 → 「无可搜索平台」，不等用户点搜索；
+     * 平台恢复 → 回到输入态。
+     */
+    private fun idleOrUnavailable() {
+        val phase =
+            when {
+                s.tabs.isEmpty() -> SearchPhase.UNAVAILABLE
+                s.phase == SearchPhase.UNAVAILABLE -> SearchPhase.IDLE
+                else -> return
+            }
+        update { it.copy(phase = phase) }
     }
 
     private fun restore(saved: SearchConditions) {
@@ -275,11 +296,61 @@ class SearchController(
         return idle && !s.endReached && (s.phase == SearchPhase.CONTENT || s.phase == SearchPhase.EMPTY)
     }
 
+    /**
+     * 用 open 响应更新一张卡（APP-06b：新价格、new_link_id、无返利状态，BR-PRICE-12）：按 [match] 找到结果或推荐里的那张卡替换。
+     */
+    fun updateItem(
+        match: (JsonObject) -> Boolean,
+        transform: (JsonObject) -> JsonObject,
+    ) {
+        update { snapshot ->
+            snapshot.copy(
+                items = snapshot.items.map { if (match(it)) transform(it) else it },
+                fallbackItems = snapshot.fallbackItems.map { if (match(it)) transform(it) else it },
+            )
+        }
+    }
+
+    /**
+     * 按 [card] 的 product_key + item_ref 重取权威商品卡（getProduct），用 [merge]（此刻列表里的那张卡, 重取到的卡）→ 新卡 落到结果或推荐里
+     * （APP-06b：30144 链接失效、open 响应给不全价格 / 返利字段时，03 §4.2，A-R1-07 / 09）。[merge] 由购买流程给：补齐价格只补未知字段、
+     * 保留本次 open 确认的 link_id 与返利状态，重新加载带卡片版本校验（A-R2-02）；缺省整卡替换（card_id 沿用原卡）。之后仍须用户再点购买；
+     * 新一轮查询开始、页面离开之后到达的丢弃，失败时保留原卡。
+     */
+    fun refetchItem(
+        card: JsonObject,
+        merge: (current: JsonObject, fresh: JsonObject) -> JsonObject = ::replaceKeepingId,
+    ) {
+        val key = card.string("product_key") ?: return
+        if (left) return
+        val round = s.round
+        val owner = CallOwnership(api.epochs()) { !left && s.round == round }
+        refetchOwners += owner
+        val query = card.string("item_ref")?.let { "item_ref=${percentEncode(it)}" }
+        scope.launch {
+            val result = api.send(ApiCall(GET_PRODUCT, pathParams = mapOf("product_key" to key), query = query, ownership = owner))
+            refetchOwners -= owner
+            if (left || s.round != round) return@launch
+            val fresh = (result as? ApiResult.Success)?.data as? JsonObject ?: return@launch
+            updateItem({ it.string("product_key") == key }) { old -> merge(old, fresh) }
+        }
+    }
+
+    /** 整卡替换：列表认卡用的 card_id 沿用原卡（详情接口的卡可能不带）。 */
+    private fun replaceKeepingId(
+        old: JsonObject,
+        fresh: JsonObject,
+    ): JsonObject {
+        val id = old["card_id"]
+        return if (id != null && fresh["card_id"] == null) JsonObject(fresh + ("card_id" to id)) else fresh
+    }
+
     /** 页面出栈（回退栈移除的同步出口；ViewModel 清理兜底）：作废当前请求并取消传输；之后迟到的响应一律丢弃。 */
     fun leave() {
         left = true
         session.leave()
         cancelAll()
+        refetchOwners.toList().also { refetchOwners.clear() }.forEach(api::cancelOwned)
         gateTimer?.cancel()
         gateTimer = null
         unsubscribe?.invoke()
@@ -295,12 +366,13 @@ class SearchController(
         if (left) return
         val before = s.platform
         refreshTabs(before)
-        if (s.platform == before) return
         if (s.keyword.isEmpty()) {
-            // 还没搜：没有请求可作废，只换选中 Tab
-            beginRequest("config")
+            // 还没搜：没有请求可作废，只换选中 Tab；全部平台关闭立即进入「无可搜索平台」（共性第 26 条）
+            if (s.platform != before) beginRequest("config")
+            idleOrUnavailable()
             return
         }
+        if (s.platform == before) return
         fallBack()
     }
 
@@ -510,6 +582,7 @@ class SearchController(
 
     companion object {
         const val SEARCH_PRODUCTS = "searchProducts"
+        const val GET_PRODUCT = "getProduct"
         const val REASON_SEARCH_DISABLED = "search_disabled"
         const val DISABLED_CODE = 50304
         private const val ON = "on"

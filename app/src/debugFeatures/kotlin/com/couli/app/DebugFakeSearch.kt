@@ -31,22 +31,31 @@ internal object DebugFakeSearch {
     fun answer(
         path: String,
         query: String?,
+        platformStatus: Map<String, String> = emptyMap(),
         canceled: () -> Boolean,
     ): Triple<Int, String, Map<String, String>>? {
         val params = parse(query)
         return when {
-            path == "/v1/config" -> ok(config())
+            path == "/v1/config" -> ok(config(platformStatus))
             path == "/v1/products/search" -> search(params, canceled)
             path.startsWith(PRODUCT_PREFIX) -> detail(URLDecoder.decode(path.removePrefix(PRODUCT_PREFIX), "UTF-8"))
             else -> null
         }
     }
 
-    private fun config(): String {
+    /**
+     * 包内配置，三个平台的 search_status 都设为 on；platform_status 三个平台默认 on（APP-06b 购买冒烟），可由假购买服务的状态开关文件覆盖
+     * （maintenance / not_launched，APP-06a 共性第 27、31 条的冒烟）。
+     */
+    private fun config(platformStatus: Map<String, String>): String {
         val data = Json.parseToJsonElement(BundledConfig.dataJson) as JsonObject
         val features = (data["features"] as? JsonObject).orEmpty()
-        val status = JsonObject(listOf("taobao", "jd", "pdd").associateWith { JsonPrimitive("on") })
-        return JsonObject(data + ("features" to JsonObject(features + ("search_status" to status)))).toString()
+        val platforms = listOf("taobao", "jd", "pdd")
+        val status = JsonObject(platforms.associateWith { JsonPrimitive("on") })
+        val purchase = JsonObject(platforms.associateWith { JsonPrimitive(platformStatus[it] ?: "on") })
+        return JsonObject(
+            data + ("features" to JsonObject(features + ("search_status" to status) + ("platform_status" to purchase))),
+        ).toString()
     }
 
     @Suppress("CyclomaticComplexMethod", "ReturnCount") // 场景逐项
@@ -74,6 +83,7 @@ internal object DebugFakeSearch {
         }
         val ids =
             when {
+                has("trade") -> TRADE_IDS[platform].orEmpty()
                 has("状态", "states") -> STATE_IDS + if (platform == "pdd") listOf("unknown") else emptyList()
                 page2 -> PAGE2_IDS
                 else -> PAGE1_IDS
@@ -95,7 +105,7 @@ internal object DebugFakeSearch {
                 "sales_desc" -> cards.reversed()
                 else -> cards
             }
-        val more = !page2 && !has("状态", "states")
+        val more = !page2 && !has("状态", "states") && !has("trade")
         return ok(page(cards, cursor = if (more) CURSOR else null, fallback = emptyList()))
     }
 
@@ -147,6 +157,7 @@ internal object DebugFakeSearch {
                 "expired" -> Sample("信息已失效样例 纯牛奶 250ml × 24 盒", 3990, 0, 3990, 3790, 200, 200, "normal")
                 "stale" -> Sample("缓存降级样例 纯牛奶 250ml × 24 盒", 4990, 1000, 3990, 3790, 200, 200, "normal", stale = true)
                 "unavailable" -> Sample("价格不可用样例 纯牛奶 250ml × 24 盒", null, null, null, null, null, null, "normal", unavailable = true)
+                "t-restore" -> Sample("返利恢复样例 纯牛奶 250ml × 24 盒", 5678, 1000, 4678, 4678, 0, 0, "no_rebate")
                 "unknown" -> Sample("拼多多直链 金额未知样例", null, null, null, null, null, null, "amount_unknown")
                 else -> Sample("全脂纯牛奶 250ml × 24 盒 整箱装 早餐奶 学生奶", 5678, 1000, 4678, 4555, 123, 234, "normal")
             }
@@ -179,7 +190,7 @@ internal object DebugFakeSearch {
                 "item_ref" to if (unknown) kotlinx.serialization.json.JsonNull else JsonPrimitive("v1.$prefix.$id.sig"),
                 "platform" to JsonPrimitive(platform),
                 "title" to JsonPrimitive(s.title),
-                "image" to JsonPrimitive("https://img.example.test/p/$id.jpg"),
+                "image" to JsonPrimitive("https://img.example.test/p/$id.png"),
                 "shop_name" to JsonPrimitive(if (detailMilk || id == "milk") "乳品生活旗舰店" else "示例旗舰店"),
                 "price_fen" to s.price.json(),
                 "coupon_fen" to s.coupon.json(),
@@ -190,7 +201,9 @@ internal object DebugFakeSearch {
                 "rebate_basis" to JsonPrimitive(s.basis),
                 "benefit_tags" to kotlinx.serialization.json.JsonArray(tags.map(::JsonPrimitive)),
                 "is_presale" to JsonPrimitive(s.presale),
-                "link_id" to JsonPrimitive("0199a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a70"),
+                "card_id" to JsonPrimitive("fakecard.$prefix.$id"),
+                // link_id 带场景名（APP-06b 假购买服务按它回答 openLink）
+                "link_id" to JsonPrimitive("fakelink.$prefix.$id"),
                 "cta" to JsonObject(mapOf("text_key" to JsonPrimitive(cta))),
                 "quoted_at" to JsonPrimitive(QUOTED_AT),
                 "stale" to JsonPrimitive(s.stale),
@@ -258,6 +271,37 @@ internal object DebugFakeSearch {
     private val PAGE1_IDS = listOf("milk", "milk2", "milk3")
     private val PAGE2_IDS = listOf("p2a", "p2b")
     private val STATE_IDS = listOf("nonrebate", "offshelf", "expired", "stale", "unavailable")
+
+    /** 购买场景卡（APP-06b，关键词 trade；场景见 DebugFakeTrade）。 */
+    private val TRADE_IDS =
+        mapOf(
+            "taobao" to
+                listOf(
+                    "t-ok",
+                    "t-restore",
+                    "t-price",
+                    "t-pricegone",
+                    "t-gone",
+                    "t-coupon",
+                    "t-requote",
+                    "t-slow",
+                    "t-auth",
+                    "t-authsdk",
+                    "t-unavail",
+                    "t-sdk",
+                    "t-noinst",
+                    "t-maint",
+                    "t-notlaunched",
+                    "t-busy",
+                    "t-blocked",
+                    "t-conflict",
+                    "t-503",
+                    "t-offshelf",
+                    "t-login",
+                ),
+            "jd" to listOf("t-browser", "t-ok"),
+            "pdd" to listOf("t-compare", "t-compareprice", "t-pdd"),
+        )
     private const val PRODUCT_PREFIX = "/v1/products/"
     private const val CURSOR = "p2"
     private const val QUOTED_AT = "2026-10-07T10:00:00+08:00"

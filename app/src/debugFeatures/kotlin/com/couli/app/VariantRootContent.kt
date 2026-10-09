@@ -108,6 +108,16 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
             }) {
                 Text(text = "Open Settings")
             }
+            // 授权管理（APP-06b）：「我的」还是占位，从这里经 Router 以 App 内来源打开（需要登录，守卫负责）
+            TextButton(onClick = {
+                EntryPointAccessors
+                    .fromApplication(context.applicationContext, DebugPanelEntryPoint::class.java)
+                    .appRouting()
+                    .router
+                    .open(RouteRequest("AuthManage", JsonObject(emptyMap()), RouteSource.IN_APP))
+            }) {
+                Text(text = "Open AuthManage")
+            }
             // LoginSessionExpired：与网络层刷新失败清会话（clear_session_login）同一入口
             TextButton(onClick = {
                 EntryPointAccessors

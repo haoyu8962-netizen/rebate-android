@@ -414,14 +414,18 @@ private fun orderedInitSteps(steps: List<Pair<String, () -> Unit>>): List<Pair<S
  * 生产用初始化步骤：第三方 SDK 的初始化调用只能写在这里（本文件），由 [PrivacyGate.onConsented] 按顺序调用。
  * 设备注册（APP-03b）由 App 传入；其余步骤是空实现，各自任务接入时填写。设备注册失败（回调 false）触发退避重试。
  */
-fun PrivacyGate.registerProductionInitSteps(deviceRegistration: (onResult: (Boolean) -> Unit) -> Unit) {
+fun PrivacyGate.registerProductionInitSteps(
+    union: () -> Unit = {},
+    deviceRegistration: (onResult: (Boolean) -> Unit) -> Unit,
+) {
     // POST /v1/devices 设备注册（APP-03b DeviceRegistry.registerAsync，后台执行，失败退避重试）。
     // TODO(APP-12): 注册成功后上报本地同意记录（client_at = consentedAtMillis，BR-ID-12）；TODO(APP-15): 推送 token。
     registerDeviceStep(deviceRegistration)
     // TODO(APP-15): MobPush（同意后调用其隐私授权接口，03 §3.5）。
     registerInitStep(PrivacyGate.PUSH) {}
-    // TODO(APP-09): 联盟 SDK（百川 / 京东 / 拼多多，03 §3.5）。
-    registerInitStep(PrivacyGate.UNION) {}
+    // 联盟 SDK（03 §3.5）：百川适配层（APP-06b；SDK 未引入、AppKey 未给，不可用实现初始化一律失败并上报 sdk_init_failed，TODO(N-28)）。
+    // 京东 / 拼多多 SDK 不引入（任务书 APP-06b §2.4）。
+    registerInitStep(PrivacyGate.UNION) { union() }
     // TODO(APP-16): Sentry Android（境内自建服务端，关闭默认个人信息上报）。
     registerInitStep(PrivacyGate.CRASH) {}
     // TODO(APP-05): 微信 OpenSDK。

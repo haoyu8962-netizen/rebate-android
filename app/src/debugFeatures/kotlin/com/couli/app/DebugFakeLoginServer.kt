@@ -39,9 +39,24 @@ internal class DebugFakeLoginServer(
     @Volatile
     private var phoneBound = false
 
+    /** 购买、外跳与授权（APP-06b，[DebugFakeTrade]）；状态开关文件与开关文件同目录。 */
+    private val trade = DebugFakeTrade(File(switch.parentFile, FAKE_TRADE_STATE_FILE))
+
+    @Suppress("ReturnCount") // 开关关着、商品图、其余三个出口
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (!switch.exists()) return chain.proceed(request)
+        // 商品图（APP-06a 共性第 22 条的冒烟）：img.example.test 的图片在本机现画
+        if (request.url.host == DebugFakeTrade.IMAGE_HOST) {
+            return Response
+                .Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(HTTP_OK)
+                .message("OK")
+                .body(DebugFakeTrade.image(request.url.encodedPath).toResponseBody(PNG))
+                .build()
+        }
         val body =
             request.body?.let { content ->
                 val buffer = Buffer()
@@ -49,20 +64,36 @@ internal class DebugFakeLoginServer(
                 runCatching { Json.parseToJsonElement(buffer.readUtf8()) as? JsonObject }.getOrNull()
             } ?: JsonObject(emptyMap())
         // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
+        val loggedIn = request.header("Authorization") != null
         val (code, data, headers) =
-            DebugFakeSearch.answer(request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
+            trade.answer(request.method, request.url.encodedPath, body, request.headers.toMap(), loggedIn) { chain.call().isCanceled() }
+                ?: DebugFakeSearch.answer(
+                    request.url.encodedPath,
+                    request.url.encodedQuery,
+                    trade.platformStatus(),
+                ) { chain.call().isCanceled() }
                 ?: answer(request.url.encodedPath, body)
-        val envelope = """{"code":$code,"msg":"","data":$data,"trace_id":"fake-trace-${"%06d".format(++serial)}"}"""
+        // 复核过的商品，详情按新报价回答（APP-06b 重取权威卡片的冒烟）
+        val answered = if (code == 0) trade.requoted(request.url.encodedPath, data) else data
+        val envelope = """{"code":$code,"msg":"","data":$answered,"trace_id":"fake-trace-${"%06d".format(++serial)}"}"""
         return Response
             .Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
-            .code(if (code == RATE_LIMITED) HTTP_TOO_MANY else HTTP_OK)
+            .code(httpStatus(code))
             .message("OK")
             .apply { headers.forEach { (name, value) -> header(name, value) } }
             .body(envelope.toResponseBody(JSON))
             .build()
     }
+
+    /** 外壳的 HTTP 状态按 error-codes 的 http 列（ApiClient 只看外壳，状态码影响不大）。 */
+    private fun httpStatus(code: Int): Int =
+        when (code) {
+            RATE_LIMITED -> HTTP_TOO_MANY
+            LOGIN_REQUIRED -> HTTP_UNAUTHORIZED
+            else -> HTTP_OK
+        }
 
     private fun answer(
         path: String,
@@ -173,6 +204,7 @@ internal class DebugFakeLoginServer(
 
     private companion object {
         val JSON = "application/json".toMediaType()
+        val PNG = "image/png".toMediaType()
         val INVITE = Regex("[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}")
         const val LIMITED_PHONE = "13900000000"
         const val MERGEABLE_PHONE = "13800005678"
@@ -189,6 +221,8 @@ internal class DebugFakeLoginServer(
         const val FORCE_UPDATE = 10405
         const val HTTP_OK = 200
         const val HTTP_TOO_MANY = 429
+        const val HTTP_UNAUTHORIZED = 401
+        const val LOGIN_REQUIRED = 10001
     }
 }
 

@@ -26,6 +26,11 @@ data class ProductDetailView(
     val stale: Boolean,
     /** 价格不可用（BR-PRICE-01）：不显示任何金额，价格保持未知、不补 0。 */
     val priceUnavailable: Boolean,
+    /**
+     * 平台购买状态（features.platform_status.<platform>，PlatformPurchaseStatus；03 §7.4、BR-PROD-10，APP-06a 共性第 27、31 条）：
+     * on / maintenance / not_launched；context 没给（缺失）为 null，按 on。maintenance、not_launched 时 [buyEnabled] 为 false。
+     */
+    val purchaseStatus: String? = null,
 ) {
     /**
      * 降级卡（ProductCardDegrade）。TODO(N-27)：getProduct 没有平台状态与认领配置，stale 也不等于画板的五种能力降级；判定不了，
@@ -40,7 +45,10 @@ data class ProductDetailView(
     val rebateGone: Boolean get() = false
 }
 
-/** getProduct 的 ProductCard → 详情页模型。context：{ loggedIn: Boolean, privacy: "consented" | "basic" }。 */
+/**
+ * getProduct 的 ProductCard → 详情页模型。context：{ loggedIn: Boolean, privacy: "consented" | "basic", platformStatus?: "on" | "maintenance" |
+ * "not_launched" }（platformStatus 取这一刻的 features.platform_status.<platform>，APP-06b 接入）。
+ */
 object ProductDetailState {
     const val PRIVACY_CONSENTED = "consented"
     const val PRIVACY_BASIC = "basic"
@@ -56,14 +64,17 @@ object ProductDetailState {
         val basic = (context["privacy"] as? JsonPrimitive)?.content == PRIVACY_BASIC
         val unavailable = ProductCardMapper.priceUnavailable(product)
         val offShelf = (product["availability"] as? JsonPrimitive)?.content == OFF_SHELF
+        val status = (context["platformStatus"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        val purchaseBlocked = status == ProductCardMapper.PURCHASE_MAINTENANCE || status == ProductCardMapper.PURCHASE_NOT_LAUNCHED
         return ProductDetailView(
             buttonKeyRaw = key,
             presale = (product["is_presale"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull == true,
             rebateUnknown = (product["rebate_basis"] as? JsonPrimitive)?.content == AMOUNT_UNKNOWN,
             publicMode = !loggedIn || basic,
-            buyEnabled = key.isNotEmpty() && !offShelf && !unavailable,
+            buyEnabled = key.isNotEmpty() && !offShelf && !unavailable && !purchaseBlocked,
             stale = ProductCardMapper.stale(product),
             priceUnavailable = unavailable,
+            purchaseStatus = status,
         )
     }
 }

@@ -41,6 +41,9 @@ object PriceTerms {
     /** 无券状态（BR-PRICE-04「显示无券状态」；设计稿副行写「无券」）。 */
     const val NO_COUPON = "无券"
 
+    /** 有券优惠标签（服务端 benefit_tags 的取值；券失效后从卡片去掉，APP-06b CardPatch）。 */
+    const val HAS_COUPON = "有券"
+
     /** 返利短标签（BR-PRICE-05：界面短标签只允许「预估返」）。 */
     const val EST_REBATE = "预估返"
 

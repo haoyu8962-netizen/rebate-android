@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -37,10 +38,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -64,10 +68,14 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.couli.core.designsystem.BuyButtonModel
+import com.couli.core.designsystem.BuyButtonState
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
@@ -97,8 +105,11 @@ import com.couli.core.network.ResultSignals
 import com.couli.generated.Sort
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** 测试与冒烟用的标记。 */
 object SearchTags {
@@ -112,6 +123,9 @@ object SearchTags {
     const val PRICE = "search_filter_price"
     const val RESULTS = "search_results"
     const val CARD_PREFIX = "search_card_"
+
+    /** 卡片下的比价无返利原因行（后接 [cardKey]）；其中【看看相似商品】再加后缀 _similar。 */
+    const val COMPARE_PREFIX = "search_compare_"
     const val ERROR = "search_error"
     const val RETRY = "search_retry"
     const val NOTICE = "search_notice"
@@ -692,18 +706,35 @@ private fun ResultList(
         }
     }
     LaunchedEffect(listState) {
-        snapshotFlow {
-            val last =
-                listState.layoutInfo.visibleItemsInfo
-                    .lastOrNull()
-                    ?.index ?: listState.firstVisibleItemIndex
-            ScrollAnchor(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, last)
-        }.collect(model::onScrolled)
+        // 临时没有可见项（重排、被盖住前后的空帧）时不记：保留最后有效的锚点，只在新一轮查询或真正出栈时重置（APP-06a 共性第 29 条）
+        snapshotFlow { viewportAnchor(listState) }.filterNotNull().collect(model::onScrolled)
+    }
+    // 被覆盖 / 进入后台（ON_STOP）：同步写入此刻视口的锚点后冻结记录；回到前台解冻（共性第 32、33 条）
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, model, listState) {
+        // 页面已出栈（退出动画期间组合与生命周期还在）：持久化入口自己拒绝写入（SearchViewModel.persist，A-R2-04）
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_STOP -> model.onPageStopped(viewportAnchor(listState))
+                    Lifecycle.Event.ON_START -> model.onPageStarted()
+                    else -> Unit
+                }
+            }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
     }
     AutoLoadMore(listState, state) { model.controller.loadMore() }
     val now = model.config.clock()
-    val mapped = state.items.map { ProductCardMapper.map(it, texts, now) }
-    val fallback = state.fallbackItems.map { ProductCardMapper.map(it, texts, now) }
+    // 配置变化（platform_status）时重新映射卡片（APP-06a 共性第 27、31 条：订阅配置变化）
+    var configTick by remember { mutableIntStateOf(0) }
+    DisposableEffect(model) {
+        val unsubscribe = model.config.config.subscribe { configTick += 1 }
+        onDispose(unsubscribe)
+    }
+    val port = model.config.config
+    val mapped = remember(state.items, configTick, now) { state.items.map { mapCard(it, texts, now, port) } }
+    val fallback = remember(state.fallbackItems, configTick, now) { state.fallbackItems.map { mapCard(it, texts, now, port) } }
     val shownRaw = if (state.phase == SearchPhase.EMPTY) state.fallbackItems else state.items
     val shownCards = if (state.phase == SearchPhase.EMPTY) fallback else mapped
     RestoreScroll(model, listState)
@@ -723,24 +754,152 @@ private fun listItemCount(
     return 1 + emptyItems + cards + 1
 }
 
+/** 此刻视口的锚点：顶部可见项与偏移、最后一个可见项；临时没有可见项时为 null。 */
+private fun viewportAnchor(listState: LazyListState): ScrollAnchor? {
+    val last =
+        listState.layoutInfo.visibleItemsInfo
+            .lastOrNull()
+            ?.index ?: return null
+    return ScrollAnchor(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, last)
+}
+
+/** 列表此刻的位置（恢复任务比对用）：顶部可见项与偏移、已布局的项数、是否有滚动在进行。 */
+internal data class ListPosition(
+    val index: Int,
+    val offset: Int,
+    val count: Int,
+    val scrolling: Boolean,
+)
+
+/**
+ * 恢复任务预期的列表位置（A-R2-03，APP-06a 共性第 38 条）：任务每次自己移动列表后记下实际落点；还没移动过 = 任务开始时的位置。
+ * 列表的项数变了（首屏到达、补页、提示行增减）是内容造成的位置变化（如布局把越界的位置截到末尾），按当前位置重取基准，不算偏离。
+ */
+internal class RestoreExpectation(
+    private var expected: ListPosition,
+) {
+    /** 任务自己正在移动列表（这期间的滚动与位置变化是任务的）。 */
+    var moving: Boolean = false
+        private set
+
+    /**
+     * [now] 是否说明列表被别人移动了：有不属于任务的滚动在进行（触摸拖动、惯性、读屏的滚动动作、键盘 / 焦点移动带来的滚动都经过列表的
+     * scroll，都算），或项数没变而位置偏离预期（超出 [TOLERANCE_PX]）。
+     */
+    fun drifted(now: ListPosition): Boolean =
+        when {
+            moving -> {
+                false
+            }
+
+            now.scrolling -> {
+                true
+            }
+
+            now.count != expected.count -> {
+                expected = now
+                false
+            }
+
+            else -> {
+                now.index != expected.index || kotlin.math.abs(now.offset - expected.offset) > TOLERANCE_PX
+            }
+        }
+
+    /** 任务自己移动列表：[move] 期间不判偏离，之后按实际落点记预期。 */
+    suspend fun move(
+        move: suspend () -> Unit,
+        landed: () -> ListPosition,
+    ) {
+        moving = true
+        try {
+            move()
+        } finally {
+            moving = false
+            expected = landed()
+        }
+    }
+
+    companion object {
+        /** 位置比较的容差（像素）：取整误差。 */
+        const val TOLERANCE_PX = 1
+    }
+}
+
+private fun listPosition(listState: LazyListState): ListPosition =
+    ListPosition(
+        listState.firstVisibleItemIndex,
+        listState.firstVisibleItemScrollOffset,
+        listState.layoutInfo.totalItemsCount,
+        listState.isScrollInProgress,
+    )
+
 /**
  * 系统回收后恢复（A-R2-03）：结果重新加载到保存时最后一个可见项之后，再滚到锚点；锚点还没加载到就继续翻页（翻到第二页的位置也能回去），到底、翻页
  * 失败或被限流时停在已有的最后一项。按执行器的实时状态判断（不用组合时的快照，免得和自动翻页抢着发请求时误判为「翻不动」）。
+ *
+ * 恢复任务绑定查询轮次与页面实例（A-R1-17、A-R2-03 / 04，APP-06a 共性第 33、38、39 条）：
+ * - 让位用通用判定（[RestoreExpectation]）：持续比对列表实际位置与任务预期，任何不是任务造成的移动（触摸、惯性、读屏滚动、键盘 / 焦点移动）
+ *   都取消恢复，并按用户此刻的位置记录；每一步（翻页、滚动）之前再核对一次；
+ * - 锚点被放弃（让位、新一轮查询）或页面实例已出栈（[SearchViewModel.alive]）即结束，滚动、翻页前都复核；
+ * - 页面不在前台（被覆盖、在后台）时暂停等待，回到前台再继续；等待目标内容按加载状态（项数、翻页中、到底、失败），不用固定超时。
+ * 每个等待分支的结束条件见 NATIVE/APP-06b/compare-android.md「滚动恢复的等待与结束」。
  */
+@Suppress("CyclomaticComplexMethod", "LongMethod") // 放弃、暂停、加载中、到位、继续翻页逐项判定
 @Composable
 private fun RestoreScroll(
     model: SearchViewModel,
     listState: LazyListState,
 ) {
-    val anchor = model.pendingScroll ?: return
-    LaunchedEffect(anchor) {
+    val anchor = model.pendingScrollFlow.collectAsState().value ?: return
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(anchor, lifecycle) {
+        val expectation = RestoreExpectation(listPosition(listState))
+
+        fun stillMine(): Boolean = model.alive && model.pendingScroll === anchor
+
+        fun takeOverIfDrifted(): Boolean {
+            if (!expectation.drifted(listPosition(listState))) return false
+            model.restoreTakenOver(viewportAnchor(listState))
+            return true
+        }
+        // 持续比对：读屏的滚动动作、键盘 / 焦点移动、惯性滚动都不经过拖动事件，只看实际位置与是否有别人的滚动
+        launch {
+            snapshotFlow { listPosition(listState) }.collect {
+                if (stillMine()) takeOverIfDrifted()
+            }
+        }
         // 列表已布局的项数要追上执行器的状态再判断（状态先变、列表下一帧才有新项；在旧项数上滚动会被截到旧的末尾）
-        combine(snapshotFlow { listState.layoutInfo.totalItemsCount }, model.state) { laidOut, s -> laidOut to s }
-            .first { (laidOut, s) ->
+        combine(
+            snapshotFlow { listState.layoutInfo.totalItemsCount },
+            model.state,
+            lifecycle.currentStateFlow,
+        ) { laidOut, s, life -> Triple(laidOut, s, life) }
+            .first { (laidOut, s, life) ->
                 val cards = if (s.phase == SearchPhase.EMPTY) s.fallbackItems.size else s.items.size
                 val count = listItemCount(s, cards, s.fallbackItems.isNotEmpty())
                 val shown = s.phase == SearchPhase.CONTENT || s.phase == SearchPhase.EMPTY
                 when {
+                    // 页面已出栈、锚点已放弃（让位、新查询）或已换了一轮查询：结束，不再滚
+                    !stillMine() || s.round != model.pendingScrollRound -> {
+                        if (model.pendingScroll === anchor) model.scrollRestored()
+                        true
+                    }
+
+                    // 被覆盖、在后台：暂停（不滚、不翻页），回到前台再判断
+                    !life.isAtLeast(Lifecycle.State.STARTED) -> {
+                        false
+                    }
+
+                    // 等待期间列表被别人移动过：让位
+                    takeOverIfDrifted() -> {
+                        true
+                    }
+
+                    s.phase == SearchPhase.LOADING || s.phase == SearchPhase.IDLE -> {
+                        false
+                    }
+
                     !shown -> {
                         model.scrollRestored()
                         true
@@ -752,13 +911,19 @@ private fun RestoreScroll(
 
                     anchor.lastVisible < count - 1 || s.endReached || s.loadMoreError != null || s.blocked -> {
                         val reached = anchor.index < count - 1
-                        listState.scrollToItem(minOf(anchor.index, count - 1), if (reached) anchor.offset else 0)
-                        model.scrollRestored()
+                        expectation.move(
+                            move = {
+                                // 滚动前复核页面实例与锚点（等布局期间出栈、被放弃的不滚）
+                                if (stillMine()) listState.scrollToItem(minOf(anchor.index, count - 1), if (reached) anchor.offset else 0)
+                            },
+                            landed = { listPosition(listState) },
+                        )
+                        if (model.pendingScroll === anchor) model.scrollRestored()
                         true
                     }
 
                     else -> {
-                        if (!s.loadingMore) model.controller.loadMore()
+                        if (!s.loadingMore && stillMine()) model.controller.loadMore()
                         false
                     }
                 }
@@ -796,8 +961,8 @@ private fun ColumnScope.ResultItems(
                 item(key = "fallback_title") { FallbackHeader(state, texts) }
             }
         }
-        items(cards, key = { (raw, _) -> cardKey(raw) }) { (raw, card) ->
-            ResultCard(model, raw, card, infoFocus)
+        itemsIndexed(cards, key = { _, (raw, _) -> cardKey(raw) }) { slot, (raw, card) ->
+            ResultCard(model, raw, card, infoFocus, slot)
         }
         item(key = "footer") { ListFooter(model, state, texts) }
     }
@@ -878,6 +1043,7 @@ private fun ResultCard(
     raw: JsonObject,
     card: MappedProductCard,
     infoFocus: MutableMap<String, FocusRequester>,
+    slot: Int,
 ) {
     val key = cardKey(raw)
     val focus = remember(key) { FocusRequester() }
@@ -891,21 +1057,62 @@ private fun ResultCard(
         } else {
             null
         }
-    Box(
+    Column(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .then(if (open != null) Modifier.clickable(role = Role.Button, onClick = open) else Modifier)
                 .testTag(SearchTags.CARD_PREFIX + key),
     ) {
+        // 购买流程的覆盖（加载、限流、点击结果禁用、未安装提示）只对正在购买的这张卡、且卡片本来可买时生效
+        val override =
+            model.config.purchase
+                .button(raw)
+                ?.takeIf { card.buyState == BuyButtonState.NORMAL }
+        val buyState = override?.state ?: card.buyState
+        val data = override?.text?.takeIf { buyState == BuyButtonState.NORMAL }?.let { card.data.copy(buyBase = it) } ?: card.data
         ProductCardList(
-            data = card.data,
-            onBuy = { model.config.actions.onBuyIntent(raw) },
-            buyState = card.buyState,
-            retryLaterText = card.retryLaterText,
+            data = data,
+            onBuy = { model.config.actions.onBuyIntent(raw, "$SPM_PREFIX${slot + 1}") },
+            buyState = buyState,
+            retryLaterText = override?.text?.takeIf { buyState == BuyButtonState.RETRY_LATER } ?: card.retryLaterText,
             context = BuyButtonModel.CONTEXT_LIST,
             onInfo = { model.showDisclaimer(key, card.data.disclaimer) },
             infoFocus = focus,
+        )
+        // 比价无返利（open 复核后卡片的 no_rebate_cause=price_compare，或接口直接给出）：原因行 +【看看相似商品】，绑定这张卡（BR-PRICE-08，A-R1-16）
+        if (raw.string("no_rebate_cause") == PRICE_COMPARE) {
+            CompareReasonRow(texts = model.config.texts, tag = SearchTags.COMPARE_PREFIX + key) {
+                model.config.actions.onSimilar(raw)
+            }
+        }
+    }
+}
+
+/** 比价无返利的原因行（no_rebate.price_compare +【看看相似商品】，ProductPriceCompareCancelled）。 */
+@Composable
+private fun CompareReasonRow(
+    texts: SearchTexts,
+    tag: String,
+    onSimilar: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space2).testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+    ) {
+        Text(
+            text = texts.text(COMPARE_REASON_KEY),
+            style = CouliTypography.footnote,
+            color = CouliColors.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        CouliButton(
+            text = texts.text(COMPARE_SIMILAR_KEY),
+            onClick = onSimilar,
+            variant = CouliButtonVariant.TEXT,
+            size = CouliButtonSize.COMPACT,
+            modifier = Modifier.testTag(tag + SIMILAR_SUFFIX),
         )
     }
 }
@@ -1088,3 +1295,22 @@ private const val UNDERLINE = 2
 private const val CHIP_HEIGHT = 36
 private const val SKELETONS = 3
 private const val DISCLAIMER_MAX_HEIGHT = 160
+
+/** 卡片映射：带上此刻的平台购买状态（features.platform_status，APP-06a 共性第 27、31 条）。 */
+private fun mapCard(
+    card: JsonObject,
+    texts: SearchTexts,
+    now: Long,
+    port: SearchConfigPort,
+): MappedProductCard {
+    val platform = (card["platform"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+    return ProductCardMapper.map(card, texts, now, purchaseStatus = port.platformStatus(platform))
+}
+
+private const val PRICE_COMPARE = "price_compare"
+private const val COMPARE_REASON_KEY = "no_rebate.price_compare"
+private const val COMPARE_SIMILAR_KEY = "no_rebate.price_compare.similar"
+private const val SIMILAR_SUFFIX = "_similar"
+
+/** 搜索结果卡购买按钮的 spm（页面.模块.坑位，03 §4.7）。 */
+private const val SPM_PREFIX = "search.result_list."

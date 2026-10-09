@@ -35,6 +35,8 @@ import com.couli.app.routing.ShellHooks
 import com.couli.app.search.AppSearch
 import com.couli.app.search.ProductDetailRoute
 import com.couli.app.search.SearchRoute
+import com.couli.app.trade.AuthManageRoute
+import com.couli.app.trade.openAuthManage
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.ForceUpdateActions
 import com.couli.app.update.ForceUpdatePage
@@ -134,6 +136,10 @@ fun AppShell(
                     },
                     PRODUCT_DETAIL_ROUTE to { page ->
                         search?.let { ProductDetailRoute(it, page) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                    },
+                    // 授权管理（APP-06b，BR-ID-17 细则「授权管理页」）：从「我的」与设置进入（需要登录，守卫负责）
+                    AUTH_MANAGE_ROUTE to { page ->
+                        search?.trade?.let { AuthManageRoute(it, search) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
                     // 隐私中心占位（TODO(APP-12)）：强更状态下只可能从强更页进入，带强更状态标记（R1-05）
                     PRIVACY_CENTER_ROUTE to { page ->
@@ -332,6 +338,12 @@ private fun TabRoot(
     } else if (tab == ShellTab.HOME) {
         // 首页 Tab 顶部的搜索入口（经 Router 打开 Search，APP-06a 冒烟入口）；首页内容在首页任务（TODO(APP-11)）
         HomeWithSearch(onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) }) { registry.Render(destination) }
+    } else if (tab == ShellTab.ME) {
+        // 「我的」Tab 顶部的账号入口：授权管理（A-R1-14）、设置；「我的」页正文在后续任务（占位）
+        MeWithEntries(
+            onAuthManage = { openAuthManage(routing) },
+            onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
+        ) { registry.Render(destination) }
     } else {
         registry.Render(destination)
     }
@@ -371,5 +383,6 @@ internal const val PRIVACY_CENTER_ROUTE = "PrivacyCenter"
 private const val SEARCH_ROUTE = "Search"
 private const val PRODUCT_DETAIL_ROUTE = "ProductDetail"
 private const val SETTINGS_ROUTE = "Settings"
+private const val AUTH_MANAGE_ROUTE = "AuthManage"
 private const val ME_ROUTE = "Me"
 private const val EMPTY_PARAMS = "{}"

@@ -176,6 +176,15 @@ private fun buttonColors(
     }
 }
 
+/**
+ * 购买流程对按钮的覆盖（APP-06b：加载中、限流、点击结果禁用、「安装X后下单才有返利」）：[text] 替换按钮文字（NORMAL 时替换动词且不拼金额，
+ * RETRY_LATER 时是「稍后再试」类文字），null 用卡片的。
+ */
+data class BuyButtonOverride(
+    val state: BuyButtonState,
+    val text: String?,
+)
+
 /** 购买按钮的状态（03 §10.2 BuyButton：loading、禁用、「稍后再试」）。 */
 enum class BuyButtonState {
     NORMAL,

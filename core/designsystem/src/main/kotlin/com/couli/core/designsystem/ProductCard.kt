@@ -1,5 +1,6 @@
 package com.couli.core.designsystem
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,16 +25,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -82,6 +89,8 @@ data class ProductCardData(
     val priceUnavailableText: String? = null,
     /** 取价处的价格变化提示（BR-PRICE-11：stale=true 或 age_sec > 300；APP-06a 共性第 3 条），接在取价时间后；没有为 null。 */
     val staleNote: String? = null,
+    /** 商品图地址（契约 image，https；没有为 null → 占位，APP-06a 共性第 22 条）。 */
+    val imageUrl: String? = null,
 ) {
     /** 价格不可用：不显示任何金额（[priceUnavailableText]）。 */
     val priceUnavailable: Boolean get() = priceUnavailableText != null
@@ -159,7 +168,7 @@ fun ProductCardList(
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
-                ProductThumbnail(label = shown.imageLabel, size = CouliSizes.listThumbnail)
+                ProductThumbnail(label = shown.imageLabel, size = CouliSizes.listThumbnail, imageUrl = shown.imageUrl)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
                     BadgedTitle(
                         platformName = shown.platformName,
@@ -296,15 +305,23 @@ private fun BenefitTagRow(tags: List<BenefitTag>) {
     }
 }
 
-/** 商品图占位（GUIDE §7.1：占位底 #E9E2D9 + 1 描边，圆角 8）；列表里是装饰，读屏跳过。 */
+/**
+ * 商品图（契约 ProductCard.image，APP-06a 共性第 22 条）：有 [imageUrl] 且 App 给了 [LocalProductImageLoader] 时加载显示；加载中、字段为空
+ * 或加载失败时显示占位（GUIDE §7.1：占位底 #E9E2D9 + 1 描边，圆角 8）。列表里是装饰，读屏跳过。
+ */
 @Composable
 fun ProductThumbnail(
     label: String,
     modifier: Modifier = Modifier,
     size: Dp? = null,
     description: String? = null,
+    imageUrl: String? = null,
 ) {
     val shape = RoundedCornerShape(CouliRadius.small)
+    val loader = LocalProductImageLoader.current
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, imageUrl, loader) {
+        value = if (imageUrl.isNullOrEmpty() || loader == null) null else runCatching { loader.load(imageUrl) }.getOrNull()
+    }
     Box(
         modifier =
             modifier
@@ -321,9 +338,22 @@ fun ProductThumbnail(
                 ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = label, style = CouliTypography.caption, color = CouliColors.textSecondary)
+        val image = bitmap
+        if (image != null) {
+            Image(bitmap = image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+        } else {
+            Text(text = label, style = CouliTypography.caption, color = CouliColors.textSecondary)
+        }
     }
 }
+
+/** 商品图加载（App 给：经 App 的 HTTP 客户端取 https 图片并解码；没给时一律占位）。 */
+fun interface ProductImageLoader {
+    suspend fun load(url: String): ImageBitmap?
+}
+
+/** 当前的商品图加载器（App 在根部提供；目录页、快照测试不提供 → 占位）。 */
+val LocalProductImageLoader = staticCompositionLocalOf<ProductImageLoader?> { null }
 
 /**
  * 首页网格卡（窄卡）：上图下文；返利标签两行结构——第一行「钟表 + 预估返 + 信息按钮」，第二行完整金额，只在破折号处折行（GUIDE §6）。
@@ -339,7 +369,11 @@ fun ProductCardGrid(
         modifier = modifier.couliCard().padding(CouliSpacing.space2),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        ProductThumbnail(label = data.imageLabel, modifier = Modifier.fillMaxWidth().aspectRatio(GRID_IMAGE_RATIO))
+        ProductThumbnail(
+            label = data.imageLabel,
+            modifier = Modifier.fillMaxWidth().aspectRatio(GRID_IMAGE_RATIO),
+            imageUrl = data.imageUrl,
+        )
         Column(
             modifier = Modifier.padding(horizontal = CouliSpacing.space1),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
@@ -457,7 +491,13 @@ fun ProductCardLarge(
         BenefitTagRow(tags = data.benefitTags)
         Box(modifier = Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
         Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-            BadgedTitle(platformName = data.platformName, title = data.title, style = CouliTextStyles.bodySemibold)
+            // 详情的「平台 + 商品名」合为一项、读屏标题角色（A11yFocusProduct 第 10 项，APP-06a 共性第 30 条）
+            BadgedTitle(
+                platformName = data.platformName,
+                title = data.title,
+                style = CouliTextStyles.bodySemibold,
+                modifier = Modifier.semantics { heading() }.testTag(DETAIL_TITLE_TAG),
+            )
             if (data.shopName != null) {
                 Text(text = data.shopName, style = CouliTypography.caption, color = CouliColors.textSecondary)
             }
@@ -499,3 +539,6 @@ private fun LargePriceBlock(data: ProductCardData) {
 
 /** 网格卡图片宽高比（ProductCardStress 网格卡 157 × 132 的近似；GUIDE §6 未给令牌）。 */
 private const val GRID_IMAGE_RATIO = 1.19f
+
+/** 详情大卡标题的测试标记（读屏标题角色断言用）。 */
+const val DETAIL_TITLE_TAG = "product_detail_title"
