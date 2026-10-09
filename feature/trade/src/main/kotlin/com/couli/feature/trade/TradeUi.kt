@@ -50,7 +50,6 @@ import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.PriceTagModel
-import com.couli.core.designsystem.PriceTerms
 import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.delay
@@ -74,12 +73,24 @@ object TradeKeys {
     const val PRICE_TITLE = "trade.price_changed.title"
     const val PRICE_BEFORE = "trade.price_changed.before"
     const val PRICE_NOW = "trade.price_changed.now"
+
+    /** 新价口径未补齐时「现在」一行不带口径词（三端同名，共性第 30、37、45 条）。 */
+    const val PRICE_NOW_PLAIN = "trade.price_changed.now_plain"
+
+    /** 原价口径未知时「之前」一行不带口径词（共性第 47 条）。 */
+    const val PRICE_BEFORE_PLAIN = "trade.price_changed.before_plain"
     const val PRICE_ASK = "trade.price_changed.ask"
     const val COUPON_TITLE = "trade.coupon_gone.title"
     const val REBATE_GONE_LINE = "trade.rebate_gone.line"
     const val REBATE_GONE_NOTE = "trade.rebate_gone.note"
     const val REBATE_GONE_TITLE = "trade.rebate_gone.title"
     const val REBATE_GONE_BODY = "trade.rebate_gone.body"
+
+    /** 返利归零弹窗、新价与原价不同（变动未达阈值）：「{price_now} {price}。继续购买不会获得返利」（三端同名，共性第 45 条）。 */
+    const val REBATE_GONE_BODY_CHANGED = "trade.rebate_gone.body_changed"
+
+    /** 返利归零、价格没有变化但口径未知：「价格没有变化，{price}。继续购买不会获得返利」（不默认「券后」，共性第 47 条）。 */
+    const val REBATE_GONE_BODY_PLAIN = "trade.rebate_gone.body_plain"
     const val CANCEL = "trade.cancel"
     const val CONTINUE = "trade.continue"
     const val COMPARE_TITLE = "no_rebate.price_compare.confirm"
@@ -145,6 +156,22 @@ fun purchaseButton(
         else -> null
     }
 }
+
+/**
+ * 搜索结果卡的购买按钮覆盖（[card] 是列表里的这张卡，[current] 是本页购买流程正在处理的卡）：42901 限流按 Retry-After 置灰本页每一张卡
+ * （执行层同样拦下，与详情一致，APP-06b 共性第 36 条）；加载、未安装提示只给正在购买的那张卡。
+ */
+fun searchPurchaseButton(
+    state: PurchaseState,
+    texts: TradeTexts,
+    card: JsonObject,
+    current: JsonObject,
+): BuyButtonOverride? =
+    when {
+        state.rateLimited -> BuyButtonOverride(BuyButtonState.DISABLED, null)
+        CardPatch.sameCard(card, current) -> purchaseButton(state, texts)
+        else -> null
+    }
 
 /**
  * 超时提示条（ProductBuyTimeout）：底栏上方「网络不稳定，请重试」+【重试】（沿用原键，TRADE-22）。出现时播报一次（03 §10.5）。
@@ -295,6 +322,7 @@ private fun PurchaseDialogs(
     vars: Map<String, String>,
     buyFocus: FocusRequester?,
 ) {
+    val state by controller.state.collectAsStateWithLifecycle()
     when (dialog) {
         is PurchaseDialog.ConfirmPrice -> {
             CouliDialog(
@@ -309,9 +337,8 @@ private fun PurchaseDialogs(
                         PriceCompareBox(
                             dialog.oldFen,
                             dialog.newFen,
-                            priceLabel(controller.cardBeforeResponse),
-                            priceLabel(controller.currentCard),
-                            texts,
+                            beforeLine(controller.cardBeforeResponse, texts),
+                            nowLine(state.latest ?: controller.currentCard, dialog.newFen, texts),
                         )
                         if (dialog.rebateGone) {
                             Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
@@ -334,17 +361,9 @@ private fun PurchaseDialogs(
         }
 
         is PurchaseDialog.ConfirmRebateGone -> {
-            val price = dialog.priceFen?.let(CouliFormat::money).orEmpty()
             CouliDialog(
                 title = texts.text(TradeKeys.REBATE_GONE_TITLE),
-                message =
-                    texts.format(
-                        TradeKeys.REBATE_GONE_BODY,
-                        mapOf(
-                            "price_label" to priceLabel(controller.currentCard),
-                            "price" to price,
-                        ),
-                    ),
+                message = rebateGoneBody(dialog, controller.cardBeforeResponse, state.latest ?: controller.currentCard, texts),
                 confirmText = texts.text(TradeKeys.CONTINUE),
                 onConfirm = controller::confirm,
                 onDismissRequest = controller::dismissDialog,
@@ -409,7 +428,6 @@ private fun PurchaseDialogs(
 
         is PurchaseDialog.AuthCheckFailed -> {
             // 授权结果查不到（A-R2-06）：对应错误（5xxxx 带 trace6）+【重试】重新查询（42901 期间置灰）+【取消】
-            val state by controller.state.collectAsStateWithLifecycle()
             val title =
                 ResultSignals.withTrace6(
                     texts.format(
@@ -581,14 +599,13 @@ private fun BulletLines(
     }
 }
 
-/** 价格变动的对照框：之前 / 现在（券后口径词随卡片）。 */
+/** 价格变动的对照框：之前（[beforeText]：原卡口径已知才带口径词）/ 现在（[nowText]：新价口径已补齐才带口径词）。 */
 @Composable
 private fun PriceCompareBox(
     oldFen: Long?,
     newFen: Long?,
-    oldLabel: String,
-    newLabel: String,
-    texts: TradeTexts,
+    beforeText: String,
+    nowText: String,
 ) {
     Column(
         modifier =
@@ -598,8 +615,8 @@ private fun PriceCompareBox(
                 .padding(CouliSpacing.space3),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
-        PriceRow(texts.format(TradeKeys.PRICE_BEFORE, mapOf("price_label" to oldLabel)), oldFen, emphasized = false)
-        PriceRow(texts.format(TradeKeys.PRICE_NOW, mapOf("price_label" to newLabel)), newFen, emphasized = true)
+        PriceRow(beforeText, oldFen, emphasized = false)
+        PriceRow(nowText, newFen, emphasized = true)
     }
 }
 
@@ -622,12 +639,72 @@ private fun PriceRow(
     }
 }
 
-/** 卡片的价格口径词（券后 / 售价 / 拼单券后…，BR-PRICE-04 / 05）；价格字段不全时用「券后」。 */
-internal fun priceLabel(card: JsonObject): String {
+/**
+ * 确认框「现在」一行的口径词（共性第 21、30、37 条）：新价格按当前可用的券重算（coupon_gone 可能换了新券，普通改价也可能新增或去掉了券），
+ * 所以券额未定前不能沿用点击时的口径，也不能由 coupon_gone 推断「售价」：[latest]（同一次 open 写入、权威重取补齐后的卡）的券后价与弹窗
+ * 新价一致、三个价格字段都已知时按它的券额给口径词；否则为 null（调用方只写「现在」，trade.price_changed.now_plain）。
+ */
+@Suppress("ReturnCount", "ComplexCondition") // 没有卡、价格构成不全或与新价不符两个出口
+internal fun nowPriceLabel(
+    latest: JsonObject?,
+    newFen: Long?,
+): String? {
+    val card = latest ?: return null
     val price = card.fen("price_fen")
     val coupon = card.fen("coupon_fen")
     val final = card.fen("final_price_fen")
-    if (price == null || coupon == null || final == null) return PriceTerms.AFTER_COUPON
+    if (price == null || coupon == null || final == null || newFen == null || final != newFen) return null
+    return PriceTagModel.make(card.text("platform").orEmpty(), price, coupon, final, isPresale = false).mainLabel
+}
+
+/** 「现在（券后）」或口径未补齐时的「现在」。 */
+internal fun nowLine(
+    latest: JsonObject?,
+    newFen: Long?,
+    texts: TradeTexts,
+): String =
+    nowPriceLabel(latest, newFen)?.let { texts.format(TradeKeys.PRICE_NOW, mapOf("price_label" to it)) }
+        ?: texts.text(TradeKeys.PRICE_NOW_PLAIN)
+
+/**
+ * 返利归零弹窗正文（BR-PRICE-13，共性第 45 条）：只有新旧金额相同才写「价格没有变化，<原卡口径> ¥x」；新价不同（变动未达阈值）写
+ * 「现在（<新价口径>）¥新」，券额未补齐时用不带口径词的「现在」；新价未知只说明继续购买不会获得返利。
+ */
+internal fun rebateGoneBody(
+    dialog: PurchaseDialog.ConfirmRebateGone,
+    before: JsonObject,
+    latest: JsonObject?,
+    texts: TradeTexts,
+): String {
+    val newFen = dialog.newFen ?: return texts.text(TradeKeys.REBATE_GONE_NOTE)
+    val price = CouliFormat.money(newFen)
+    return if (dialog.oldFen == newFen) {
+        // 口径取原卡；原卡口径未知时用补齐后的新卡（金额相同）；都未知就不带口径词（共性第 47 条）
+        val label = priceLabel(before) ?: nowPriceLabel(latest, newFen)
+        label?.let { texts.format(TradeKeys.REBATE_GONE_BODY, mapOf("price_label" to it, "price" to price)) }
+            ?: texts.format(TradeKeys.REBATE_GONE_BODY_PLAIN, mapOf("price" to price))
+    } else {
+        texts.format(TradeKeys.REBATE_GONE_BODY_CHANGED, mapOf("price_now" to nowLine(latest, newFen, texts), "price" to price))
+    }
+}
+
+/** 「之前（券后）」或原价口径未知时的「之前」（共性第 47 条）。 */
+internal fun beforeLine(
+    before: JsonObject,
+    texts: TradeTexts,
+): String =
+    priceLabel(before)?.let { texts.format(TradeKeys.PRICE_BEFORE, mapOf("price_label" to it)) }
+        ?: texts.text(TradeKeys.PRICE_BEFORE_PLAIN)
+
+/**
+ * 卡片的价格口径词（券后 / 售价 / 拼单券后…，BR-PRICE-04 / 05）；价格字段不全（口径未知）时为 null，调用方用不带口径词的写法，
+ * 不默认按有券写「券后」（共性第 47 条）。
+ */
+internal fun priceLabel(card: JsonObject): String? {
+    val price = card.fen("price_fen")
+    val coupon = card.fen("coupon_fen")
+    val final = card.fen("final_price_fen")
+    if (price == null || coupon == null || final == null) return null
     return PriceTagModel.make(card.text("platform").orEmpty(), price, coupon, final, isPresale = false).mainLabel
 }
 

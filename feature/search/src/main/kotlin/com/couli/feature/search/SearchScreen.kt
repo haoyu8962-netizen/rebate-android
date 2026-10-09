@@ -817,17 +817,34 @@ private fun viewportAnchor(listState: LazyListState): ScrollAnchor? {
     return ScrollAnchor(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, last)
 }
 
-/** 列表此刻的位置（恢复任务比对用）：顶部可见项与偏移、已布局的项数、是否有滚动在进行。 */
+/**
+ * 列表此刻的位置（恢复任务比对用）：顶部可见项与偏移、已布局的项数、是否有滚动在进行；[leading] 是卡片之前的非卡片项数（提示行，空态
+ * 时加空态与推荐标题），这些项可能是零高度，列表在顶部时顶部可见项可以是其中任一项之后的第一项。
+ * [key] 是顶部可见项的稳定 key（LazyColumn item key；前插 / 前删时同一项按 key 留在原处，位移的证据）；[atEnd] 是列表已到真实底部
+ * （不能再向后滚，底部截断的证据）。[zeroLeading] 是此刻能证明为零高度的前置项数（从第 0 项起连续；提示行没有内容时为 1，空态与推荐标题
+ * 总有高度），「仍在顶部」只在顶部可见项不越过它们时成立（F2-03）。
+ */
 internal data class ListPosition(
     val index: Int,
     val offset: Int,
     val count: Int,
     val scrolling: Boolean,
+    val leading: Int = 1,
+    val key: Any? = null,
+    val atEnd: Boolean = false,
+    val zeroLeading: Int = 0,
 )
 
 /**
  * 恢复任务预期的列表位置（A-R2-03，APP-06a 共性第 38 条）：任务每次自己移动列表后记下实际落点；还没移动过 = 任务开始时的位置。
- * 列表的项数变了（首屏到达、补页、提示行增减）是内容造成的位置变化（如布局把越界的位置截到末尾），按当前位置重取基准，不算偏离。
+ * 列表的项数变了（首屏到达、补页、提示行增减）时，只放行能证明是布局造成的位置变化（F-AND-18、FU-AND-0607 F1-06），按当前位置重取基准：
+ * - 位置不变（在后面追加 / 删除）；
+ * - 前插 / 前删：顶部可见项的稳定 key 不变、偏移不变，只是序号位移（项数差本身不是证据：尾部追加量恰等于一次瞬时滚动的距离时，
+ *   序号差与项数差相同，但顶部已是另一项）；
+ * - 底部截断：项数变少、列表此刻已在真实底部（不能再向后滚），且位置只向前收；没到底部的向前移动不算截断；
+ * - 原来在顶部、现在仍在顶部（偏移为 0，顶部可见项不超过前置非卡片项数）：还要证明顶部可见项之前的前置项此刻都是零高度（[ListPosition.zeroLeading]），
+ *   或顶部可见项的 key 没变；只比较序号与前置项数不够（有高度的提示条之后的第一张卡不是顶部，F2-03）。
+ * 其余（如项数变化与瞬时语义滚动 ScrollToIndex 合并在同一帧，观测时滚动已结束）算被别人移动了，恢复让位，不把用户的新位置当基准抢回。
  */
 internal class RestoreExpectation(
     private var expected: ListPosition,
@@ -851,14 +868,41 @@ internal class RestoreExpectation(
             }
 
             now.count != expected.count -> {
-                expected = now
-                false
+                val explained = layoutShift(expected, now)
+                if (explained) expected = now
+                !explained
             }
 
             else -> {
                 now.index != expected.index || kotlin.math.abs(now.offset - expected.offset) > TOLERANCE_PX
             }
         }
+
+    private fun layoutShift(
+        before: ListPosition,
+        now: ListPosition,
+    ): Boolean {
+        val sameOffset = kotlin.math.abs(now.offset - before.offset) <= TOLERANCE_PX
+        val unchanged = now.index == before.index && sameOffset
+        val sameItemShifted = before.key != null && now.key == before.key && sameOffset
+        val clamped =
+            now.count < before.count &&
+                now.atEnd &&
+                (now.index < before.index || (now.index == before.index && now.offset <= before.offset))
+        return unchanged || sameItemShifted || clamped || stillAtTop(before, now)
+    }
+
+    /** 原来在顶部、现在仍在顶部：序号、偏移之外还要有证明（F2-03）。 */
+    private fun stillAtTop(
+        before: ListPosition,
+        now: ListPosition,
+    ): Boolean {
+        val bothAtTopIndex = before.index <= before.leading && before.offset == 0 && now.index <= now.leading && now.offset == 0
+        // 前置项零高度的证据（两次观测各自证明顶部可见项之前都是零高度），或顶部可见项还是同一个 key
+        val provedTop =
+            (before.index <= before.zeroLeading && now.index <= now.zeroLeading) || (before.key != null && now.key == before.key)
+        return bothAtTopIndex && provedTop
+    }
 
     /** 任务自己移动列表：[move] 期间不判偏离，之后按实际落点记预期。 */
     suspend fun move(
@@ -880,13 +924,31 @@ internal class RestoreExpectation(
     }
 }
 
-private fun listPosition(listState: LazyListState): ListPosition =
-    ListPosition(
+private fun listPosition(
+    listState: LazyListState,
+    state: SearchSnapshot,
+): ListPosition {
+    // 提示行此刻没有内容（与 Notices、DisabledPasteSlot 一致）即零高度；空态与推荐标题总有内容
+    val staleShown = state.stale && (state.phase == SearchPhase.CONTENT || state.phase == SearchPhase.EMPTY)
+    val noticesEmpty = state.notice == null && !staleShown
+    return ListPosition(
         listState.firstVisibleItemIndex,
         listState.firstVisibleItemScrollOffset,
         listState.layoutInfo.totalItemsCount,
         listState.isScrollInProgress,
+        leadingItems(state),
+        key =
+            listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == listState.firstVisibleItemIndex }
+                ?.key,
+        atEnd = !listState.canScrollForward,
+        zeroLeading = if (noticesEmpty) 1 else 0,
     )
+}
+
+/** 卡片之前的非卡片项数（与 [ResultItems] 一致）：提示行 +（空态 + 推荐标题）。 */
+private fun leadingItems(state: SearchSnapshot): Int =
+    1 + if (state.phase == SearchPhase.EMPTY) 1 + (if (state.fallbackItems.isNotEmpty()) 1 else 0) else 0
 
 /**
  * 系统回收后恢复（A-R2-03）：结果重新加载到保存时最后一个可见项之后，再滚到锚点；锚点还没加载到就继续翻页（翻到第二页的位置也能回去），到底、翻页
@@ -908,18 +970,18 @@ private fun RestoreScroll(
     val anchor = model.pendingScrollFlow.collectAsState().value ?: return
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(anchor, lifecycle) {
-        val expectation = RestoreExpectation(listPosition(listState))
+        val expectation = RestoreExpectation(listPosition(listState, model.state.value))
 
         fun stillMine(): Boolean = model.alive && model.pendingScroll === anchor
 
         fun takeOverIfDrifted(): Boolean {
-            if (!expectation.drifted(listPosition(listState))) return false
+            if (!expectation.drifted(listPosition(listState, model.state.value))) return false
             model.restoreTakenOver(viewportAnchor(listState))
             return true
         }
         // 持续比对：读屏的滚动动作、键盘 / 焦点移动、惯性滚动都不经过拖动事件，只看实际位置与是否有别人的滚动
         launch {
-            snapshotFlow { listPosition(listState) }.collect {
+            snapshotFlow { listPosition(listState, model.state.value) }.collect {
                 if (stillMine()) takeOverIfDrifted()
             }
         }
@@ -970,7 +1032,7 @@ private fun RestoreScroll(
                                 // 滚动前复核页面实例与锚点（等布局期间出栈、被放弃的不滚）
                                 if (stillMine()) listState.scrollToItem(minOf(anchor.index, count - 1), if (reached) anchor.offset else 0)
                             },
-                            landed = { listPosition(listState) },
+                            landed = { listPosition(listState, model.state.value) },
                         )
                         if (model.pendingScroll === anchor) model.scrollRestored()
                         true

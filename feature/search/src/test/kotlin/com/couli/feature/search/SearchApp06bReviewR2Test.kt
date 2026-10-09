@@ -196,12 +196,12 @@ class SearchApp06bReviewR2Test {
 
     @Test
     fun r2_03_theDriftRuleCoversForeignScrollsLayoutRebasesAndTolerance() {
-        val start = ListPosition(index = 0, offset = 0, count = 2, scrolling = false)
+        val start = ListPosition(index = 0, offset = 0, count = 2, scrolling = false, zeroLeading = 1)
         val e = RestoreExpectation(start)
         assertFalse("没动", e.drifted(start))
-        // 首屏到达（项数变）：内容造成的位置变化，重取基准不算偏离
-        assertFalse(e.drifted(ListPosition(1, 0, 22, scrolling = false)))
-        assertFalse("基准已换", e.drifted(ListPosition(1, 0, 22, scrolling = false)))
+        // 首屏到达（项数变）：内容造成的位置变化，重取基准不算偏离（提示行无内容 = 零高度，FU-AND-0607 F2-03 起要带这个证明）
+        assertFalse(e.drifted(ListPosition(1, 0, 22, scrolling = false, zeroLeading = 1)))
+        assertFalse("基准已换", e.drifted(ListPosition(1, 0, 22, scrolling = false, zeroLeading = 1)))
         assertFalse("容差内", e.drifted(ListPosition(1, 1, 22, scrolling = false)))
         assertTrue("项数没变而位置偏离（读屏 / 键盘移动后停下）", e.drifted(ListPosition(1, 40, 22, scrolling = false)))
         // 有不属于任务的滚动在进行（惯性、动画滚动、读屏滚动动作进行中）：即使位置还没变也算

@@ -55,6 +55,23 @@ object PriceTagModel {
             mainSpoken = "$label ${CouliFormat.moneySpoken(finalPriceFen)}",
         )
     }
+
+    /**
+     * 只知道新券后价、券前价与券额还在补齐（open 改价后，APP-06b 共性第 34 条）：只显示金额，不带口径词（不反推券后 / 售价），
+     * 不给副行、不标无券。
+     */
+    fun neutral(
+        finalPriceFen: Long,
+        isPresale: Boolean,
+    ): PriceTagContent =
+        PriceTagContent(
+            mainLabel = "",
+            mainAmount = CouliFormat.money(finalPriceFen),
+            subLine = null,
+            noCoupon = false,
+            presaleLabel = if (isPresale) PriceTerms.PRESALE else null,
+            mainSpoken = CouliFormat.moneySpoken(finalPriceFen),
+        )
 }
 
 /** 返利标签的种类；[raw] 与向量里的 kind 字符串一致。 */

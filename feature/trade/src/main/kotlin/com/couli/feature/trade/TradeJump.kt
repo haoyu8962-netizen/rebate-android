@@ -75,8 +75,10 @@ class TradeJumpExecutor(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /**
-     * 执行方案。每一步执行前（含 sdk 初始化、浏览器提示这些等待之后）都复核：[allowed]（本次点击的续执行许可仍有效、页面在前台）与
-     * expire_at（[now] 已到或无法判定即停）；不满足即停止，这一步与之后的步骤不执行、不上报。
+     * 执行方案。每一步执行前（含 sdk 初始化、浏览器提示这些等待之后）都复核：[allowed]（「允许开始下一步」：本次点击的续执行许可仍有效、
+     * 页面在前台，购买外跳还要平台此刻仍可购买）与 expire_at（[now] 已到或无法判定即停）；不满足即停止，这一步与之后的步骤不执行、不上报。
+     * 已执行步骤的上报只看 [reportable]（「允许上报已执行步骤」：尝试仍是当前的、没被取消；进入后台、平台此刻关闭都照常上报，APP-06b
+     * 共性第 40 条），缺省与 [allowed] 相同。
      */
     @Suppress("LongParameterList", "CyclomaticComplexMethod", "LongMethod") // 方案、平台、安装状态、归属、浏览器提示与许可逐项给
     suspend fun execute(
@@ -86,6 +88,7 @@ class TradeJumpExecutor(
         identity: PurchaseIdentity?,
         allowed: () -> Boolean = { true },
         confirmBrowser: suspend () -> Boolean = { true },
+        reportable: () -> Boolean = allowed,
     ): JumpOutcome {
         var cancelled = false
         var sdkFailed = false
@@ -142,8 +145,8 @@ class TradeJumpExecutor(
                             JumpTypes.FAILED
                         }
                     }
-                // 上报前再复核许可（等待之后作废的不上报；03 §4.5）
-                if (identity != null && type in KNOWN_TYPES && allowed()) {
+                // 上报前再复核：尝试仍是当前的、没被取消（等待之后被取消的不上报；03 §4.5、共性第 40 条）
+                if (identity != null && type in KNOWN_TYPES && reportable()) {
                     report(identity, platform, type, result, elapsedMillis() - started, installed)
                 }
                 result

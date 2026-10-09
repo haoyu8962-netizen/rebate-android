@@ -12,6 +12,7 @@ package com.couli.core.update
  *   基本模式不发检查）为 unknown。同一进程里成功过之后，失败保持本进程的已知结论（失败不拦用户自己的操作）。
  *   「暂不更新」记录不随之失效（向量 dismissal_survives_cold_start_failure）。
  * - 10405（[on10405]）直接进 below_min，不算一次成功检查；之后的成功检查可以解除。
+ * - 服务端已判定强更（[onServerForced]）不按缓存最低版本比较，落盘保留到成功检查或本机升级（APP-07 共性第 24 条）。
  * - 本机版本升级后（rule-gaps G15，编排者裁定）：落盘的 below_min（成功检查或 10405 带来的）按新的 appVersion 与缓存的
  *   最低版本重比，已不低于就不再是已知强更（冷启动按上一条：checking → 失败为 unknown）；10405 没带最低版本时，
  *   appVersion 与记下 10405 时的版本不同即失效。
@@ -73,6 +74,7 @@ class UpdateGate(
                 forcedBy10405 = false,
                 forcedMinimum = null,
                 forcedAppVersion = null,
+                forcedByServer = false,
             ),
         )
         inFlight = false
@@ -108,6 +110,18 @@ class UpdateGate(
                 forcedAppVersion = appVersion,
             ),
         )
+    }
+
+    /**
+     * 服务端已判定强更（APP-07 共性第 21、24 条：parse 外层成功、结果行 error_code=10405；登录 / 刷新拿到受限会话；网络层整体
+     * 10405 没带最低版本）：强制进 below_min，不交给「按缓存最低版本比较」——缓存的最低版本可能不高于本机，会把这次结论放掉。
+     * 落盘，冷启动检查失败仍保留；只对收到时的 appVersion 成立（本机升级后失效，G15）；之后一次成功检查（[apply]）解除。
+     * 与鸿蒙 UpdateGate.onServerForced 同义。
+     */
+    @Suppress("UnusedParameter") // 三端同一 API；不算成功检查，不改复查计时
+    fun onServerForced(now: Long = clock()) {
+        val persisted = store.load()
+        store.save(persisted.copy(forcedBy10405 = true, forcedByServer = true, forcedAppVersion = appVersion))
     }
 
     /** 当前结论。 */
@@ -192,6 +206,10 @@ class UpdateGate(
         val result = persisted.result
         if (persisted.forcedBy10405) {
             val minimum = highest(persisted.forcedMinimum, result?.minSupported)
+            if (persisted.forcedByServer && persisted.forcedAppVersion == appVersion) {
+                // 服务端已判定强更：不按缓存最低版本比较。目标版本只取高于本机的最低版本，否则为 null（选店要求商店版本高于本机）
+                return belowMin(minimum?.takeIf { compareOrNull(appVersion, it)?.let { c -> c < 0 } == true })
+            }
             if (stillBelow10405Minimum(persisted, minimum)) return belowMin(minimum)
         }
         if (result == null) return null

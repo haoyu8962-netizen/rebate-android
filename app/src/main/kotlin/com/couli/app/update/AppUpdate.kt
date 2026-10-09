@@ -50,7 +50,7 @@ interface StoreAccess {
  * - 冷启动必查、回前台按间隔复查；检查只在 [canCheck]（环境 settled 且已同意隐私政策）时发：同意前只允许请求协议文本与
  *   /v1/config（BR-ID-11），基本模式不发 check、保留已知强更（rule-gaps G06）。冷启动时还不能查的，等能查了（同意后）再补一次冷启动检查。
  * - 检查失败不拦用户自己的操作（Gate 保持上次已知结论或 unknown）。
- * - 10405 入口 [on10405] 给网络层（APP-03）调用：直接进 below_min。
+ * - 10405 入口 [on10405] 给网络层（APP-03）调用：直接进 below_min；服务端已判定强更走 [onServerForced]（闸门落盘）。
  * - 【去更新】按 Gate 选店；都不行 → 强更页显示 unavailable 与【重试】；【重试】重新检查再选。
  *
  * 非线程安全：在主线程使用（[scope] 用 Main）。
@@ -134,10 +134,43 @@ class AppUpdate
             runCheck(thenPickStore)
         }
 
-        /** 接口层收到 10405（APP-03 网络层调用，只送确需强更的，rule-gaps G07）。 */
+        /**
+         * 接口层收到 10405（APP-03 网络层调用，只送确需强更的，rule-gaps G07：受限令牌且本机已受支持的先刷新，不送进来）。
+         * 没带最低版本：服务端已判定强更，走 [onServerForced]（不按缓存最低版本比较，F-AND-23）；带了最低版本：按它比较
+         * （[UpdateGate.on10405]，最低版本高于本机即强更并落盘；本机不低于它时按 Gate 的防御不改结论）。
+         */
         fun on10405(minSupported: String?) {
+            if (minSupported == null) {
+                onServerForced()
+                return
+            }
             gate.on10405(minSupported, clock())
             publish()
+            checkIfForcedWithoutCache()
+        }
+
+        /**
+         * 服务端已判定强更（APP-07 共性第 20、21、24 条与 F-AND-23）：parse 行内 10405、登录 / 刷新拿到受限会话、网络层整体
+         * 10405 没带最低版本。进闸门本身（[UpdateGate.onServerForced]，落盘），界面、Router、【去更新】选店都按 Gate 同一结论；
+         * 成功复查或本机升级后由 Gate 解除。不在这里另做界面覆盖。
+         * 无缓存补查见 [checkIfForcedWithoutCache]。
+         */
+        fun onServerForced() {
+            gate.onServerForced(clock())
+            publish()
+            checkIfForcedWithoutCache()
+        }
+
+        /**
+         * 所有强更闸门（[on10405] 带或不带最低版本、[onServerForced]）之后共用（03 §4.2，F2-02 / F3-01；APP-07 共性第 27 条：
+         * 任何路径进入强更）：Gate 确已是 below_min、没有最近成功检查结果（如首次检查超时，没有商店列表）且允许检查时立即补查一次；
+         * 已有在途检查就复用它（[runCheck] 不重复发）。补查失败保持已知强更，成功按新结果处理。有成功缓存时不复查
+         * （缓存里的商店列表可直接选店）；没进强更（如带回的最低版本不高于本机）也不查。
+         */
+        private fun checkIfForcedWithoutCache() {
+            if (gate.state(clock()).status != UpdateStatus.BELOW_MIN) return
+            if (store.load().result != null || !canCheck()) return
+            runCheck()
         }
 
         /** 可关闭提示【暂不更新】：按提示时的目标版本记录。 */

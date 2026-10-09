@@ -49,9 +49,14 @@ sealed interface PurchaseDialog {
         val coupon: Boolean,
     ) : PurchaseDialog
 
-    /** 返利变为 0（ProductRebateGone）。 */
+    /**
+     * 返利变为 0（ProductRebateGone）。[oldFen] / [newFen] 是本次 open 的原价与新价（价格变动未达阈值时可能不同，共性第 45 条：只有相同才写
+     * 「价格没有变化」）。
+     */
     data class ConfirmRebateGone(
         val priceFen: Long?,
+        val oldFen: Long? = null,
+        val newFen: Long? = priceFen,
     ) : PurchaseDialog
 
     /** 比价无返利（ProductPriceCompareNoRebate，BR-PRICE-08）。 */
@@ -135,6 +140,11 @@ data class PurchaseState(
     val notInstalled: Boolean = false,
     /** 即将交系统浏览器：「将通过浏览器打开X」+【取消】（ProductJumpBrowser）。 */
     val browserNotice: Boolean = false,
+    /**
+     * 当前尝试那张卡的最新展示版本（open 响应写入、权威重取补齐之后）：确认框「现在」一行的价格口径词按它选（券额未补齐用不带口径词的
+     * now_plain，共性第 30、37、45 条）。
+     */
+    val latest: JsonObject? = null,
 )
 
 /** 购买流程要的页面环境（App 给）。 */
@@ -265,8 +275,11 @@ class OpenPurchaseController(
     /** 发起页在前台（ON_START 之后、ON_STOP 之前）。 */
     private var foreground = true
 
-    /** 自动执行的动作（登录、补同意后的恢复）遇到页面不在前台：回到前台再执行。 */
-    private var deferred: (() -> Unit)? = null
+    /**
+     * 自动执行的动作（授权、登录、补同意后的恢复）遇到页面不在前台：回到前台再执行。按类型分槽（共性第 48 条）：同类后写覆盖先写，
+     * 不同类互不覆盖；回前台按授权、登录、补同意的顺序逐槽执行，各自执行前仍核对待办类型、归属、尝试、有效期与 link_id。
+     */
+    private val deferred = linkedMapOf<DeferredResume, () -> Unit>()
     private val owners = mutableListOf<CallOwnership>()
     private var timer: Job? = null
     private var toastSeq = 0L
@@ -315,9 +328,35 @@ class OpenPurchaseController(
     /** 基本模式下点购买、等补同意的那张卡与 spm。 */
     private var consentCard: Pair<JsonObject, String?>? = null
 
+    /**
+     * 本页的待办归属标记（共性第 44 条）：本页登记的购买待办都带「页标记#点击编号」（[OWNER]），清除、续时、消费之前先核对归属，
+     * 旧页面迟到的授权查询结果不会清掉新页面登记的待办。
+     */
+    private val pageTag: String = "page-${PAGE_SEQ.incrementAndGet()}"
+
+    /**
+     * 授权外跳许可（共性第 25、31 条）：用户在 AuthSheet 点【去授权】时发一张；进入后台、被覆盖、离开、新点击都作废，回到前台也不恢复。
+     * 授权跳转每一步、30104 恢复后再次拉起授权之前都复核它与前台状态。授权回流的查询与它分开（只看授权上下文与世代）。
+     */
+    private var authPermit: AuthPermit? = null
+
+    /** 授权跳转已发起、拉起结果还没回来（拉起的回调可能晚于回前台通知，共性第 38 条）。 */
+    private var authJumpInFlight = false
+
+    /** 授权跳转发起之后进过后台（已离开过 App）：拉起结果晚到且此刻在前台时立即查询授权状态。 */
+    private var authLeftApp = false
+
     private class Permit(
         val attempt: PurchaseAttempt,
     ) {
+        /** 允许开始下一步（进入后台、被覆盖、取消、新点击都作废）。 */
+        var valid = true
+
+        /** 用户取消、新点击、离开：已执行的步骤也不再上报（共性第 40 条：进入后台不算取消，已执行步骤照常上报）。 */
+        var cancelled = false
+    }
+
+    private class AuthPermit {
         var valid = true
     }
 
@@ -354,7 +393,7 @@ class OpenPurchaseController(
         spm: String?,
     ) = buy(card, spm, userAuthRetry = false)
 
-    @Suppress("ReturnCount") // 忙、下架、平台状态、限流、基本模式五个出口
+    @Suppress("ReturnCount") // 忙、可购状态、限流、基本模式四个出口
     private fun buy(
         card: JsonObject,
         spm: String?,
@@ -362,13 +401,9 @@ class OpenPurchaseController(
     ) {
         if (left || busy()) return
         val platform = card.text("platform").orEmpty()
-        // 下架绑定这张卡（30141 / availability=off_shelf）：同页其它商品照常（A-R1-05）
-        if (card.text("availability") == BuyBlock.OFF_SHELF) return
-        // 发出购买意图前再核对一次平台购买状态（APP-06a 共性第 27 条；含点击结果确认的 50301）
-        when (env.platformStatus(platform)) {
-            BuyBlock.MAINTENANCE -> return toast(MAINTENANCE_KEY)
-            BuyBlock.NOT_LAUNCHED -> return
-        }
+        // 下架绑定这张卡（30141 / availability=off_shelf，A-R1-05）；发出购买意图前再核对一次平台购买状态（APP-06a 共性第 27 条；含点击
+        // 结果确认的 50301）
+        if (!purchasable(card)) return
         if (gate.active) return
         this.card = card
         this.spm = spm
@@ -384,7 +419,7 @@ class OpenPurchaseController(
     ) {
         val linkId = card.text("link_id") ?: return toast(REF_EXPIRED_KEY)
         consentCard = card to spm
-        pending.register(pendingParams(card, linkId, key = null, kind = PENDING_CONSENT, noRebate = false, reason = null))
+        pending.register(pendingParams(card, linkId, key = null, kind = PENDING_CONSENT, noRebate = false, reason = null, owner = CONSENT))
         env.requestConsent()
     }
 
@@ -392,16 +427,24 @@ class OpenPurchaseController(
     fun cancelLoading() {
         if (mutableState.value.phase != PurchasePhase.LOADING) return
         interrupt = LateResponsePolicy.CANCEL
-        revokePermit()
+        revokePermit(cancel = true)
         keys.cancel()
         timer?.cancel()
         mutableState.value = mutableState.value.copy(phase = PurchasePhase.IDLE)
     }
 
-    /** 超时后的【重试】：完整重放原尝试（原路径、原请求体、原键，TRADE-22）；用户这一下重新发许可。 */
+    /**
+     * 超时后的【重试】：完整重放原尝试（原路径、原请求体、原键，TRADE-22）；用户这一下重新发许可。重发前复核最新平台购买状态与这张卡的
+     * 可购状态（共性第 27 条）：不可买就放弃本次（不再发同键请求），超时条收起。
+     */
+    @Suppress("ReturnCount") // 状态不对、没有尝试、不可购三个出口
     fun retryAfterTimeout() {
-        if (left || mutableState.value.phase != PurchasePhase.TIMEOUT) return
+        if (left || mutableState.value.phase != PurchasePhase.TIMEOUT || gate.active) return
         val attempt = current ?: return
+        if (!purchasable(latestCard(attempt))) {
+            mutableState.value = mutableState.value.copy(phase = PurchasePhase.IDLE)
+            return
+        }
         keys.retry()
         grantPermit(attempt)
         send(attempt)
@@ -416,6 +459,8 @@ class OpenPurchaseController(
     ) {
         // 没有 link_id 的卡买不了（契约 openLink 只按 link_id）：保守不发、提示失效
         val linkId = card.text("link_id") ?: return toast(REF_EXPIRED_KEY)
+        // 所有发新 open 的入口（点击、授权后自动执行、无返利购买）都经同一个可购检查（共性第 27 条）
+        if (!purchasable(card)) return
         click += 1
         val installed = ports.installed(card.text("platform").orEmpty())
         val attempt =
@@ -434,7 +479,7 @@ class OpenPurchaseController(
         current = attempt
         ready = null
         grantPermit(attempt)
-        mutableState.value = mutableState.value.copy(platform = attempt.platform, card = card, notInstalled = false)
+        mutableState.value = mutableState.value.copy(platform = attempt.platform, card = card, notInstalled = false, latest = card)
         send(attempt)
     }
 
@@ -533,7 +578,7 @@ class OpenPurchaseController(
         val data = result.data as? JsonObject ?: JsonObject(emptyMap())
         val envelope = JsonObject(mapOf("code" to JsonPrimitive(0), "data" to data))
         // 判断基准是尝试的原卡快照：迟到响应更新过的展示卡片不能消除改价 / 返利归零的确认（A-R1-01，BR-PRICE-13）
-        val outcome = OpenResponseAction.map(envelope, openContext(attempt.card))
+        val outcome = OpenResponseAction.map(envelope, openContext(attempt.card, noRebateConfirmed = attempt.noRebate))
         patchCard(attempt, data)
         val attemptId = data.text("attempt_id")
         val plan = data["jump"] as? JsonObject
@@ -562,7 +607,13 @@ class OpenPurchaseController(
             }
 
             OpenActions.CONFIRM_REBATE_GONE -> {
-                showDialog(PurchaseDialog.ConfirmRebateGone(outcome.newFinalFen ?: outcome.oldFinalFen))
+                showDialog(
+                    PurchaseDialog.ConfirmRebateGone(
+                        priceFen = outcome.newFinalFen ?: outcome.oldFinalFen,
+                        oldFen = outcome.oldFinalFen,
+                        newFen = outcome.newFinalFen,
+                    ),
+                )
             }
 
             OpenActions.COMPARE_NO_REBATE -> {
@@ -587,7 +638,15 @@ class OpenPurchaseController(
             OpenErrorActions.LOGIN -> {
                 // 1xxxx：登录后沿用原键重放（BR-ID-10 细则），登记 pending_action 后进登录页
                 pending.register(
-                    pendingParams(attempt.card, attempt.linkId, attempt.key, PENDING_LOGIN, attempt.noRebate, attempt.noRebateReason),
+                    pendingParams(
+                        attempt.card,
+                        attempt.linkId,
+                        attempt.key,
+                        PENDING_LOGIN,
+                        attempt.noRebate,
+                        attempt.noRebateReason,
+                        owner = ownerTag(attempt),
+                    ),
                 )
                 env.open(LOGIN_ROUTE, JsonObject(emptyMap()))
             }
@@ -598,12 +657,20 @@ class OpenPurchaseController(
                 // 自动弹出每平台每会话最多 2 次（BR-ID-18）；用户在二选一里主动【重试】进来的不算自动弹出、不受限（A-R1-10）
                 if (attempt.userAuthRetry || counter.tryAutoPop(platform)) {
                     pending.register(
-                        pendingParams(attempt.card, attempt.linkId, key = null, kind = PENDING_AUTH, noRebate = false, reason = null),
+                        pendingParams(
+                            attempt.card,
+                            attempt.linkId,
+                            key = null,
+                            kind = PENDING_AUTH,
+                            noRebate = false,
+                            reason = null,
+                            owner = ownerTag(attempt),
+                        ),
                     )
                     showDialog(PurchaseDialog.AuthSheet(platform))
                 } else {
                     // 同一会话第 3 次起不再自动拉起授权，直接给二选一（BR-ID-18）
-                    pending.clear()
+                    clearMine()
                     showDialog(PurchaseDialog.AuthDeclined(platform, failed = false))
                 }
             }
@@ -678,8 +745,14 @@ class OpenPurchaseController(
         }
     }
 
-    /** open 上下文：[base] 卡片的价格与返利上限（OpenResponseAction 判返利归零用）。 */
-    private fun openContext(base: JsonObject): JsonObject {
+    /**
+     * open 上下文：[base] 卡片的价格与返利上限（OpenResponseAction 判返利归零用）；[noRebateConfirmed] = 这次是用户已确认的无返利购买
+     * （不再弹比价无返利确认，共性第 43 条）。
+     */
+    private fun openContext(
+        base: JsonObject,
+        noRebateConfirmed: Boolean,
+    ): JsonObject {
         val unknown = base.text("rebate_basis") == AMOUNT_UNKNOWN
         val fields =
             linkedMapOf<String, JsonElement>(
@@ -687,23 +760,59 @@ class OpenPurchaseController(
                 "currentRebateMaxFen" to (base.fen("rebate_max_fen")?.let(::JsonPrimitive) ?: JsonNull),
             )
         if (unknown) fields["amountUnknown"] = JsonPrimitive(true)
+        if (noRebateConfirmed) fields["noRebateConfirmed"] = JsonPrimitive(true)
         return JsonObject(fields)
     }
 
     /** 尝试那张卡的最新展示版本。 */
     private fun latestCard(attempt: PurchaseAttempt): JsonObject = if (CardPatch.sameCard(card, attempt.card)) card else attempt.card
 
-    /** 用响应更新卡片（BR-PRICE-12：无论确认还是取消）；价格 / 返利字段给不全时重取权威卡片（A-R1-07 / 08）。 */
+    /**
+     * 用响应更新卡片（BR-PRICE-12：无论确认还是取消）；价格 / 返利字段给不全时重取权威卡片（A-R1-07 / 08）。补齐请求带补齐世代
+     * （共性第 26 条）：之后又写入了不同的购买结果，旧补齐不填新结果；补齐世代只在真正发起新补齐时前进（共性第 33 条）——同键重放得到
+     * 相同结果（写入后卡片不变）不作废进行中的补齐；不同结果一律作废旧补齐，仍有未知字段就为它重新发起补齐。
+     */
     private fun patchCard(
         attempt: PurchaseAttempt,
         data: JsonObject,
     ) {
         val before = latestCard(attempt)
         cardBeforeResponse = attempt.card
-        val after = CardPatch.bump(CardPatch.apply(before, data))
-        updateCard(attempt) { CardPatch.apply(it, data) }
+        val applied = CardPatch.apply(before, data)
+        val unchanged = CardPatch.sameResult(before, applied)
+        val refetch = !unchanged && (CardPatch.needsRefetch(before, data) || CardPatch.awaitingFill(applied))
+        if (!refetch) {
+            val generation = if (unchanged) null else nextFillGeneration()
+            updateCard(attempt) { c ->
+                CardPatch.apply(c, data).let {
+                    if (generation !=
+                        null
+                    ) {
+                        it.with(CardPatch.FILL_GENERATION, JsonPrimitive(generation))
+                    } else {
+                        it
+                    }
+                }
+            }
+            return
+        }
+        val generation = nextFillGeneration()
+        val write: (JsonObject) -> JsonObject = { CardPatch.apply(it, data).with(CardPatch.FILL_GENERATION, JsonPrimitive(generation)) }
+        val after = CardPatch.bump(write(before))
+        updateCard(attempt, write)
         // 只补齐价格 / 口径字段，不整卡替换：本次 open 确认的 link_id、返利状态、比价原因与按钮保留（A-R2-02，BR-PRICE-07 / 13）
-        if (CardPatch.needsRefetch(before, data)) env.refetchCard(after, CardPatch::fill)
+        val fill = CardPatch.fillFor(generation)
+        env.refetchCard(after) { current, fresh -> fill(current, fresh).also { noteLatest(attempt, it) } }
+    }
+
+    /** 补齐落到页面上的结果：仍是当前尝试的那张卡就同步给执行器与界面（确认框的价格口径词随之更新）。 */
+    private fun noteLatest(
+        attempt: PurchaseAttempt,
+        merged: JsonObject,
+    ) {
+        if (left || current !== attempt || !CardPatch.sameCard(merged, attempt.card)) return
+        if (CardPatch.sameCard(card, attempt.card)) card = merged
+        mutableState.value = mutableState.value.copy(latest = merged)
     }
 
     /** 写入购买结果（open 响应、30141 下架）：卡片版本加 1，之前发出的重新加载结果到达时认出卡片已更新、不覆盖（A-R2-02）。 */
@@ -712,7 +821,10 @@ class OpenPurchaseController(
         transform: (JsonObject) -> JsonObject,
     ) {
         val versioned: (JsonObject) -> JsonObject = { CardPatch.bump(transform(it)) }
-        if (CardPatch.sameCard(card, attempt.card)) card = versioned(card)
+        if (CardPatch.sameCard(card, attempt.card)) {
+            card = versioned(card)
+            if (current === attempt) mutableState.value = mutableState.value.copy(latest = card)
+        }
         env.updateCard(attempt.card, versioned)
     }
 
@@ -725,20 +837,24 @@ class OpenPurchaseController(
         when (dialog) {
             is PurchaseDialog.ConfirmPrice, is PurchaseDialog.ConfirmRebateGone, PurchaseDialog.CompareNoRebate -> {
                 hideDialog()
-                jump?.takeIf { it.attempt === current }?.let {
+                // 继续之前复核最新平台购买状态与这张卡的可购状态（共性第 27、32 条）
+                jump?.takeIf { it.attempt === current && purchasable(latestCard(it.attempt)) }?.let {
                     grantPermit(it.attempt)
                     proceed(it)
-                }
+                } ?: run { ready = null }
             }
 
             is PurchaseDialog.JumpTip -> {
                 hideDialog()
-                val owner = owner()
-                scope.launch { tips.markRead(dialog.platform, owner) }
-                jump?.takeIf { it.attempt === current }?.let {
+                // 已读请求的归属绑定这次购买尝试与请求世代（F-AND-19）：新点击取消它时归属已失效，不会被当成断连重试
+                jump?.attempt?.let { attempt ->
+                    val owner = attemptOwner(attempt)
+                    scope.launch { tips.markRead(dialog.platform, owner) }
+                }
+                jump?.takeIf { it.attempt === current && purchasable(latestCard(it.attempt)) }?.let {
                     grantPermit(it.attempt)
                     execute(it)
-                }
+                } ?: run { ready = null }
             }
 
             else -> {
@@ -763,14 +879,14 @@ class OpenPurchaseController(
             is PurchaseDialog.AuthSheet -> {
                 // 用户关闭授权：删除待办，给二选一（BR-ID-18）
                 if (dialog.busy) return
-                pending.clear()
+                clearMine()
                 showDialog(PurchaseDialog.AuthDeclined(dialog.platform, failed = false))
             }
 
             is PurchaseDialog.AuthCheckFailed -> {
                 // 放弃本次：删除待办（之后授权了也不自动执行）
                 hideDialog()
-                pending.clear()
+                clearMine()
                 authContext = null
             }
 
@@ -779,34 +895,47 @@ class OpenPurchaseController(
             }
         }
         ready = null
-        revokePermit()
+        revokePermit(cancel = true)
     }
 
     private fun proceed(jump: ReadyJump) {
         val granted = permit?.takeIf { it.attempt === jump.attempt } ?: return
         if (!env.loggedIn()) return execute(jump)
-        val owner = owner()
+        // 须知请求的归属绑定这次购买尝试与请求世代（F-AND-19）
+        val owner = attemptOwner(jump.attempt)
         scope.launch {
             val show = tips.shouldShow(jump.attempt.platform, owner)
             // 等待之后复核许可：期间进入后台、被覆盖、离开、再点了别的都不再继续（A-R1-03）
             if (!allowed(granted) || ready !== jump) return@launch
+            // 等下单须知期间平台关闭 / 维护、商品下架：停止续执行（共性第 32 条）；按钮随配置与卡片状态置灰
+            if (!purchasable(latestCard(jump.attempt))) {
+                ready = null
+                return@launch
+            }
             if (show) showDialog(PurchaseDialog.JumpTip(jump.attempt.platform)) else execute(jump)
         }
     }
 
+    @Suppress("ReturnCount") // 没有许可、许可失效、不可购三个出口
     private fun execute(jump: ReadyJump) {
         val granted = permit?.takeIf { it.attempt === jump.attempt } ?: return
         if (!allowed(granted)) return
         ready = null
+        // 最终外跳前统一复核最新平台购买状态与这张卡的可购状态（共性第 32 条）：须知、确认框等异步等待之后的路径都经这里
+        if (!purchasable(latestCard(jump.attempt))) return
         scope.launch {
+            // 执行器的两种许可分开（共性第 40 条）：「允许开始下一步」每个新步骤前（含 scheme 等系统返回、浏览器提示停留之后）复核续执行
+            // 许可 + 最新平台购买状态与可购状态；「允许上报已执行步骤」只看尝试与取消，已执行的步骤照常上报
             val outcome =
                 executor.execute(
                     jump.plan,
                     jump.attempt.platform,
                     jump.attempt.installed,
                     jump.identity,
-                    allowed = { allowed(granted) },
-                ) { confirmBrowser(granted) }
+                    allowed = { continuable(granted) },
+                    confirmBrowser = { confirmBrowser(granted) },
+                    reportable = { reportable(granted) },
+                )
             if (left) return@launch
             afterJump(jump, outcome)
         }
@@ -870,17 +999,25 @@ class OpenPurchaseController(
 
     // ---------------------------------------------------------------- 授权
 
-    /** AuthSheet【去授权】。 */
+    /**
+     * AuthSheet【去授权】。用户这一下发授权外跳许可（共性第 25、31 条）：不在前台不拉起；进入后台、被覆盖、离开、新点击都作废，回前台
+     * 也不恢复。授权跳转每一步、30104 恢复后再次拉起授权之前都复核它。
+     */
     @Suppress("ReturnCount", "CyclomaticComplexMethod", "ComplexCondition", "LongMethod") // 拼多多跳转、淘宝两种方式与本端能力逐项判定
     fun authorize() {
         val context = authContext ?: return
         val dialog = mutableState.value.dialog as? PurchaseDialog.AuthSheet ?: return
-        if (dialog.busy) return
+        if (dialog.busy || !foreground) return
         mutableState.value = mutableState.value.copy(dialog = dialog.copy(busy = true))
         authGen += 1
         val gen = authGen
+        revokeAuthPermit()
+        val permit = AuthPermit().also { authPermit = it }
+        resetAuthReturn()
         val authJump = context.data["auth_jump"] as? JsonObject
         if (authJump != null) {
+            // 发起前就登记「外跳在途」：拉起的回调可能晚于回前台通知（共性第 38 条）
+            authJumpInFlight = true
             scope.launch {
                 val outcome =
                     executor.execute(
@@ -888,21 +1025,24 @@ class OpenPurchaseController(
                         context.platform,
                         ports.installed(context.platform),
                         identity = null,
-                        allowed = { authLive(context, gen) },
+                        allowed = { authJumpAllowed(permit, context, gen) },
                     )
+                // 授权回流（回前台后查询）的归属与外跳许可分开：这里只看授权上下文仍是本次
                 if (!authLive(context, gen)) return@launch
+                authJumpInFlight = false
                 val launched = outcome.run.final == JumpTypes.FINAL_OPENED || outcome.run.final == JumpTypes.FINAL_BROWSER
-                if (launched) {
-                    // 回到前台后由服务端确认已授权（[onForeground]）
-                    awaitingAuthReturn = true
+                if (launched || outcome.stopped) {
+                    // 已拉起授权页，或期间进入后台 / 被覆盖（含系统弹出应用市场）而停在半路、不再执行下一步：回到前台后由服务端确认是否已授权
+                    // （[onForeground] → listUnionBindings；查不到授权按「没完成就回来」给二选一，BR-ID-22 细则）
                     hideDialog()
+                    awaitReturn(context, gen, returned = !launched || authLeftApp)
                 } else {
                     authFailed(context.platform)
                 }
             }
             return
         }
-        val flow = taobaoFlow(context, gen)
+        val flow = taobaoFlow(context, gen, permit)
         if (flow.pick(context.platform, context.data) == null) {
             // 本端执行不了下发的任何授权方式（web_code 回跳未登记、百川不可用，TODO(N-28)）：按授权失败（BR-ID-17、BR-ID-18）
             authFailed(context.platform)
@@ -919,7 +1059,7 @@ class OpenPurchaseController(
                 }
 
                 TaobaoAuthOutcome.Cancelled -> {
-                    pending.clear()
+                    clearMine()
                     showDialog(PurchaseDialog.AuthDeclined(context.platform, failed = false))
                 }
 
@@ -931,16 +1071,64 @@ class OpenPurchaseController(
                     bindFailed(context, outcome.result)
                 }
 
+                TaobaoAuthOutcome.Interrupted -> {
+                    // 30104 恢复后要再次拉起时，用户点击发出的许可已撤销（进过后台 / 被覆盖，共性第 31 条）：不再自动拉起；回到前台后向服务端
+                    // 查询授权状态，已授权自动 open 一次，没授权删除待办给二选一（共性第 39 条）
+                    hideDialog()
+                    awaitReturn(context, gen, returned = true)
+                }
+
                 TaobaoAuthOutcome.Abandoned -> {
-                    Unit
+                    // 要拉起授权时已不在前台（还没拉起过）：不外跳，AuthSheet 回到可点状态，等用户在前台再点【去授权】
+                    (mutableState.value.dialog as? PurchaseDialog.AuthSheet)?.takeIf { it.busy }?.let {
+                        mutableState.value = mutableState.value.copy(dialog = it.copy(busy = false))
+                    }
                 }
             }
         }
     }
 
+    /**
+     * 授权外跳之后等回流（共性第 38 条）：[returned] = 已经离开过 App 又回到前台（或停在半路）——此刻在前台就立即查询；否则等
+     * [onForeground]。
+     */
+    private fun awaitReturn(
+        context: AuthContext,
+        gen: Long,
+        returned: Boolean,
+    ) {
+        authJumpInFlight = false
+        if (returned && foreground) {
+            awaitingAuthReturn = false
+            authLeftApp = false
+            if (authLive(context, gen)) queryBindings(context, afterBind = false)
+        } else {
+            awaitingAuthReturn = true
+        }
+    }
+
+    private fun resetAuthReturn() {
+        awaitingAuthReturn = false
+        authJumpInFlight = false
+        authLeftApp = false
+    }
+
+    /** 授权外跳此刻可以继续：许可仍有效、授权上下文与世代仍是本次、页面在前台（共性第 25 条）。 */
+    private fun authJumpAllowed(
+        permit: AuthPermit,
+        context: AuthContext,
+        gen: Long,
+    ): Boolean = permit.valid && authPermit === permit && authLive(context, gen) && foreground
+
+    private fun revokeAuthPermit() {
+        authPermit?.valid = false
+        authPermit = null
+    }
+
     private fun taobaoFlow(
         context: AuthContext,
         gen: Long,
+        permit: AuthPermit,
     ): TaobaoAuthFlow =
         TaobaoAuthFlow(
             api,
@@ -950,6 +1138,8 @@ class OpenPurchaseController(
             owner = { authOwner(context, gen) },
             alive = { authLive(context, gen) },
             installed = ports::installed,
+            // 每次拉起授权（含 30104 恢复后的再次授权）之前：用户点【去授权】发出的许可仍有效、页面在前台（共性第 25、31 条）
+            canJump = { authJumpAllowed(permit, context, gen) },
         )
 
     /** 授权归属仍有效（A-R3-01）：页面没离开、世代没变、授权上下文仍是它、购买尝试仍是当前的。 */
@@ -972,9 +1162,13 @@ class OpenPurchaseController(
         authGen += 1
         val old = authContext
         authContext = null
-        awaitingAuthReturn = false
+        revokeAuthPermit()
+        resetAuthReturn()
         if (old != null) {
-            pending.peek()?.takeIf { it.text("kind") == PENDING_AUTH && it.text("link_id") == old.linkId }?.let { pending.clear() }
+            pending
+                .peek()
+                ?.takeIf { it.text("kind") == PENDING_AUTH && it.text(OWNER) == ownerTag(old.attempt) }
+                ?.let { pending.clear() }
         }
     }
 
@@ -986,13 +1180,13 @@ class OpenPurchaseController(
         val failure = result as? ApiResult.Failure
         when {
             failure != null && failure.code in setOf(30151, 30153) -> {
-                pending.clear()
+                clearMine()
                 val outcome = OpenErrorAction.map(failure.code, failure.data)
                 showDialog(PurchaseDialog.Notice(outcome.textKey, null, noRebate = true, contact = true, retry = false))
             }
 
             failure != null && (failure.code == 30101 || failure.code == 30102) && failure.data.text("reason") == AUTH_UNAVAILABLE -> {
-                pending.clear()
+                clearMine()
                 showDialog(PurchaseDialog.AuthUnavailable(OpenErrorAction.map(failure.code, failure.data).textKey))
             }
 
@@ -1071,7 +1265,8 @@ class OpenPurchaseController(
                 }
 
                 else -> {
-                    pending.clear()
+                    // 查询成功但没有授权（含授权中断、30104 恢复被撤销后回前台查得未授权，共性第 39 条）：删除本次待办，给二选一
+                    clearMine()
                     showDialog(PurchaseDialog.AuthDeclined(context.platform, failed = false))
                 }
             }
@@ -1087,10 +1282,11 @@ class OpenPurchaseController(
     fun onForeground() {
         if (left) return
         foreground = true
-        deferred?.let {
-            deferred = null
-            it()
+        // 按类型逐槽执行（共性第 48 条）：授权、登录、补同意的恢复各自核对，不互相覆盖
+        for (kind in DeferredResume.entries) {
+            deferred.remove(kind)?.invoke()
         }
+        // 授权跳转的拉起结果还没回来：等它回来时（已离开过 App、此刻在前台）立即查询（共性第 38 条）
         if (!awaitingAuthReturn) return
         awaitingAuthReturn = false
         val context = authContext ?: return
@@ -1103,6 +1299,7 @@ class OpenPurchaseController(
      * 清待办、关弹窗之前核对仍属当前尝试与授权世代 [gen]，并只消费一次（授权上下文置空、世代加 1）；不在前台时延迟恢复，执行前再核对
      * 尝试与世代（期间有新点击就不执行，A-R3-01）。
      */
+    @Suppress("ReturnCount") // 归属失效、待办不是本次、link 已换三个出口
     private fun authorized(
         context: AuthContext,
         gen: Long,
@@ -1111,18 +1308,31 @@ class OpenPurchaseController(
         authContext = null
         authGen += 1
         val resumeGen = authGen
+        // 先核归属再续时（共性第 44 条）：别的页面（或本页别的尝试）登记的待办不动
+        if (!pendingMine(context)) return hideDialog()
         pending.stepDone()
-        val record = pending.peek()
-        pending.clear()
         hideDialog()
         val target = latestCard(context.attempt)
-        val mine = record?.text("kind") == PENDING_AUTH && record.text("link_id") == context.linkId
-        if (!mine || target.text("link_id") != context.linkId) return
-        whenForeground {
+        if (target.text("link_id") != context.linkId) {
+            pending.clear()
+            return
+        }
+        // 不在前台时延迟恢复，不先删待办（共性第 46 条）：执行前再核待办有效期（BR-ID-10，peek 过期即为 null）与归属，过期或被新待办取代
+        // 就放弃；仍是本次的才删除并以新键自动执行一次
+        whenForeground(DeferredResume.AUTH) {
+            if (!pendingMine(context)) return@whenForeground
+            pending.clear()
             if (resumeStillMine(context, resumeGen)) {
                 startClick(target, keys.resendAfterAuth(), noRebate = false, noRebateReason = null, userAuthRetry = false)
             }
         }
+    }
+
+    /** 此刻的购买待办仍是 [context] 这次尝试登记的授权待办（未过期、本页、这次点击）。 */
+    private fun pendingMine(context: AuthContext): Boolean {
+        val record = pending.peek() ?: return false
+        return record.text("kind") == PENDING_AUTH && record.text("link_id") == context.linkId &&
+            record.text(OWNER) == ownerTag(context.attempt)
     }
 
     /** 授权完成后的延迟恢复仍属当前尝试：页面没离开、世代没变（期间没有新点击）、尝试仍是那次、没有在途请求或弹窗（A-R3-01）。 */
@@ -1132,7 +1342,7 @@ class OpenPurchaseController(
     ): Boolean = !left && authGen == gen && current === context.attempt && !busy()
 
     private fun authFailed(platform: String) {
-        pending.clear()
+        clearMine()
         showDialog(PurchaseDialog.AuthDeclined(platform, failed = true))
     }
 
@@ -1193,13 +1403,15 @@ class OpenPurchaseController(
     @Suppress("ReturnCount") // 已离开、不在前台、没有待办、不是本页的出口
     fun resumeAfterLogin() {
         if (left) return
-        if (!foreground) return defer(::resumeAfterLogin)
+        if (!foreground) return defer(DeferredResume.LOGIN, ::resumeAfterLogin)
         if (busy()) return
         val record = pending.peek() ?: return
         val attempt = current ?: return
         if (record.text("kind") != PENDING_LOGIN || record.text("link_id") != attempt.linkId) return
-        if (record.text("idempotency_key") != attempt.key) return
+        if (record.text("idempotency_key") != attempt.key || record.text(OWNER) != ownerTag(attempt)) return
         pending.clear()
+        // 重放前复核最新平台购买状态与这张卡的可购状态（共性第 27 条）：不可买就不发
+        if (!purchasable(latestCard(attempt))) return
         click += 1
         val replay = attempt.replay(click)
         current = replay
@@ -1215,10 +1427,11 @@ class OpenPurchaseController(
     @Suppress("ReturnCount") // 已离开、不在前台、没有待办、不是本页的出口
     fun resumeAfterConsent() {
         if (left) return
-        if (!foreground) return defer(::resumeAfterConsent)
+        if (!foreground) return defer(DeferredResume.CONSENT, ::resumeAfterConsent)
         val (target, targetSpm) = consentCard ?: return
         val record = pending.peek() ?: return
         if (record.text("kind") != PENDING_CONSENT || record.text("link_id") != target.text("link_id")) return
+        if (record.text(OWNER) != "$pageTag#$CONSENT") return
         pending.clear()
         consentCard = null
         if (env.basicMode()) return
@@ -1229,6 +1442,9 @@ class OpenPurchaseController(
     fun onBackground() {
         foreground = false
         revokePermit()
+        // 授权外跳许可同样作废（共性第 25、31 条）；授权跳转在途或等回流时记下「离开过 App」（共性第 38 条）
+        revokeAuthPermit()
+        if (authJumpInFlight || awaitingAuthReturn) authLeftApp = true
         if (mutableState.value.phase == PurchasePhase.LOADING) {
             interrupt = LateResponsePolicy.BACKGROUND
             timer?.cancel()
@@ -1242,14 +1458,15 @@ class OpenPurchaseController(
         if (left) return
         left = true
         interrupt = LateResponsePolicy.LEAVE
-        revokePermit()
-        deferred = null
+        revokePermit(cancel = true)
+        revokeAuthPermit()
+        deferred.clear()
         timer?.cancel()
         gateTimer?.cancel()
         browserDecision?.complete(false)
         cancelOwners()
-        val mine = listOfNotNull(current?.linkId, consentCard?.first?.text("link_id"), card.text("link_id"))
-        pending.peek()?.takeIf { it.text("link_id") in mine }?.let { pending.clear() }
+        // 只删本页登记的（共性第 44 条）：别的页面登记的待办（哪怕同一个 link）不动
+        clearMine()
     }
 
     fun consumeToast() {
@@ -1261,12 +1478,19 @@ class OpenPurchaseController(
     private fun busy(): Boolean = mutableState.value.phase == PurchasePhase.LOADING || mutableState.value.dialog != null
 
     private fun grantPermit(attempt: PurchaseAttempt) {
-        permit?.valid = false
+        permit?.let {
+            it.valid = false
+            it.cancelled = true
+        }
         permit = Permit(attempt)
     }
 
-    private fun revokePermit() {
-        permit?.valid = false
+    /** 作废续执行许可；[cancel]：用户取消、离开（已执行的步骤也不再上报）；进入后台不算取消。 */
+    private fun revokePermit(cancel: Boolean = false) {
+        permit?.let {
+            it.valid = false
+            if (cancel) it.cancelled = true
+        }
         permit = null
     }
 
@@ -1274,17 +1498,71 @@ class OpenPurchaseController(
     private fun allowed(granted: Permit): Boolean =
         granted.valid && permit === granted && granted.attempt === current && !left && foreground
 
+    /** 外跳执行器「允许开始下一步」（共性第 40 条）：许可仍有效，且这张卡此刻仍可购买（平台状态、下架；不重复提示）。 */
+    private fun continuable(granted: Permit): Boolean = allowed(granted) && purchasable(latestCard(granted.attempt), notify = false)
+
+    /** 外跳执行器「允许上报已执行步骤」（共性第 40 条）：只看尝试仍是当前的、没被取消、页面没离开（进入后台照常上报）。 */
+    private fun reportable(granted: Permit): Boolean = !granted.cancelled && granted.attempt === current && !left
+
+    /**
+     * 此刻这张卡能发 open / 继续外跳（共性第 27、32 条）：所有发 open 与继续外跳的入口都经这里——点击、超时同键重试、授权后自动执行、
+     * 登录后重放、补同意恢复、无返利购买、确认框与 JumpTip 的继续、外跳每一步。下架（30141 / availability=off_shelf，按卡）、平台
+     * not_launched 不发；maintenance 提示后不发（含点击结果确认的 50301）。
+     */
+    private fun purchasable(
+        card: JsonObject,
+        notify: Boolean = true,
+    ): Boolean {
+        if (card.text("availability") == BuyBlock.OFF_SHELF) return false
+        return when (env.platformStatus(card.text("platform").orEmpty())) {
+            BuyBlock.MAINTENANCE -> {
+                if (notify) toast(MAINTENANCE_KEY)
+                false
+            }
+
+            BuyBlock.NOT_LAUNCHED -> {
+                false
+            }
+
+            else -> {
+                true
+            }
+        }
+    }
+
     private fun permitted(attempt: PurchaseAttempt): Boolean = permit?.let { it.attempt === attempt && allowed(it) } == true
 
-    private fun whenForeground(action: () -> Unit) {
-        if (foreground) action() else defer(action)
+    /** 本页这次尝试的待办归属标记。 */
+    private fun ownerTag(attempt: PurchaseAttempt): String = "$pageTag#${attempt.click}"
+
+    /** 只删本页登记的购买待办（共性第 44 条）：别的页面登记的待办不动。 */
+    private fun clearMine() {
+        pending.peek()?.takeIf { it.text(OWNER)?.startsWith("$pageTag#") == true }?.let { pending.clear() }
     }
 
-    private fun defer(action: () -> Unit) {
-        deferred = action
+    /** 绑定这次购买尝试与请求世代的请求归属（F-AND-19）：新点击、重发、离开之后即失效。 */
+    private fun attemptOwner(attempt: PurchaseAttempt): CallOwnership {
+        val myRequest = request
+        return CallOwnership(api.epochs()) { !left && current === attempt && myRequest == request }.also { owners += it }
     }
 
-    private fun owner(): CallOwnership = CallOwnership(api.epochs()) { !left }.also { owners += it }
+    private fun whenForeground(
+        kind: DeferredResume,
+        action: () -> Unit,
+    ) {
+        if (foreground) action() else defer(kind, action)
+    }
+
+    /** 写入 [kind] 的延迟槽位（共性第 48 条）：只覆盖同类，其他类型的延迟恢复保留。 */
+    private fun defer(
+        kind: DeferredResume,
+        action: () -> Unit,
+    ) {
+        deferred[kind] = action
+    }
+
+    /** 延迟恢复的类型（共性第 48 条），声明顺序即回前台的执行顺序。 */
+    private enum class DeferredResume { AUTH, LOGIN, CONSENT }
 
     @Suppress("LongParameterList") // 待办的字段逐项
     private fun pendingParams(
@@ -1294,12 +1572,15 @@ class OpenPurchaseController(
         kind: String,
         noRebate: Boolean,
         reason: String?,
+        owner: String,
     ): JsonObject {
         val fields =
             linkedMapOf<String, JsonElement>(
                 "kind" to JsonPrimitive(kind),
                 "link_id" to JsonPrimitive(linkId),
                 "platform" to JsonPrimitive(target.text("platform").orEmpty()),
+                // 归属：本页 + 这次尝试（共性第 44 条）；补同意还没有尝试，用页内固定标记
+                OWNER to JsonPrimitive(if (owner == CONSENT) "$pageTag#$CONSENT" else owner),
             )
         target.text("product_key")?.let { fields["product_key"] = JsonPrimitive(it) }
         key?.let { fields["idempotency_key"] = JsonPrimitive(it) }
@@ -1380,6 +1661,19 @@ class OpenPurchaseController(
         const val CANCELLED_PRICE_REBATE_KEY = "trade.cancelled.price_rebate"
         const val CANCELLED_REBATE_KEY = "trade.cancelled.rebate"
 
+        /** 待办里的归属字段（本页 + 这次尝试，共性第 44 条；不是令牌，不上送）。 */
+        internal const val OWNER = "client_owner"
+        private const val CONSENT = "consent"
+        private val PAGE_SEQ =
+            java.util.concurrent.atomic
+                .AtomicLong()
+        private val FILL_SEQ =
+            java.util.concurrent.atomic
+                .AtomicLong()
+
+        /** 补齐世代（进程内递增）。 */
+        private fun nextFillGeneration(): Long = FILL_SEQ.incrementAndGet()
+
         internal const val PENDING_LOGIN = "login"
         internal const val PENDING_AUTH = "auth"
         internal const val PENDING_CONSENT = "consent"
@@ -1416,6 +1710,7 @@ class OpenPurchaseController(
  * 改价、券失效、返利变化（不含变为 0）时 [needsRefetch]：调用方按 product_key + item_ref 重取权威卡片，用 [fill] 只补齐仍未知的字段（A-R2-02）；
  * 30144 用 [reload] 整卡替换但不覆盖之后写入的购买结果（卡片版本 [revision]）。
  */
+@Suppress("TooManyFunctions") // 写卡、补齐、重载、版本与世代逐项
 object CardPatch {
     @Suppress("CyclomaticComplexMethod", "ComplexCondition", "LongMethod") // 逐字段
     fun apply(
@@ -1424,7 +1719,6 @@ object CardPatch {
     ): JsonObject {
         val out = LinkedHashMap<String, JsonElement>(card)
         data.text("new_link_id")?.let { out["link_id"] = JsonPrimitive(it) }
-        val couponGone = data.text("availability") == COUPON_GONE
         val newFinal = data.fen("new_final_price_fen")
         if (priceChanged(card, data)) {
             out["final_price_fen"] = newFinal?.let(::JsonPrimitive) ?: JsonNull
@@ -1432,34 +1726,43 @@ object CardPatch {
             out["coupon_fen"] = JsonNull
             out["price_fen"] = JsonNull
             out["est_net_price_fen"] = JsonNull
-            if (couponGone) {
-                // 原券已失效、新券未知：先去掉「有券」、按钮不再称「领券购买」；补齐后由 [fill] 按实际券额同步回来
-                out["benefit_tags"] = JsonArray(card.texts("benefit_tags").filter { it != PriceTerms.HAS_COUPON }.map(::JsonPrimitive))
-                (card["cta"] as? JsonObject)?.takeIf { it.text("text_key") == BUY_COUPON }?.let {
-                    out["cta"] = JsonObject(it + ("text_key" to JsonPrimitive(BUY)))
-                }
+            // 新价已知、只等补齐（APP-06b 共性第 34 条）：照常显示新价并可购买（映射不当「价格不可用」）
+            if (newFinal != null) out[PRICE_PENDING] = JsonPrimitive(true) else out.remove(PRICE_PENDING)
+            // 券额未知（券失效或普通改价都一样，不沿用旧券推断，共性第 21、37 条）：先去掉「有券」、按钮不再称「领券购买」；
+            // 补齐后由 [fill] 按实际券额同步回来
+            out["benefit_tags"] = JsonArray(card.texts("benefit_tags").filter { it != PriceTerms.HAS_COUPON }.map(::JsonPrimitive))
+            (card["cta"] as? JsonObject)?.takeIf { it.text("text_key") == BUY_COUPON }?.let {
+                out["cta"] = JsonObject(it + ("text_key" to JsonPrimitive(BUY)))
             }
         }
         val newMax = data.fen("new_rebate_max_fen")
         val newMin = data.fen("new_rebate_min_fen")
         val oldMax = card.fen("rebate_max_fen")
-        if (newMax == 0L && (oldMax ?: 0L) > 0L) {
+        if (newMax == 0L) {
+            // 确定返利为 0（BR-PRICE-08，共性第 35、41 条）：不论原来是正数、0 还是未知（游客 login_required 登录后同键重放），一律写零金额、
+            // no_rebate、「去购买（无返利）」与本次原因（price_compare 才写，空值或未知值清除旧原因）。是否弹确认另按前后返利判断
+            // （OpenResponseAction），与写卡分开
+            val alreadyNone = oldMax == 0L && card.fen("rebate_min_fen") == 0L && card.text("rebate_basis") == NO_REBATE
             out["rebate_min_fen"] = JsonPrimitive(0L)
             out["rebate_max_fen"] = JsonPrimitive(0L)
             out["rebate_basis"] = JsonPrimitive(NO_REBATE)
             out.remove(ProductCardMapper.PROVISIONAL_REBATE)
-            out["est_net_price_fen"] = JsonNull
+            // 原来不是确定的暂无返利：旧的预估返后按旧返利算，置未知；原来就是暂无返利则保留（同结果重放不改卡）
+            if (!alreadyNone) out["est_net_price_fen"] = JsonNull
             out["no_rebate_cause"] =
                 data["no_rebate_cause"]?.takeIf { it is JsonPrimitive && it.isString && it.content == PRICE_COMPARE } ?: JsonNull
-            out["cta"] = JsonObject(mapOf("text_key" to JsonPrimitive(BUY_NO_REBATE)))
+            if ((card["cta"] as? JsonObject)?.text("text_key") != BUY_NO_REBATE) {
+                out["cta"] = JsonObject(mapOf("text_key" to JsonPrimitive(BUY_NO_REBATE)))
+            }
             out["disclaimer_keys"] = JsonArray(card.texts("disclaimer_keys").filter { !it.startsWith(REBATE_PREFIX) }.map(::JsonPrimitive))
         } else if (newMax != null && newMin != null && (newMax != oldMax || newMin != card.fen("rebate_min_fen"))) {
             out["rebate_min_fen"] = JsonPrimitive(newMin)
             out["rebate_max_fen"] = JsonPrimitive(newMax)
             out["est_net_price_fen"] = JsonNull
-            if (newMax > 0L && restored(card)) {
-                // 返利从无到有：不留「暂无返利 / 去购买（无返利）」与比价原因；口径响应没有 → 置未知并标临时展示状态，按服务端区间显示，
-                // 等重取的权威卡片补口径；重取失败就一直按区间显示，不落入「暂无返利」（A-R1-08、A-R2-01）
+            if (newMax > 0L && (restored(card) || unknownRebate(card))) {
+                // 返利从无到有，或原来未知（游客 login_required / 金额缺失，登录后同键重放给出正数，共性第 41 条）：不留「暂无返利 /
+                // 登录查看返利 / 去购买（无返利）」与比价原因；口径响应没有 → 置未知并标临时展示状态，按服务端区间显示，等重取的权威卡片
+                // 补口径；重取失败就一直按区间显示，不落入「暂无返利」（A-R1-08、A-R2-01）
                 out["rebate_basis"] = JsonNull
                 out[ProductCardMapper.PROVISIONAL_REBATE] = JsonPrimitive(true)
                 out["no_rebate_cause"] = JsonNull
@@ -1472,6 +1775,19 @@ object CardPatch {
         data.text("availability")?.takeIf { it == OFF_SHELF }?.let { out["availability"] = JsonPrimitive(it) }
         return JsonObject(out)
     }
+
+    /** 写入这次 open 结果后卡片没有变化（同键重放得到相同结果，共性第 33 条）：卡片版本不算（每次写入都会加 1）。 */
+    fun sameResult(
+        before: JsonObject,
+        after: JsonObject,
+    ): Boolean = JsonObject(before - REVISION) == JsonObject(after - REVISION)
+
+    /** 卡片仍有等补齐的字段：新价已知而券前价 / 券额未知，或返利口径仍是临时展示状态。 */
+    fun awaitingFill(card: JsonObject): Boolean = card.flag(PRICE_PENDING) || card.flag(ProductCardMapper.PROVISIONAL_REBATE)
+
+    /** 带世代的补齐（共性第 26 条）：此刻页面上的卡仍是 [generation] 那一次 open 写入的结果才 [fill]，否则原样保留。 */
+    fun fillFor(generation: Long): (JsonObject, JsonObject) -> JsonObject =
+        { current, fresh -> if (current.fen(FILL_GENERATION) == generation) fill(current, fresh) else current }
 
     /** 响应给不全卡片要的字段（券前价、券额、预估返后、返利口径），要按 product_key + item_ref 重取权威卡片（A-R1-07 / 08）。 */
     @Suppress("ReturnCount") // 改价、返利缺失、归零三个出口
@@ -1528,6 +1844,8 @@ object CardPatch {
         missing.forEach { field -> fresh.fen(field)?.let { out[field] = JsonPrimitive(it) } }
         // 券额由未知补成已知：同步「有券」标签与普通购买按钮（A-R3-02 / 03）；open 确认的「去购买（无返利）」与比价原因不动（A-R2-02）
         if ("coupon_fen" in missing) fresh.fen("coupon_fen")?.let { syncCoupon(out, it > 0L) }
+        // 价格三字段都已知：不再是「待补齐」（共性第 34 条）
+        if (JsonObject(out).fen("price_fen") != null && JsonObject(out).fen("coupon_fen") != null) out.remove(PRICE_PENDING)
         val min = current.fen("rebate_min_fen")
         val max = current.fen("rebate_max_fen")
         val sameRebate = min != null && max != null && fresh.fen("rebate_min_fen") == min && fresh.fen("rebate_max_fen") == max
@@ -1585,8 +1903,29 @@ object CardPatch {
     /** 卡片原来是暂无返利。 */
     private fun restored(card: JsonObject): Boolean = card.text("rebate_basis") == NO_REBATE || card.fen("rebate_max_fen") == 0L
 
+    /**
+     * 卡片原来的返利未知：login_required（游客）或返利上下限缺失；open 给出确定正数后要清掉旧口径（不能保留「登录查看返利」，共性第 41 条）。
+     * amount_unknown 由服务端口径决定，不在此列（open 返回 null 时保持原处理）。
+     */
+    private fun unknownRebate(card: JsonObject): Boolean {
+        val basis = card.text("rebate_basis")
+        if (basis == AMOUNT_UNKNOWN) return false
+        return basis == LOGIN_REQUIRED || card.fen("rebate_max_fen") == null || card.fen("rebate_min_fen") == null
+    }
+
     /** 卡片版本的客户端字段名（不来自接口，不上送）。 */
     const val REVISION = "client_card_rev"
+
+    /**
+     * 最近一次写入的 open 结果的补齐世代（客户端字段，共性第 26 条）：每次写入不同的 open 结果换新；补齐请求带发出时的世代，到达时卡片上
+     * 已是别的世代（之后又写入了新的 open 结果、或 30144 整卡重载）就不补齐。
+     */
+    const val FILL_GENERATION = "client_fill_gen"
+
+    /** open 已给出新券后价、券前价 / 券额待补齐（与 DesignSystem 的映射同名）。 */
+    const val PRICE_PENDING = ProductCardMapper.PRICE_PENDING
+    private const val AMOUNT_UNKNOWN = "amount_unknown"
+    private const val LOGIN_REQUIRED = "login_required"
     private val RANGE_BASES = setOf("normal", "price_compare_risk")
     private const val BUY_COUPON = "btn.buy.coupon"
     private const val BUY = "btn.buy"

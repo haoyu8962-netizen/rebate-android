@@ -59,15 +59,20 @@ data class ClipboardPrompt(
     val busy: Boolean = false,
 )
 
-/** parse 或手动粘贴之后要在发起页上显示的东西（只在发起页仍是当前页时显示）。 */
+/**
+ * parse 或手动粘贴之后要在发起页上显示的东西（只在发起页仍是当前页时显示）。
+ * [id]：每次发布自增的唯一编号（APP-07 共性第 26 条）。内容相同的两次结果编号不同，StateFlow 不会把它们合并；界面回调带渲染时的
+ * 结果，执行层按编号核对是不是当前结果，不靠对象身份或 equals。
+ */
 sealed interface ClipboardResult {
     val origin: String
+    val id: Long
 
     /** 轻提示（30131、30141、42901、5xxxx 带 trace6）。 */
     data class Notice(
         override val origin: String,
         val text: String,
-        val serial: Long,
+        override val id: Long,
     ) : ClipboardResult
 
     /** 30132：error.30132 加【用商品名搜索】，预填「」内或首行（G10、BR-TEXT-14）。 */
@@ -75,6 +80,7 @@ sealed interface ClipboardResult {
         override val origin: String,
         val text: String,
         val prefill: String?,
+        override val id: Long,
     ) : ClipboardResult
 
     /**
@@ -85,6 +91,7 @@ sealed interface ClipboardResult {
         override val origin: String,
         val rows: List<ParseRow>,
         val traceId: String? = null,
+        override val id: Long,
     ) : ClipboardResult
 
     /**
@@ -94,6 +101,7 @@ sealed interface ClipboardResult {
     data class InviteConfirm(
         override val origin: String,
         val code: String,
+        override val id: Long,
     ) : ClipboardResult
 }
 
@@ -134,6 +142,9 @@ class AppClipboard(
     /** App 写剪贴板的唯一入口（桥 clipboard.write、复制口令 copy_tpwd、各原生复制按钮）。 */
     val writer = ClipboardWriter(system, ledger)
     private val parser = ParseInputService(api)
+
+    /** 进入强更分流（APP-03a 的同一个入口 AppUpdate.on10405；App 接线时给，APP-07 共性第 20 条）。 */
+    var onForceUpdate: () -> Unit = {}
 
     /** 浮层来源（AuthSheet、auth_jump 执行中、第三方登录进行中等，G12）；App 接线时给。 */
     var overlay: () -> String? = { null }
@@ -518,10 +529,14 @@ class AppClipboard(
             sessionEpoch() == t.session &&
             api.epochs() == t.epochs
 
-    /** 提示条的按钮：商品 → 这时才上传已读到的片段；邀请（游客）→ 预填登录页，不发请求。 */
+    /**
+     * 提示条的按钮：商品 → 这时才上传已读到的片段；邀请（游客）→ 预填登录页，不发请求。[id] 是渲染时这条提示的编号（APP-07 共性第 18 条）：
+     * 已不是当前提示（被新提示替换）的旧回调直接返回，不执行新提示；缺省（null）只给测试直接调用。
+     */
     @Suppress("ReturnCount") // 归属失效、限流、邀请、没有片段逐项短路
-    fun onPromptAction() {
+    fun onPromptAction(id: Long? = null) {
         val t = ticket ?: return
+        if (id != null && id != t.id) return
         if (!valid(t)) {
             clearPrompt()
             return
@@ -572,8 +587,11 @@ class AppClipboard(
         // TODO(N-30) G01：已登录用户的补填绑定等契约补 POST /v1/me/inviter 与 InviteBackfill 路由
     }
 
-    /** 提示条的【关闭】：放弃，同一内容 24 小时内不再提示（出提示条时已记录）。 */
-    fun onPromptClose() = clearPrompt()
+    /** 提示条的【关闭】：放弃，同一内容 24 小时内不再提示（出提示条时已记录）。[id] 不是当前提示时不动（旧关闭回调不清掉新提示，共性第 18 条）。 */
+    fun onPromptClose(id: Long? = null) {
+        if (id != null && ticket?.id != id) return
+        clearPrompt()
+    }
 
     // ---------------------------------------------------------------- 用户主动粘贴
 
@@ -586,6 +604,8 @@ class AppClipboard(
         val origin = currentOrigin()
         val read = system.read()
         val text = (read as? ClipRead.Text)?.value
+        // App 自己写入的内容（复制口令、桥 clipboard.write 等）手动粘贴同样排除（APP-07 共性第 17 条，BR-ID-16、03 §4.6）：不上传 parse、不出提示
+        if (text != null && ClipboardText.sha256(text) in ledger.hashes()) return
         val decision = ManualPasteAction.decide(entry, text, rules(), shareDomains())
         when (decision.actionRaw) {
             ManualPasteAction.OPEN_SEARCH_TYPING -> {
@@ -605,14 +625,19 @@ class AppClipboard(
             ManualPasteAction.INVITE -> {
                 val code = decision.code
                 if (code != null && guest()) {
-                    mutableResult.value = ClipboardResult.InviteConfirm(origin, code)
+                    mutableResult.value = ClipboardResult.InviteConfirm(origin, code, nextResultId())
                 }
             }
         }
     }
 
-    /** 手动粘贴的邀请确认条点确认（游客）：发起页仍是当前页才预填登录页；不发请求。 */
+    /**
+     * 手动粘贴的邀请确认条点确认（游客）：发起页仍是当前页才预填登录页；不发请求。执行层先核对共享限流与「该结果仍是当前结果」
+     * （APP-07 共性第 16 条，F-AND-22）：旧 parse 返回 42901 已启动禁用期、结果已被替换，而界面还没重组时到达的点击直接返回，
+     * 不预填、不导航。
+     */
     fun confirmManualInvite(result: ClipboardResult.InviteConfirm) {
+        if (!actionable(result)) return
         consumeResult(result)
         if (result.origin != currentOrigin() || privacy() != PrivacyState.CONSENTED || !overlayClear()) return
         val session = if (guest()) InviteConfirmAction.SESSION_GUEST else InviteConfirmAction.SESSION_PHONE
@@ -698,13 +723,21 @@ class AppClipboard(
         when (action.actionRaw) {
             ParseResultAction.OPEN_DETAIL -> {
                 val card = action.card ?: return
-                if (!openDetail(card)) mutableResult.value = ClipboardResult.CardList(origin, listOf(ParseRow(card, null, null)))
+                if (!openDetail(card)) {
+                    mutableResult.value =
+                        ClipboardResult.CardList(origin, listOf(ParseRow(card, null, null)), id = nextResultId())
+                }
             }
 
             ParseResultAction.CARD_LIST -> {
+                // 行内 10405（外层成功）：主动进入已有的强更分流（APP-07 共性第 20 条），不出弹层
+                if (action.rows.any { it.card == null && it.errorCode == ParseResultAction.FORCE_UPDATE_CODE }) {
+                    onForceUpdate()
+                    return
+                }
                 // 行内 42901：启动共享禁用期（成功响应没有 Retry-After，按 5 秒，A11）；其余行内码在弹层里逐条按码给动作（A-R1-05）
                 if (action.rows.any { it.card == null && it.errorCode == ParseResultAction.RATE_LIMITED }) block(DEFAULT_BLOCK_MS)
-                mutableResult.value = ClipboardResult.CardList(origin, action.rows, action.traceId)
+                mutableResult.value = ClipboardResult.CardList(origin, action.rows, action.traceId, nextResultId())
             }
 
             ParseResultAction.SEARCH_PREFILL -> {
@@ -720,7 +753,12 @@ class AppClipboard(
                 notice(origin, action.textKey, action.traceId.takeIf { action.showTrace6 != false })
             }
 
-            // 10405 由网络层走强更分流（APP-03a），这里不另写
+            // 单条结果 error_code=10405（外层成功，网络层看到的是成功外壳）：主动进入已有的强更分流（APP-07 共性第 20 条）；整体 10405
+            // 网络层已分流，这里再调一次也只是同一个结论
+            ParseResultAction.FORCE_UPDATE -> {
+                onForceUpdate()
+            }
+
             else -> {
                 Unit
             }
@@ -733,22 +771,37 @@ class AppClipboard(
         traceId: String?,
     ) {
         val text = textOrGeneric(key ?: GENERIC_ERROR_KEY)
-        serial += 1
-        mutableResult.value = ClipboardResult.Notice(origin, ResultSignals.withTrace6(text, traceId), serial)
+        mutableResult.value = ClipboardResult.Notice(origin, ResultSignals.withTrace6(text, traceId), nextResultId())
     }
 
     private fun unrecognized(
         origin: String,
         prefill: String?,
-    ) = ClipboardResult.Unrecognized(origin, ClipboardDraftTexts.text(UNRECOGNIZED_KEY), prefill)
+    ) = ClipboardResult.Unrecognized(origin, ClipboardDraftTexts.text(UNRECOGNIZED_KEY), prefill, nextResultId())
 
-    /** 结果提示被关掉或显示完。 */
-    fun consumeResult(result: ClipboardResult) {
-        if (mutableResult.value == result) mutableResult.value = null
+    /** 每次发布结果的新编号（APP-07 共性第 26 条）。 */
+    private fun nextResultId(): Long {
+        serial += 1
+        return serial
     }
+
+    /** 结果提示被关掉或显示完：只消费渲染时的那一条（按编号认，APP-07 共性第 18、26 条：旧关闭回调不清掉内容相同的新结果）。 */
+    fun consumeResult(result: ClipboardResult) {
+        if (current(result)) mutableResult.value = null
+    }
+
+    /** [result] 仍是当前结果（渲染时绑定的那一条，按发布编号核对；旧回调不读最新状态去执行，APP-07 共性第 16、18、26 条）。 */
+    private fun current(result: ClipboardResult): Boolean = mutableResult.value?.id == result.id
+
+    /**
+     * 结果按钮（打开卡片、用商品名搜索、邀请确认）在执行层的统一核对（APP-07 共性第 16 条，F1-04）：共享限流（42901 禁用期）中不执行，
+     * 且必须仍是当前结果（F1-05）。界面同步置灰（[blocked]）。
+     */
+    private fun actionable(result: ClipboardResult): Boolean = !gate.active && current(result)
 
     /** 30132 的【用商品名搜索】：[fill] 是 SearchTyping 本页的搜索框；没有时经 Router 打开 Search（q 预填，提取不到就留空）。 */
     fun searchByName(result: ClipboardResult.Unrecognized) {
+        if (!actionable(result)) return
         consumeResult(result)
         searchByName(result.origin, result.prefill)
     }
@@ -758,6 +811,7 @@ class AppClipboard(
         result: ClipboardResult.CardList,
         row: ParseRow,
     ) {
+        if (!actionable(result) || result.rows.none { it === row }) return
         consumeResult(result)
         searchByName(result.origin, ClipboardText.searchPrefill(row.hitRaw))
     }
@@ -800,6 +854,7 @@ class AppClipboard(
         result: ClipboardResult.CardList,
         card: JsonObject,
     ) {
+        if (!actionable(result) || result.rows.none { it.card === card }) return
         consumeResult(result)
         openDetail(card)
     }

@@ -29,11 +29,18 @@ class ClipboardPreferences internal constructor(
         object : ClipboardHashStore {
             override fun read(key: String): String? = runCatching { prefs.getString(HASH_PREFIX + key, null) }.getOrNull()
 
+            /**
+             * 同步落盘并返回 commit() 的结果（APP-07 共性第 25 条）：异步 apply 时内存先更新，磁盘写失败也读得回，
+             * 自写记录会在重启后丢失。不用 KTX 的 edit(commit = true)：它丢掉返回值（UseKtx 不适用）。
+             */
+            @SuppressLint("ApplySharedPref", "UseKtx")
             override fun write(
                 key: String,
                 value: String?,
-            ) {
-                prefs.edit { if (value == null) remove(HASH_PREFIX + key) else putString(HASH_PREFIX + key, value) }
+            ): Boolean {
+                val editor = prefs.edit()
+                if (value == null) editor.remove(HASH_PREFIX + key) else editor.putString(HASH_PREFIX + key, value)
+                return editor.commit()
             }
         }
 

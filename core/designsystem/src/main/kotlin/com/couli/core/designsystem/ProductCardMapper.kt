@@ -66,6 +66,7 @@ object ProductCardMapper {
     private const val STALE_AGE_SEC = 300L
     private const val AMOUNT_UNKNOWN = "amount_unknown"
     private const val PRICE_UNAVAILABLE = "price_unavailable"
+    private const val OFF_SHELF = "off_shelf"
 
     @Suppress("CyclomaticComplexMethod", "ComplexCondition") // 逐字段映射，缺失即未知
     fun map(
@@ -88,10 +89,13 @@ object ProductCardMapper {
         val couponFen = card.fen("coupon_fen")
         val finalFen = card.fen("final_price_fen")
         val price =
-            if (!unavailable && priceFen != null && couponFen != null && finalFen != null) {
-                PriceTagModel.make(platform, priceFen, couponFen, finalFen, presale)
-            } else {
-                null
+            when {
+                unavailable || finalFen == null -> null
+
+                priceFen != null && couponFen != null -> PriceTagModel.make(platform, priceFen, couponFen, finalFen, presale)
+
+                // open 已给出新券后价、券前价 / 券额待补齐（[PRICE_PENDING]）：照常显示已知新价，不带口径词（APP-06b 共性第 34 条）
+                else -> PriceTagModel.neutral(finalFen, presale)
             }
         val min = card.fen("rebate_min_fen")
         val ctaKey = (card["cta"] as? JsonObject)?.text("text_key").orEmpty()
@@ -129,7 +133,12 @@ object ProductCardMapper {
         val buyState =
             when {
                 unavailable || notLaunched || maintenance -> BuyButtonState.RETRY_LATER
+
+                // 下架（availability=off_shelf，含 30141 写进这张卡的）：卡片按钮立即置灰（搜索卡与详情一致，APP-06b 共性第 28 条）
+                card.text("availability") == OFF_SHELF -> BuyButtonState.DISABLED
+
                 buyEnabled && buyBase.isNotEmpty() -> BuyButtonState.NORMAL
+
                 else -> BuyButtonState.DISABLED
             }
         val retryLater = if (notLaunched && !unavailable) notLaunchedText else texts.text(ProductCardKeys.RETRY_LATER)
@@ -140,6 +149,12 @@ object ProductCardMapper {
      * 客户端临时字段（不来自接口）：open 复核确认返利从无到有、服务端只给了区间没给口径时由购买流程写上（A-R2-01）；重取到口径后去掉。
      */
     const val PROVISIONAL_REBATE = "client_rebate_provisional"
+
+    /**
+     * 客户端临时字段（不来自接口）：open 已给出新券后价、券前价 / 券额待补齐（APP-06b 共性第 34 条）。为 true 且券后价已知时不算
+     * 「价格不可用」：照常显示新价（不带口径词）、可购买；补齐后去掉。
+     */
+    const val PRICE_PENDING = "client_price_pending"
 
     /** 返利临时展示状态：带 [PROVISIONAL_REBATE] 且口径未知（没有 rebate_basis）。 */
     fun provisionalRebate(card: JsonObject): Boolean = card.flag(PROVISIONAL_REBATE) && card.text("rebate_basis").isNullOrEmpty()
@@ -153,12 +168,14 @@ object ProductCardMapper {
 
     /**
      * 价格不可用（BR-PRICE-01、AC-S1-09）：availability=price_unavailable，或价格三字段任一缺失（rebate_basis=amount_unknown 的拼多多
-     * 直链卡除外：BR-PRICE-08 规定它本来就不显示价格，只显示专用返利标签）。
+     * 直链卡除外：BR-PRICE-08 规定它本来就不显示价格，只显示专用返利标签）。open 已给出新券后价、只是券前价 / 券额待补齐
+     * （[PRICE_PENDING]）不算：照常显示新价、可购买（APP-06b 共性第 34 条）。
      */
     @Suppress("ReturnCount") // 逐条判定
     fun priceUnavailable(card: JsonObject): Boolean {
         if (card.text("availability") == PRICE_UNAVAILABLE) return true
         if (card.text("rebate_basis") == AMOUNT_UNKNOWN) return false
+        if (card.flag(PRICE_PENDING) && card.fen("final_price_fen") != null) return false
         return card.fen("price_fen") == null || card.fen("coupon_fen") == null || card.fen("final_price_fen") == null
     }
 

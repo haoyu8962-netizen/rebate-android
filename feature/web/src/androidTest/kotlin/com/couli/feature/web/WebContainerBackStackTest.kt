@@ -76,6 +76,15 @@ class WebContainerBackStackTest {
         throw AssertionError("timed out: $message")
     }
 
+    /** 页面脚本已执行（window.ready）：首个文档已提交，之后的调用不会再被这次提交作废。 */
+    private fun pageReady(webView: WebView): Boolean {
+        val result = CompletableDeferred<String?>()
+        compose.runOnUiThread { webView.evaluateJavascript("window.ready === true") { result.complete(it) } }
+        val deadline = SystemClock.uptimeMillis() + POLL_MS * EVAL_POLLS
+        while (!result.isCompleted && SystemClock.uptimeMillis() < deadline) Thread.sleep(POLL_MS / EVAL_POLLS)
+        return result.isCompleted && result.getCompleted() == "true"
+    }
+
     private fun show() =
         compose.setContent {
             nav = rememberNavController()
@@ -119,6 +128,9 @@ class WebContainerBackStackTest {
         compose.waitForIdle()
         waitUntil("web view created") { webViews().isNotEmpty() && host != null }
         val webView = webViews().single()
+        // 先等首个文档提交并跑完脚本（F-AND-21）：主框架提交新文档（onPageStarted）会按设计作废之前的在途调用；负载高时页面加载慢，
+        // 测试的调用若在提交之前发出，就会被这次提交作废，「被盖住仍有效」的前提就不成立。等确定条件，不用固定时长。
+        waitUntil("first document committed") { pageReady(webView) }
         compose.runOnUiThread {
             checkNotNull(host).handle("""{"v":1,"id":"in-flight","method":"auth.getUser","params":{}}""", TRUSTED, true, false) {
                 replies += it
@@ -126,6 +138,7 @@ class WebContainerBackStackTest {
         }
         waitUntil("call in flight") { validity.isCompleted }
         val call = validity.getCompleted()
+        assertTrue("the call is valid before covering", call.stillValid())
 
         // 被盖住：仍在回退栈里，调用照常有效
         compose.runOnUiThread { nav.navigate(OTHER) }
@@ -204,6 +217,7 @@ class WebContainerBackStackTest {
     private companion object {
         const val WAIT_MS = 10_000L
         const val POLL_MS = 100L
+        const val EVAL_POLLS = 10
         const val HOME = "home"
         const val OTHER = "other"
         const val WEB = "web"

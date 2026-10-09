@@ -543,7 +543,7 @@ object AppModule {
             tokens = tokens,
             routing = routing,
             updateCheck = { update.routerUpdate },
-            markBelow = { update.on10405(null) },
+            markBelow = { update.onServerForced() },
             legal = LegalVersions.parse(BundledConfig.dataJson),
             // 第三方登录（APP-05b）：Release 微信适配器恒不可用；Debug / Staging 本机假服务打开时是假适配器
             adapters = listOf(variantWechatAdapter(context, AndroidInstalledAppProbe(context))),
@@ -659,6 +659,7 @@ object AppModule {
         cleaners: EnvironmentSwitchCleanerRegistry,
         trade: Provider<AppTrade>,
         login: Provider<AppLogin>,
+        update: Provider<AppUpdate>,
     ): AppClipboard =
         AppClipboard(
             system = AndroidSystemClipboard(context),
@@ -673,6 +674,8 @@ object AppModule {
             board.overlay = {
                 trade.get().sensitiveOverlay() ?: ClipboardSensitive.OVERLAY_OAUTH.takeIf { login.get().oauth.busy }
             }
+            // parse 单条 / 多条结果里的 10405（外层成功）：强制进入强更界面（APP-07 共性第 20、21 条，不经按缓存最低版本比较的闸门）
+            board.onForceUpdate = { update.get().onServerForced() }
             // 隐私结论（撤回、基本模式）、登录 / 退出 / 切换账号、切换环境：作废提示条与在途 parse
             board.connect(privacy, routing, cleaners)
         }

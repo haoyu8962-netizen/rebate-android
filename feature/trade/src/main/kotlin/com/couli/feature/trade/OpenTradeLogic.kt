@@ -101,7 +101,8 @@ object OpenActions {
  * no_rebate_cause=price_compare 弹比价无返利（BR-PRICE-08，替代通用无返利确认），其余（含未知原因，按 null）弹无返利确认。
  * amount_unknown（context.amountUnknown=true）不做价格复核提示（BR-PRICE-08）。金额读成 Long，null 保持未知、不补 0。
  *
- * context：{ currentPriceFen, currentRebateMaxFen, amountUnknown }（卡片当前的值）。
+ * context：{ currentPriceFen, currentRebateMaxFen, amountUnknown, noRebateConfirmed }（这次点击时卡片的值；noRebateConfirmed = 这次是
+ * 用户已确认的无返利购买）。
  */
 object OpenResponseAction {
     private const val OFF_SHELF = "off_shelf"
@@ -125,10 +126,13 @@ object OpenResponseAction {
         val before = context.fen("currentRebateMaxFen")
         val after = data.fen("new_rebate_max_fen")
         val rebateGone = before != null && before > 0 && after == 0L
-        val compare = rebateGone && data.text("no_rebate_cause") == PRICE_COMPARE
+        // 比价无返利（BR-PRICE-08，无豁免）按本次响应判定，不依赖原返利（APP-06b 共性第 43 条修订）：本次零返利 + price_compare，只要这次
+        // 不是用户已确认的无返利购买（context.noRebateConfirmed，即请求 no_rebate=false），原返利为正、0 或未知都要确认
+        val compare = after == 0L && data.text("no_rebate_cause") == PRICE_COMPARE && !context.flag("noRebateConfirmed")
+        val lost = rebateGone || compare
         return when {
-            data.text("availability") == COUPON_GONE -> base.copy(actionRaw = OpenActions.CONFIRM_COUPON, rebateGone = rebateGone)
-            data.flag("price_changed") -> base.copy(actionRaw = OpenActions.CONFIRM_PRICE, rebateGone = rebateGone)
+            data.text("availability") == COUPON_GONE -> base.copy(actionRaw = OpenActions.CONFIRM_COUPON, rebateGone = lost)
+            data.flag("price_changed") -> base.copy(actionRaw = OpenActions.CONFIRM_PRICE, rebateGone = lost)
             compare -> base.copy(actionRaw = OpenActions.COMPARE_NO_REBATE, rebateGone = true)
             rebateGone -> base.copy(actionRaw = OpenActions.CONFIRM_REBATE_GONE, rebateGone = true)
             else -> base

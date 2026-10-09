@@ -62,6 +62,8 @@ import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
 import com.couli.core.network.ClientIdentity
 import com.couli.core.network.DeviceCredentials
+import com.couli.core.network.ErrorEffect
+import com.couli.core.network.ErrorEffectKind
 import com.couli.core.network.InFlightCalls
 import com.couli.core.network.MemoryPendingKeyBackend
 import com.couli.core.network.MemorySessionTokens
@@ -69,6 +71,7 @@ import com.couli.core.network.NetworkContext
 import com.couli.core.network.PageApi
 import com.couli.core.network.PendingKeyStore
 import com.couli.core.network.PrivacyRaw
+import com.couli.core.network.ReplayMode
 import com.couli.core.network.UpdateRaw
 import com.couli.core.privacy.PrivacyGate
 import com.couli.core.privacy.PrivacyStore
@@ -919,6 +922,219 @@ class AppClipboardIntegrationTest {
         assertEquals(0, system.writes)
     }
 
+    /**
+     * F-AND-22（APP-07 R3F-01、共性第 16 条）：手动粘贴的 parse 在途，又手动粘贴邀请内容出确认条；旧 parse 返回 42901（禁用期启动、结果
+     * 换成提示），界面重组之前旧确认条的点击才到：执行层核对共享限流与「该结果仍是当前结果」，不预填、不导航。
+     */
+    @Test
+    fun fAnd22_aConfirmArrivingBeforeTheNextFrameAfterARateLimitedParseDoesNothing() {
+        launch()
+        foreground(cold = true)
+        copy(LINK)
+        val reply = CompletableDeferred<ApiResult>()
+        gated = reply
+        composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
+        composeRule.waitForIdle()
+        assertEquals("parse 已发出（停在闸门）", 1, clipboard.parseCount)
+        copy("邀请码 K7M2QX https://share.example.test/i/K7M2QX")
+        composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
+        composeRule.waitForIdle()
+        val confirm = clipboard.result.value as ClipboardResult.InviteConfirm
+        var replaced = false
+        var prefilled = true
+        composeRule.runOnUiThread {
+            val effect = ErrorEffect(RATE_LIMITED, ErrorEffectKind.DISABLE_BUTTON, ReplayMode.NONE, false, disableMillis = RATE_LIMIT_MS)
+            reply.complete(ApiResult.Failure(RATE_LIMITED, "", JsonObject(emptyMap()), "trace-000429", effect, null))
+            // 同一条消息里、下一次重组之前：旧确认条的按钮回调
+            replaced = clipboard.blocked.value && clipboard.result.value !== confirm
+            clipboard.confirmManualInvite(confirm)
+            prefilled = clipboard.invitePrefill.pending
+        }
+        assertTrue("前提：42901 已启动禁用期、结果已被替换", replaced)
+        assertFalse("不预填", prefilled)
+        composeRule.waitForIdle()
+        assertFalse("不导航到登录页", RouteNames.LOGIN in routes())
+        assertEquals(0, system.writes)
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0607：APP-07 共性第 17–20 条
+
+    /** 手动粘贴、自动识别关掉、回到前台（parse 的归属要求在前台）。 */
+    private fun launchForManualPaste(session: SessionState = SessionState.GUEST) {
+        prefs().edit().putBoolean("device_auto_detect", false).commit()
+        launch(session = session)
+        foreground(cold = true)
+    }
+
+    private fun pasteHome() {
+        composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
+        composeRule.waitForIdle()
+    }
+
+    /** 第 17 条：App 自己写入的内容（复制口令等）经手动粘贴入口同样不上传 parse。 */
+    @Test
+    fun lesson17_manualPasteSkipsContentTheAppWroteItself() {
+        launchForManualPaste()
+        composeRule.runOnUiThread { clipboard.writer.write(LINK, "tpwd") }
+        pasteHome()
+        Thread.sleep(LATE_MS)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("自写内容不上传", 0, parseRequests().size)
+        assertNull("不出提示", clipboard.result.value)
+        // 别的 App 复制的同一类内容照常上传
+        copy("看看这个 $LINK")
+        pasteHome()
+        idleUntil { parseRequests().size == 1 }
+    }
+
+    /** 第 18 条：旧结果的回调（关闭、用商品名搜索）只认渲染时那一条，不清掉、不执行内容相同的新结果；提示条回调绑定提示编号。 */
+    @Test
+    fun lesson18_oldResultCallbacksDoNotActOnTheCurrentResult() {
+        launchForManualPaste()
+        copy("「全脂纯牛奶 250ml」看不懂的口令")
+        pasteHome()
+        val first = clipboard.result.value as ClipboardResult.Unrecognized
+        copy("「低脂酸奶 100g」另一段口令")
+        pasteHome()
+        val second = clipboard.result.value as ClipboardResult.Unrecognized
+        assertTrue("新结果已替换旧结果", first != second)
+        composeRule.runOnUiThread {
+            clipboard.consumeResult(first)
+            clipboard.searchByName(first)
+        }
+        composeRule.waitForIdle()
+        assertTrue("旧关闭回调不清掉新结果", clipboard.result.value === second)
+        assertFalse("旧回调不按旧结果去搜索", "Search" in routes())
+        // 提示条：旧编号的回调不动当前提示
+        prefs().edit().putBoolean("device_auto_detect", true).commit()
+        composeRule.runOnUiThread { clipboard.setAutoSwitch(true) }
+        copy(LINK)
+        foreground()
+        val prompt = checkNotNull(clipboard.prompt.value)
+        composeRule.runOnUiThread {
+            clipboard.onPromptClose(prompt.id - 1)
+            clipboard.onPromptAction(prompt.id - 1)
+        }
+        composeRule.waitForIdle()
+        assertTrue("旧编号的关闭不清掉当前提示", clipboard.prompt.value?.id == prompt.id)
+        assertEquals("旧编号的按钮不上传", 0, parseRequests().size)
+    }
+
+    /** 第 19 条：已登录用户粘贴纯邀请内容：不发 parse，不落入 30132「识别不了」，不预填。 */
+    @Test
+    fun lesson19_aSignedInPasteOfPureInviteContentStaysSilent() {
+        launchForManualPaste(session = SessionState.PHONE_BOUND)
+        copy("邀请码 K7M2QX")
+        pasteHome()
+        copy("https://share.example.test/i/K7M2QX")
+        pasteHome()
+        assertEquals(0, parseRequests().size)
+        assertNull("不出「识别不了」", clipboard.result.value)
+        assertFalse(clipboard.invitePrefill.pending)
+    }
+
+    /** 第 20 条：parse 外层成功、单条结果 error_code=10405：主动进入强更分流；多结果里有 10405 同理。 */
+    @Test
+    fun lesson20_anInlineForceUpdateEntersTheForceUpdateFlow() {
+        var forced = 0
+        parseAnswer = { envelope(0, """{"results":[{"hit":{"platform":"taobao","kind":"url","raw":"$LINK"},"error_code":10405}]}""") }
+        launchForManualPaste()
+        composeRule.runOnUiThread { clipboard.onForceUpdate = { forced += 1 } }
+        copy(LINK)
+        pasteHome()
+        idleUntil { forced == 1 }
+        parseAnswer = {
+            envelope(
+                0,
+                """{"results":[{"hit":{"platform":"taobao","kind":"url","raw":"$LINK"},"card":${card("tb:7Kq9LmN3pQ", "降噪蓝牙耳机 5.3")}},""" +
+                    """{"hit":{"platform":"jd","kind":"url","raw":"https://u.jd.com/x"},"error_code":10405}]}""",
+            )
+        }
+        copy("$LINK https://u.jd.com/x")
+        pasteHome()
+        idleUntil { forced == 2 }
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0607 第 2 轮：F1-04、F1-05
+
+    /** 一张卡 + 一条 42901 + 一条 30132（命中口令带「」标题）。 */
+    private fun rateLimitedMixedResults(): String {
+        val first = """{"hit":{"platform":"taobao","kind":"url","raw":"$LINK"},"card":${card("tb:7Kq9LmN3pQ", "降噪蓝牙耳机 5.3")}}"""
+        val limited = """{"hit":{"platform":"jd","kind":"url","raw":"https://u.jd.com/x"},"error_code":42901}"""
+        val unrec = """{"hit":{"platform":"taobao","kind":"tpwd","raw":"￥Zx8Cv7Bn6Mq￥「全脂纯牛奶 250ml」"},"error_code":30132}"""
+        return """{"results":[$first,$limited,$unrec]}"""
+    }
+
+    /**
+     * F1-04（APP-07 共性第 16 条）：多条结果里有 42901（共享禁用期已启动），同一弹层里的商品卡与 30132【用商品名搜索】界面置灰，
+     * 执行层 openCard / searchByName 也不执行（不开详情、不预填搜索）。
+     */
+    @Test
+    fun f1_04_everyResultButtonHonoursTheSharedRateLimit() {
+        parseAnswer = { envelope(0, rateLimitedMixedResults()) }
+        launch()
+        copy(LINK)
+        foreground()
+        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertTrue("行内 42901 启动禁用期", clipboard.blocked.value)
+        val list = clipboard.result.value as ClipboardResult.CardList
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_PREFIX + 0).assertIsNotEnabled()
+        composeRule.onNodeWithTag(ClipboardScreens.ROW_SEARCH_BY_NAME_PREFIX + 2).assertIsDisplayed().assertIsNotEnabled()
+        val before = routes()
+        composeRule.runOnUiThread {
+            clipboard.openCard(list, checkNotNull(list.rows[0].card))
+            clipboard.searchByName(list, list.rows[2])
+        }
+        composeRule.waitForIdle()
+        assertEquals("执行层不开详情、不去搜索", before, routes())
+        assertTrue("结果仍在（没有被按钮消费）", clipboard.result.value === list)
+        assertEquals(0, productRequests())
+    }
+
+    /**
+     * F1-05（APP-07 共性第 26 条）：内容完全相同的两次结果编号不同，StateFlow 不合并；第一次结果的关闭、【用商品名搜索】、邀请确认回调
+     * 一律无效，只认第二次。
+     */
+    @Test
+    fun f1_05_anIdenticalSecondResultInvalidatesTheFirstResultsCallbacks() {
+        launchForManualPaste()
+        val text = "「全脂纯牛奶 250ml」看不懂的口令"
+        copy(text)
+        pasteHome()
+        val first = clipboard.result.value as ClipboardResult.Unrecognized
+        copy(text)
+        pasteHome()
+        val second = clipboard.result.value as ClipboardResult.Unrecognized
+        assertEquals("内容相同", first.copy(id = second.id), second)
+        assertTrue("编号不同：第二次发布没有被合并", first.id != second.id)
+        composeRule.runOnUiThread {
+            clipboard.consumeResult(first)
+            clipboard.searchByName(first)
+        }
+        composeRule.waitForIdle()
+        assertTrue("旧关闭回调不清掉内容相同的新结果", clipboard.result.value === second)
+        assertFalse("旧【用商品名搜索】不执行", SEARCH in routes())
+
+        // 邀请确认：同一邀请内容连续粘贴两次，旧确认回调不预填，新的才预填
+        val invite = "邀请码 K7M2QX https://share.example.test/i/K7M2QX"
+        copy(invite)
+        pasteHome()
+        val oldConfirm = clipboard.result.value as ClipboardResult.InviteConfirm
+        copy(invite)
+        pasteHome()
+        val newConfirm = clipboard.result.value as ClipboardResult.InviteConfirm
+        assertTrue(oldConfirm.id != newConfirm.id)
+        composeRule.runOnUiThread { clipboard.confirmManualInvite(oldConfirm) }
+        composeRule.waitForIdle()
+        assertFalse("旧确认回调不预填", clipboard.invitePrefill.pending)
+        assertTrue(clipboard.result.value === newConfirm)
+        composeRule.runOnUiThread { clipboard.confirmManualInvite(newConfirm) }
+        composeRule.waitForIdle()
+        assertTrue("当前确认回调照常预填", clipboard.invitePrefill.pending)
+    }
+
     /** SearchTyping 的「粘贴查返利」同一套过滤：纯邀请落地页不上传。 */
     @Test
     fun searchTypingPasteOfAPureInviteLinkNeverUploads() {
@@ -1418,6 +1634,8 @@ class AppClipboardIntegrationTest {
                 """"search_status":{"taobao":"on"}}}"""
         const val WAIT_S = 5L
         const val POLL_MS = 10L
+        const val RATE_LIMITED = 42901
+        const val RATE_LIMIT_MS = 60_000L
         const val LATE_MS = 300L
         const val REFOCUS_TIMES = 3
         const val UNKNOWN_SERVER_CODE = 59999

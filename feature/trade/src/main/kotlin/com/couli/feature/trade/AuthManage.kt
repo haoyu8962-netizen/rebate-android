@@ -134,6 +134,25 @@ class AuthManageController(
     private var toastSeq = 0L
     private val owners = mutableListOf<CallOwnership>()
 
+    /** 页面在前台（ON_START 之后、ON_STOP 之前）。 */
+    private var foreground = true
+
+    /**
+     * 授权外跳许可（APP-06b 共性第 25、31 条）：用户点【去授权】时发一张；进入后台、被覆盖、离开都作废，回到前台也不恢复。取到授权地址后、
+     * 授权跳转每一步、30104 恢复后再次拉起授权之前都复核它与前台状态。
+     */
+    private var permit: Permit? = null
+
+    /** 授权跳转已发起、拉起结果还没回来（拉起的回调可能晚于回前台通知，共性第 38 条）。 */
+    private var jumpInFlight = false
+
+    /** 授权跳转发起之后进过后台（已离开过 App）。 */
+    private var leftApp = false
+
+    private class Permit {
+        var valid = true
+    }
+
     fun load() {
         // 42901 禁用期间执行层直接拦下（不只靠按钮置灰）
         if (left || gate.active) return
@@ -166,14 +185,18 @@ class AuthManageController(
         }
     }
 
-    /** 用户点【去授权】。 */
-    @Suppress("ReturnCount") // 没有这一行、限流、不可授权三个出口
+    /** 用户点【去授权】。不在前台不发起；这一下发授权外跳许可（共性第 25 条）。 */
+    @Suppress("ReturnCount", "ComplexCondition") // 没有这一行、限流、不可授权（离开、后台、不可授权、忙）逐项短路
     fun authorize(platform: String) {
         val row = mutableState.value.rows.firstOrNull { it.platform == platform } ?: return
         // 42901 禁用期间执行层直接拦下
         if (gate.active) return
-        if (left || !row.canAuthorize || mutableState.value.busyPlatform != null) return
+        if (left || !foreground || !row.canAuthorize || mutableState.value.busyPlatform != null) return
         mutableState.value = mutableState.value.copy(busyPlatform = platform)
+        val granted = Permit().also { permit?.valid = false }
+        permit = granted
+        jumpInFlight = false
+        leftApp = false
         val installed = ports.installed(platform)
         scope.launch {
             val result =
@@ -187,32 +210,62 @@ class AuthManageController(
                 )
             if (left) return@launch
             when (result) {
-                is ApiResult.Success -> run(platform, result.data as? JsonObject ?: JsonObject(emptyMap()))
+                is ApiResult.Success -> run(platform, result.data as? JsonObject ?: JsonObject(emptyMap()), granted)
                 is ApiResult.Failure -> failed(platform, result)
                 else -> done(NETWORK_KEY)
             }
         }
     }
 
-    @Suppress("ReturnCount", "CyclomaticComplexMethod", "ComplexCondition") // 拼多多跳转、淘宝两种方式与本端能力逐项判定
+    @Suppress("ReturnCount", "CyclomaticComplexMethod", "ComplexCondition", "LongMethod") // 拼多多跳转、淘宝两种方式与本端能力逐项判定
     private suspend fun run(
         platform: String,
         data: JsonObject,
+        granted: Permit,
     ) {
+        // 取授权地址期间进入后台、被覆盖（许可已撤销）：不从后台拉起授权，按钮复原，等用户在前台再点（共性第 25 条）
+        if (!jumpAllowed(granted)) {
+            mutableState.value = mutableState.value.copy(busyPlatform = null)
+            return
+        }
         val authJump = data["auth_jump"] as? JsonObject
         if (authJump != null) {
-            val outcome = executor.execute(authJump, platform, ports.installed(platform), identity = null) { true }
+            // 发起前就登记「外跳在途」：拉起的回调可能晚于回前台通知（共性第 38 条）
+            jumpInFlight = true
+            val outcome =
+                executor.execute(
+                    authJump,
+                    platform,
+                    ports.installed(platform),
+                    identity = null,
+                    allowed = { jumpAllowed(granted) },
+                    confirmBrowser = { true },
+                )
+            jumpInFlight = false
             if (left) return
-            if (outcome.run.final == JumpTypes.FINAL_OPENED || outcome.run.final == JumpTypes.FINAL_BROWSER) {
-                awaitingReturn = true
+            val launched = outcome.run.final == JumpTypes.FINAL_OPENED || outcome.run.final == JumpTypes.FINAL_BROWSER
+            if (launched || outcome.stopped) {
+                // 已拉起，或期间进入后台而停在半路：回到前台后刷新本页（服务端复查）；拉起结果晚于回前台通知时此刻就刷新
                 mutableState.value = mutableState.value.copy(busyPlatform = null)
+                awaitReturn(returned = !launched || leftApp)
             } else {
                 done(AUTH_FAILED_KEY)
             }
             return
         }
-        // 淘宝：含 30104 按 reason 的恢复（重新取授权上下文、换方式、新凭证与新幂等键，A-R2-05）；本页发起的授权不重放任何 open
-        val flow = TaobaoAuthFlow(api, webCode, baichuan, keyGenerator, ::owner, alive = { !left }, installed = ports::installed)
+        // 淘宝：含 30104 按 reason 的恢复（重新取授权上下文、换方式、新凭证与新幂等键，A-R2-05）；本页发起的授权不重放任何 open。
+        // 每次拉起授权之前复核用户点击发出的许可与前台状态（共性第 25、31 条）
+        val flow =
+            TaobaoAuthFlow(
+                api,
+                webCode,
+                baichuan,
+                keyGenerator,
+                ::owner,
+                alive = { !left },
+                installed = ports::installed,
+                canJump = { jumpAllowed(granted) },
+            )
         if (flow.pick(platform, data) == null) {
             // 本端执行不了下发的任何方式（TODO(N-28)：web_code 回跳未登记、百川不可用）
             done(AUTH_FAILED_KEY)
@@ -237,9 +290,29 @@ class AuthManageController(
                 (outcome.result as? ApiResult.Failure)?.let { failed(platform, it) } ?: done(NETWORK_KEY)
             }
 
-            TaobaoAuthOutcome.Abandoned -> {
-                Unit
+            TaobaoAuthOutcome.Interrupted -> {
+                // 30104 恢复后要再次拉起时许可已撤销（进过后台）：不再自动拉起；回到前台刷新本页，没授权由用户再点
+                mutableState.value = mutableState.value.copy(busyPlatform = null)
+                awaitReturn(returned = true)
             }
+
+            TaobaoAuthOutcome.Abandoned -> {
+                if (!left) mutableState.value = mutableState.value.copy(busyPlatform = null)
+            }
+        }
+    }
+
+    /** 授权外跳此刻可以继续：许可仍有效、页面没离开且在前台。 */
+    private fun jumpAllowed(granted: Permit): Boolean = granted.valid && permit === granted && !left && foreground
+
+    /** 授权外跳之后等回流：[returned] 且此刻在前台就立即刷新，否则等 [onForeground]。 */
+    private fun awaitReturn(returned: Boolean) {
+        if (returned && foreground) {
+            awaitingReturn = false
+            leftApp = false
+            load()
+        } else {
+            awaitingReturn = true
         }
     }
 
@@ -263,13 +336,26 @@ class AuthManageController(
 
     /** 回到前台：拼多多授权跳转之后刷新本页（服务端按 authority.query 复查）。 */
     fun onForeground() {
-        if (!awaitingReturn || left) return
+        if (left) return
+        foreground = true
+        if (!awaitingReturn) return
         awaitingReturn = false
+        leftApp = false
         load()
+    }
+
+    /** 被覆盖或进入后台（ON_STOP）：作废授权外跳许可（共性第 25、31 条）；授权跳转在途或等回流时记下「离开过 App」（共性第 38 条）。 */
+    fun onBackground() {
+        foreground = false
+        permit?.valid = false
+        permit = null
+        if (jumpInFlight || awaitingReturn) leftApp = true
     }
 
     fun leave() {
         left = true
+        permit?.valid = false
+        permit = null
         gateTimer?.cancel()
         val cancelled = owners.toList()
         owners.clear()
@@ -392,7 +478,14 @@ fun AuthManageScreen(config: AuthManageConfig) {
     BackHandler { config.onBack() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, controller) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_START) controller.onForeground() }
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> controller.onForeground()
+                    Lifecycle.Event.ON_STOP -> controller.onBackground()
+                    else -> Unit
+                }
+            }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }

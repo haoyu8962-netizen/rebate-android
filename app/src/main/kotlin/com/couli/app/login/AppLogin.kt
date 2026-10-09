@@ -98,7 +98,7 @@ class AppLogin(
     private val routing: AppRouting,
     /** 强更检查进度（AppUpdate.routerUpdate）。 */
     private val updateCheck: () -> UpdateCheck,
-    /** 受限会话按「低于」处理（AppUpdate.on10405(null)）。 */
+    /** 受限会话按服务端已判定强更处理（AppUpdate.onServerForced）。 */
     private val markBelow: () -> Unit,
     legal: LegalVersions,
     /** App 级（会话级）作用域：登出及其收尾在这里执行（主线程），不随页面取消。 */
@@ -454,9 +454,12 @@ class AppLogin(
 
     override fun discardPending() = routing.router.discardPendingAction()
 
-    /** 受限会话进强更：强更结论还不是 below_min 时按「低于」处理（UpdateGate.on10405），外壳随之进入强更页。 */
+    /**
+     * 受限会话进强更：服务端已判定强更（AppUpdate.onServerForced，落盘、不按缓存最低版本比较，F-AND-23），外壳随之进入强更页。
+     * 已是 below_min 也记下（来自缓存最低版本的结论可被之后的检查改写，服务端判定要跨进程保留）。
+     */
     override fun enterForceUpdate() {
-        if (updateCheck() != UpdateCheck.BELOW_MIN) markBelow()
+        markBelow()
         routing.drain()
     }
 

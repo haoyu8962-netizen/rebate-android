@@ -41,6 +41,7 @@ import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.ParseResultAction
 import com.couli.core.clipboard.ParseRow
 import com.couli.core.clipboard.PasteEntry
+import com.couli.core.designsystem.BuyButtonState
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
@@ -103,8 +104,9 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
                 actionText = texts.text(if (invite) "clipboard.invite_prompt.action" else "clipboard.prompt.action"),
                 actionLabel = texts.text(if (invite) "clipboard.invite_prompt.action_label" else "clipboard.prompt.action_label"),
                 closeLabel = texts.text("clipboard.prompt.close"),
-                onAction = clipboard::onPromptAction,
-                onClose = clipboard::onPromptClose,
+                // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
+                onAction = { clipboard.onPromptAction(current.id) },
+                onClose = { clipboard.onPromptClose(current.id) },
                 enabled = !blocked,
                 busy = current.busy,
             )
@@ -203,7 +205,7 @@ fun ClipboardResultHost(clipboard: AppClipboard) {
                 CouliToast(
                     message = current.text,
                     icon = null,
-                    announcementId = current.serial,
+                    announcementId = current.id,
                     modifier = Modifier.padding(top = CouliSpacing.space12).testTag(ClipboardScreens.NOTICE),
                 )
             }
@@ -236,6 +238,8 @@ fun UnrecognizedInline(
     modifier: Modifier = Modifier,
 ) {
     val result by clipboard.result.collectAsStateWithLifecycle()
+    // 42901 共享禁用期：【用商品名搜索】置灰（执行层另在 AppClipboard.searchByName 拦，APP-07 共性第 16 条）
+    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
     val current = result as? ClipboardResult.Unrecognized ?: return
     if (!origin(current.origin)) return
     Row(
@@ -269,21 +273,24 @@ fun UnrecognizedInline(
                 modifier =
                     Modifier
                         .heightIn(min = CouliSizes.touchTarget)
-                        .wrapClick { clipboard.searchByName(current) }
+                        .wrapClick(enabled = !blocked) { clipboard.searchByName(current) }
                         .testTag(ClipboardScreens.SEARCH_BY_NAME),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
                     text = ClipboardDraftTexts.text("clipboard.search_by_name"),
                     style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-                    color = CouliColors.brandEmphasis,
+                    color = if (blocked) CouliColors.textSecondary else CouliColors.brandEmphasis,
                 )
             }
         }
     }
 }
 
-private fun Modifier.wrapClick(onClick: () -> Unit): Modifier = this.clickable(role = Role.Button, onClick = onClick)
+private fun Modifier.wrapClick(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+): Modifier = this.clickable(enabled = enabled, role = Role.Button, onClick = onClick)
 
 @Composable
 private fun CardListSheet(
@@ -291,6 +298,8 @@ private fun CardListSheet(
     clipboard: AppClipboard,
 ) {
     val texts = SearchDraftTexts
+    // 42901 共享禁用期（含本次结果里的行内 42901）：卡片与【用商品名搜索】一并置灰（执行层另在 openCard / searchByName 拦，APP-07 共性第 16 条）
+    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
     CouliSheet(
         title = ClipboardDraftTexts.text("clipboard.card_list.title"),
         onDismissRequest = { clipboard.consumeResult(result) },
@@ -305,11 +314,18 @@ private fun CardListSheet(
                 if (card != null) {
                     val mapped = ProductCardMapper.map(card, texts)
                     val open = { clipboard.openCard(result, card) }
-                    Box(modifier = Modifier.fillMaxWidth().wrapClick(open).testTag(ClipboardScreens.CARD_PREFIX + index)) {
-                        ProductCardList(data = mapped.data, onBuy = open, buyState = mapped.buyState)
+                    val buyState = if (blocked) BuyButtonState.DISABLED else mapped.buyState
+                    Box(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .wrapClick(enabled = !blocked, onClick = open)
+                                .testTag(ClipboardScreens.CARD_PREFIX + index),
+                    ) {
+                        ProductCardList(data = mapped.data, onBuy = open, buyState = buyState)
                     }
                 } else {
-                    ErrorRow(result, row, index, clipboard)
+                    ErrorRow(result, row, index, clipboard, enabled = !blocked)
                 }
             }
         }
@@ -326,6 +342,7 @@ private fun ErrorRow(
     row: ParseRow,
     index: Int,
     clipboard: AppClipboard,
+    enabled: Boolean,
 ) {
     val code = row.errorCode ?: ParseResultAction.UNSUPPORTED
     Column(
@@ -351,14 +368,14 @@ private fun ErrorRow(
                 modifier =
                     Modifier
                         .heightIn(min = CouliSizes.touchTarget)
-                        .wrapClick { clipboard.searchByName(result, row) }
+                        .wrapClick(enabled = enabled) { clipboard.searchByName(result, row) }
                         .testTag(ClipboardScreens.ROW_SEARCH_BY_NAME_PREFIX + index),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
                     text = ClipboardDraftTexts.text("clipboard.search_by_name"),
                     style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-                    color = CouliColors.brandEmphasis,
+                    color = if (enabled) CouliColors.brandEmphasis else CouliColors.textSecondary,
                 )
             }
         }

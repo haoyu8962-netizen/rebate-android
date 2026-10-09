@@ -55,6 +55,7 @@ import com.couli.feature.trade.PurchaseEnv
 import com.couli.feature.trade.PurchaseOverlay
 import com.couli.feature.trade.PurchaseTimeoutBanner
 import com.couli.feature.trade.purchaseButton
+import com.couli.feature.trade.searchPurchaseButton
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -271,7 +272,8 @@ class AppSearch(
             banner = { PurchaseTimeoutBanner(page.controller, texts) },
             button = { card ->
                 val state by page.controller.state.collectAsStateWithLifecycle()
-                purchaseButton(state, texts)?.takeIf { sameCard(card, page.controller.currentCard) }
+                // 42901 置灰本页每一张卡（共性第 36 条）；加载、未安装提示只给正在购买的那张卡
+                searchPurchaseButton(state, texts, card, page.controller.currentCard)
             },
         )
     }

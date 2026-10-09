@@ -100,8 +100,8 @@ object ClipboardClassifier {
         }
     }
 
-    /** 商品候选的拒绝原因；null = 是商品候选。 */
-    private fun productRejection(
+    /** 商品候选的拒绝原因；null = 是商品候选。手动粘贴的商品入口用同一套（APP-07 共性第 22 条）。 */
+    internal fun productRejection(
         text: String,
         links: List<String>,
         rules: ClipboardRules,

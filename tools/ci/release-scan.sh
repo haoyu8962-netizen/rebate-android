@@ -15,6 +15,8 @@
 #         - Debug 本机假搜索服务的标记 COULI_FAKE_SEARCH_SERVER_APP06A（app/src/debugFeatures 的 DebugFakeSearch.kt；APP-06a）
 #         - Debug 假微信适配器的标记 COULI_FAKE_WECHAT_ADAPTER_APP05B（app/src/debugFeatures 的 DebugWechatAdapter.kt；APP-05b）
 #         - Debug 本机假购买服务的标记 COULI_FAKE_TRADE_SERVER_APP06B（app/src/debugFeatures 的 DebugFakeTrade.kt；APP-06b）
+#         - Debug 模拟安装状态 / 假授权码的外跳与授权端口 debug-web-code（app/src/debugFeatures 的 trade/VariantTrade.kt；APP-06b 共性第 42 条：
+#           开关与执行分支都只在调试编译单元，Release 制品里不得出现）
 #         - 一致性页的假登录账号（conformance-harness）、adb 入口 extra（couli.conformance）、替换配置用的示例域（example.test）；
 #         - Debug 本机一致性测试源的地址 10.0.2.2 / 127.0.0.1 / http(s)://localhost（模拟器访问宿主机 loopback；APP-04「Debug 本机 loopback 例外」，只在 debug：
 #           --self-test 要求 debug 命中、staging 与 release 都不命中）
@@ -156,7 +158,7 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B'; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'debug-web-code'; do
     case "$pattern" in
       "$conformance_marker") label="bridge_conformance" ;;
       "$LOOPBACK_PATTERN") label="loopback_origin" ;;
@@ -167,6 +169,7 @@ scan_apk() {
       COULI_FAKE_SEARCH_SERVER_APP06A) label="fake_search_server" ;;
       COULI_FAKE_WECHAT_ADAPTER_APP05B) label="fake_wechat_adapter" ;;
       COULI_FAKE_TRADE_SERVER_APP06B) label="fake_trade_server" ;;
+      debug-web-code) label="fake_trade_ports" ;;
       "$marker") label="debug_routes_marker" ;;
       "$catalog_marker") label="component_catalog" ;;
       "$update_marker") label="update_check_example" ;;
@@ -268,6 +271,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "fake_search_server"
   require_label "debug" "fake_wechat_adapter"
   require_label "debug" "fake_trade_server"
+  require_label "debug" "fake_trade_ports"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -285,6 +289,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "fake_search_server"
   require_label "staging" "fake_wechat_adapter"
   require_label "staging" "fake_trade_server"
+  require_label "staging" "fake_trade_ports"
   forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"

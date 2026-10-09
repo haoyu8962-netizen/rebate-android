@@ -28,8 +28,14 @@ sealed interface TaobaoAuthOutcome {
         val result: ApiResult,
     ) : TaobaoAuthOutcome
 
-    /** 页面已离开：什么都不做。 */
+    /** 页面已离开，或第一次拉起授权前授权许可已不在（不在前台，没有外跳过）：什么都不做 / 按钮复原。 */
     data object Abandoned : TaobaoAuthOutcome
+
+    /**
+     * 已拉起过授权、30104 恢复后要再次拉起时，用户点击发出的授权许可已撤销（进过后台、被覆盖；APP-06b 共性第 31 条）：不再自动拉起，
+     * 调用方回到前台后向服务端查询授权状态，没授权就交用户再点。
+     */
+    data object Interrupted : TaobaoAuthOutcome
 }
 
 /**
@@ -43,7 +49,9 @@ sealed interface TaobaoAuthOutcome {
  *   - 没有 reason（state 过期或已用）：按新列表重新发起；
  *   恢复最多 [MAX_RECOVERIES] 次（服务端反复返回 30104 时不无限循环），之后按授权失败；
  * - 其它失败（bindings、auth-url 的业务码、42901、5xxxx、传输失败）原样交给调用方（[TaobaoAuthOutcome.RequestFailed]）。
- * 每次等待之后复核 [alive]（页面离开即 [TaobaoAuthOutcome.Abandoned]）。
+ * 每次等待之后复核 [alive]（页面离开即 [TaobaoAuthOutcome.Abandoned]）。每次拉起授权（含 30104 恢复后的再次授权）之前复核 [canJump]：
+ * 用户点击发出的授权许可仍有效、页面在前台（进过后台即撤销，回前台也不恢复，APP-06b 共性第 25、31 条）；不满足就不拉起——还没拉起过
+ * 返回 [TaobaoAuthOutcome.Abandoned]，30104 恢复中返回 [TaobaoAuthOutcome.Interrupted]。
  */
 @Suppress("LongParameterList") // 依赖逐项注入
 class TaobaoAuthFlow(
@@ -54,6 +62,7 @@ class TaobaoAuthFlow(
     private val owner: () -> CallOwnership,
     private val alive: () -> Boolean,
     private val installed: (String) -> String,
+    private val canJump: () -> Boolean = { true },
 ) {
     /** 本端能执行的方式（按本端能力，不看下发顺序）。 */
     private fun supported(): List<String> =
@@ -82,10 +91,14 @@ class TaobaoAuthFlow(
         var data = initial
         val invalid = mutableSetOf<String>()
         var recoveries = 0
+        var jumped = false
         while (true) {
             if (!alive()) return TaobaoAuthOutcome.Abandoned
             val method = pick(platform, data, invalid) ?: return TaobaoAuthOutcome.Failed
             val state = data.text("state") ?: return TaobaoAuthOutcome.Failed
+            // 许可只认用户那一下（共性第 31 条）：已拉起过授权（30104 恢复中）就交调用方回前台查询，不凭「此刻在前台」再拉起
+            if (!canJump()) return if (jumped) TaobaoAuthOutcome.Interrupted else TaobaoAuthOutcome.Abandoned
+            jumped = true
             val step = authorizeWith(method, data.text("auth_url").orEmpty(), state)
             if (!alive()) return TaobaoAuthOutcome.Abandoned
             val credential =

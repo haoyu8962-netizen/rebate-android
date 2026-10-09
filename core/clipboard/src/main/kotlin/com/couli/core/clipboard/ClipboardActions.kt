@@ -180,9 +180,10 @@ object ManualPasteAction {
             return if (code != null) ManualPasteDecision(FILL_INVITE, code = code) else ManualPasteDecision(INVITE_NOT_FOUND)
         }
         if (text.isNullOrEmpty()) return ManualPasteDecision(OPEN_SEARCH_TYPING)
-        // 与自动识别同一套过滤（A-R3-01）：邀请落地页不是商品链接，不进上传片段
+        // 与自动识别同一套过滤（A-R3-01）：邀请落地页不是商品链接，不进上传片段；长度 / 形态过滤（过长、过短、纯字母数字、排除词）
+        // 同样适用于手动粘贴的商品入口（APP-07 共性第 22 条，F-CLIP-02）：不合格的不上传，按「识别不了」给用商品名搜索
         val links = ClipboardText.links(text).filterNot { ClipboardClassifier.inviteLanding(it, shareDomains) }
-        if (links.isNotEmpty()) {
+        if (links.isNotEmpty() && ClipboardClassifier.productRejection(text, links, rules) == null) {
             return ManualPasteDecision(PARSE, uploadText = ClipboardText.uploadText(links, text, rules.maxUploadLinks))
         }
         val code = InviteCodeExtractor.extract(text)

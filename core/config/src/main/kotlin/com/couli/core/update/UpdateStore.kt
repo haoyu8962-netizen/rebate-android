@@ -12,6 +12,8 @@ import com.couli.core.config.CouliPreferenceNamespaces
  * @property forcedBy10405 接口层收到 10405 后进入的强更（还没有新的成功检查推翻它）。
  * @property forcedMinimum 10405 带回的 min_supported_version（可能为空）。
  * @property forcedAppVersion 收到 10405 时的本机版本（10405 没带最低版本时，升级后据此失效，rule-gaps G15）。
+ * @property forcedByServer 服务端已对本机判定强更（[UpdateGate.onServerForced]）：对 [forcedAppVersion] 无条件 below_min，
+ *   不按缓存最低版本比较。
  * @property dismissedLatest 「暂不更新」时记下的目标版本（提示时的 latest_version）。
  */
 data class UpdatePersisted(
@@ -20,6 +22,7 @@ data class UpdatePersisted(
     val forcedBy10405: Boolean = false,
     val forcedMinimum: String? = null,
     val forcedAppVersion: String? = null,
+    val forcedByServer: Boolean = false,
     val dismissedLatest: String? = null,
 )
 
@@ -63,6 +66,7 @@ class SharedPreferencesUpdateStore internal constructor(
             forcedBy10405 = prefs.getBoolean(KEY_FORCED, false),
             forcedMinimum = prefs.getString(KEY_FORCED_MIN, null),
             forcedAppVersion = prefs.getString(KEY_FORCED_APP_VERSION, null),
+            forcedByServer = prefs.getBoolean(KEY_FORCED_BY_SERVER, false),
             dismissedLatest = prefs.getString(KEY_DISMISSED, null),
         )
 
@@ -84,6 +88,7 @@ class SharedPreferencesUpdateStore internal constructor(
         editor.putBoolean(KEY_FORCED, value.forcedBy10405)
         editor.putNullable(KEY_FORCED_MIN, value.forcedMinimum)
         editor.putNullable(KEY_FORCED_APP_VERSION, value.forcedAppVersion)
+        editor.putBoolean(KEY_FORCED_BY_SERVER, value.forcedByServer)
         editor.putNullable(KEY_DISMISSED, value.dismissedLatest)
         check(editor.commit()) { "保存版本检查结论失败" }
     }
@@ -123,6 +128,7 @@ class SharedPreferencesUpdateStore internal constructor(
         const val KEY_FORCED = "forced_by_10405"
         const val KEY_FORCED_MIN = "forced_min_supported_version"
         const val KEY_FORCED_APP_VERSION = "forced_app_version"
+        const val KEY_FORCED_BY_SERVER = "forced_by_server"
         const val KEY_DISMISSED = "dismissed_latest_version"
 
         // 商店键是小写字母、数字、下划线（specs/app-stores.yaml），版本号是数字与点：用制表符与换行分隔不会冲突

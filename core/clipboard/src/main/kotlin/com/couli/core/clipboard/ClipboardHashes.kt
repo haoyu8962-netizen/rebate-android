@@ -7,10 +7,11 @@ package com.couli.core.clipboard
 interface ClipboardHashStore {
     fun read(key: String): String?
 
+    /** 写入并返回是否确认已持久化（生产为同步 commit() 的返回值，APP-07 共性第 25 条）；读回内存不算确认。 */
     fun write(
         key: String,
         value: String?,
-    )
+    ): Boolean
 }
 
 /** 内存实现（测试与没有持久化时）。 */
@@ -22,8 +23,9 @@ class MemoryClipboardHashStore : ClipboardHashStore {
     override fun write(
         key: String,
         value: String?,
-    ) {
+    ): Boolean {
         synchronized(values) { if (value == null) values.remove(key) else values[key] = value }
+        return true
     }
 }
 
@@ -38,16 +40,22 @@ class ClipboardWriteLedger(
 ) {
     private val lock = Any()
 
-    fun record(text: String) = recordHash(hash(text))
+    /** 记下自写内容的 hash；返回是否确认落盘（APP-07 共性第 23、25 条）。 */
+    fun record(text: String): Boolean = recordHash(hash(text))
 
     fun contains(text: String): Boolean = hash(text) in hashes()
 
-    fun recordHash(value: String) {
+    /**
+     * 记下 [value]；存储没确认持久化（同步提交返回 false）或写入抛错时返回 false，调用方据此不写系统剪贴板（APP-07 共性第 23、25 条）。
+     * 不用「读回内存有没有」判断：SharedPreferences 内存已更新而磁盘写失败时读回照样有。
+     */
+    fun recordHash(value: String): Boolean =
         synchronized(lock) {
-            val next = (hashes() - value + value).takeLast(capacity)
-            store.write(KEY, next.joinToString(SEPARATOR))
+            runCatching {
+                val next = (hashes() - value + value).takeLast(capacity)
+                store.write(KEY, next.joinToString(SEPARATOR))
+            }.getOrDefault(false)
         }
-    }
 
     /** 最近 [capacity] 条（旧的在前）。 */
     fun hashes(): List<String> =

@@ -213,7 +213,9 @@ class OpenPurchaseReviewR3Test {
             assertNull("券额未知，不推断为 0", pendingCard.fenOf("coupon_fen"))
             assertNull("券前价未知，不推断为券后价", pendingCard.fenOf("price_fen"))
             assertEquals(5178L, pendingCard.fenOf("final_price_fen"))
-            assertNull("价格构成未知时不显示错误的价格", mapped(pendingCard).data.price)
+            // 价格构成未知时不显示错误的口径（FU-AND-0607 按共性第 34 条改：已知新价照常显示，不带口径词、不给券前副行）
+            assertEquals("价格构成未知时不带口径词", "", mapped(pendingCard).data.price?.mainLabel)
+            assertNull("价格构成未知时不显示券前副行", mapped(pendingCard).data.price?.subLine)
             assertEquals(1, env.refetched)
             // 权威重取：券前 5678、券 500、券后 5178
             env.answerRefetch(quote(price = 5678, coupon = 500, final = 5178))

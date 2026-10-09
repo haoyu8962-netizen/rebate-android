@@ -84,7 +84,8 @@ class ClipboardWriter(
         text: String,
         label: String = DEFAULT_LABEL,
     ): Boolean {
-        ledger.record(text)
+        // 先确认自写 hash 已记下（APP-07 共性第 23 条）：记不下就不写系统剪贴板、返回失败，保证自写内容总能被识别排除
+        if (!ledger.record(text)) return false
         return system.write(text, label)
     }
 
