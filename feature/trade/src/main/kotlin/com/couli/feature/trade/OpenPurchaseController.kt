@@ -291,6 +291,21 @@ class OpenPurchaseController(
     private var awaitingAuthReturn = false
 
     /**
+     * 授权进行中（APP-07 剪贴板敏感浮层，BR-ID-16、G12）：AuthSheet 正在显示 → auth_sheet；已交出授权跳转、等回到前台确认（auth_jump 执行中）
+     * → auth_jump；都不是为 null。
+     */
+    val authOverlay: String?
+        get() =
+            when {
+                awaitingAuthReturn || (mutableState.value.dialog as? PurchaseDialog.AuthSheet)?.busy == true -> OVERLAY_AUTH_JUMP
+                mutableState.value.dialog is PurchaseDialog.AuthSheet -> OVERLAY_AUTH_SHEET
+                else -> null
+            }
+
+    /** AuthSheet 出现时同步调（App 接剪贴板的作废出口，APP-07 A-R1-04）；缺省什么都不做。 */
+    var onAuthOverlay: () -> Unit = {}
+
+    /**
      * 授权世代（A-R3-01，APP-06b 共性第 20 条）：每次发出授权状态查询、开始一次授权流程、授权完成被消费、每次发出新的 open 请求都加 1。
      * 授权查询的归属、授权流程的结果、授权完成后的延迟恢复都绑定发出时的世代与购买尝试；世代变了就作废（旧查询不得关掉新尝试的确认窗）。
      */
@@ -1295,6 +1310,8 @@ class OpenPurchaseController(
 
     private fun showDialog(dialog: PurchaseDialog) {
         mutableState.value = mutableState.value.copy(dialog = dialog)
+        // 授权浮层出现的同步出口（APP-07 剪贴板，A-R1-04）：作废发起页在途的 parse 与提示条
+        if (dialog is PurchaseDialog.AuthSheet) onAuthOverlay()
     }
 
     private fun hideDialog() {
@@ -1327,6 +1344,10 @@ class OpenPurchaseController(
     }
 
     companion object {
+        /** [authOverlay] 的取值（与剪贴板敏感清单同名）。 */
+        const val OVERLAY_AUTH_SHEET = "auth_sheet"
+        const val OVERLAY_AUTH_JUMP = "auth_jump"
+
         /** TRADE-22：open 最多等 8 秒。 */
         const val TIMEOUT_MILLIS = 8_000L
 

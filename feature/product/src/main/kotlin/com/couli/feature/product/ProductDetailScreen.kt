@@ -119,6 +119,11 @@ class ProductPageConfig(
     val subscribeConfig: (listener: () -> Unit) -> (() -> Unit) = { { } },
     /** 进程被回收后自动恢复本页：先等本轮版本检查结果（最长 5 秒，03 §4.4，APP-06a 共性第 28 条）再取详情；没有给时不等。 */
     val restoreGate: (suspend () -> Unit)? = null,
+    /**
+     * 进程内的卡片种子（APP-07 G09：剪贴板 parse 只有 1 张卡时）：首次进入直接以这张卡显示，不重取详情，详情与购买沿用它的 link_id
+     * （entry_source=parse）。之后的【重试】、重新加载照常取详情；进程被回收后恢复本页没有种子，按路由参数取详情。
+     */
+    val seed: JsonObject? = null,
 )
 
 /** 购买流程的界面插槽（App 用 feature:trade 的组件填；feature 之间不互相依赖）。 */
@@ -178,6 +183,8 @@ class ProductDetailViewModel(
                 gate()
                 if (!gone) controller.load(initial.platform, initial.productKey, initial.itemRef)
             }
+        } else if (initial.seed != null && !restored) {
+            controller.loadSeeded(initial.platform, initial.productKey, initial.itemRef, initial.seed)
         } else {
             controller.load(initial.platform, initial.productKey, initial.itemRef)
         }

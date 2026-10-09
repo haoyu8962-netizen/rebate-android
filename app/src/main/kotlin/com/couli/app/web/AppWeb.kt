@@ -1,13 +1,12 @@
 package com.couli.app.web
 
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import androidx.core.content.edit
 import com.couli.app.BuildConfig
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.clientPrivacyRaw
+import com.couli.app.clipboard.AppClipboard
 import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -80,6 +79,8 @@ class AppWeb(
     private val inFlight: InFlightCalls,
     /** 登录（APP-05a）：桥调用 auth.login 等登录页结束再结算（APP-04 共性第 66 条）。 */
     private val login: Provider<AppLogin>,
+    /** 剪贴板（APP-07）：clipboard.write 经唯一写入口记 hash；clipboard.setAutoDetect 只对发起调用的容器实例临时抑制（G06）。 */
+    private val clipboard: Provider<AppClipboard>,
 ) {
     private val bridgeLogin = BridgeLogin({ login.get() }, routing) { update.checkRound }
 
@@ -134,6 +135,8 @@ class AppWeb(
         patternsOverride: JsonObject? = null,
         shareDomainsOverride: Set<String>? = null,
         callerOverride: ((BridgeCallerState) -> BridgeCallerState)? = null,
+        /** 容器所在的回退栈条目（clipboard.setAutoDetect 的临时抑制只对这个容器实例生效，出栈即失效）。 */
+        entryId: String? = null,
     ): BridgeHost {
         // 调试替换（一致性页的示例规则、假定已登录）只在 debug / staging 生效，回环源只在 debug；其余构建一律丢弃（三端共性第 2 条）
         val patterns = patternsOverride?.takeIf { BuildConfig.DEBUG_FEATURES }
@@ -150,7 +153,7 @@ class AppWeb(
         }
         val override = callerOverride?.takeIf { BuildConfig.DEBUG_FEATURES }
         val caller = override?.let { adjust -> { adjust(callerState()) } } ?: ::callerState
-        return BridgeHost(protocol, caller, Services(), ui, ::awaitUpdate, scope).also(hosts::add)
+        return BridgeHost(protocol, caller, Services(entryId), ui, ::awaitUpdate, scope).also(hosts::add)
     }
 
     private fun privacyRaw(): String =
@@ -175,7 +178,9 @@ class AppWeb(
             update.routerUpdate.toBridgeUpdate()
         } ?: BridgeUpdateState.UNKNOWN
 
-    private inner class Services : BridgeServices {
+    private inner class Services(
+        private val entryId: String?,
+    ) : BridgeServices {
         override fun env(): JsonObject =
             buildJsonObject {
                 put("platform", ClientPlatform.ANDROID.raw)
@@ -271,9 +276,8 @@ class AppWeb(
             BridgeRouting.open(routing.router, routing::guardState, route, params, update, round = { this@AppWeb.update.checkRound })
 
         override fun clipboardWrite(text: String): BridgeOutcome {
-            // TODO(APP-09)：剪贴板识别模块接入后记下文本哈希、之后不再识别它（03 §4.6）
-            val manager = context.getSystemService(ClipboardManager::class.java) ?: return fail(BridgeCode.NATIVE_ERROR)
-            manager.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text))
+            // 经 App 写剪贴板的唯一入口：写入前先记 hash，之后识别不再提示（03 §4.6，F-CLIP-02）
+            if (!clipboard.get().writer.write(text, CLIP_LABEL)) return fail(BridgeCode.NATIVE_ERROR)
             return BridgeOutcome.Ok()
         }
 
@@ -290,8 +294,8 @@ class AppWeb(
         }
 
         override fun setClipboardAutoDetect(enabled: Boolean): BridgeOutcome {
-            // TODO(APP-09)：剪贴板自动识别的开关由识别模块读取；这里先只记下用户的选择（本机，不随环境切换）
-            context.getSharedPreferences(CLIPBOARD_PREFS, Context.MODE_PRIVATE).edit { putBoolean(KEY_AUTO_DETECT, enabled) }
+            // G06：只对发起调用的这个网页容器实例生效的临时抑制（容器在栈顶时回前台不读，出栈即失效）；不写设备级开关，不改设置页
+            clipboard.get().setWebAutoDetect(entryId, enabled)
             return BridgeOutcome.Ok()
         }
 
@@ -347,8 +351,6 @@ class AppWeb(
         private const val SCOPE_STANDARD = "standard"
         private const val PRODUCT_INTERCEPT = "external_page.product_intercept"
         private const val CLIP_LABEL = "couli"
-        private const val CLIPBOARD_PREFS = "couli_clipboard"
-        private const val KEY_AUTO_DETECT = "auto_detect"
         private const val UPDATE_WAIT_MS = 5_000L
         private const val UPDATE_POLL_MS = 100L
         private val H5_TOKEN_FIELDS = setOf("token", "expire_at", "scope")

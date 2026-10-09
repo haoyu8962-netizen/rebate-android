@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -163,24 +166,48 @@ private fun SearchEntry(
     }
 }
 
-/** 首页 Tab（已同意）：顶部搜索入口，下面是首页内容（[content]，占位）。 */
+/**
+ * 首页 Tab（已同意）：顶部搜索入口，下面是 [header]（剪贴板提示条与「粘贴链接，先查返利」卡，APP-07）与首页内容（[content]，占位；
+ * 首页 SDUI 在 APP-11）。大屏（03 §10.4，A-R1-08）：搜索入口与 [header] 限宽 600dp、水平居中（与搜索、详情页同一最大宽度）；[header]
+ * 放在可滚动容器里，最多占剩余高度的 3/4，大字号或窗口变矮时滚动查看，主要操作都可达。
+ */
 @Composable
 fun HomeWithSearch(
     onSearch: () -> Unit,
+    header: @Composable () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
         SearchEntry(
             onClick = onSearch,
             modifier =
                 Modifier
+                    .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
                     .fillMaxWidth()
                     .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
                     .testTag(HOME_SEARCH_ENTRY_TAG),
         )
+        Box(
+            modifier =
+                Modifier
+                    .weight(HOME_HEADER_WEIGHT, fill = false)
+                    .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .testTag(HOME_HEADER_TAG),
+        ) { header() }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
     }
 }
+
+/** 首页搜索入口下的剪贴板区滚动容器（A-R1-08）。 */
+const val HOME_HEADER_TAG = "home_header"
+
+/** 首页内容的最大宽度（与搜索、商品详情页同为 600dp，03 §10.4）。 */
+private const val HOME_CONTENT_MAX_WIDTH = 600
+
+/** 剪贴板区与首页内容分剩余高度：剪贴板区最多占 3/4（内容不够时按实际高度）。 */
+private const val HOME_HEADER_WEIGHT = 3f
 
 /** 「我的」Tab 的入口行：设置（ME_SETTINGS_ENTRY_TAG）。 */
 const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"

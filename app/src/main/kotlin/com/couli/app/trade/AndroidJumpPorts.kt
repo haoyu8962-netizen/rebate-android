@@ -1,14 +1,15 @@
 package com.couli.app.trade
 
 import android.content.ActivityNotFoundException
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.net.toUri
 import com.couli.app.web.BrowserExit
+import com.couli.core.clipboard.AndroidSystemClipboard
+import com.couli.core.clipboard.ClipboardWriteLedger
+import com.couli.core.clipboard.ClipboardWriter
 import com.couli.feature.trade.JumpPorts
 import com.couli.feature.trade.JumpTypes
 
@@ -19,13 +20,16 @@ import com.couli.feature.trade.JumpTypes
  * - scheme：ACTION_VIEW 交给声明了该 scheme 的 App，没有能处理的 App 即失败；
  * - universal_link：只交给非浏览器 App（API 30+ FLAG_ACTIVITY_REQUIRE_NON_BROWSER；更低版本解析到浏览器即按失败），浏览器的落点由 h5 步骤负责；
  * - h5：只交系统浏览器（[BrowserExit]：限定在浏览器包内解析，App Links 认领该域名的其他 App 收不到，APP-04 共性第 9 条）；
- * - copy_tpwd：写系统剪贴板。TODO(APP-07)：本 App 写入的内容记 hash，剪贴板识别不再提示（03 §4.6）。
+ * - copy_tpwd：写系统剪贴板，经 App 写剪贴板的唯一入口 [ClipboardWriter]（写入前先记 hash，剪贴板识别不再提示；03 §4.6，APP-07）。
+ *   生产由 AppModule 给 AppClipboard 的写入口；没给时（单测）用一份只在内存里记 hash 的写入口。
  */
 class AndroidJumpPorts(
     context: Context,
     private val packages: Map<String, List<String>> = APP_PACKAGES,
+    writer: ClipboardWriter? = null,
 ) : JumpPorts {
     private val app = context.applicationContext
+    private val writer: ClipboardWriter = writer ?: ClipboardWriter(AndroidSystemClipboard(app), ClipboardWriteLedger())
     private val manager: PackageManager = app.packageManager
 
     override fun installed(platform: String): String {
@@ -57,12 +61,7 @@ class AndroidJumpPorts(
         return start(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
-    override fun copy(text: String): Boolean =
-        runCatching {
-            val clipboard = app.getSystemService(ClipboardManager::class.java) ?: return false
-            clipboard.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text))
-            true
-        }.getOrDefault(false)
+    override fun copy(text: String): Boolean = writer.write(text, CLIP_LABEL)
 
     private fun resolvesToBrowser(intent: Intent): Boolean {
         val target = manager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName ?: return true

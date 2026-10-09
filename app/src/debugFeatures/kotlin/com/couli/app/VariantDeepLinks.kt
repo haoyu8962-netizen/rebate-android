@@ -12,5 +12,8 @@ internal const val DEBUG_DEEP_LINK_SCHEME = "couli-dev"
 
 internal fun variantDeepLinkConfig(): DeepLinkConfig = DeepLinkConfig(schemes = listOf(DEBUG_DEEP_LINK_SCHEME), hosts = emptyList())
 
-/** 启动 Intent 清洗后保留的字符串 extra（R1-01）：组件目录的截图入口（couli.catalog）与桥一致性页（couli.conformance，APP-04）。 */
-internal fun variantLaunchExtraAllowlist(): Set<String> = setOf(CATALOG_EXTRA, CONFORMANCE_EXTRA)
+/**
+ * 启动 Intent 清洗后保留的字符串 extra（R1-01）：组件目录的截图入口（couli.catalog）、桥一致性页（couli.conformance，APP-04）与剪贴板样例
+ * （couli.clip，APP-07 截图：模拟别的 App 复制样例文字）。
+ */
+internal fun variantLaunchExtraAllowlist(): Set<String> = setOf(CATALOG_EXTRA, CONFORMANCE_EXTRA, DEBUG_CLIP_EXTRA)

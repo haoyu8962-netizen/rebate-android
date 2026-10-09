@@ -86,6 +86,30 @@ class ProductDetailController(
         fetch()
     }
 
+    /**
+     * 以进程内的卡片种子显示（APP-07 G09：剪贴板 parse 的卡）：直接进内容态，不发 getProduct；卡上的 link_id 原样保留给购买。
+     */
+    fun loadSeeded(
+        platform: String,
+        productKey: String,
+        itemRef: String?,
+        seed: JsonObject,
+    ) {
+        left = false
+        this.platform = platform
+        this.productKey = productKey
+        this.itemRef = itemRef
+        counter += 1
+        current = counter
+        mutableState.value =
+            ProductSnapshot(
+                phase = ProductPhase.CONTENT,
+                product = seed,
+                view = ProductDetailState.map(seed, context()),
+                shownSeq = counter,
+            )
+    }
+
     /** 【重试】：42901 禁用中、不在错误态时不发请求（返回 false）。 */
     fun retry(): Boolean {
         if (mutableState.value.phase != ProductPhase.ERROR || gate.active) return false

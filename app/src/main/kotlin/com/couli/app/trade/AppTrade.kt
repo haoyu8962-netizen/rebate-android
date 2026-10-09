@@ -73,8 +73,12 @@ class AppTrade(
     val tips = JumpTipService(api) { sessionKey() }
     val pending: PurchasePending = RouterPurchasePending()
 
-    /** 活着的发起页执行器（登录完成后的自动恢复只交给它们）。 */
-    private val live = linkedSetOf<OpenPurchaseController>()
+    /**
+     * 活着的发起页执行器（登录完成后的自动恢复只交给它们）。主线程在登记与出栈的同步出口整体替换成新的不可变列表（A-R2-04）：任何线程
+     * 读到的都是一份完整快照，遍历时不会被并发修改。
+     */
+    @Volatile
+    private var live: List<OpenPurchaseController> = emptyList()
 
     /** 点击结果确认的平台购买状态（50301），进程里一份；分界之后发出并生效的配置覆盖它。 */
     val overrides = PlatformStatusOverrides(issuedMark = { store?.issuedFetchId ?: 0L }, appliedMark = { store?.appliedFetchId ?: 0L })
@@ -83,7 +87,7 @@ class AppTrade(
         scope.launch {
             // 补同意完成：登记了购买待办的发起页恢复一次（不同意时 Router 已删除待办，这里不会走到）
             routing.privacy.drop(1).collect { state ->
-                if (state == PrivacyState.CONSENTED) main.post { live.toList().forEach(OpenPurchaseController::resumeAfterConsent) }
+                if (state == PrivacyState.CONSENTED) main.post { live.forEach(OpenPurchaseController::resumeAfterConsent) }
             }
         }
         scope.launch {
@@ -92,7 +96,7 @@ class AppTrade(
                 if (state.loggedIn() &&
                     !routing.router.pendingHeld
                 ) {
-                    main.post { live.toList().forEach(OpenPurchaseController::resumeAfterLogin) }
+                    main.post { live.forEach(OpenPurchaseController::resumeAfterLogin) }
                 }
             }
         }
@@ -120,11 +124,20 @@ class AppTrade(
             baichuan = baichuan,
             scope = scope,
             browserNoticeMillis = browserNoticeMillis,
-        ).also { live += it }
+        ).also {
+            it.onAuthOverlay = { onSensitiveOverlay() }
+            live = live + it
+        }
+
+    /** 敏感浮层（AuthSheet）出现的同步出口（APP-07：AppModule 接剪贴板的作废，A-R1-04）。 */
+    var onSensitiveOverlay: () -> Unit = {}
+
+    /** 授权进行中的敏感浮层（APP-07 剪贴板：AuthSheet、auth_jump 执行中时回前台不读）；没有为 null。遍历的是不可变快照 [live]。 */
+    fun sensitiveOverlay(): String? = live.firstNotNullOfOrNull { it.authOverlay }
 
     fun release(controller: OpenPurchaseController) {
         controller.leave()
-        live -= controller
+        live = live - controller
     }
 
     fun authManageController(scope: CoroutineScope): AuthManageController =

@@ -65,13 +65,14 @@ fun BindPhoneRoute(login: AppLogin) {
 
 /**
  * 设置页（Settings 占位，APP-05a 只放【退出登录】；其余设置项在设置任务实现）：已登录时显示【退出登录】→ 确认框（SettingsLogoutConfirm）
- * → 登出，回到游客并关闭设置页。
+ * → 登出，回到游客并关闭设置页。[extra]：挂到现有设置页上的其余行（APP-07 的剪贴板开关），整页留给 APP-09。
  */
 @Composable
 fun SettingsRoute(
     login: AppLogin,
     routing: AppRouting,
     onBack: () -> Unit,
+    extra: @Composable () -> Unit = {},
 ) {
     val texts = LoginDraftTexts
     val session by routing.session.collectAsStateWithLifecycle()
@@ -97,6 +98,8 @@ fun SettingsRoute(
         }
         // 授权管理的正式入口（BR-ID-17 细则，A-R1-14）：经 Router 打开，登录 / 隐私守卫照常
         AuthManageEntry(onOpen = { openAuthManage(routing) })
+        // 其余设置项（APP-07：Android「打开 App 自动识别剪贴板」一行）；TODO(APP-09) 设置整页
+        extra()
         if (session != SessionState.GUEST) {
             CouliButton(
                 text = texts.text("settings.logout"),

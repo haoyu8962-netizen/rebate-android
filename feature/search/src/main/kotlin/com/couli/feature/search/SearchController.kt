@@ -450,7 +450,7 @@ class SearchController(
      * 50304 + search_disabled（error-codes：不显示重试，刷新配置并隐藏该平台 Tab；BR-PROD-10）：本页先移除该平台，请求配置刷新，按可用
      * 平台回落（统一入口 [fallBack]：本轮已关闭过的平台不再自动重搜，A-R2-01）；没有可用平台就进入「无可搜索平台」。提示保留到用户下一次
      * 换条件。
-     * TODO(APP-07)：提示里的「粘贴商品链接查返利」入口随剪贴板识别接入。
+     * 「粘贴商品链接查返利」入口（APP-07）：提示在时页面不论处于哪个阶段都显示 App 给的粘贴入口（SearchPageConfig.pasteEntry，A-R2-03）。
      */
     private fun searchDisabled(
         view: SearchResultView,

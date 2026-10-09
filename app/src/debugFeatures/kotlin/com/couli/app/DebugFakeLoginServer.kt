@@ -101,13 +101,24 @@ internal class DebugFakeLoginServer(
     ): Triple<Int, String, Map<String, String>> =
         when (path) {
             "/v1/devices" -> ok("""{"device_id":"fake-device-0001","install_secret":"fake-install-0001"}""")
+
             "/v1/auth/sms-codes" -> sms(body.text("phone"))
+
             "/v1/auth/login/sms" -> login(body.text("code"), body.text("invite_code"))
+
             "/v1/auth/refresh" -> ok("""{${tokens("full")}}""")
+
             "/v1/auth/oauth-attempts" -> ok(attempt())
+
             "/v1/auth/login/wechat" -> wechatLogin()
+
             "/v1/me" -> ok("""{"user_id":"fake-user-0002","phone_bound":$phoneBound}""")
+
             "/v1/me/phone" -> bindPhone(body.text("phone"), body.text("code"))
+
+            // 剪贴板识别（APP-07，DebugFakeSearch.parseInput）：按上传片段里的场景词回答
+            "/v1/inputs/parse" -> DebugFakeSearch.parseInput(body.text("text").orEmpty())
+
             else -> ok("{}")
         }
 

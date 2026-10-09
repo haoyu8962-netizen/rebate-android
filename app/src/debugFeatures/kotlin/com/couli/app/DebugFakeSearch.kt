@@ -120,6 +120,51 @@ internal object DebugFakeSearch {
         }
     }
 
+    /**
+     * 剪贴板 parse（APP-07 设计稿比对与冒烟）：按上传片段（链接 + 「」标题）里的场景词回答——busy 42901（Retry-After 10）、fail 50001、
+     * unsupported 30131、unrec 30132、multi 两条结果（一张卡 + 一条 30131）、mixed 三条结果（一张卡 + 30132 + 50001）；其余回 1 张卡（详情样例卡，link_id 带场景名）。
+     */
+    fun parseInput(text: String): Triple<Int, String, Map<String, String>> {
+        fun has(word: String) = text.contains(word, ignoreCase = true)
+        val hit = { raw: String -> """{"platform":"taobao","kind":"url","raw":${JsonPrimitive(raw)}}""" }
+        val link = text.lineSequence().firstOrNull { it.startsWith("http") } ?: text
+        val cardResult = """{"hit":${hit(link)},"card":${card("tb", "detail", "taobao")}}"""
+        return when {
+            has("busy") -> {
+                Triple(RATE_LIMITED, "null", mapOf("Retry-After" to "10"))
+            }
+
+            has("fail") -> {
+                fail(SERVER_ERROR)
+            }
+
+            has("unsupported") -> {
+                fail(UNSUPPORTED)
+            }
+
+            has("unrec") -> {
+                fail(UNRECOGNIZED)
+            }
+
+            // 多结果逐条按码（A-R1-05 截图）：一张卡 + 一条 30132（口令带「」标题）+ 一条 50001（trace6）
+            has("mixed") -> {
+                val unrec = """{"platform":"taobao","kind":"tpwd","raw":${JsonPrimitive("￥Zx8Cv7Bn6Mq￥「全脂纯牛奶 250ml」")}}"""
+                ok(
+                    """{"results":[$cardResult,{"hit":$unrec,"error_code":$UNRECOGNIZED},""" +
+                        """{"hit":${hit("https://u.jd.com/fail")},"error_code":$SERVER_ERROR}]}""",
+                )
+            }
+
+            has("multi") -> {
+                ok("""{"results":[$cardResult,{"hit":${hit("https://u.jd.com/unsupported")},"error_code":$UNSUPPORTED}]}""")
+            }
+
+            else -> {
+                ok("""{"results":[$cardResult]}""")
+            }
+        }
+    }
+
     private fun disabled(platform: String) =
         Triple(DISABLED, """{"platform":"$platform","reason":"search_disabled"}""", emptyMap<String, String>())
 
@@ -314,6 +359,9 @@ internal object DebugFakeSearch {
     private const val DISABLED = 50304
     private const val OFF_SHELF = 30141
     private const val REF_EXPIRED = 30143
+    private const val SERVER_ERROR = 50001
+    private const val UNSUPPORTED = 30131
+    private const val UNRECOGNIZED = 30132
     private const val MARKER_HEADER = "X-Couli-Debug-Fake"
 }
 

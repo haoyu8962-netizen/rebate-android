@@ -91,6 +91,7 @@ object LoginTags {
     const val CONTINUE_CODE = "login_continue_code"
     const val INVITE_ENTRY = "login_invite_entry"
     const val INVITE = "login_invite"
+    const val INVITE_PASTE = "login_invite_paste"
     const val CODE = "login_code"
     const val CODE_CELL = "login_code_cell_"
     const val RESEND = "login_resend"
@@ -685,7 +686,29 @@ private fun InviteField(
     val decision = InviteField.decide(state.invite, kotlinx.serialization.json.JsonObject(emptyMap()))
     val label = texts.text("login.invite.label")
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary, modifier = Modifier.clearAndSetSemantics {})
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = CouliTypography.footnote,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.weight(1f).clearAndSetSemantics {},
+            )
+            // 邀请码行【粘贴】（LoginCodeInvite，APP-07）：用户点击才读剪贴板，只抽码
+            if (model.invitePasteAvailable) {
+                // 42901 共享禁用期内置灰（A-R1-06；执行层另在 onPasteInvite 拦）
+                val blocked by model.invitePasteBlocked.collectAsStateWithLifecycle()
+                TextLink(
+                    text = texts.text(INVITE_PASTE_KEY),
+                    onClick = model::onPasteInvite,
+                    enabled = !blocked,
+                    color = if (blocked) CouliColors.textSecondary else CouliColors.textLink,
+                    modifier =
+                        Modifier
+                            .testTag(LoginTags.INVITE_PASTE)
+                            .semantics { contentDescription = texts.text(INVITE_PASTE_LABEL_KEY) },
+                )
+            }
+        }
         InputBox(error = false) {
             Box(
                 modifier =
@@ -925,3 +948,6 @@ private const val CONTENT_MAX_WIDTH = 480
 
 /** 协议说明句的缩进：复选框 20 + 间距 8。 */
 private const val CHECK_INDENT = 28
+
+private const val INVITE_PASTE_KEY = "clipboard.login_invite.paste"
+private const val INVITE_PASTE_LABEL_KEY = "clipboard.login_invite.paste_label"

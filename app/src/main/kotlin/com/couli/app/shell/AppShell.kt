@@ -5,6 +5,7 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -13,11 +14,17 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDestination.Companion.hasRoute
+import androidx.navigation.NavGraph
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.couli.app.clipboard.AppClipboard
+import com.couli.app.clipboard.ClipboardResultHost
+import com.couli.app.clipboard.ClipboardSettingsRow
+import com.couli.app.clipboard.HomeClipboardArea
 import com.couli.app.login.AppLogin
 import com.couli.app.login.BindPhoneRoute
 import com.couli.app.login.LoginNoticeHost
@@ -83,6 +90,8 @@ import kotlinx.serialization.json.jsonObject
  * @param homeContent 首页 Tab 的根内容（首页 Feature 的占位；debug / staging 是调试首屏）。
  * @param update 强更检查（APP-02c）；为 null 时不显示强更页与更新提示（只测外壳的单测）。
  * @param web 两类 WebView 容器与 JSBridge 的接线（APP-04）；为 null 时 WebPage / ExternalPage 是占位页（只测外壳的单测）。
+ * @param clipboard 剪贴板识别（APP-07）：首页提示条与粘贴卡、设置页开关、parse 结果；外壳把「当前前台界面」（回退栈栈顶、选中的 Tab、
+ *   基本模式页）同步告诉它。为 null 时都不显示（只测外壳的单测）。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 外壳按可选接线（强更、桥、登录）逐项组合
@@ -95,6 +104,7 @@ fun AppShell(
     web: AppWeb? = null,
     login: AppLogin? = null,
     search: AppSearch? = null,
+    clipboard: AppClipboard? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -105,7 +115,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search) {
+        remember(homeContent, update, web, login, search, clipboard) {
             RoutePageRegistry(
                 mapOf(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -128,7 +138,11 @@ fun AppShell(
                     },
                     // 设置页占位：APP-05a 只放【退出登录】（SettingsLogoutConfirm）
                     SETTINGS_ROUTE to { page ->
-                        login?.let { SettingsRoute(it, routing) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
+                        login?.let {
+                            SettingsRoute(it, routing, onBack = { navController.popBackStack() }) {
+                                clipboard?.let { board -> ClipboardSettingsSlot(board, privacy) }
+                            }
+                        } ?: PlaceholderRoutePage(page)
                     },
                     // 搜索与商品详情（APP-06a）；没有接线（只测外壳的单测）时是占位页
                     SEARCH_ROUTE to { page ->
@@ -149,20 +163,34 @@ fun AppShell(
             )
         }
     val hooks =
-        remember(privacy, login, search) {
+        remember(privacy, login, search, clipboard) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
-                onOpenTab = { route, readonly -> ShellTab.ofRoute(route)?.let { selection = TabSelection(it, readonly) } },
+                onOpenTab = { route, readonly ->
+                    ShellTab.ofRoute(route)?.let {
+                        // 剪贴板（APP-07，A-R1-03）：在提交 Tab 切换的同步出口先告知剪贴板（作废首页提示条与首页发起的 parse），再改选中项；
+                        // 不等下一次重组的 SideEffect
+                        clipboard?.onShell(it.route, privacy.conclusion == PrivacyState.BASIC_MODE)
+                        selection = TabSelection(it, readonly)
+                    }
+                },
                 onRequestConsent = { privacy.requestFullFunction() },
                 pageAllowed = { page -> stillAllowedWithUpdate(page, routing.guardState()) },
                 onBackStack = { entries ->
                     login?.followBackStack(entries)
                     // 搜索、详情页出栈的同步出口：立即作废其在途请求（APP-06a，APP-05a 共性第 9 条）
                     search?.followBackStack(entries)
+                    // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
+                    clipboard?.let { followClipboard(it, entries) }
                 },
             )
         }
     val activity = LocalActivity.current
+    // 剪贴板（APP-07）：选中的 Tab 与基本模式页的兜底同步（隐私结论变化、恢复保存的选中项等）；用户点 Tab 已在 onOpenTab 同步告知（A-R1-03）
+    if (clipboard != null) {
+        val basicShell = conclusion == PrivacyState.BASIC_MODE
+        SideEffect { clipboard.onShell(selection.tab.route, basicShell) }
+    }
 
     // 隐私结论变化（先于 Router 收到通知，AppPrivacy.onConclusionChanged(beforeRouting = true)）：
     // 进入基本模式（含撤回）→ 清导航栈、切回基本模式页；其余变化按新结论重新过守卫选中的 Tab（R1-06），只收紧不放宽（R2-02）。
@@ -217,6 +245,7 @@ fun AppShell(
                             registry = registry,
                             routing = routing,
                             onEnableFullFunction = { privacy.requestFullFunction() },
+                            clipboard = clipboard,
                         )
                     },
                 )
@@ -236,6 +265,8 @@ fun AppShell(
     if (update != null) UpdatePromptHost(update, updateUi, hidden = showPrompt || topRoute == RouteNames.FORCE_UPDATE)
     // 登录成功后的邀请绑定结果（LoginInviteBound / LoginInviteFailed）：显示在恢复的页面之上
     if (login != null && !showPrompt) LoginNoticeHost(login) { routing.router.open(inAppRequest(ME_ROUTE)) }
+    // 剪贴板 parse / 手动粘贴的结果（轻提示、30132【用商品名搜索】、多卡弹层）：只在发起页仍是当前页时显示
+    if (clipboard != null && !showPrompt) ClipboardResultHost(clipboard)
     if (showPrompt) {
         PrivacyPromptDialog(
             stage = privacyState.promptStage,
@@ -327,6 +358,7 @@ private fun TabRoot(
     registry: RoutePageRegistry,
     routing: AppRouting,
     onEnableFullFunction: () -> Unit,
+    clipboard: AppClipboard?,
 ) {
     val destination = RouteDestination(tab.route, EMPTY_PARAMS, readonly = readonly)
     if (tab == ShellTab.HOME && basicMode) {
@@ -337,7 +369,11 @@ private fun TabRoot(
         ) { registry.Render(destination) }
     } else if (tab == ShellTab.HOME) {
         // 首页 Tab 顶部的搜索入口（经 Router 打开 Search，APP-06a 冒烟入口）；首页内容在首页任务（TODO(APP-11)）
-        HomeWithSearch(onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) }) { registry.Render(destination) }
+        // 剪贴板（APP-07）：提示条（只在首页根页）、Android 开关关闭时的粘贴按钮、「粘贴链接，先查返利」卡
+        HomeWithSearch(
+            onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
+            header = { clipboard?.let { HomeClipboardArea(it) } },
+        ) { registry.Render(destination) }
     } else if (tab == ShellTab.ME) {
         // 「我的」Tab 顶部的账号入口：授权管理（A-R1-14）、设置；「我的」页正文在后续任务（占位）
         MeWithEntries(
@@ -386,3 +422,32 @@ private const val SETTINGS_ROUTE = "Settings"
 private const val AUTH_MANAGE_ROUTE = "AuthManage"
 private const val ME_ROUTE = "Me"
 private const val EMPTY_PARAMS = "{}"
+
+/** 设置页的剪贴板开关一行（APP-07）：只在已同意隐私政策时显示（游客也显示）；基本模式、撤回同意后不显示。 */
+@Composable
+private fun ClipboardSettingsSlot(
+    clipboard: AppClipboard,
+    privacy: AppPrivacy,
+) {
+    val state by privacy.state.collectAsStateWithLifecycle()
+    if (state.toRouterPrivacy() == PrivacyState.CONSENTED) ClipboardSettingsRow(clipboard)
+}
+
+/** 回退栈 → 剪贴板的「当前前台界面」：栈顶路由名（起点为 null）、栈顶条目与全部条目（主线程、同一条消息）。 */
+internal fun followClipboard(
+    clipboard: AppClipboard,
+    entries: List<NavBackStackEntry>,
+) {
+    val pages = entries.filter { it.destination !is NavGraph }
+    val top = pages.lastOrNull() ?: return
+    val name =
+        when {
+            top.destination.hasRoute(HomeDestination::class) -> null
+            top.destination.hasRoute(RouteDestination::class) -> top.toRoute<RouteDestination>().name
+            else -> UPGRADE_PAGE
+        }
+    clipboard.onBackStack(name, top.id, pages.map { it.id }.toSet())
+}
+
+/** 升级提示页（没有路由名，TODO(N-14)）。 */
+private const val UPGRADE_PAGE = "UpgradePrompt"

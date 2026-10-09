@@ -51,8 +51,14 @@ object CouliPreferenceNamespaces {
      */
     const val PERMISSION = "couli_permission"
 
+    /**
+     * 剪贴板识别（APP-07）：设备级开关「打开 App 自动识别剪贴板」与本机 hash 记录（自写内容、24 小时提示记录）。**故意不以 [PREFIX] 开头**：
+     * 开关是本机用户的选择，与连哪个服务器、登录哪个账号无关（BR-ID-16），切换环境不清；hash 记录在撤回同意时由剪贴板模块清空。
+     */
+    const val CLIPBOARD = "couli_clipboard"
+
     /** 已登记、但切换环境时保留的 SharedPreferences（不在命名空间内）。 */
-    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION)
+    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION, CLIPBOARD)
 
     init {
         registered.forEach { name ->

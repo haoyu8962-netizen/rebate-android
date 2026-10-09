@@ -23,6 +23,7 @@ import com.couli.feature.login.BindPhoneHost
 import com.couli.feature.login.BindPhonePageActions
 import com.couli.feature.login.BindPhonePageConfig
 import com.couli.feature.login.BindPhoneService
+import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginHost
 import com.couli.feature.login.LoginOutcome
@@ -324,6 +325,9 @@ class AppLogin(
         return wait.result.await()
     }
 
+    /** 邀请码的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
+    var invite: InvitePasteSource? = null
+
     /** 登录页配置。[restricted]：从强更页进入（APP-02c 已有标记：强更 below_min 时 Login 只能从强更页进入）。 */
     fun pageConfig(restricted: Boolean): LoginPageConfig {
         val expired = sessionExpiredPending
@@ -336,6 +340,8 @@ class AppLogin(
             // 第三方登录（APP-05b）：Android 只有微信；适配器不可用（正式包恒为不可用）或本机确知没装时不显示（任务书 §2.2）
             oauth = oauth,
             thirdParty = if (restricted) emptyList() else oauth.visibleProviders(),
+            // 邀请码的剪贴板来源（APP-07：游客邀请预填、邀请码行【粘贴】）；受限登录不用
+            invite = if (restricted) null else invite,
             actions =
                 LoginPageActions(
                     onClose = ::closeLogin,

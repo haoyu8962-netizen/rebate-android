@@ -85,6 +85,16 @@ class SearchPageConfig(
      * 重搜；用户主动打开不等。没有给（单测）时不等。
      */
     val restoreGate: (suspend () -> Unit)? = null,
+    /**
+     * 「粘贴查返利」入口（APP-07，SearchTyping；App 给剪贴板的 PasteEntry）：输入态（还没搜）、无可搜索平台时显示；有 search_disabled 提示时
+     * 不论搜索处于哪个阶段都独立显示（BR-TEXT-14：50304.search_disabled 给【粘贴链接查返利】，A-R2-03）。
+     */
+    val pasteEntry: (@Composable () -> Unit)? = null,
+    /**
+     * 粘贴结果（APP-07：30132 的提示与【用商品名搜索】）：挂在搜索栏下面、不依赖搜索阶段（粘贴后已开始关键词搜索也看得见，A-R2-02）；
+     * 是否属于本页由 App 按发起页核对。参数是本页搜索框的「填入并搜索」。
+     */
+    val pasteResult: (@Composable (fill: (String) -> Unit) -> Unit)? = null,
 )
 
 /** 搜索页的弹层。 */

@@ -12,6 +12,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.app.clientcore.ActivityPermissionHost
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
+import com.couli.app.clipboard.AppClipboard
 import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -72,6 +73,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var productImages: AppProductImages
 
+    @Inject
+    lateinit var clipboard: AppClipboard
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,6 +109,7 @@ class MainActivity : ComponentActivity() {
                                 web = web,
                                 login = login,
                                 search = search,
+                                clipboard = clipboard,
                                 homeContent = { VariantRootContent(trace = trace) },
                             )
                         },
@@ -118,6 +123,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // 剪贴板（APP-07）：冷启动进入前台、或真正经过后台之后回到前台，才算一次回前台（配置变更重建不算）；之后第一次获得窗口焦点时读 1 次
+        if (!clipboardRebuilt) clipboard.onForeground(cold = clipboardColdStart, hasFocus = hasWindowFocus())
+        clipboardColdStart = false
+        clipboardRebuilt = false
         // AuthSheet 自动弹出计数：后台停留 ≥ 1800 秒回前台清零（BR-ID-18）
         search.trade?.onAppForeground()
         // 回前台：距上次成功检查超过复查间隔才查（03 §4.1）；冷启动那次由 Application 发起
@@ -134,8 +143,15 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        clipboard.onWindowFocus(hasFocus)
+    }
+
     override fun onStop() {
         super.onStop()
+        // 进后台（配置变更重建除外）：作废未点击的提示条、在途读取与 parse
+        if (isChangingConfigurations) clipboardRebuilt = true else clipboard.onBackground()
         if (!isChangingConfigurations) search.trade?.onAppBackground()
         // 旋转等配置变更的重建不算回前台
         skipNextForeground = isChangingConfigurations
@@ -144,6 +160,12 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** 下一次 onStart 不是回前台：进程里第一次显示（冷启动检查由 Application 发起）或配置变更重建。按进程记。 */
         var skipNextForeground = true
+
+        /** 剪贴板：进程里第一次 onStart 是冷启动进入前台。按进程记。 */
+        var clipboardColdStart = true
+
+        /** 剪贴板：下一次 onStart 是配置变更重建（不算回前台）。按进程记。 */
+        var clipboardRebuilt = false
     }
 
     override fun onNewIntent(intent: Intent) {

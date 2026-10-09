@@ -17,6 +17,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
+import com.couli.app.clipboard.AppClipboard
+import com.couli.app.clipboard.SearchTypingPasteEntry
+import com.couli.app.clipboard.SearchTypingPasteResult
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
 import com.couli.app.trade.AppTrade
@@ -90,6 +93,8 @@ class AppSearch(
     private val privacy: () -> PrivacyState,
     private val api: PageApi = ApiClientPageApi(client),
     val trade: AppTrade? = null,
+    /** 剪贴板识别（APP-07）：SearchTyping 的「粘贴查返利」与 parse 卡片种子；没有接（只测外壳的单测）时不显示粘贴入口。 */
+    private val clipboard: AppClipboard? = null,
 ) {
     /** 回退栈条目 id → 该页的购买执行器（随页面出栈作废）。 */
     private val purchases = mutableMapOf<String, PurchasePage>()
@@ -246,6 +251,16 @@ class AppSearch(
             purchase = purchase?.let { searchSlots(it) } ?: SearchPurchaseSlots(),
             bindController = { controller -> purchase?.search = controller },
             restoreGate = ::awaitUpdateCheck,
+            // 「粘贴查返利」（APP-07）：基本模式不读剪贴板，不显示
+            pasteEntry =
+                clipboard?.takeIf { privacy() == PrivacyState.CONSENTED }?.let { board ->
+                    { SearchTypingPasteEntry(board) }
+                },
+            // 粘贴结果（30132）：不依赖搜索阶段显示，仍只认本页发起的结果（A-R2-02）
+            pasteResult =
+                clipboard?.let { board ->
+                    { fill -> SearchTypingPasteResult(board, entryId, fill) }
+                },
         )
     }
 
@@ -310,6 +325,8 @@ class AppSearch(
             bindController = { controller -> purchase?.product = controller },
             subscribeConfig = { listener -> configPort.subscribe(listener) },
             restoreGate = ::awaitUpdateCheck,
+            // 剪贴板 parse 只有 1 张卡时的进程内种子（APP-07 G09）：沿用 parse 卡的 link_id
+            seed = clipboard?.seeds?.claim(entryId, key),
         )
     }
 

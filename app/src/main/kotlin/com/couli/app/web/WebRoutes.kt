@@ -8,6 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.net.toUri
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.navigation.NavBackStackEntry
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
 import com.couli.core.router.RouteNames
@@ -33,11 +35,13 @@ fun WebPageRoute(
     onClose: () -> Unit,
 ) {
     val config = remember(web) { web.trustedConfig() }
+    // 容器所在的回退栈条目：clipboard.setAutoDetect 的临时抑制只对这个容器实例生效（APP-07 G06）
+    val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
     TrustedWebScreen(
         url = page.param("url").orEmpty(),
         config = config,
         // 宿主用容器实例自己的作用域：被盖住不取消，出栈时随容器拆除取消
-        hostFactory = { ui, scope -> web.newHost(ui, scope) },
+        hostFactory = { ui, scope -> web.newHost(ui, scope, entryId = entryId) },
         onOpenExternal = { url -> openExternal(routing, url) },
         onClose = onClose,
     )

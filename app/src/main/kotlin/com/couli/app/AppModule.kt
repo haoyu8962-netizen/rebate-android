@@ -8,6 +8,9 @@ import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
 import com.couli.app.clientcore.pendingEventsSink
 import com.couli.app.clientcore.trackerCanUpload
+import com.couli.app.clipboard.AppClipboard
+import com.couli.app.clipboard.ClipboardPreferences
+import com.couli.app.clipboard.connect
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
@@ -36,6 +39,8 @@ import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clientcore.ExecutorPeriodicScheduler
 import com.couli.core.clientcore.TrackerQueue
 import com.couli.core.clientcore.TrackerSink
+import com.couli.core.clipboard.AndroidSystemClipboard
+import com.couli.core.clipboard.ClipboardSensitive
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.EnvironmentSwitchListener
@@ -73,6 +78,7 @@ import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.core.update.UpdateGate
+import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
 import com.couli.generated.ClientPlatform
 import com.couli.generated.InstallChannel
@@ -88,6 +94,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.StateFlow
 
 /** App 级依赖。 */
 @Module
@@ -281,6 +288,8 @@ object AppModule {
                 trackerQueueFile(context).write(null)
                 tracker.get().clear()
             }
+            // 剪贴板（APP-07）：本机的自写记录与 24 小时提示记录（只有 hash）一并删除；设备级开关不在撤回清理范围（BR-ID-16）
+            register(CLIPBOARD_HASHES_CLEANER) { ClipboardPreferences(context).clearHashes() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -527,6 +536,7 @@ object AppModule {
         routing: AppRouting,
         update: AppUpdate,
         privacy: AppPrivacy,
+        clipboard: Provider<AppClipboard>,
     ): AppLogin =
         AppLogin(
             client = client,
@@ -540,6 +550,15 @@ object AppModule {
         ).also { login ->
             privacy.onConclusionChanged { login.syncSession() }
             update.onRouterUpdate { login.syncSession() }
+            // 邀请码的剪贴板来源（APP-07）：游客邀请预填、邀请码行【粘贴】
+            login.invite =
+                object : InvitePasteSource {
+                    override fun takePrefill(): String? = clipboard.get().invitePrefill.take()
+
+                    override fun paste(): String? = clipboard.get().pasteInviteCode()
+
+                    override val blocked: StateFlow<Boolean> get() = clipboard.get().blocked
+                }
         }
 
     /**
@@ -548,13 +567,15 @@ object AppModule {
      */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 网络、配置、路由、隐私、购买与剪贴板逐项注入
     fun appSearch(
         client: ApiClient,
         config: AppConfig,
         routing: AppRouting,
         privacy: AppPrivacy,
         trade: AppTrade,
-    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion }, trade = trade)
+        clipboard: AppClipboard,
+    ): AppSearch = AppSearch(client, config.store, routing, privacy = { privacy.conclusion }, trade = trade, clipboard = clipboard)
 
     /**
      * 购买、外跳与授权（APP-06b）：open 经 ApiClient（请求带页面归属）；百川是不可用实现（SDK 未引入、AppKey 占位，TODO(N-28)）；
@@ -570,6 +591,7 @@ object AppModule {
         routing: AppRouting,
         tracker: Provider<TrackerQueue>,
         privacy: Provider<AppPrivacy>,
+        clipboard: AppClipboard,
     ): AppTrade =
         AppTrade(
             api = ApiClientPageApi(client),
@@ -578,11 +600,15 @@ object AppModule {
             tracker = tracker,
             baichuan = UnavailableBaichuan(),
             webCode = variantWebCodeAuthorizer(context),
-            ports = variantJumpPorts(context, AndroidJumpPorts(context)),
+            // copy_tpwd 经剪贴板唯一写入口（写入前记 hash，APP-07）
+            ports = variantJumpPorts(context, AndroidJumpPorts(context, writer = clipboard.writer)),
             browserNoticeMillis = variantBrowserNoticeMillis(),
             // 基本模式下点购买：弹补同意（与 Router 的补同意同一个弹窗，A-R1-04）
             consentPrompt = { privacy.get().requestFullFunction() },
-        )
+        ).also { trade ->
+            // AuthSheet 出现时同步作废剪贴板在途的 parse 与提示条（APP-07，A-R1-04）
+            trade.onSensitiveOverlay = clipboard::onSensitiveOverlay
+        }
 
     /** 商品图加载（APP-06a 共性第 22 条）：经 App 的 HTTP 客户端（debug 带本机假服务）取 https 图片。 */
     @Provides
@@ -613,7 +639,43 @@ object AppModule {
         tokens: SessionTokens,
         inFlight: InFlightCalls,
         login: Provider<AppLogin>,
-    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight, login)
+        clipboard: Provider<AppClipboard>,
+    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight, login, clipboard)
+
+    /**
+     * 剪贴板识别（APP-07；BR-ID-16、BR-INV-04）：系统剪贴板经 [AndroidSystemClipboard]；parse 经 ApiClient（请求带提示条 / 发起页的归属）；
+     * 隐私结论、会话与环境变化时作废提示条与在途 parse；浮层来源（AuthSheet、auth_jump、第三方登录进行中）经 Provider 现取。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 各状态源逐项注入
+    fun appClipboard(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+        config: AppConfig,
+        tokens: SessionTokens,
+        cleaners: EnvironmentSwitchCleanerRegistry,
+        trade: Provider<AppTrade>,
+        login: Provider<AppLogin>,
+    ): AppClipboard =
+        AppClipboard(
+            system = AndroidSystemClipboard(context),
+            api = ApiClientPageApi(client),
+            routing = routing,
+            privacy = { privacy.conclusion },
+            promptShowing = { privacy.promptShowing },
+            configData = { config.store.snapshots.value.data },
+            prefs = ClipboardPreferences(context),
+            sessionEpoch = { tokens.loginEpoch },
+        ).also { board ->
+            board.overlay = {
+                trade.get().sensitiveOverlay() ?: ClipboardSensitive.OVERLAY_OAUTH.takeIf { login.get().oauth.busy }
+            }
+            // 隐私结论（撤回、基本模式）、登录 / 退出 / 切换账号、切换环境：作废提示条与在途 parse
+            board.connect(privacy, routing, cleaners)
+        }
 
     /**
      * 包内隐私政策版本（整数，BR-ID-12）。TODO(N-16): 法务定稿的包内协议副本与版本号；接入 /v1/config.legal 后
@@ -630,6 +692,7 @@ object AppModule {
     private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
     private const val IN_FLIGHT_CALLS_CLEANER = "in_flight_calls"
     private const val BRIDGE_CALLS_CLEANER = "bridge_calls"
+    private const val CLIPBOARD_HASHES_CLEANER = "clipboard_hashes"
 }
 
 /**

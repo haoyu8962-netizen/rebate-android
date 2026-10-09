@@ -23,6 +23,23 @@ interface LoginTexts {
     ): String
 }
 
+/**
+ * 邀请码的剪贴板来源（APP-07，App 给；BR-INV-04、BR-ID-16）：
+ * - [takePrefill]：游客在首页邀请提示条点了确认、码放在进程内的预填容器里；进入验证码页时取一次（取走即丢弃，之后以用户输入为准，G16）；
+ * - [paste]：邀请码行【粘贴】（用户点击才读剪贴板）：只抽 6 位码，抽不到返回 null（页面轻提示「未识别到邀请码」，不清空已有输入）；
+ * - [blocked]：parse 收到 42901 后的共享禁用期（与首页、SearchTyping 的粘贴入口同一个，A-R1-06）：【粘贴】置灰，点击也不读。
+ */
+interface InvitePasteSource {
+    fun takePrefill(): String?
+
+    fun paste(): String?
+
+    val blocked: StateFlow<Boolean> get() = NOT_BLOCKED
+}
+
+/** 没有禁用期的来源（缺省）。 */
+private val NOT_BLOCKED: StateFlow<Boolean> = MutableStateFlow(false)
+
 /** 登录页的出口（App 给：经 Router 打开别的页、关闭登录页）。 */
 @Suppress("LongParameterList") // 每个出口一个回调，都有缺省
 class LoginPageActions(
@@ -59,6 +76,8 @@ class LoginPageConfig(
     val thirdParty: List<String> = emptyList(),
     val clock: () -> Long = System::currentTimeMillis,
     val actions: LoginPageActions = LoginPageActions(),
+    /** 邀请码的剪贴板来源（APP-07）；没有时不显示【粘贴】、不预填。受限登录不用。 */
+    val invite: InvitePasteSource? = null,
 )
 
 /** 登录页两步。 */
@@ -194,6 +213,37 @@ class LoginViewModel(
 
     fun onInviteChange(raw: String) = mutableState.update { it.copy(invite = raw.take(MAX_INVITE_INPUT)) }
 
+    /** 有剪贴板来源（APP-07）时邀请码行显示【粘贴】。 */
+    val invitePasteAvailable: Boolean get() = !config.restricted && config.invite != null
+
+    /** 邀请码行【粘贴】的禁用状态（42901 共享禁用期，A-R1-06）；没有来源时恒为 false。 */
+    val invitePasteBlocked: StateFlow<Boolean> get() = config.invite?.blocked ?: NOT_BLOCKED
+
+    /**
+     * 邀请码行【粘贴】：只抽码填入；抽不到轻提示「未识别到邀请码」，不清空已有输入（BR-INV-04）。42901 禁用期内执行层也拦：不读剪贴板，
+     * 给限流提示（error.42901），不误报「未识别到邀请码」（A-R1-06）。
+     */
+    fun onPasteInvite() {
+        val source = config.invite?.takeIf { !config.restricted } ?: return
+        if (source.blocked.value) {
+            toast(texts.text(RATE_LIMITED_KEY))
+            return
+        }
+        val code = source.paste()
+        if (code != null) {
+            mutableState.update { it.copy(invite = code, inviteExpanded = true) }
+        } else {
+            toast(texts.text(INVITE_NOT_FOUND_KEY))
+        }
+    }
+
+    /** 进入验证码页：取一次首页邀请提示条留下的预填码（G16）；输入框已有内容时以用户输入为准，预填仍丢弃。 */
+    private fun fillInvitePrefill() {
+        if (config.restricted) return
+        val code = config.invite?.takePrefill() ?: return
+        mutableState.update { if (it.invite.isEmpty()) it.copy(invite = code, inviteExpanded = true) else it }
+    }
+
     fun onCodeChange(raw: String) = mutableState.update { it.copy(code = CodeInput.sanitize(raw), codeError = null) }
 
     /** 手机号页【获取验证码】与验证码页【重新获取】：都是发码（同号码倒计时内不再发出，直接回验证码步）。 */
@@ -211,6 +261,7 @@ class LoginViewModel(
         mutableState.update {
             it.copy(step = LoginStep.CODE, maskedPhone = PhoneNumber.masked(phone), resendSec = entry.countdownSec, phoneError = null)
         }
+        fillInvitePrefill()
     }
 
     fun onResend() = requireAgreement { send(fromCodePage = true) }
@@ -310,6 +361,7 @@ class LoginViewModel(
                         codeError = null,
                     )
                 }
+                fillInvitePrefill()
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {
@@ -505,6 +557,12 @@ class LoginViewModel(
     private companion object {
         const val TICK_MILLIS = 1000L
         const val MAX_INVITE_INPUT = 32
+
+        /** 邀请码行【粘贴】抽不到码的轻提示（BR-INV-04；草稿键 TODO(N-30)）。 */
+        const val INVITE_NOT_FOUND_KEY = "clipboard.login_invite.not_found"
+
+        /** 邀请码行【粘贴】在 42901 禁用期内被点（A-R1-06）。 */
+        const val RATE_LIMITED_KEY = "error.42901"
         const val DEFAULT_LIMIT_MILLIS = 5_000L
     }
 }

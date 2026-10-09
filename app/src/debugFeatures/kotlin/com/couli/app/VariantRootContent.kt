@@ -1,6 +1,8 @@
 package com.couli.app
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +73,14 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
         return
     }
 
+    // 剪贴板样例（APP-07 设计稿截图）：adb 用 extra couli.clip 把样例文字写进系统剪贴板，模拟别的 App 复制（不经 App 的写入口、不记 hash）；
+    // 写一次后移除 extra
+    LaunchedEffect(context) {
+        val activity = context.findActivity() ?: return@LaunchedEffect
+        val sample = activity.intent?.getStringExtra(DEBUG_CLIP_EXTRA) ?: return@LaunchedEffect
+        activity.intent?.removeExtra(DEBUG_CLIP_EXTRA)
+        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("debug-sample", sample))
+    }
     Column(
         modifier =
             Modifier
@@ -174,3 +185,6 @@ private tailrec fun Context.findActivity(): Activity? =
         is ContextWrapper -> baseContext.findActivity()
         else -> null
     }
+
+/** 剪贴板样例的启动 extra（APP-07 截图，debug / staging）。 */
+internal const val DEBUG_CLIP_EXTRA = "couli.clip"

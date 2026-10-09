@@ -1,5 +1,6 @@
 package com.couli.app.login
 
+import com.couli.app.clipboard.ClipboardDraftTexts
 import com.couli.feature.login.LoginTexts
 import com.couli.generated.DefaultTexts
 
@@ -108,7 +109,8 @@ internal object LoginDraftTexts : LoginTexts {
 
     /** 先取契约字典，再取草稿；带 {变量} 的契约文案（没有给值）用它的 fallback。缺键返回空串。 */
     override fun text(key: String): String {
-        val raw = DefaultTexts.text(key) ?: DRAFTS[key] ?: DefaultTexts.fallback(key) ?: return ""
+        // 登录页邀请码行【粘贴】与「未识别到邀请码」（APP-07）在剪贴板的集中草稿表里（TODO(N-30)）
+        val raw = DefaultTexts.text(key) ?: DRAFTS[key] ?: ClipboardDraftTexts.DRAFTS[key] ?: DefaultTexts.fallback(key) ?: return ""
         return if (PLACEHOLDER.containsMatchIn(raw)) DefaultTexts.fallback(key) ?: raw.replace(PLACEHOLDER, "") else raw
     }
 

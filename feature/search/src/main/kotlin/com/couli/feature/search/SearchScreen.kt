@@ -117,6 +117,7 @@ object SearchTags {
     const val INPUT = "search_input"
     const val SUBMIT = "search_submit"
     const val CLEAR = "search_clear"
+    const val PASTE_ENTRY = "search_paste_entry"
     const val TAB_PREFIX = "search_tab_"
     const val SORT_PREFIX = "search_sort_"
     const val COUPON = "search_filter_coupon"
@@ -223,6 +224,17 @@ internal fun SearchScreen(
                 if (state.tabs.isNotEmpty()) PlatformTabs(state, texts, model.controller::selectTab)
                 SortRow(state, texts, model.controller::selectSort)
                 FilterRow(state, texts, onCoupon = model::onCouponToggle, onPrice = model::openPriceFilter)
+            }
+            // 粘贴结果（APP-07，30132）：不依赖搜索阶段，粘贴后用户已开始关键词搜索也照样显示（A-R2-02）
+            config.pasteResult?.let { slot ->
+                val fill =
+                    remember(model) {
+                        { query: String ->
+                            model.onInput(query)
+                            if (query.isNotEmpty()) model.onSubmit()
+                        }
+                    }
+                slot(fill)
             }
             SearchBody(model, state, history, texts, infoFocus)
         }
@@ -509,6 +521,8 @@ private fun SearchBody(
             Column(modifier = Modifier.fillMaxWidth()) {
                 // 配置恢复了本轮已关闭的平台、等用户触发下一次搜索时（A-R1-01），search_disabled 的提示仍在
                 if (state.notice != null) Column(Modifier.padding(CouliSpacing.space4)) { Notices(state, texts) }
+                // SearchTyping「粘贴查返利」（APP-07）
+                PasteSlot(model, top = state.notice == null)
                 HistoryPanel(history, texts, onWord = model::onHistory, onClear = model::onClearHistory)
             }
         }
@@ -519,6 +533,7 @@ private fun SearchBody(
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
                 Notices(state, texts)
+                DisabledPasteSlot(model, state)
                 repeat(SKELETONS) { SkeletonProductCard(description = texts.text(SearchKeys.LOADING)) }
             }
         }
@@ -526,6 +541,7 @@ private fun SearchBody(
         SearchPhase.ERROR -> {
             Column(modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space4)) {
                 Notices(state, texts)
+                DisabledPasteSlot(model, state)
                 ErrorBlock(
                     message = errorText(state.error, state.platform, texts),
                     retryLabel = texts.text(SearchKeys.RETRY),
@@ -541,12 +557,50 @@ private fun SearchBody(
                 Notices(state, texts)
                 EmptyState(title = texts.text(SearchKeys.UNAVAILABLE), modifier = Modifier.testTag(SearchTags.UNAVAILABLE))
             }
+            // 没有可搜索的平台：「可以粘贴商品链接查返利」（APP-07）
+            PasteSlot(model, top = false)
         }
 
         else -> {
             ResultList(model, state, texts, infoFocus)
         }
     }
+}
+
+/**
+ * App 给的「粘贴查返利」入口（APP-07）；[top] 时上边距 16（输入态的第一块），否则与上一块之间只留下边距；[inset] 为 false 时不加左右边距
+ * （所在容器已有）。
+ */
+@Composable
+private fun PasteSlot(
+    model: SearchViewModel,
+    top: Boolean,
+    inset: Boolean = true,
+) {
+    val entry = model.config.pasteEntry ?: return
+    val side = if (inset) CouliSpacing.space4 else CouliSpacing.space0
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(start = side, end = side, top = if (top) CouliSpacing.space4 else CouliSpacing.space0)
+                .testTag(SearchTags.PASTE_ENTRY),
+    ) {
+        entry()
+    }
+}
+
+/**
+ * search_disabled 回落到其他平台后（加载、结果、空结果、出错各阶段）独立显示的粘贴入口（A-R2-03，error-codes 50304.search_disabled）；
+ * 输入态与无可搜索平台已各自显示，不在这里重复。限流置灰与执行层拦截沿用剪贴板的共享禁用期。
+ */
+@Composable
+private fun DisabledPasteSlot(
+    model: SearchViewModel,
+    state: SearchSnapshot,
+) {
+    if (state.notice == null) return
+    Column(modifier = Modifier.padding(bottom = CouliSpacing.space2)) { PasteSlot(model, top = false, inset = false) }
 }
 
 @Composable
@@ -948,7 +1002,12 @@ private fun ColumnScope.ResultItems(
         contentPadding = PaddingValues(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        item(key = "notices") { Column { Notices(state, texts) } }
+        item(key = "notices") {
+            Column {
+                Notices(state, texts)
+                DisabledPasteSlot(model, state)
+            }
+        }
         if (state.phase == SearchPhase.EMPTY) {
             item(key = "empty") {
                 EmptyState(
