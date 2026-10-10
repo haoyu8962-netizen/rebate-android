@@ -66,6 +66,11 @@ class AppUpdate
         private val scope: CoroutineScope,
         private val canCheck: () -> Boolean,
         private val clock: () -> Long = System::currentTimeMillis,
+        /**
+         * 回前台复查间隔：每次回前台现取当前生效配置（/v1/config.app_update.recheck_interval_sec，F-X-01）；没有为 null（按成功结果里
+         * 记下的间隔，再没有用包内默认）。
+         */
+        private val recheckIntervalSec: () -> Int? = { null },
     ) {
         private val mutableUi = MutableStateFlow(UpdateUi(gate.state(clock()), store.load().result))
         val ui: StateFlow<UpdateUi> = mutableUi.asStateFlow()
@@ -74,8 +79,27 @@ class AppUpdate
         private var coldStartChecked = false
         private var checkJob: Job? = null
 
+        /**
+         * 在途检查期间用户点了【重试】（F-AND-24）：不另发，等这次检查结束后按最新 Gate 结论选一次店（仍强更才选；选不到显示
+         * unavailable 与【重试】）。
+         */
+        private var pickStoreAfterCheck = false
+
         /** 本进程发出的检查还没有结果（冷启动、回前台复查、【重试】）。 */
         private var checkInFlight = false
+
+        /**
+         * 需要补查（FU-AND-0710 R3-01）：上一次检查结果作废（[UpdateCheckOutcome.Invalidated]：检查开始后撤回同意、进基本模式、切环境），
+         * 本进程该有的那次检查等于没做。检查重新允许（[onCheckAllowedChanged]：重新同意、环境就绪；或回前台、【重试】）时发一次新检查，
+         * 不看冷启动是否已查过、不看复查间隔；新检查真正发出后清掉。
+         */
+        private var recheckOwed = false
+
+        /**
+         * 在途检查期间检查又被重新允许（[onCheckAllowedChanged] 时 [canCheck] 为真）：这次检查若最终作废，退出后立即补发一次新检查（不复用失效
+         * 结果）。每发起一次新检查清掉。
+         */
+        private var allowedAgainWhileInFlight = false
 
         /**
          * 版本检查轮次（主线程）：每发起一轮检查加 1。桥调用等待之后、导航之前据此判断「检查中」是不是新的一轮（APP-04 共性第 63 条：
@@ -115,8 +139,22 @@ class AppUpdate
             publish()
         }
 
-        /** 隐私结论或环境闸门变化：变得可以查了而冷启动还没查过 → 补冷启动检查。 */
-        fun onCheckAllowedChanged() = coldStart()
+        /**
+         * 隐私结论或环境闸门变化：变得可以查了而冷启动还没查过 → 补冷启动检查；上一次检查已作废（[recheckOwed]）→ 发一次新检查。
+         * 旧检查还在途（之后才会作废）时先记下，等它退出后补发（R3-01）。
+         */
+        fun onCheckAllowedChanged() {
+            if (checkJob?.isActive == true && canCheck()) allowedAgainWhileInFlight = true
+            coldStart()
+            settleOwedCheck()
+        }
+
+        /** 作废后欠的那次检查：允许检查且没有在途检查时发出（R3-01）。 */
+        private fun settleOwedCheck() {
+            if (!recheckOwed || !canCheck() || checkJob?.isActive == true) return
+            if (gate.onColdStart(clock())) runCheck()
+            publish()
+        }
 
         /** 回前台（不含冷启动那一次）：距上次成功检查超过间隔才查。 */
         fun onForeground() {
@@ -124,11 +162,19 @@ class AppUpdate
                 coldStart()
                 return
             }
-            if (canCheck() && gate.onForeground(clock())) runCheck()
+            if (recheckOwed) {
+                settleOwedCheck()
+                return
+            }
+            if (canCheck() && gate.onForeground(clock(), currentInterval())) runCheck()
             publish()
         }
 
-        /** 立即重新检查（强更页【重试】、调试面板切换假数据）。[thenPickStore]：检查后仍需强更就再选一次店。 */
+        /**
+         * 立即重新检查（强更页【重试】、调试面板切换假数据）。[thenPickStore]：检查后仍需强更就再选一次店。
+         * 已有检查在途（冷启动、回前台、无缓存补查）时复用它：点击立即显示检查中（working），在途检查结束后按结果选店或显示 unavailable
+         * 与【重试】，不被吞（F-AND-24）；在途检查失败后再点【重试】真正重发。
+         */
         fun recheck(thenPickStore: Boolean = false) {
             if (!canCheck()) return
             runCheck(thenPickStore)
@@ -202,23 +248,58 @@ class AppUpdate
             }
         }
 
+        @Suppress("TooGenericExceptionCaught", "SwallowedException") // 配置读不出按 null（成功结果里的间隔或包内默认）
+        private fun currentInterval(): Int? =
+            try {
+                recheckIntervalSec()?.takeIf { it > 0 }
+            } catch (error: Exception) {
+                null
+            }
+
         private fun runCheck(thenPickStore: Boolean = false) {
-            if (checkJob?.isActive == true) return
+            if (checkJob?.isActive == true) {
+                if (thenPickStore) {
+                    pickStoreAfterCheck = true
+                    mutableUi.value = mutableUi.value.copy(working = true, forceUnavailable = false)
+                }
+                return
+            }
+            pickStoreAfterCheck = thenPickStore
             mutableUi.value = mutableUi.value.copy(working = thenPickStore)
             checkRound += 1
             checkInFlight = true
+            // 新检查真正发出：欠的补查由它承担；在途期间「又被允许」的记录只对上一检查有效
+            recheckOwed = false
+            allowedAgainWhileInFlight = false
             checkJob =
                 scope.launch {
                     val outcome = checker.check()
                     checkInFlight = false
+                    if (outcome == UpdateCheckOutcome.Invalidated) {
+                        // 检查开始后撤回同意 / 进基本模式 / 切了环境（R1-02）：结果作废——不落盘、不改强更结论、不选店，只结束「检查中」
+                        gate.abandonCheck()
+                        pickStoreAfterCheck = false
+                        mutableUi.value = mutableUi.value.copy(working = false)
+                        // 作废的检查不算做过：记下需要补查（R3-01）。检查已在这次检查退出前重新允许 → 现在补发新的一次；否则等
+                        // 重新允许（onCheckAllowedChanged）、回前台或【重试】时再发
+                        recheckOwed = true
+                        val reissue = allowedAgainWhileInFlight
+                        allowedAgainWhileInFlight = false
+                        checkJob = null
+                        publish()
+                        if (reissue) settleOwedCheck()
+                        return@launch
+                    }
                     lastCheckFailed = outcome is UpdateCheckOutcome.Failure
                     when (outcome) {
                         is UpdateCheckOutcome.Success -> gate.apply(outcome.result, clock())
-                        UpdateCheckOutcome.Failure -> gate.applyFailure(clock())
+                        else -> gate.applyFailure(clock())
                     }
+                    val pick = pickStoreAfterCheck
+                    pickStoreAfterCheck = false
                     mutableUi.value = mutableUi.value.copy(working = false, forceUnavailable = false, promptUnavailable = false)
                     publish()
-                    if (thenPickStore && gate.state(clock()).status == UpdateStatus.BELOW_MIN) goToStore()
+                    if (pick && gate.state(clock()).status == UpdateStatus.BELOW_MIN) goToStore()
                 }
         }
 

@@ -62,15 +62,17 @@ fun PendingTrackCards(
 ) {
     val state by service.state.collectAsStateWithLifecycle()
     val toast = state.toastKey
+    // 渲染时取出普通值（APP-09 共性第 63 条）：回调只用这份票据，执行时不读最新状态
+    val ticket = state.ticket
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
         state.cards.forEach { card ->
             PendingTrackCard(
                 card = card,
                 texts = texts,
                 closeEnabled = !state.blocked && !readonly && card.key !in state.busy,
-                onClose = { service.dismiss(card) },
+                onClose = { service.dismiss(card, ticket) },
                 onClaim = onClaim,
-                onNotify = { service.requestNotification(card) },
+                onNotify = { service.requestNotification(card, ticket) },
             )
         }
         if (toast != null) {

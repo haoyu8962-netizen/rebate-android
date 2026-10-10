@@ -18,11 +18,11 @@ import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.update.SharedPreferencesUpdateStore
+import com.couli.core.update.UpdateCheckAdapter
 import com.couli.core.update.UpdateCheckOutcome
 import com.couli.core.update.UpdateCheckResult
 import com.couli.core.update.UpdateChecker
 import com.couli.core.update.UpdateStore
-import com.couli.core.update.UpdateStoreListing
 import com.couli.generated.AppVersionCheckExample
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -33,7 +33,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 
@@ -132,28 +131,10 @@ internal fun scenarioData(scenario: DebugUpdateScenario): JsonObject {
 }
 
 /**
- * check.data → [UpdateCheckResult]（只投影字段，不做判定）。listed_version 为 null 的商店丢弃（rule-gaps G04）；
- * recheck_interval_sec 不在 check 响应里，用包内默认（rule-gaps G01）。
+ * check.data → [UpdateCheckResult]（只投影字段，不做判定；与 Release 真实检查器共用 [UpdateCheckAdapter]）。listed_version 为 null 的商店
+ * 丢弃（rule-gaps G04）；recheck_interval_sec 不在 check 响应里，用包内默认（rule-gaps G01）。
  */
-internal fun adapt(data: JsonObject): UpdateCheckResult =
-    UpdateCheckResult(
-        minSupported = data.text("min_supported_version"),
-        recommended = data.text("recommended_version"),
-        latest = data.text("latest_version"),
-        defaultStore = data.text("default_store"),
-        stores =
-            data["stores"]?.jsonArray.orEmpty().mapNotNull { entry ->
-                val item = entry.jsonObject
-                val store = item.text("store")
-                val version = item.text("listed_version")
-                if (store != null && version != null) UpdateStoreListing(store, version) else null
-            },
-        updateTitle = data.text("update_title"),
-        updateNotes = data.text("update_notes"),
-    )
-
-/** 字符串字段；缺失、null 或不是字符串为 null（JsonNull 的 isString 为 false）。 */
-private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+internal fun adapt(data: JsonObject): UpdateCheckResult = UpdateCheckAdapter.adapt(data)
 
 @EntryPoint
 @InstallIn(SingletonComponent::class)
@@ -161,8 +142,12 @@ internal interface DebugUpdateEntryPoint {
     fun appUpdate(): AppUpdate
 }
 
-/** debug / staging 的版本检查器。 */
-internal fun variantUpdateChecker(context: Context): UpdateChecker = DebugUpdateChecker(DebugUpdateScenarioStore(context))
+/** debug / staging 的版本检查器：调试假数据（不用 App 组合的真实检查器 [real]，Release 才用它）。 */
+@Suppress("UnusedParameter")
+internal fun variantUpdateChecker(
+    context: Context,
+    real: UpdateChecker,
+): UpdateChecker = DebugUpdateChecker(DebugUpdateScenarioStore(context))
 
 /**
  * debug / staging 的版本检查结论存储（R1-03）：调试假结果只写 couli.update_debug，不写 Release 读取的 couli.update，

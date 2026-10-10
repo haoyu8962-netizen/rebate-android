@@ -237,8 +237,11 @@ private fun createTrustedWebView(
     }
 
 /**
- * 【重试】（R3-03）：首次没加载成的（地址拼不出、可信源还没下发），按重新读取的生效配置换新地址与配置重建 WebView 并加载；已加载过的
- * 按当前这份的地址与配置再判一次后 reload。新的一份仍不可信（不是 https、不在白名单）时继续显示加载失败，不加载。
+ * 【重试】（R3-03、F-AND-26）：每次都按重新读取的生效配置生成新的一份（[retarget]）并与当前这份比较——
+ * - 首次没加载成的（地址拼不出、可信源还没下发），或已发起加载但新配置的地址 / 可信配置变了（如 LKG 的旧基址打不开、随后新配置换了基址），
+ *   按新的一份校验后重建 WebView 与控制器并明确加载新地址（桥的可信源规则在建控制器时装上）；
+ * - 地址与可信配置都没变的，按当前这份再判一次后 reload。
+ * 新的一份不可信（不是 https、不在白名单）时继续显示加载失败，不加载。
  */
 private fun retry(
     holder: TrustedWebHolder,
@@ -246,7 +249,7 @@ private fun retry(
 ) {
     val current = holder.target ?: return
     val fresh = retarget?.invoke()
-    if (!holder.loaded && fresh != null) {
+    if (fresh != null && (!holder.loaded || fresh != current)) {
         holder.failed = !fresh.config.allows(fresh.url)
         holder.rebuild(fresh)
         return

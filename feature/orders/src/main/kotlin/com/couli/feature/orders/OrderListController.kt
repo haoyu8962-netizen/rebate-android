@@ -43,6 +43,16 @@ data class OrderToast(
     val view: OrderErrorView? = null,
 )
 
+/**
+ * 已显示的订单数据的固定身份（APP-08 共性第 44 条、APP-09 第 65 条；FU-AND-0710 R1-01）：[account] 与 [epoch] 来自发出这份结果的请求（请求开始时
+ * 一次性取自本页的固定归属），[version] 是结果版本（每次换一份结果加 1）。复制等回调在渲染时捕获这份身份，执行前只做比较。
+ */
+data class OrderListIdentity(
+    val account: String?,
+    val epoch: Long,
+    val version: Long,
+)
+
 /** 订单列表的一次状态快照（不可变）。 */
 data class OrderListSnapshot(
     val conditions: OrderConditions = OrderConditions(OrderQuery.SELF, OrderQuery.ALL, null, null, null),
@@ -66,6 +76,8 @@ data class OrderListSnapshot(
     /** 当前显示的结果来自哪个请求序号（测试核对迟到响应）。 */
     val shownSeq: Long? = null,
     val toast: OrderToast? = null,
+    /** 已显示的数据的固定身份（没有数据时为 null）。 */
+    val identity: OrderListIdentity? = null,
 ) {
     val scope: String get() = conditions.scope
     val filtered: Boolean get() =
@@ -81,6 +93,11 @@ data class OrderListSnapshot(
  * 断网显示上次数据（G10）：只有传输层失败才用缓存，只用默认视图第一页；带筛选或搜索词的失败显示错误态；5xxxx 不用缓存、不伪装成空结果。
  * 42901 按 Retry-After 禁用刷新、翻页、筛选与搜索提交，执行层（这里）与页面两处都生效；禁用期是会话级共享的一份（[rateGate]，与详情、待跟单
  * 查询与关闭共用；没给时本页一份）。只在主线程使用。
+ *
+ * 固定归属（APP-09 共性第 65 条、APP-08 第 44 条；FU-AND-0710 R1-01）：本页的查询条件与请求属于 [owner]（账号 + 会话世代），构造时一次性取得，
+ * 只在会话清理（[onSessionChanged] / [onCleanup]）与「发现身份已变、先作废旧列表」时重取；请求开始（begin）不再读当前会话来绑定。每个入口先比较
+ * 当前会话与固定归属、已显示数据的身份：不一致就先作废旧列表（清结果、条件回默认，通知页面清搜索框等），再按新会话重取，不把旧数据绑到新会话。
+ * 会话通知是否已处理按「最近一次处理的会话通知 / 清理」（[noticedEpoch]）判断，不看最近一次请求的世代。
  */
 @Suppress("TooManyFunctions") // 页面每个入口一个函数
 class OrderListController(
@@ -94,7 +111,19 @@ class OrderListController(
     private var query = OrderQuery.initial(null)
     private var seq = 0L
     private var current = 0L
-    private var boundEpoch = Long.MIN_VALUE
+
+    /** 本页查询与请求的固定归属（构造时一次性取；只在会话清理、作废旧列表时重取）。 */
+    private var owner = Owner(env.sessionEpoch(), env.account())
+
+    /** 最近一次处理过的会话通知 / 清理所对应的会话世代（不随请求变化）。 */
+    private var noticedEpoch = owner.epoch
+
+    /** 结果版本（每换一份已显示的结果加 1）。 */
+    private var resultVersion = 0L
+
+    /** 发现身份已变、作废了旧列表时通知页面（清搜索框、半屏、锚点与待执行的恢复，待跟单卡）。 */
+    var onInvalidated: () -> Unit = {}
+
     private var left = false
     private var opened = false
 
@@ -109,6 +138,12 @@ class OrderListController(
     private val mutableState = MutableStateFlow(OrderListSnapshot())
     val state: StateFlow<OrderListSnapshot> = mutableState.asStateFlow()
     private val s: OrderListSnapshot get() = mutableState.value
+
+    /** 本页查询条件属于哪个账号（保存状态的归属用；与请求、已显示数据同一份固定归属）。 */
+    val ownerAccount: String? get() = owner.account
+
+    /** 本页固定归属的会话世代。 */
+    val ownerEpoch: Long get() = owner.epoch
 
     init {
         // 页面的禁用状态跟会话级的那一份（待跟单查询、关闭、详情收到的 42901 也让本页置灰）
@@ -125,6 +160,11 @@ class OrderListController(
     ) {
         if (opened || left) return
         opened = true
+        // 打开前会话已换代（通知还没到）：先按新会话重置，不把保存的旧条件交给新会话
+        if (sessionStale()) {
+            invalidateStale()
+            return
+        }
         if (!prepared) {
             query = if (restored != null) OrderQuery.restore(restored) else OrderQuery.initial(routeScope)
             preparedRestored = restored != null
@@ -158,6 +198,8 @@ class OrderListController(
     /** 路由参数 scope（Router 打开 OrderList {scope}）：与当前子 Tab 不同时切过去（等同用户切子 Tab）。 */
     fun requestScope(scope: String?) {
         val wanted = OrderQuery.normalizeScope(scope)
+        // 会话已换代（通知还没到）：先作废旧列表，再按路由参数切子 Tab
+        if (opened) invalidatedStale()
         if (!opened && !prepared) {
             open(wanted)
             return
@@ -167,7 +209,7 @@ class OrderListController(
 
     /** 切子 Tab：分组回「全部」，平台、月份、搜索词清空（BR-TEXT-02 细则）。42901 禁用中也照常切（不发请求，显示限流错误）。 */
     fun selectScope(scope: String): Boolean {
-        if (left || scope == s.scope) return false
+        if (left || invalidatedStale() || scope == s.scope) return false
         takeOver()
         query.setScope(scope)
         load(newRound = true)
@@ -175,7 +217,7 @@ class OrderListController(
     }
 
     fun selectGroup(group: String): Boolean {
-        if (blockedOrLeft() || group == s.conditions.group) return false
+        if (invalidatedStale() || blockedOrLeft() || group == s.conditions.group) return false
         takeOver()
         query.setGroup(group)
         load(newRound = true)
@@ -184,7 +226,7 @@ class OrderListController(
 
     /** 平台筛选（null = 全部平台）。 */
     fun selectPlatform(platform: String?): Boolean {
-        if (blockedOrLeft() || platform == s.conditions.platform) return false
+        if (invalidatedStale() || blockedOrLeft() || platform == s.conditions.platform) return false
         takeOver()
         query.setPlatform(platform)
         load(newRound = true)
@@ -193,7 +235,7 @@ class OrderListController(
 
     /** 月份筛选（YYYY-MM；null = 全部月份）。 */
     fun selectMonth(month: String?): Boolean {
-        if (blockedOrLeft() || month == s.conditions.month) return false
+        if (invalidatedStale() || blockedOrLeft() || month == s.conditions.month) return false
         takeOver()
         query.setMonth(month)
         load(newRound = true)
@@ -202,7 +244,7 @@ class OrderListController(
 
     /** 搜索框提交或清空（G11：只去首尾空白，客户端不做任何匹配，结果只按服务端返回显示）。 */
     fun submitQuery(text: String?): Boolean {
-        if (blockedOrLeft()) return false
+        if (left || invalidatedStale() || blockedOrLeft()) return false
         takeOver()
         query.setQ(text)
         load(newRound = true)
@@ -211,7 +253,7 @@ class OrderListController(
 
     /** 下拉刷新：新一轮查询，保留已显示的结果直到响应回来。 */
     fun refresh(): Boolean {
-        if (blockedOrLeft()) return false
+        if (left || invalidatedStale() || blockedOrLeft()) return false
         takeOver()
         query.apply(OrderQuery.OP_REFRESH, null)
         load(newRound = true, keepItems = s.items.isNotEmpty())
@@ -221,7 +263,7 @@ class OrderListController(
     /** 【重试】：整页失败重取第一页；翻页失败重试翻页；stale 状态下翻页的【重试】重取第一页。 */
     fun retry(): Boolean =
         when {
-            blockedOrLeft() -> false
+            left || invalidatedStale() || blockedOrLeft() -> false
             s.phase == OrderListPhase.ERROR -> load(newRound = false).let { true }
             s.staleAt != null -> refresh()
             s.loadMoreError != null -> loadMore()
@@ -231,6 +273,8 @@ class OrderListController(
     /** 加载更多：已到底、正在加载、下拉刷新进行中（新一轮还没回来）、42901 禁用中、显示的是缓存时不做（返回 false）。 */
     @Suppress("ReturnCount")
     fun loadMore(): Boolean {
+        // 迟到的翻页（滚动触发、恢复补页）先比较身份：会话已换代就作废旧列表，不经 begin() 把旧数据接到新会话（R1-01）
+        if (left || invalidatedStale()) return false
         val idle = !s.loadingMore && !s.endReached && s.staleAt == null && !s.refreshing
         if (blockedOrLeft() || !idle || s.phase != OrderListPhase.CONTENT) return false
         val cursor = nextCursor ?: return false
@@ -337,7 +381,8 @@ class OrderListController(
             owners.clear()
             val data = (result as? ApiResult.Success)?.let { OrderJson.listData(it.data) }
             if (data != null) {
-                if (cacheable) cache?.writeList(env.account(), conditions.scope, data, clock())
+                // 缓存归属用请求开始时的固定归属（不在结果到达时再读当前会话）
+                if (cacheable) cache?.writeList(request.account, conditions.scope, data, clock())
                 firstPageLoaded(request, data)
                 return@launch
             }
@@ -386,6 +431,7 @@ class OrderListController(
                 staleAt = null,
                 refreshing = false,
                 shownSeq = request.seq,
+                identity = request.identity(++resultVersion),
             )
         }
     }
@@ -398,7 +444,7 @@ class OrderListController(
         previousCursor: String?,
     ) {
         val transport = result is ApiResult.TransportFailure
-        val cached = if (transport && cacheable) cache?.readList(env.account(), s.scope) else null
+        val cached = if (transport && cacheable) cache?.readList(request.account, s.scope) else null
         val view = errorView(OrderErrorAction.LIST_FIRST, result, hasCache = cached != null, filtered = filtered)
         when (view.actionRaw) {
             OrderErrorKind.SHOW_STALE -> {
@@ -415,6 +461,7 @@ class OrderListController(
                         staleAt = cached.fetchedAt,
                         refreshing = false,
                         shownSeq = request.seq,
+                        identity = request.identity(++resultVersion),
                     )
                 }
             }
@@ -438,6 +485,7 @@ class OrderListController(
                             staleAt = null,
                             refreshing = false,
                             shownSeq = request.seq,
+                            identity = null,
                         )
                     }
                 }
@@ -501,13 +549,22 @@ class OrderListController(
     /**
      * 卡内【复制】（自购单）：渲染时的 [orderId] 与 [orderNo] 必须仍是当前列表里的同一行，才经统一写入口写入 order_no 原文；分享单没有这条路径
      * （没有完整单号，也不在客户端拼、补或还原）。记 hash 失败时不写、提示「复制失败，请重试」。
+     * 列表卡【复制订单号】（APP-08 共性第 41、44 条）：[round] 与 [identity] 是渲染时取出的查询轮次与已显示数据的固定身份（普通值）。执行前核对
+     * 页面仍在、当前会话仍等于已显示数据的身份（会话已换代而作废通知还没到时也不写，并先作废旧列表）、身份与轮次没变、这一行仍在当前结果里且单号
+     * 一致，才经统一写入口写；失效的旧按钮零写入。
      */
-    @Suppress("ReturnCount") // 离开、行不在、单号不符逐项
+    @Suppress("ReturnCount", "ComplexCondition") // 页面、会话、身份、轮次、行、单号逐项拦截
     fun copy(
         orderId: String,
         orderNo: String,
+        round: Long? = null,
+        identity: OrderListIdentity? = null,
     ): Boolean {
-        if (left) return false
+        if (left || invalidatedStale()) return false
+        val shown = s.identity ?: return false
+        if (shown.epoch != env.sessionEpoch() || shown.account != env.account()) return false
+        if (identity != null && identity != shown) return false
+        if (round != null && round != s.round) return false
         val row = s.items.firstOrNull { it.orderId == orderId } ?: return false
         if (row.orderNo != orderNo || row.maskedOrderNo != null) return false
         val ok = env.copy(orderNo)
@@ -517,7 +574,7 @@ class OrderListController(
 
     /** 整卡点击：经 Router 打开 OrderDetail（渲染时的行仍在当前列表里才打开）。 */
     fun openDetail(orderId: String): Boolean {
-        if (left || s.items.none { it.orderId == orderId }) return false
+        if (left || invalidatedStale() || s.items.none { it.orderId == orderId }) return false
         env.open(
             OrderRoutes.ORDER_DETAIL,
             kotlinx.serialization.json.JsonObject(
@@ -537,7 +594,8 @@ class OrderListController(
      */
     @Suppress("ReturnCount") // 离开、行不在、单号种类不同逐项
     fun patch(detail: OrderDetail) {
-        if (left) return
+        // 已显示的数据不属于当前会话（换代通知还没到）：不把新会话的详情接进旧列表
+        if (left || sessionStale()) return
         val fresh = detail.summary.copy(actualFen = null, clawbackFen = null)
         val index = s.items.indexOfFirst { it.orderId == fresh.orderId }
         if (index < 0) return
@@ -559,11 +617,26 @@ class OrderListController(
      * 会话变了（登录、退出、换账号）：会话世代不同时作废全部在途请求、清掉旧账号的结果（不把旧账号的结果显示给新账号），条件回到默认，重新取第一页
      * （游客不发请求）。
      */
+    fun onSessionChanged() = resetForSession(force = false)
+
+    /**
+     * 撤回同意、进入基本模式、切换环境（APP-08 共性第 36、38 条）：不论会话世代是否已经变化，同步作废在途请求、清掉已显示的结果与条件（含可能是
+     * 完整订单号的搜索词），回到默认条件重新取（游客不发请求）。
+     */
+    fun onCleanup() = resetForSession(force = true)
+
+    /**
+     * 是否已处理过这一代会话的通知按 [noticedEpoch]（最近一次处理的会话通知 / 清理）判断，不看最近一次请求的世代：入口作废旧列表时重取了归属，
+     * 之后到达的会话通知仍照常重置一次（R1-01）。
+     */
     @Suppress("ReturnCount") // 离开、恢复等待中、同一会话三个出口
-    fun onSessionChanged() {
+    private fun resetForSession(force: Boolean) {
         if (left) return
+        val now = env.sessionEpoch()
         if (!opened) {
             // 恢复等待期间：丢掉旧账号保存的条件（含搜索词），等待结束后按默认条件打开（共性第 19、21 条）
+            noticedEpoch = now
+            rebind()
             if (prepared) {
                 preparedRestored = false
                 query = OrderQuery.initial(s.scope)
@@ -571,34 +644,87 @@ class OrderListController(
             }
             return
         }
-        if (env.sessionEpoch() == boundEpoch) return
+        if (!force && now == noticedEpoch && !sessionStale()) return
+        noticedEpoch = now
+        rebind()
         query = OrderQuery.initial(s.scope)
-        // 上一账号的轻提示一并清掉
-        update { it.copy(toast = null) }
+        // 上一账号的轻提示与结果一并清掉（不等新请求回来）
+        update { it.reset(query.conditions()).copy(toast = null) }
         load(newRound = true)
     }
 
-    /** 页面出栈（订单 Tab 根只在 ViewModel 清理时；被详情盖住、切走 Tab 不算）：作废请求并取消传输。 */
+    /** 当前会话与本页的固定归属、已显示数据的身份不一致（会话已换代、作废通知还没到）。只比较，不赋值。 */
+    @Suppress("ReturnCount") // 固定归属、没有数据、已显示身份逐项
+    private fun sessionStale(): Boolean {
+        val epoch = env.sessionEpoch()
+        val account = env.account()
+        if (epoch != owner.epoch || account != owner.account) return true
+        val shown = s.identity ?: return false
+        return shown.epoch != epoch || shown.account != account
+    }
+
+    /** 入口的身份检查：不一致就先作废旧列表并返回 true（这次操作不执行）。 */
+    private fun invalidatedStale(): Boolean {
+        if (left || !sessionStale()) return false
+        invalidateStale()
+        return true
+    }
+
+    /**
+     * 作废旧列表（R1-01）：作废并取消在途请求，同步清掉已显示的结果、游标与条件（含搜索词），通知页面清搜索框等；再按此刻的会话重取固定归属并
+     * 取默认条件的第一页（游客不发）。之后到达的会话通知仍会再重置一次（[noticedEpoch] 不变）。
+     */
+    private fun invalidateStale() {
+        seq += 1
+        current = seq
+        cancelAll()
+        nextCursor = null
+        rebind()
+        query = OrderQuery.initial(s.scope)
+        update { it.reset(query.conditions()).copy(toast = null) }
+        onInvalidated()
+        if (opened) load(newRound = true)
+    }
+
+    /** 重取固定归属（只在会话清理与作废旧列表时；同一次读取取账号与世代）。 */
+    private fun rebind() {
+        owner = Owner(env.sessionEpoch(), env.account())
+    }
+
+    /**
+     * 页面出栈（订单 Tab 根只在 ViewModel 清理时；被详情盖住、切走 Tab 不算）：作废请求并取消传输，同步结束下拉刷新与翻页的「进行中」
+     * （APP-08 共性第 30 条：不让刷新状态依赖已被取消、只会被丢弃的响应）。可重复调用。
+     */
     fun leave() {
         left = true
         current = -1
         cancelAll()
+        if (s.refreshing || s.loadingMore) mutableState.value = s.copy(refreshing = false, loadingMore = false)
     }
 
     // ---------------------------------------------------------------- 请求
 
+    /** 本页的固定归属：账号 + 会话世代。 */
+    private data class Owner(
+        val epoch: Long,
+        val account: String?,
+    )
+
     private class Request(
         val seq: Long,
         val epoch: Long,
-    )
+        val account: String?,
+    ) {
+        /** 这个请求带回的结果的固定身份。 */
+        fun identity(version: Long) = OrderListIdentity(account, epoch, version)
+    }
 
-    /** 新请求开始：旧序号立即失效，并取消旧请求的传输。 */
+    /** 新请求开始：旧序号立即失效，并取消旧请求的传输。请求只绑本页的固定归属（不读当前会话来绑定，R1-01）。 */
     private fun begin(): Request {
         seq += 1
         current = seq
-        boundEpoch = env.sessionEpoch()
         cancelAll()
-        return Request(seq, boundEpoch)
+        return Request(seq, owner.epoch, owner.account)
     }
 
     private fun accept(request: Request): Boolean = !left && current == request.seq && env.sessionEpoch() == request.epoch
@@ -636,6 +762,7 @@ class OrderListController(
             staleAt = null,
             refreshing = false,
             shownSeq = null,
+            identity = null,
         )
 
     private inline fun update(change: (OrderListSnapshot) -> OrderListSnapshot) {

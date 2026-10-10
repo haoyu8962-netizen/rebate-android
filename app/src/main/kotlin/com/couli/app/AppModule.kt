@@ -13,10 +13,12 @@ import com.couli.app.clientcore.trackerCanUpload
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardPreferences
 import com.couli.app.clipboard.connect
+import com.couli.app.clipboard.connectPurchaseStatus
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
 import com.couli.app.orders.AppOrders
+import com.couli.app.orders.connectCleanup
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RoutingPrivacyHooks
@@ -56,6 +58,7 @@ import com.couli.core.network.AndroidKeystoreCipher
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.ApiConfigFetcher
+import com.couli.core.network.ApiUpdateChecker
 import com.couli.core.network.ClientIdentity
 import com.couli.core.network.DeviceRegistry
 import com.couli.core.network.EncryptedPreferences
@@ -70,6 +73,7 @@ import com.couli.core.network.SecretCipher
 import com.couli.core.network.SecurePendingKeyBackend
 import com.couli.core.network.SessionTokens
 import com.couli.core.network.UpdateRaw
+import com.couli.core.orders.OrderRestoreStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.privacy.AndroidPermissionRequester
 import com.couli.core.privacy.AndroidPermissionSystem
@@ -84,6 +88,7 @@ import com.couli.core.privacy.registerProductionInitSteps
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
+import com.couli.core.update.UpdateConfigReader
 import com.couli.core.update.UpdateGate
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.InvitePasteSource
@@ -162,6 +167,8 @@ object AppModule {
             register { _, _ -> tracker.get().clear() }
             // 订单缓存（APP-08，G10）：属于连接的那套服务器与账号，切换环境时删除（删不掉保留待清理、不读回）
             register { _, _ -> orderCacheStore(context).clearAll() }
+            // 订单页恢复记录（FU-AND-0710 R2-02）：搜索词、筛选、锚点订单；删除确认，失败保留待清理（目录外 + 目录内标记）、不读回并报失败
+            register { _, _ -> orderRestoreStore(context).clearAll() }
             // 钱包摘要缓存（APP-09，G22）：同上
             register { _, _ -> walletCacheStore(context).clearAll() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
@@ -240,7 +247,9 @@ object AppModule {
             pendingKeys = PendingKeyStore(SecurePendingKeyBackend(EncryptedPreferences(context, cipher)), System::currentTimeMillis),
             hooks =
                 NetworkHooks(
-                    onForceUpdate = { min -> main.post { update.on10405(min) } },
+                    // 切到主线程后、进强更之前复核这次调用的归属（APP-07 共性第 29 条）：期间已离页、切 Tab、撤回同意、切环境的迟到
+                    // 整体 10405（如剪贴板 parse）不跳强更、不落盘
+                    onForceUpdateChecked = { min, stillValid -> main.post { if (stillValid()) update.on10405(min) } },
                     // 刷新失败清会话（clear_session_login / clear_session_stay_force_update）：同步守卫的会话状态，普通状态下跳登录
                     // （LoginSessionExpired，APP-05a）
                     onEffect = { effect -> main.post { login.get().onNetworkEffect(effect) } },
@@ -315,6 +324,9 @@ object AppModule {
             register(CLIPBOARD_HASHES_CLEANER) { ClipboardPreferences(context).clearHashes() }
             // 订单缓存（APP-08，G10；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
             register(AppOrders.ORDER_CACHE_CLEANER) { orderCacheStore(context).clearAll() }
+            // 订单页恢复记录（FU-AND-0710 R1-03、R2-02）：直接登记在这里，Application 启动时 PrivacyGate 的补清理同样执行并计入成败，
+            // 不依赖 AppOrders 是否已创建、隐私结论通知是否发出；删除要确认，失败保留待清理并抛错
+            register(AppOrders.ORDER_RESTORE_CLEANER) { orderRestoreStore(context).clearAll() }
             // 钱包摘要缓存（APP-09，G22；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
             register(AppWallet.WALLET_CACHE_CLEANER) { walletCacheStore(context).clearAll() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
@@ -474,8 +486,9 @@ object AppModule {
 
     /**
      * 强更检查（APP-02c）：UpdateGate（core:config com.couli.core.update；结论 Release 存 couli.update，debug / staging 存
-     * couli.update_debug，见各源码集的 variantUpdateStore）+ 检查器（debug / staging 读契约示例的假数据，Release 永远失败的占位，
-     * 见各源码集的 variantUpdateChecker）+ 本机商店能力。只在环境 settled 且已同意隐私政策时发检查。
+     * couli.update_debug，见各源码集的 variantUpdateStore）+ 检查器（debug / staging 读契约示例的假数据；Release 经 ApiClient 请求
+     * GET /v1/app-versions/check 的 [ApiUpdateChecker]，F-X-01；见各源码集的 variantUpdateChecker）+ 本机商店能力。
+     * 只在环境 settled 且已同意隐私政策时发检查（基本模式不发）。回前台复查间隔取当前生效配置的 app_update.recheck_interval_sec。
      */
     @Provides
     @Singleton
@@ -483,6 +496,8 @@ object AppModule {
         @ApplicationContext context: Context,
         environmentGate: EnvironmentGate,
         privacy: AppPrivacy,
+        client: Provider<ApiClient>,
+        config: Provider<AppConfig>,
     ): AppUpdate {
         // Release：couli.update；debug / staging：couli.update_debug（调试假结果不进 Release 读取的存储，R1-03）
         val store = variantUpdateStore(context)
@@ -498,13 +513,23 @@ object AppModule {
                 channel = channel,
                 installSource = stores.installSource,
             )
+        val canCheck = { environmentGate.isSettled && privacy.conclusion == PrivacyState.CONSENTED }
+        val configInterval = {
+            UpdateConfigReader.recheckIntervalSec(
+                config
+                    .get()
+                    .store.snapshots.value.data,
+            )
+        }
+        val real = ApiUpdateChecker(client = { client.get() }, allowed = canCheck, recheckIntervalSec = configInterval)
         return AppUpdate(
             gate = gate,
             store = store,
-            checker = variantUpdateChecker(context),
+            checker = variantUpdateChecker(context, real),
             stores = stores,
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-            canCheck = { environmentGate.isSettled && privacy.conclusion == PrivacyState.CONSENTED },
+            canCheck = canCheck,
+            recheckIntervalSec = configInterval,
         ).also { update ->
             // 同意隐私政策（含基本模式补同意）后才补冷启动检查（BR-ID-11：同意前不发版本检查）
             privacy.onConclusionChanged { update.onCheckAllowedChanged() }
@@ -625,6 +650,8 @@ object AppModule {
         permissions: AndroidPermissionRequester,
         update: Provider<AppUpdate>,
         mask: AmountMaskStore,
+        privacy: AppPrivacy,
+        cleaners: EnvironmentSwitchCleanerRegistry,
     ): AppOrders =
         AppOrders(
             api = ApiClientPageApi(client),
@@ -638,7 +665,15 @@ object AppModule {
             forceUpdate = { update.get().onServerForced() },
             cache = orderCacheStore(context),
             mask = mask,
-        ).also { orders -> orders.connectSession() }
+            // 相对时间（今天 / 昨天）按服务端 Date 校准（BR-TEXT-11，APP-08 共性第 34 条）；禁用期计时仍用本机时钟
+            displayClock = client::serverNow,
+            // 订单页恢复记录（R1-03、R2-02）：个人数据存 noBackupFilesDir 下的原子文件，系统保存状态只存随机引用；两个清理器直接删除
+            restoreStore = orderRestoreStore(context),
+        ).also { orders ->
+            orders.connectSession()
+            // 撤回同意、基本模式、切换环境：同步清空各显示位置的待跟单卡（APP-08 共性第 38、43 条）
+            orders.connectCleanup(privacy, cleaners)
+        }
 
     /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
     @Provides
@@ -715,6 +750,8 @@ object AppModule {
         ).also { trade ->
             // AuthSheet 出现时同步作废剪贴板在途的 parse 与提示条（APP-07，A-R1-04）
             trade.onSensitiveOverlay = clipboard::onSensitiveOverlay
+            // 剪贴板多卡弹层的商品卡按同一平台购买状态映射（APP-07 共性第 32 条）；AppTrade 依赖 AppClipboard，所以在这里接
+            clipboard.connectPurchaseStatus(trade, config.store)
         }
 
     /** 商品图加载（APP-06a 共性第 22 条）：经 App 的 HTTP 客户端（debug 带本机假服务）取 https 图片。 */
@@ -850,6 +887,38 @@ internal fun orderCachePendingFlag(context: Context): OrderStaleCache.PendingCle
 }
 
 private const val ORDER_CACHE_PENDING_KEY = "pending_clear"
+
+/**
+ * 订单页恢复记录（FU-AND-0710 R1-03、R2-02）：noBackupFilesDir 下每份记录一个原子文件；订单页与两个清理入口共用同一个实例（同步、互斥）。
+ */
+internal fun orderRestoreStore(context: Context): OrderRestoreStore {
+    val root = AppOrders.restoreRoot(context)
+    return synchronized(OrderRestoreStores) {
+        OrderRestoreStores.instances.getOrPut(root.absolutePath) { OrderRestoreStore(root, orderRestorePendingFlag(context)) }
+    }
+}
+
+/**
+ * 订单页恢复记录的「待清理」状态：与订单缓存的待清理同一个 SharedPreferences（不以 couli. 开头，切换环境的命名空间清理不会抹掉它），commit 确认。
+ */
+@SuppressLint("ApplySharedPref", "UseKtx") // 必须 commit 并拿到返回值确认写入
+internal fun orderRestorePendingFlag(context: Context): OrderStaleCache.PendingClearFlag {
+    val prefs = context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.ORDER_CACHE_PENDING, Context.MODE_PRIVATE)
+    return object : OrderStaleCache.PendingClearFlag {
+        override fun isSet(): Boolean = prefs.getBoolean(ORDER_RESTORE_PENDING_KEY, false)
+
+        override fun set(): Boolean = prefs.edit().putBoolean(ORDER_RESTORE_PENDING_KEY, true).commit()
+
+        override fun clear(): Boolean = prefs.edit().remove(ORDER_RESTORE_PENDING_KEY).commit()
+    }
+}
+
+private const val ORDER_RESTORE_PENDING_KEY = "restore_pending_clear"
+
+private object OrderRestoreStores {
+    /** 按绝对路径各一份（生产只有一个；单测每个用例的目录不同）。 */
+    val instances = mutableMapOf<String, OrderRestoreStore>()
+}
 
 /** 钱包摘要缓存（APP-09，G22）：noBackupFilesDir 下按账号分目录；钱包页与两个清理入口共用同一个实例。 */
 internal fun walletCacheStore(context: Context): WalletStaleCache.Store {

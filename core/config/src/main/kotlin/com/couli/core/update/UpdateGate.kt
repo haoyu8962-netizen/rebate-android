@@ -51,11 +51,20 @@ class UpdateGate(
         return true
     }
 
-    /** 回前台：本进程还没成功过、最近一次失败，或距上次成功检查严格超过复查间隔才查。 */
-    fun onForeground(now: Long = clock()): Boolean {
+    /**
+     * 回前台：本进程还没成功过、最近一次失败，或距上次成功检查严格超过复查间隔才查。
+     * [currentIntervalSec]：当前生效配置（/v1/config.app_update.recheck_interval_sec，FU-AND-0710 / 鸿蒙 FU-HM-0709 R1-02）给的间隔，
+     * 正数时按它（配置在上次成功检查之后变了也按新值）；没有时按成功结果里记下的间隔，再没有用包内默认（向量行为不变）。
+     */
+    fun onForeground(
+        now: Long = clock(),
+        currentIntervalSec: Int? = null,
+    ): Boolean {
         val persisted = store.load()
         val last = persisted.lastSuccessAtMillis
-        val intervalMillis = (persisted.result?.recheckIntervalSec ?: DEFAULT_RECHECK_INTERVAL_SEC) * MILLIS_PER_SECOND
+        val intervalSec =
+            currentIntervalSec?.takeIf { it > 0 } ?: persisted.result?.recheckIntervalSec ?: DEFAULT_RECHECK_INTERVAL_SEC
+        val intervalMillis = intervalSec * MILLIS_PER_SECOND
         val due = last == null || !succeededThisProcess || lastAttemptFailed || now - last > intervalMillis
         if (due) inFlight = true
         return due
@@ -90,6 +99,11 @@ class UpdateGate(
     fun applyFailure(now: Long = clock()) {
         inFlight = false
         lastAttemptFailed = true
+    }
+
+    /** 检查结果作废（[UpdateCheckOutcome.Invalidated]）：只结束「检查中」，不落盘、不改结论、不算一次失败。 */
+    fun abandonCheck() {
+        inFlight = false
     }
 
     /**

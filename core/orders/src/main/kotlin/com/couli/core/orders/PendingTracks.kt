@@ -221,8 +221,12 @@ interface PendingTrackEnv {
     /** 会话世代（登录、退出、换账号都会变）：请求绑定它，响应回来时不是同一代就丢弃。 */
     fun sessionEpoch(): Long
 
-    /** 点了卡内【开启通知】：先记下「点过」（之后不再出这一行，无论结果），再经 PermissionRequester 申请（只在用户点了才弹系统框）。 */
-    suspend fun requestNotification()
+    /**
+     * 点了卡内【开启通知】：先记下「点过」（之后不再出这一行，无论结果），再经 PermissionRequester 申请（只在用户点了才弹系统框）。
+     * [stillValid] 是点击时那张卡的有效性（页面没离开、会话 / 隐私 / 环境没换代、卡片版本没变；APP-08 共性第 31、42 条）：记「点过」之前、
+     * 排队期间、调系统接口之前都核对，失效就什么都不做（不记、不弹）。
+     */
+    suspend fun requestNotification(stillValid: () -> Boolean = { true })
 
     /** 10405：强制进入已有的强更分流（服务端已判定强更，进闸门并落盘，没有检查结果时立即补查）。 */
     fun forceUpdate()
@@ -239,7 +243,29 @@ data class PendingTrackState(
     val toastKey: String? = null,
     val toastId: Long = 0,
     val toastError: OrderErrorView? = null,
+    /**
+     * 这份卡片的票据（APP-08 共性第 42 条、APP-09 第 63 条）：渲染时取出这个普通值交给关闭与【开启通知】的回调；执行前与当前票据比较，
+     * 会话换代、清理（撤回 / 切环境）之后旧画面上的回调失效（同账号重新登录、重新显示同一张卡也一样）。
+     */
+    val ticket: PendingTicket = PendingTicket(0L, 0L),
 )
+
+/**
+ * 待跟单卡的不可变票据（APP-08 共性第 42、46 条）：[epoch] 发布时的会话世代，[serial] 执行器的清理代次（会话换代、撤回、切环境都加 1），
+ * [placement] 显示位置（订单列表为全部平台 [PendingTicket.ALL]；发起页为同平台那一张的平台），[lifetime] 卡片有效期（[PendingTrackService.clear]、
+ * 换显示位置、离开都加 1：切走再切回、取回相同 link_id / attempt_id 的卡也不同于旧票据，旧回调不复活；FU-AND-0710 R1-04）。
+ */
+data class PendingTicket(
+    val epoch: Long,
+    val serial: Long,
+    val placement: String = ALL,
+    val lifetime: Long = 0L,
+) {
+    companion object {
+        /** 显示全部平台（订单列表自购子 Tab）。 */
+        const val ALL = "*"
+    }
+}
 
 /**
  * 待跟单卡执行器（订单列表自购子 Tab 顶部、发起购买的页面外跳回前台后，G07）。一个页面一份，只在主线程使用。
@@ -265,7 +291,16 @@ class PendingTrackService(
     private val gate = rateGate ?: OrderRateGate(scope, clock)
     private var left = false
     private var fetchSeq = 0L
+
+    /** 清理代次：会话换代、撤回同意、切换环境时加 1（票据的一部分，旧画面上的回调随之失效）。 */
+    private var serial = 0L
+
+    /** 卡片有效期：清掉显示（切到分享子 Tab 等）、换显示位置、离开时加 1（票据的一部分，R1-04）。 */
+    private var lifetime = 0L
     private var items: List<PendingTrack> = emptyList()
+
+    /** 已显示的卡片属于哪个会话世代（拉取请求开始时取的那一代；结果到达、重算时都不再读当前会话来赋值，R1-01 排查）。 */
+    private var itemsEpoch: Long = env.sessionEpoch()
 
     /** 已关闭成功的尝试（会话级共享：App 给的那一份；没给时本页一份）：迟到的旧快照里 dismissed=false 也不再显示。 */
     private val closed = closedAttempts ?: PendingClosedAttempts()
@@ -285,6 +320,8 @@ class PendingTrackService(
     /** 拉一次（[onlyPlatform] 只给发起购买的页面：外跳回到前台后，只显示同平台那一张）。 */
     fun refresh(onlyPlatform: String? = platform) {
         if (left) return
+        // 换显示位置（同一页换了平台）：旧位置上的卡片回调随之失效
+        if (onlyPlatform != platform) lifetime += 1
         platform = onlyPlatform
         // 42901 禁用期内不发（执行层拦截；会话级共享，重进页面也一样）
         if (gate.active) return
@@ -301,6 +338,7 @@ class PendingTrackService(
             when (result) {
                 is ApiResult.Success -> {
                     items = OrderJson.pendingTracks(result.data) ?: return@launch
+                    itemsEpoch = epoch
                     publish()
                 }
 
@@ -328,18 +366,29 @@ class PendingTrackService(
                 .filterNot { it.key in closed.keys.value }
         val shown = platform?.let { p -> all.filter { it.platform == p } } ?: all
         // 忙碌不随重新发布丢掉：关闭在途期间另一轮查询暂时去掉又重建了同一尝试的卡片，按钮仍是忙碌；结果回来时统一清掉（共性第 14 条）
-        mutable.value = mutable.value.copy(cards = shown)
+        // 票据的会话世代是这批卡片的世代（会话已换代而通知还没到时重算，旧卡片拿不到新会话的票据）
+        mutable.value = mutable.value.copy(cards = shown, ticket = currentTicket().copy(epoch = itemsEpoch))
     }
 
-    /** 关闭 [card]（渲染时的卡片项）。42901 禁用中、在途中、卡片已不是当前显示的那一张都不发，返回 false。 */
+    /** 此刻的票据（会话世代 + 清理代次 + 显示位置 + 卡片有效期）。 */
+    fun currentTicket(): PendingTicket = PendingTicket(env.sessionEpoch(), serial, platform ?: PendingTicket.ALL, lifetime)
+
+    /**
+     * 关闭 [card]（渲染时的卡片项）。[ticket] 是渲染时取出的票据（APP-08 共性第 42 条）：与当前票据不同（会话换代、清理之后的旧画面）、42901
+     * 禁用中、在途中、卡片已不是当前显示的那一张都不发，返回 false。缺省按此刻的票据（只给没有渲染值的直接调用）。
+     */
     @Suppress("ReturnCount") // 逐项拦截
-    fun dismiss(card: PendingTrackCardView): Boolean {
-        if (left || gate.active) return false
+    fun dismiss(
+        card: PendingTrackCardView,
+        ticket: PendingTicket = currentTicket(),
+    ): Boolean {
+        if (left || gate.active || ticket != currentTicket()) return false
         val current = mutable.value
         if (card.key in current.busy) return false
         if (current.cards.none { it.attemptId == card.attemptId && it.linkId == card.linkId }) return false
         mutable.value = current.copy(busy = current.busy + card.key)
-        val epoch = env.sessionEpoch()
+        // 归属沿用渲染时的票据（已与当前会话比较过），不再读当前会话来绑定
+        val epoch = ticket.epoch
         // 禁用期只拦写出（发送前闸门），不进归属：关闭已发出时别处的 42901 不取消它，成功照常隐藏并记下、10405 照常进强更（R3-01）
         val owner = CallOwnership(api.epochs(), sendAllowed = { !gate.active }) { !left && env.sessionEpoch() == epoch }
         owners += owner
@@ -437,9 +486,18 @@ class PendingTrackService(
     private fun errorView(failure: ApiResult.Failure): OrderErrorView =
         OrderErrorAction.of(OrderErrorAction.LIST_FIRST, failure.code, false, 0L, failure.traceId, false, false)
 
-    /** 卡内【开启通知】：先记下点过（这一行随即消失），只有用户点了才经 PermissionRequester 弹系统框；结束后按新状态重算。 */
-    fun requestNotification(card: PendingTrackCardView) {
-        if (left || mutable.value.cards.none { it.attemptId == card.attemptId && it.notificationRow }) return
+    /**
+     * 卡内【开启通知】：先记下点过（这一行随即消失），只有用户点了才经 PermissionRequester 弹系统框；结束后按新状态重算。
+     * [ticket] 是渲染时取出的票据（APP-08 共性第 42 条）：与当前票据不同就不记「点过」、不申请；之后的等待沿用点击时的有效性（页面、会话、隐私
+     * 与环境世代、票据，共性第 31 条），失效即取消待执行的申请。缺省按此刻的票据（只给没有渲染值的直接调用）。
+     */
+    @Suppress("ReturnCount") // 票据、页面、卡片逐项拦截
+    fun requestNotification(
+        card: PendingTrackCardView,
+        ticket: PendingTicket = currentTicket(),
+    ) {
+        if (left || ticket != currentTicket()) return
+        if (mutable.value.cards.none { it.attemptId == card.attemptId && it.notificationRow }) return
         // 执行前按最新的本机申请记录与系统权限状态再判一次（别的显示位置刚点过、或系统里已开启：只重算、不申请；共性第 25 条）
         val stillShown =
             PendingTrackCards.of(items, env.session(), env.notification(), env.requestedBefore()).any {
@@ -449,8 +507,10 @@ class PendingTrackService(
             publish()
             return
         }
+        val epochs = api.epochs()
+        val stillValid = { !left && ticket == currentTicket() && api.epochs() == epochs }
         scope.launch {
-            env.requestNotification()
+            env.requestNotification(stillValid)
             if (!left) publish()
         }
         publish()
@@ -474,23 +534,31 @@ class PendingTrackService(
     /** 会话换代（登录、退出、换账号）：作废在途请求，清掉旧账号的卡（不把旧账号的卡显示给新账号）。 */
     fun onSessionChanged() {
         fetchSeq += 1
+        serial += 1
         cancelAll()
         items = emptyList()
+        // 会话清理出口：卡片已清空，按此刻的会话重新起算
+        itemsEpoch = env.sessionEpoch()
         closed.clear()
-        mutable.value = PendingTrackState(blocked = gate.blocked.value, toastId = mutable.value.toastId)
+        mutable.value = PendingTrackState(blocked = gate.blocked.value, toastId = mutable.value.toastId, ticket = currentTicket())
     }
 
-    /** 清掉显示（发起页离开外跳场景时不留旧卡）。 */
+    /**
+     * 清掉显示（订单列表切到分享子 Tab、发起页离开外跳场景时不留旧卡）：卡片有效期同步加 1，旧画面上的关闭与【开启通知】回调、排队中的通知申请
+     * 一并失效；之后再显示（切回自购、取回相同 attempt）用新票据（R1-04）。
+     */
     fun clear() {
         fetchSeq += 1
+        lifetime += 1
         cancelAll()
         items = emptyList()
-        mutable.value = mutable.value.copy(cards = emptyList(), busy = emptySet())
+        mutable.value = mutable.value.copy(cards = emptyList(), busy = emptySet(), ticket = currentTicket())
     }
 
-    /** 页面出栈（同步出口）：作废并取消在途请求，之后迟到的响应一律丢弃。 */
+    /** 页面出栈（同步出口）：作废并取消在途请求、卡片有效期加 1，之后迟到的响应一律丢弃。 */
     fun leave() {
         left = true
+        lifetime += 1
         cancelAll()
     }
 

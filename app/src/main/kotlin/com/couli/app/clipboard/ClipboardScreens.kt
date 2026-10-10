@@ -1,5 +1,6 @@
 package com.couli.app.clipboard
 
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,12 +23,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
@@ -42,6 +43,7 @@ import com.couli.core.clipboard.ParseResultAction
 import com.couli.core.clipboard.ParseRow
 import com.couli.core.clipboard.PasteEntry
 import com.couli.core.designsystem.BuyButtonState
+import com.couli.core.designsystem.CouliAnnouncer
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
@@ -52,6 +54,7 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.designsystem.ProductCardList
 import com.couli.core.designsystem.ProductCardMapper
 import kotlinx.coroutines.delay
@@ -82,6 +85,8 @@ object ClipboardScreens {
 fun HomeClipboardArea(clipboard: AppClipboard) {
     val prompt by clipboard.prompt.collectAsStateWithLifecycle()
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    // 共享 busy（R1-05）：商品 parse 在途时提示条按钮与粘贴入口一起置灰
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
     val autoSwitch by clipboard.autoSwitch.collectAsStateWithLifecycle()
     val texts = ClipboardDraftTexts
     Column(
@@ -107,7 +112,7 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
                 // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
                 onAction = { clipboard.onPromptAction(current.id) },
                 onClose = { clipboard.onPromptClose(current.id) },
-                enabled = !blocked,
+                enabled = !blocked && (current.busy || !busy),
                 busy = current.busy,
             )
         }
@@ -117,7 +122,7 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
             PasteEntry(
                 text = texts.text("clipboard.paste_entry"),
                 onClick = { clipboard.paste(ManualPasteAction.ENTRY_HOME) },
-                enabled = !blocked,
+                enabled = !blocked && !busy,
                 modifier = Modifier.testTag(ClipboardScreens.HOME_PASTE_BUTTON),
             )
         }
@@ -126,7 +131,7 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
             subtitle = texts.text("clipboard.home_card.subtitle"),
             actionText = texts.text("clipboard.home_card.action"),
             onClick = { clipboard.paste(ManualPasteAction.ENTRY_HOME) },
-            enabled = !blocked,
+            enabled = !blocked && !busy,
         )
     }
 }
@@ -135,11 +140,12 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
 @Composable
 fun SearchTypingPasteEntry(clipboard: AppClipboard) {
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
     PasteEntry(
         text = ClipboardDraftTexts.text("clipboard.paste_entry"),
         hint = ClipboardDraftTexts.text("clipboard.paste_entry.hint"),
         onClick = { clipboard.paste(ManualPasteAction.ENTRY_SEARCH_TYPING) },
-        enabled = !blocked,
+        enabled = !blocked && !busy,
     )
 }
 
@@ -175,9 +181,12 @@ fun InviteConfirmInline(
     val current = result as? ClipboardResult.InviteConfirm ?: return
     if (!origin(current.origin)) return
     val texts = ClipboardDraftTexts
+    val message = texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.code))
+    // 提示条自带礼貌型实时区域（文字变了会读）；连续两次同一邀请码时文字不变，按结果编号补读一次（APP-07 共性第 33 条）
+    AnnounceResult(current.id, message, surfaceAnnouncesChanges = true)
     Box(modifier = modifier.fillMaxWidth().testTag(ClipboardScreens.INVITE_CONFIRM)) {
         ClipboardPromptBar(
-            message = texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.code)),
+            message = message,
             actionText = texts.text("clipboard.invite_prompt.action"),
             actionLabel = texts.text("clipboard.invite_prompt.action_label"),
             closeLabel = texts.text("clipboard.prompt.close"),
@@ -242,6 +251,8 @@ fun UnrecognizedInline(
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
     val current = result as? ClipboardResult.Unrecognized ?: return
     if (!origin(current.origin)) return
+    // 每个新结果读一次（按结果编号，APP-07 共性第 33 条）：连续两次 30132 文字相同、视图不重建，实时区域不会再读
+    AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
     Row(
         modifier =
             modifier
@@ -267,7 +278,7 @@ fun UnrecognizedInline(
                 text = current.text,
                 style = CouliTypography.footnote,
                 color = CouliColors.statusErrorText,
-                modifier = Modifier.padding(vertical = CouliSpacing.space2).semantics { liveRegion = LiveRegionMode.Assertive },
+                modifier = Modifier.padding(vertical = CouliSpacing.space2),
             )
             Box(
                 modifier =
@@ -287,6 +298,37 @@ fun UnrecognizedInline(
     }
 }
 
+/**
+ * 按结果编号读屏播报（APP-07 共性第 33 条，iOS R3-02）：[id] 每换一次读出 [text] 一次，普通重组不重复读。
+ * [surfaceAnnouncesChanges]：界面自己会读第一次出现或文字变化（弹层打开移焦到标题、礼貌型实时区域），这时只在结果被替换而文字没变时补读。
+ */
+@Composable
+private fun AnnounceResult(
+    id: Long,
+    text: String,
+    surfaceAnnouncesChanges: Boolean,
+) {
+    val injected = LocalCouliAnnouncer.current
+    val view = LocalView.current
+    val last = remember { arrayOfNulls<Pair<Long, String>>(1) }
+    LaunchedEffect(id) {
+        val previous = last[0]
+        last[0] = id to text
+        val replacedSameText = previous != null && previous.first != id && previous.second == text
+        if (text.isNotEmpty() && (!surfaceAnnouncesChanges || replacedSameText)) announce(injected, view, text)
+    }
+}
+
+// API 36 起不推荐主动播报，但同文再提示需要立即读出（与 designsystem 的 ViewAnnouncer、iOS UIAccessibility.post 对齐）
+@Suppress("DEPRECATION")
+private fun announce(
+    injected: CouliAnnouncer?,
+    view: View,
+    text: String,
+) {
+    if (injected != null) injected.announce(text) else view.announceForAccessibility(text)
+}
+
 private fun Modifier.wrapClick(
     enabled: Boolean = true,
     onClick: () -> Unit,
@@ -300,8 +342,13 @@ private fun CardListSheet(
     val texts = SearchDraftTexts
     // 42901 共享禁用期（含本次结果里的行内 42901）：卡片与【用商品名搜索】一并置灰（执行层另在 openCard / searchByName 拦，APP-07 共性第 16 条）
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    // 平台购买状态变了（配置、50301 覆盖）按当前结果重新映射（APP-07 共性第 32 条）；读它即订阅
+    val statusVersion by clipboard.purchaseStatusVersion.collectAsStateWithLifecycle()
+    val title = ClipboardDraftTexts.text("clipboard.card_list.title")
+    // 弹层打开时焦点进标题（读出）；弹层没关、换成新的一组结果时按结果编号再读一次标题（APP-07 共性第 33 条）
+    AnnounceResult(result.id, title, surfaceAnnouncesChanges = true)
     CouliSheet(
-        title = ClipboardDraftTexts.text("clipboard.card_list.title"),
+        title = title,
         onDismissRequest = { clipboard.consumeResult(result) },
         closeLabel = ClipboardDraftTexts.text("clipboard.card_list.close"),
     ) {
@@ -312,7 +359,8 @@ private fun CardListSheet(
             result.rows.forEachIndexed { index, row ->
                 val card = row.card
                 if (card != null) {
-                    val mapped = ProductCardMapper.map(card, texts)
+                    // 与搜索卡同一映射与同一平台购买状态：not_launched 隐藏返利金额、预估返后与读屏金额，maintenance 禁用购买
+                    val mapped = statusVersion.let { ProductCardMapper.map(card, texts, purchaseStatus = clipboard.purchaseStatusOf(card)) }
                     val open = { clipboard.openCard(result, card) }
                     val buyState = if (blocked) BuyButtonState.DISABLED else mapped.buyState
                     Box(
@@ -322,7 +370,7 @@ private fun CardListSheet(
                                 .wrapClick(enabled = !blocked, onClick = open)
                                 .testTag(ClipboardScreens.CARD_PREFIX + index),
                     ) {
-                        ProductCardList(data = mapped.data, onBuy = open, buyState = buyState)
+                        ProductCardList(data = mapped.data, onBuy = open, buyState = buyState, retryLaterText = mapped.retryLaterText)
                     }
                 } else {
                     ErrorRow(result, row, index, clipboard, enabled = !blocked)

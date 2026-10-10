@@ -53,9 +53,17 @@ data class NetworkContext(
 )
 
 /** 网络层对外的回调。 */
+@Suppress("LongParameterList") // 各回调逐项给，都有缺省
 class NetworkHooks(
     /** 进强更（Update.on10405）：确需强更的 10405，或强更检查未知期间登录 / 刷新拿到 deletion_only（min 为 null）。 */
     val onForceUpdate: (minSupportedVersion: String?) -> Unit = {},
+    /**
+     * 同 [onForceUpdate]，另带这次调用的归属复核 [stillValid]（APP-07 共性第 29 条，FU-AND-0710）：网络线程核对通过后才调它，接收方切到主线程
+     * 后、真正进强更（跳转、UpdateGate 落盘）之前再调一次 [stillValid]，期间已离页 / 切 Tab / 撤回同意 / 切环境（调用方的
+     * [CallOwnership.stillOwned] 或隐私、环境世代失效）的迟到整体 10405 不进强更。[stillValid] 线程安全、不阻塞。
+     * 给了它就不再调 [onForceUpdate]；没有为 null（行为与之前相同）。
+     */
+    val onForceUpdateChecked: ((minSupportedVersion: String?, stillValid: () -> Boolean) -> Unit)? = null,
     /** 每个错误 Effect（页面也能从 [ApiResult.Failure] 拿到）。 */
     val onEffect: (ErrorEffect) -> Unit = {},
     /**

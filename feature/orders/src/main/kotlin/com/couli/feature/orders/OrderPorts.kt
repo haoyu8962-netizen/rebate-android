@@ -4,6 +4,7 @@ import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.network.PageApi
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderRateGate
+import com.couli.core.orders.OrderRestoreStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.OrderTexts
 import com.couli.core.orders.PendingClosedAttempts
@@ -62,6 +63,11 @@ class OrderListConfig(
     val rateGate: OrderRateGate? = null,
     /** 已关闭成功的待跟单尝试（会话级共享一份，APP-08 共性第 15 条）；没给时本页一份。 */
     val closedAttempts: PendingClosedAttempts? = null,
+    /**
+     * 恢复记录里个人数据（搜索词、输入框、平台与月份、锚点订单、账号归属）的落盘（App 给，noBackupFilesDir 下原子写；撤回 / 基本模式 / 切环境由
+     * AppModule 的两个清理器删除并确认，APP-08 共性第 36、40、45 条）。系统保存状态只存它的随机引用。没给时这些内容不保存、也不恢复。
+     */
+    val restoreStore: OrderRestoreStore? = null,
 )
 
 /** 订单详情页的配置（App 给）。[orderId] 是路由参数（必填）。 */

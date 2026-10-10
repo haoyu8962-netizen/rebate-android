@@ -7,6 +7,7 @@ import com.couli.core.orders.OrderConditions
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderQuery
 import com.couli.core.orders.OrderRateGate
+import com.couli.core.orders.OrderRestoreRecord
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.PendingTrackService
 import kotlinx.coroutines.Job
@@ -18,6 +19,12 @@ import kotlinx.coroutines.launch
 /** App 经它把会话变化、详情回填（G17）、路由参数 scope 交给订单列表（订单 Tab 根只有一份）。 */
 interface OrderListHandle {
     fun onSessionChanged()
+
+    /**
+     * 撤回同意、进入基本模式、切换环境（APP-08 共性第 36、38 条）：不论会话通知是否已到，同步清掉页面状态（搜索框与保存状态里可能是完整订单号
+     * 的搜索词、半屏、滚动锚点与待执行的恢复）、已显示的结果与待跟单卡，作废在途请求。
+     */
+    fun onCleanup()
 
     fun patch(detail: OrderDetail)
 
@@ -44,14 +51,27 @@ data class OrderAnchor(
 )
 
 /**
+ * 页面的渲染身份（R2-01，APP-09 共性第 63、65 条）：本页固定归属的会话世代与账号，加页面代次（会话换代、清理、作废旧列表时加 1）。Compose 在
+ * 组合时取出这份普通值交给每个回调；回调执行时只比较（仍是当前这份、当前会话仍等于它），不在执行时读当前会话来绑定。
+ */
+data class OrderPageTicket(
+    val epoch: Long,
+    val account: String?,
+    val page: Long,
+)
+
+/**
  * 订单列表的 ViewModel（订单 Tab 根；03 §3.3）：状态来自 [OrderListController]；搜索框文字、半屏、滚动锚点在这里。
- * 页面状态写进 [saved]（SavedStateHandle；APP-06a 第 17、20 条）：子 Tab、分组、平台、月份、搜索词、输入框文字、半屏、滚动锚点。配置重建与进程被
- * 系统回收后按保存的条件恢复（不看路由参数），重取第一页但不算新一轮，再一次性回到滚动锚点（APP-06a 第 40、43 条）。被详情盖住、切走 Tab 不算
- * 出栈：条件、搜索词与滚动锚点都保留（AdaptBackRestore）。
+ * 页面状态（APP-06a 第 17、20 条）分两处保存：系统保存状态（SavedStateHandle）只存不含个人数据的子 Tab、分组、半屏、锚点位置，以及恢复记录的随机
+ * 引用；搜索词、输入框文字、平台与月份、锚点订单与账号归属（账号哈希）存在 [OrderListConfig.restoreStore]（能确认写入与删除结果的文件，撤回 /
+ * 基本模式 / 切环境时由 App 的清理器删除并确认；R1-03、R2-02）。配置重建与进程被系统回收后按保存的条件恢复（不看路由参数），重取第一页但不算
+ * 新一轮，再一次性回到滚动锚点（APP-06a 第 40、43 条）。被详情盖住、切走 Tab 不算出栈：条件、搜索词与滚动锚点都保留（AdaptBackRestore）。
  *
- * 保存的状态绑定账号归属（[K_OWNER] = 账号哈希，不落明文）：恢复前核对，不是当前账号保存的一律丢弃。会话换代时同步清空搜索框（可能是上一账号的完整订单号）、
- * 关掉半屏、丢弃滚动锚点与待执行的恢复（APP-08 共性第 19 条）。进程恢复的等待任务绑定页面、会话与查询：等待期间用户发起了新查询，或会话换了代，
- * 等待结束后不再用保存的旧条件覆盖（共性第 21 条）。
+ * 恢复前核对：引用对应的记录存在、清理代次没变、记录的账号归属是本页的固定归属，否则一律不恢复并清掉保存状态。会话换代时同步清空搜索框（可能是
+ * 上一账号的完整订单号）、关掉半屏、丢弃滚动锚点与待执行的恢复（APP-08 共性第 19 条）。进程恢复的等待任务绑定页面、会话与查询：等待期间用户
+ * 发起了新查询，或会话换了代，等待结束后不再用保存的旧条件覆盖（共性第 21 条）。
+ *
+ * 页面上每个用户入口都带渲染身份 [OrderPageTicket]（R2-01）：失效的旧回调（换号、清理之后）不写内存、不写保存状态与恢复记录、不发请求。
  */
 @Suppress("TooManyFunctions") // 页面每个操作一个入口
 class OrderListViewModel(
@@ -78,10 +98,34 @@ class OrderListViewModel(
             )
         }
 
-    /** 保存的状态属于当前账号才恢复（别的账号、没有归属记录的一律丢弃并清掉）。 */
-    val restored: Boolean = ownedSavedState()
+    /** 恢复记录的落盘（App 给；没给时个人数据不保存、不恢复）。 */
+    private val store = initial.restoreStore
 
-    private val mutableInput = MutableStateFlow(if (restored) saved[K_INPUT] ?: "" else "")
+    /** 本页恢复记录的引用（随机；系统保存状态里只有它）。 */
+    private var ref: String? = null
+
+    /** 本页取得的清理代次（清理之后要先清空内存状态再取新的，旧代次写不进）。 */
+    private var boundEpoch: Long = 0L
+
+    /** 最近一次确认写入的记录（内容没变不重写）。 */
+    private var lastWritten: OrderRestoreRecord? = null
+
+    private var gone = false
+
+    /** 本页的页面代次（会话换代、清理、作废旧列表时加 1）。 */
+    private var page = 0L
+
+    private val mutableTicket = MutableStateFlow(OrderPageTicket(controller.ownerEpoch, controller.ownerAccount, page))
+
+    /** 渲染身份（Compose 组合时取出普通值交给回调）。 */
+    val ticket: StateFlow<OrderPageTicket> = mutableTicket.asStateFlow()
+
+    /** 恢复记录：属于本页的固定归属、清理之后没被删掉才有（别的账号、没有记录、清理之后的旧引用一律丢弃并清掉保存状态）。 */
+    private val record: OrderRestoreRecord? = ownedRecord()
+
+    val restored: Boolean = record != null
+
+    private val mutableInput = MutableStateFlow(record?.input.orEmpty())
     val input: StateFlow<String> = mutableInput.asStateFlow()
 
     private val mutableSheet =
@@ -92,7 +136,7 @@ class OrderListViewModel(
 
     /** 滚动锚点（切走 Tab 再回来、进程回收后恢复用）。 */
     var anchor: OrderAnchor =
-        if (restored) OrderAnchor(saved[K_ANCHOR_INDEX] ?: 0, saved[K_ANCHOR_OFFSET] ?: 0, saved[K_ANCHOR_ID]) else OrderAnchor(0, 0)
+        if (restored) OrderAnchor(saved[K_ANCHOR_INDEX] ?: 0, saved[K_ANCHOR_OFFSET] ?: 0, record?.anchorOrderId) else OrderAnchor(0, 0)
         private set
 
     /**
@@ -105,23 +149,28 @@ class OrderListViewModel(
     /** 已为哪一轮查询滚回过顶部（返回本页、重建、恢复时轮次没变，不滚回顶部）。 */
     var seenRound: Long = -1L
 
-    private var gone = false
-
     /** 进程恢复时等待版本检查的任务（等待结束前为非 null）。 */
     private var restoreJob: Job? = null
 
     init {
         initial.bindController(this)
+        // 执行器发现会话已换代、先作废了旧列表（迟到的翻页、复制等入口；R1-01）：同步清掉页面状态与待跟单卡
+        controller.onInvalidated = {
+            dropPageState()
+            pending?.onSessionChanged()
+            if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+        }
         val conditions = savedConditions()
         // 先把条件备好并显示（等待期间不发请求）；之后条件的每次变化写进保存状态（含等待期间用户的改动）
         controller.prepare(config.scope, conditions)
         seenRound = controller.state.value.round
-        saved[K_OWNER] = owner()
+        persistRecord()
         viewModelScope.launch { controller.state.collect { persist(it.conditions) } }
         val gate = initial.restoreGate
         if (conditions != null && gate != null) {
             // 进程回收后的自动恢复：等版本检查有结果再取第一页（03 §4.4）。等待结束后再核对：页面还在、用户没有接管、会话没换代
-            val epoch = initial.env.sessionEpoch()
+            // 与恢复记录核对归属时用的是同一份固定归属（构造时一次性取，之后只比较）
+            val epoch = controller.ownerEpoch
             restoreJob =
                 viewModelScope.launch {
                     gate()
@@ -153,108 +202,183 @@ class OrderListViewModel(
         if (controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
     }
 
-    /** 当前账号的归属标记（账号哈希；没有会话为 null）。 */
-    private fun owner(): String? = config.env.account()?.let(OrderStaleCache.Store::hash)
+    /** 本页固定归属的账号标记（账号哈希；没有会话为 null）：与执行器的请求、已显示数据同一份，不在写保存状态时再读当前会话。 */
+    private fun owner(): String? = controller.ownerAccount?.let(OrderStaleCache.Store::hash)
 
-    private fun ownedSavedState(): Boolean {
-        val owned = saved.contains(K_SCOPE) && saved.contains(K_OWNER) && saved.get<String>(K_OWNER) == owner()
-        // 不是当前账号保存的（或没有归属记录）：一律不恢复，并清掉（不让上一账号的搜索词留在保存状态里）
-        if (!owned) ALL_KEYS.forEach { saved.remove<Any>(it) }
-        return owned
+    /**
+     * 读恢复记录（构造时一次）：旧版本留在系统保存状态里的个人数据键一律删掉、不恢复；引用对应的记录存在、清理没有待完成、账号归属一致才恢复。
+     * 之后本页用这份引用（没恢复就换新的），并删掉别的旧记录。
+     */
+    private fun ownedRecord(): OrderRestoreRecord? {
+        LEGACY_KEYS.forEach { saved.remove<Any>(it) }
+        val candidate = saved.get<String>(K_REF)
+        val found = if (saved.contains(K_SCOPE)) store?.read(candidate)?.takeIf { it.owner == owner() } else null
+        if (found == null) ALL_KEYS.forEach { saved.remove<Any>(it) }
+        ref = if (found != null) candidate else store?.newRef()
+        store?.retainOnly(ref)
+        boundEpoch = store?.epoch ?: 0L
+        lastWritten = found
+        return found
     }
 
-    /** 会话换代：清掉上一账号留下的页面状态（搜索框、半屏、滚动锚点与待执行的恢复），保存状态改记新账号。 */
-    private fun dropAccountState() {
-        controller.onSessionChanged()
-        setInput("")
-        closeSheet()
+    /**
+     * 把本页此刻的个人数据写进恢复记录（内容没变不重写）。写不进（清理代次已变、待清理、I/O 失败）时从系统保存状态里去掉引用：之后恢复不出来，
+     * 不会恢复出一份旧内容。
+     */
+    @Suppress("ReturnCount") // 页面已清理、没有落盘、没有引用、内容没变逐项
+    private fun persistRecord(conditions: OrderConditions = controller.state.value.conditions) {
+        if (gone) return
+        val target = store ?: return
+        val id = ref ?: return
+        val next = OrderRestoreRecord(owner(), conditions.platform, conditions.month, conditions.q, mutableInput.value, anchor.orderId)
+        if (next == lastWritten && saved.contains(K_REF)) return
+        if (target.write(id, boundEpoch, next)) {
+            lastWritten = next
+            saved[K_REF] = id
+        } else {
+            lastWritten = null
+            saved.remove<String>(K_REF)
+        }
+    }
+
+    /** 会话换代：清掉上一账号留下的页面状态（搜索框、半屏、滚动锚点与待执行的恢复），恢复记录改记新账号。 */
+    private fun dropAccountState(cleanup: Boolean = false) {
+        if (cleanup) controller.onCleanup() else controller.onSessionChanged()
+        dropPageState()
+    }
+
+    /**
+     * 清掉页面状态（搜索框、半屏、滚动锚点与待执行的恢复）：先换渲染身份（旧回调从此失效），内存清空之后才取新的清理代次，恢复记录改记本页此刻的
+     * 固定归属与空内容。
+     */
+    private fun dropPageState() {
+        page += 1
+        mutableTicket.value = OrderPageTicket(controller.ownerEpoch, controller.ownerAccount, page)
+        mutableInput.value = ""
+        closeSheetNow()
         pendingRestore = null
         anchor = OrderAnchor(0, 0)
         if (!gone) {
             saved[K_ANCHOR_INDEX] = 0
             saved[K_ANCHOR_OFFSET] = 0
-            saved[K_ANCHOR_ID] = null
-            saved[K_OWNER] = owner()
+            boundEpoch = store?.epoch ?: 0L
+            persistRecord()
         }
     }
 
     private fun savedConditions(): OrderConditions? {
-        if (!restored) return null
+        val r = record ?: return null
         return OrderConditions(
             scope = saved[K_SCOPE] ?: OrderQuery.SELF,
             group = saved[K_GROUP] ?: OrderQuery.ALL,
-            platform = saved[K_PLATFORM],
-            month = saved[K_MONTH],
-            q = saved[K_Q],
+            platform = r.platform,
+            month = r.month,
+            q = r.q,
         )
     }
 
     private fun persist(c: OrderConditions) {
         if (gone) return
-        saved[K_OWNER] = owner()
         saved[K_SCOPE] = c.scope
         saved[K_GROUP] = c.group
-        saved[K_PLATFORM] = c.platform
-        saved[K_MONTH] = c.month
-        saved[K_Q] = c.q
+        persistRecord(c)
     }
 
     fun update(next: OrderListConfig) {
         config = next
     }
 
-    // ---------------------------------------------------------------- 页面入口
+    /**
+     * 渲染身份 [t] 仍有效：页面还在、仍是当前这份身份、当前会话仍等于它（会话已换代而通知还没到时也不执行）。只比较，不赋值。
+     */
+    fun live(t: OrderPageTicket): Boolean =
+        !gone && t == mutableTicket.value && t.epoch == config.env.sessionEpoch() && t.account == config.env.account()
 
-    fun selectScope(scope: String) {
-        if (!controller.selectScope(scope)) return
+    // ---------------------------------------------------------------- 页面入口（都带渲染身份）
+
+    fun selectScope(
+        t: OrderPageTicket,
+        scope: String,
+    ) {
+        if (!live(t) || !controller.selectScope(scope)) return
         afterUserAction()
         // 切子 Tab：搜索框一并清空（BR-TEXT-02 细则）
         setInput("")
         if (scope == OrderQuery.SELF) pending?.refresh() else pending?.clear()
     }
 
-    fun selectGroup(group: String): Boolean = controller.selectGroup(group).also { afterUserAction() }
+    fun selectGroup(
+        t: OrderPageTicket,
+        group: String,
+    ): Boolean = live(t) && controller.selectGroup(group).also { afterUserAction() }
 
-    fun onInput(text: String) = setInput(OrderQuery.limit(text))
+    /** 搜索框输入（R2-01：旧页面的输入回调不写进换代后的页面与恢复记录）。 */
+    fun onInput(
+        t: OrderPageTicket,
+        text: String,
+    ) {
+        if (live(t)) setInput(OrderQuery.limit(text))
+    }
 
     /** 键盘「搜索」：提交（不边输边搜，G11）。 */
-    fun submit(): Boolean = controller.submitQuery(mutableInput.value).also { afterUserAction() }
+    fun submit(t: OrderPageTicket): Boolean = live(t) && controller.submitQuery(mutableInput.value).also { afterUserAction() }
 
     /** 清空搜索框：清空即发请求（G11）。 */
-    fun clearInput(): Boolean {
+    fun clearInput(t: OrderPageTicket): Boolean {
+        if (!live(t)) return false
         setInput("")
         return controller.submitQuery(null).also { afterUserAction() }
     }
 
     private fun setInput(text: String) {
         mutableInput.value = text
-        if (!gone) saved[K_INPUT] = text
+        persistRecord()
     }
 
-    fun openSheet(sheet: OrderSheet) {
-        if (controller.state.value.blocked) return
+    fun openSheet(
+        t: OrderPageTicket,
+        sheet: OrderSheet,
+    ) {
+        if (!live(t) || controller.state.value.blocked) return
         mutableSheet.value = sheet
         if (!gone) saved[K_SHEET] = sheet.name
     }
 
-    fun closeSheet() {
+    fun closeSheet(t: OrderPageTicket) {
+        if (live(t)) closeSheetNow()
+    }
+
+    private fun closeSheetNow() {
         mutableSheet.value = null
         if (!gone) saved[K_SHEET] = null
     }
 
-    fun choosePlatform(platform: String?) {
+    fun choosePlatform(
+        t: OrderPageTicket,
+        platform: String?,
+    ) {
+        if (!live(t)) return
         controller.selectPlatform(platform)
         afterUserAction()
-        closeSheet()
+        closeSheetNow()
     }
 
-    fun chooseMonth(month: String?) {
+    fun chooseMonth(
+        t: OrderPageTicket,
+        month: String?,
+    ) {
+        if (!live(t)) return
         controller.selectMonth(month)
         afterUserAction()
-        closeSheet()
+        closeSheetNow()
     }
 
-    /** 下拉刷新：列表与待跟单卡一起刷新。 */
+    /** 下拉手势（页面入口）：渲染身份有效才刷新。 */
+    fun pullRefresh(t: OrderPageTicket) {
+        if (live(t)) refresh()
+    }
+
+    /** 下拉刷新：列表与待跟单卡一起刷新（App 入口与页面手势共用）。 */
     override fun refresh() {
         val waiting = restoreJob != null
         if (!controller.refresh()) return
@@ -263,17 +387,42 @@ class OrderListViewModel(
         if (!waiting && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
     }
 
+    /** 整页失败 / 翻页失败的【重试】。 */
+    fun retry(t: OrderPageTicket): Boolean = live(t) && controller.retry()
+
+    /** 上拉加载更多（滚动触发、恢复补页）。 */
+    fun loadMore(t: OrderPageTicket): Boolean = live(t) && controller.loadMore()
+
+    /** 整卡点击打开详情。 */
+    fun openDetail(
+        t: OrderPageTicket,
+        orderId: String,
+    ): Boolean = live(t) && controller.openDetail(orderId)
+
+    /** 卡内【复制】：渲染身份 + 渲染时的轮次与已显示数据身份（APP-08 共性第 41、44 条）。 */
+    fun copy(
+        t: OrderPageTicket,
+        orderId: String,
+        orderNo: String,
+        round: Long,
+        identity: OrderListIdentity?,
+    ): Boolean = live(t) && controller.copy(orderId, orderNo, round, identity)
+
     /** 回到前台（含从外跳的平台 App 回来）：重拉待跟单卡，按最新通知权限重算通知行。 */
     fun onStarted() {
         if (controller.state.value.scope == OrderQuery.SELF) pending?.refresh() else pending?.recompute()
     }
 
-    fun onScrolled(next: OrderAnchor) {
-        if (gone || pendingRestore != null) return
+    /** 记录滚动锚点（渲染身份有效才记；锚点订单进恢复记录）。 */
+    fun onScrolled(
+        t: OrderPageTicket,
+        next: OrderAnchor,
+    ) {
+        if (!live(t) || pendingRestore != null) return
         anchor = next
         saved[K_ANCHOR_INDEX] = next.index
         saved[K_ANCHOR_OFFSET] = next.offset
-        saved[K_ANCHOR_ID] = next.orderId
+        persistRecord()
     }
 
     fun restoreDone() {
@@ -287,6 +436,12 @@ class OrderListViewModel(
         dropAccountState()
         pending?.onSessionChanged()
         if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+    }
+
+    /** 撤回 / 基本模式 / 切环境（AppOrders 的通知）：只清本页内存状态与旧回调；落盘的恢复记录已由 App 的清理器删除。 */
+    override fun onCleanup() {
+        dropAccountState(cleanup = true)
+        pending?.onSessionChanged()
     }
 
     override fun patch(detail: OrderDetail) = controller.patch(detail)
@@ -312,19 +467,25 @@ class OrderListViewModel(
     private companion object {
         const val K_SCOPE = "orders.scope"
         const val K_GROUP = "orders.group"
-        const val K_PLATFORM = "orders.platform"
-        const val K_MONTH = "orders.month"
-        const val K_Q = "orders.q"
-        const val K_INPUT = "orders.input"
         const val K_SHEET = "orders.sheet"
         const val K_ANCHOR_INDEX = "orders.anchor_index"
         const val K_ANCHOR_OFFSET = "orders.anchor_offset"
-        const val K_ANCHOR_ID = "orders.anchor_order_id"
 
-        /** 保存状态的账号归属（账号哈希）。 */
-        const val K_OWNER = "orders.owner"
+        /** 恢复记录的引用（随机，不含个人数据）。 */
+        const val K_REF = "orders.restore_ref"
 
-        val ALL_KEYS =
-            listOf(K_SCOPE, K_GROUP, K_PLATFORM, K_MONTH, K_Q, K_INPUT, K_SHEET, K_ANCHOR_INDEX, K_ANCHOR_OFFSET, K_ANCHOR_ID, K_OWNER)
+        val ALL_KEYS = listOf(K_SCOPE, K_GROUP, K_SHEET, K_ANCHOR_INDEX, K_ANCHOR_OFFSET, K_REF)
+
+        /** 旧版本放在系统保存状态里的个人数据与归属键：一律删掉、不恢复。 */
+        val LEGACY_KEYS =
+            listOf(
+                "orders.platform",
+                "orders.month",
+                "orders.q",
+                "orders.input",
+                "orders.anchor_order_id",
+                "orders.owner",
+                "orders.restore_gen",
+            )
     }
 }

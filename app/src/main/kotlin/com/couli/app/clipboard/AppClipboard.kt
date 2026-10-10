@@ -2,6 +2,8 @@ package com.couli.app.clipboard
 
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
+import com.couli.app.trade.AppTrade
+import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.ClipboardClassifier
 import com.couli.core.clipboard.ClipboardContext
@@ -120,7 +122,7 @@ sealed interface ClipboardResult {
  * 只在主线程使用；唯一的例外是交给网络层的归属核对（CallOwnership.stillOwned，可能在网络线程上调）：它只读主线程发布的不可变快照
  * [OwnerSnapshot]，不碰界面状态与集合（A-R2-04）。
  */
-@Suppress("TooManyFunctions", "LongParameterList") // 生命周期、页面、粘贴入口与作废出口各一个入口；各状态源逐项注入
+@Suppress("TooManyFunctions", "LongParameterList", "LargeClass") // 生命周期、页面、粘贴入口与作废出口各一个入口；各状态源逐项注入；共享 busy（R1-05）
 class AppClipboard(
     private val system: SystemClipboard,
     private val api: PageApi,
@@ -148,6 +150,25 @@ class AppClipboard(
 
     /** 浮层来源（AuthSheet、auth_jump 执行中、第三方登录进行中等，G12）；App 接线时给。 */
     var overlay: () -> String? = { null }
+
+    /**
+     * 此刻的平台购买状态（features.platform_status + 点击确认的 50301 覆盖，与搜索卡同一来源，APP-07 共性第 32 条）：多卡弹层（含退化成
+     * 一行弹层的单卡）的商品卡按它映射（not_launched 隐藏金额与读屏金额、maintenance 禁用购买）。App 接线见 [connectPurchaseStatus]。
+     */
+    var purchaseStatus: (platform: String) -> String? = { null }
+
+    private val mutableStatusVersion = MutableStateFlow(0L)
+
+    /** 平台购买状态可能变了（配置快照换了、50301 覆盖变了）就加 1：多卡弹层按它重新映射商品卡（结果编号不变、不重复播报）。 */
+    val purchaseStatusVersion: StateFlow<Long> = mutableStatusVersion.asStateFlow()
+
+    /** 平台购买状态的来源变了（主线程）。 */
+    fun onPurchaseStatusChanged() {
+        mutableStatusVersion.value += 1
+    }
+
+    /** 一张结果卡此刻的平台购买状态（卡上的 platform）；没有平台为 null。 */
+    fun purchaseStatusOf(card: JsonObject): String? = card.text("platform")?.let(purchaseStatus)
 
     val watcher = ClipboardWatcher(::readState, ::autoRead)
 
@@ -181,6 +202,35 @@ class AppClipboard(
     /** 42901 限流中：所有粘贴入口与提示条按钮置灰（执行层另在 [paste] / [onPromptAction] 拦）。 */
     val blocked: StateFlow<Boolean> = mutableBlocked.asStateFlow()
 
+    /** 共享 busy 的持有者（在途商品 parse 的编号；null = 空闲）。 */
+    private var busyToken: Long? = null
+    private var busySerial = 0L
+    private val mutableBusy = MutableStateFlow(false)
+
+    /**
+     * 商品 parse 在途（APP-07 共性第 31 条共享 busy；FU-AND-0710 R1-05）：提示条按钮与所有粘贴入口共用一份。执行层（[paste]、[onPromptAction]）
+     * 在途期间不读剪贴板、不发 parse；界面同步置灰。作废（进后台、撤回、换会话、切环境）时随之结束（旧结果按世代丢弃）。
+     */
+    val busy: StateFlow<Boolean> = mutableBusy.asStateFlow()
+
+    private fun takeBusy(): Long {
+        busySerial += 1
+        busyToken = busySerial
+        mutableBusy.value = true
+        return busySerial
+    }
+
+    private fun releaseBusy(token: Long) {
+        if (busyToken != token) return
+        busyToken = null
+        mutableBusy.value = false
+    }
+
+    private fun releaseAllBusy() {
+        busyToken = null
+        mutableBusy.value = false
+    }
+
     private val mutableAutoSwitch = MutableStateFlow(prefs.autoDetect)
 
     /** 设备级开关「打开 App 自动识别剪贴板」（默认开启）。 */
@@ -204,6 +254,8 @@ class AppClipboard(
         val kind: String,
         val upload: String?,
         val inviteCode: String?,
+        /** 请求前本地抽出的「」标题片段（整体 30132 预填用，APP-07 共性第 30 条）；不是原文。 */
+        val title: String? = null,
     )
 
     /**
@@ -380,6 +432,7 @@ class AppClipboard(
         manualGen += 1
         publish()
         cancelOwned()
+        releaseAllBusy()
         mutableResult.value = null
     }
 
@@ -481,9 +534,17 @@ class AppClipboard(
         val verdict = ClipboardClassifier.classify(text, context, rules(), clock())
         val hash = verdict.hash ?: return
         when (verdict.kindRaw) {
-            ClipboardClassifier.KIND_PRODUCT -> show(round, hash, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null)
-            ClipboardClassifier.KIND_INVITE -> if (guest) show(round, hash, ClipboardClassifier.KIND_INVITE, null, verdict.inviteCode)
-            else -> Unit
+            ClipboardClassifier.KIND_PRODUCT -> {
+                show(round, hash, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null, ClipboardText.quotedTitle(text))
+            }
+
+            ClipboardClassifier.KIND_INVITE -> {
+                if (guest) show(round, hash, ClipboardClassifier.KIND_INVITE, null, verdict.inviteCode)
+            }
+
+            else -> {
+                Unit
+            }
         }
     }
 
@@ -493,12 +554,13 @@ class AppClipboard(
         kind: String,
         upload: String?,
         inviteCode: String?,
+        title: String? = null,
     ) {
         if (!homeRoot() || privacy() != PrivacyState.CONSENTED) return
         // 出了提示条就记录（点了或关了都算，G08）
         history.record(hash)
         counter += 1
-        val next = Ticket(counter, round, homeGen, screenGen, sessionEpoch(), api.epochs(), kind, upload, inviteCode)
+        val next = Ticket(counter, round, homeGen, screenGen, sessionEpoch(), api.epochs(), kind, upload, inviteCode, title)
         ticket = next
         mutablePrompt.value = ClipboardPrompt(next.id, kind, inviteCode)
         publish()
@@ -547,13 +609,21 @@ class AppClipboard(
             return
         }
         val upload = t.upload ?: return
+        // 共享 busy（R1-05）：已有商品 parse 在途（提示条或任一粘贴入口发起的）就不再发
+        if (mutableBusy.value) return
+        val busy = takeBusy()
         mutablePrompt.value = mutablePrompt.value?.copy(busy = true)
         publish()
         val owner = CallOwnership(api.epochs()) { validInBackground(t) }
         owners += owner
         parseCount += 1
         scope.launch {
-            val outcome = parser.parse(upload, owner)
+            val outcome =
+                try {
+                    parser.parse(upload, owner, t.title)
+                } finally {
+                    releaseBusy(busy)
+                }
             owners -= owner
             // 等待之后复核：已进后台、离开首页、撤回同意、换账号、换环境的迟到响应只丢弃
             if (!valid(t)) return@launch
@@ -600,7 +670,8 @@ class AppClipboard(
      * （[currentOrigin]），发起页离开后迟到的响应只丢弃。
      */
     fun paste(entry: String) {
-        if (privacy() != PrivacyState.CONSENTED || gate.active || !overlayClear()) return
+        // 共享 busy（R1-05）：商品 parse 在途时不读剪贴板、不发
+        if (!pasteAllowed()) return
         val origin = currentOrigin()
         val read = system.read()
         val text = (read as? ClipRead.Text)?.value
@@ -617,7 +688,8 @@ class AppClipboard(
             }
 
             ManualPasteAction.PARSE -> {
-                decision.uploadText?.let { manualParse(it, origin) }
+                // 「」标题在请求前本地抽出、随请求绑定（整体 30132 预填，共性第 30 条）；原文只留在这个局部变量里
+                decision.uploadText?.let { manualParse(it, origin, text?.let(ClipboardText::quotedTitle)) }
             }
 
             // 只有邀请内容：不上传 parse（A-R3-01）。游客出确认条，确认后预填登录页；已登录按 G01 不出邀请提示、不发绑定请求
@@ -650,10 +722,19 @@ class AppClipboard(
 
     private fun guest(): Boolean = routing.session.value == SessionState.GUEST
 
+    /** 粘贴入口此刻能用：已同意、不在 42901 禁用期、没有商品 parse 在途（共享 busy）、没有敏感浮层。 */
+    private fun pasteAllowed(): Boolean = privacy() == PrivacyState.CONSENTED && !gate.active && !mutableBusy.value && overlayClear()
+
     private fun manualParse(
         upload: String,
         origin: String,
+        title: String?,
     ) {
+        // 每次手动 parse 推进世代（R1-05）：先发请求的迟到结果不覆盖后发的结果
+        manualGen += 1
+        // 已有的商品提示条让位给这次手动粘贴（共享 busy 期间不能再点它）
+        if (ticket?.kind == ClipboardClassifier.KIND_PRODUCT) clearPrompt()
+        val busy = takeBusy()
         val gen = manualGen
         val screen = screenGen
         val session = sessionEpoch()
@@ -676,7 +757,12 @@ class AppClipboard(
         owners += owner
         parseCount += 1
         scope.launch {
-            val outcome = parser.parse(upload, owner)
+            val outcome =
+                try {
+                    parser.parse(upload, owner, title)
+                } finally {
+                    releaseBusy(busy)
+                }
             owners -= owner
             if (outcome.dropped || !stillOwned()) return@launch
             outcome.action?.let { act(it, origin) }
@@ -915,6 +1001,23 @@ class AppClipboard(
 
         /** routes.json Search.q 的 maxLength。 */
         private const val SEARCH_Q_MAX = 100
+    }
+}
+
+/**
+ * 平台购买状态的接线（AppModule 与集成测试共用，APP-07 共性第 32 条）：取值与搜索卡同一来源（[AppTrade.platformStatus]：50301 覆盖优先，
+ * 其次生效配置的 features.platform_status）；配置快照或 50301 覆盖变化时通知多卡弹层重新映射。没有接购买时只看配置。
+ */
+fun AppClipboard.connectPurchaseStatus(
+    trade: AppTrade?,
+    store: ConfigStore?,
+) {
+    purchaseStatus = { platform -> trade?.platformStatus(platform) ?: AppTrade.platformStatusIn(store, platform) }
+    trade?.subscribeStatus(::onPurchaseStatusChanged)
+    if (store != null) {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
+            store.snapshots.drop(1).collect { onPurchaseStatusChanged() }
+        }
     }
 }
 

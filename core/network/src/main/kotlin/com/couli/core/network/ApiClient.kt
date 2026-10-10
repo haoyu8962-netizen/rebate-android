@@ -160,6 +160,13 @@ class ApiClient(
     private var clockOffsetMillis = 0L
 
     /**
+     * 展示用的服务端时钟偏差（毫秒，BR-TEXT-11、APP-08 共性第 34 条）：每个带 Date 头的响应都更新，偏差超过 5 分钟才采用、否则为 0。
+     * 只给相对时间展示用（[serverNow]），不动签名用的 [clockOffsetMillis]（那个只在 10401 时校正）。
+     */
+    @Volatile
+    private var displayOffsetMillis = 0L
+
+    /**
      * 一次刷新的结论：[token] 新令牌（被拒为 null）；[cleared] = 被拒后确实清掉了那一代会话（本世代因刷新失败被清除，
      * 晚到的 10002 复用它、返回会话已清；不是这种情况的「会话没了」按会话已换代处理，lessons 37）。
      */
@@ -397,6 +404,20 @@ class ApiClient(
         val account = session(context())?.userId ?: return false
         pendingKeys.coldStart(account)
         return true
+    }
+
+    /**
+     * 服务端校准后的「现在」（毫秒，BR-TEXT-11：本机与服务端 Date 偏差超过 5 分钟时按服务端校准，APP-08 共性第 34 条）：订单等页面的「今天 /
+     * 昨天」等相对时间用它；本进程还没收到带 Date 头的响应时就是本机时钟。限流时长等计时仍用本机时钟。
+     */
+    fun serverNow(): Long = clock() + displayOffsetMillis
+
+    /** 每个响应的 Date 头：偏差超过 5 分钟才采用（否则按 0），只用于展示。 */
+    private fun observeServerDate(headers: Map<String, String>) {
+        val date = headers.entries.firstOrNull { it.key.equals(HeaderNames.DATE, ignoreCase = true) }?.value ?: return
+        val server = runCatching { httpDate().parse(date)?.time }.getOrNull() ?: return
+        val offset = server - clock()
+        displayOffsetMillis = if (abs(offset) > MAX_SKEW_MILLIS) offset else 0L
     }
 
     /**
@@ -681,6 +702,11 @@ class ApiClient(
                 is Sent.Done -> outcome
             }
         val exchange = sent.exchange
+        when (exchange) {
+            is Exchange.Envelope -> observeServerDate(exchange.headers)
+            is Exchange.NotModified -> observeServerDate(exchange.headers)
+            else -> Unit
+        }
         if (exchange is Exchange.NotModified) {
             settle(logical, PendingKeyStore.NO_ENVELOPE)
             // 只有带 If-None-Match 的读请求才接受 304（03 §4.3）；其余按没有统一外壳
@@ -793,7 +819,14 @@ class ApiClient(
 
             ErrorEffectKind.FORCE_UPDATE -> {
                 // 版本闸门不属于某个会话；只有撤回同意、切换环境之后的旧响应不再触发
-                if (ownership != LocalRejectReason.CALL_CANCELLED) hooks.onForceUpdate(data.text("min_supported_version"))
+                // 接收方切到主线程后、进强更之前再复核一次（APP-07 共性第 29 条）：调用方归属与隐私 / 环境世代
+                if (ownership != LocalRejectReason.CALL_CANCELLED) {
+                    val owner = logical.owner
+                    forceUpdate(data.text("min_supported_version")) {
+                        inFlight.epochs() == owner.epochs &&
+                            owner.stillOwned?.invoke() != false
+                    }
+                }
             }
 
             ErrorEffectKind.CLEAR_SESSION_LOGIN -> {
@@ -1906,8 +1939,17 @@ class ApiClient(
      * 强更状态按此刻（处理响应时）读取，不用请求开始时的旧值（A-R2-07）。
      */
     private fun afterSessionSaved(scope: String) {
-        if (scope == SessionScopeRaw.DELETION_ONLY && context().update == UpdateRaw.UNKNOWN) hooks.onForceUpdate(null)
+        if (scope == SessionScopeRaw.DELETION_ONLY && context().update == UpdateRaw.UNKNOWN) forceUpdate(null) { true }
         sessionStored()
+    }
+
+    /** 进强更的唯一出口：有 [NetworkHooks.onForceUpdateChecked] 就带复核交给它，没有调 [NetworkHooks.onForceUpdate]。 */
+    private fun forceUpdate(
+        min: String?,
+        stillValid: () -> Boolean,
+    ) {
+        val checked = hooks.onForceUpdateChecked
+        if (checked != null) checked(min, stillValid) else hooks.onForceUpdate(min)
     }
 
     /** 会话保存、刷新或清理完成：带世代通知（APP-05a 共性第 14 条，App 在主线程据此同步 Router 的会话状态）。 */

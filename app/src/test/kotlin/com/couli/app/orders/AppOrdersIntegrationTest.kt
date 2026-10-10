@@ -42,6 +42,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.AppModule
 import com.couli.app.login.AppLogin
 import com.couli.app.orderCacheStore
+import com.couli.app.orderRestorePendingFlag
+import com.couli.app.orderRestoreStore
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
@@ -76,6 +78,8 @@ import com.couli.core.network.PendingKeyStore
 import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.SecretCipher
 import com.couli.core.network.UpdateRaw
+import com.couli.core.orders.OrderRestoreRecord
+import com.couli.core.orders.OrderRestoreStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.PendingClosedAttempts
 import com.couli.core.orders.PendingTrackTags
@@ -102,6 +106,7 @@ import java.time.OffsetDateTime
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.inject.Provider
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -158,6 +163,16 @@ class AppOrdersIntegrationTest {
 
     @Volatile
     private var hold: CountDownLatch? = null
+
+    /** 假服务每个响应带的 Date 头（FU-AND-0710，共性第 34 条）；null 为不带。 */
+    @Volatile
+    private var serverDate: String? = null
+
+    /** 与 AppModule 同一套切环境清理注册（FU-AND-0710，共性第 38、43 条）。 */
+    private val envCleaners =
+        com.couli.core.config
+            .EnvironmentSwitchCleanerRegistry()
+    private lateinit var appPrivacy: AppPrivacy
 
     private class Recorded(
         val method: String,
@@ -244,6 +259,8 @@ class AppOrdersIntegrationTest {
             .clear()
             .commit()
         runCatching { orderCacheStore(context).clearAll() }
+        AppOrders.restoreRoot(context).setWritable(true)
+        runCatching { orderRestoreStore(context).clearAll() }
         server = MockWebServer()
         server.dispatcher =
             object : Dispatcher() {
@@ -265,14 +282,18 @@ class AppOrdersIntegrationTest {
                                 }?.value
                         }
                     if (path == LIST_PATH) hold?.await(WAIT_S, TimeUnit.SECONDS)
-                    return handler?.invoke(request) ?: defaultAnswer(path, query)
+                    val answer = handler?.invoke(request) ?: defaultAnswer(path, query)
+                    return serverDate?.let { answer.setHeader("Date", it) } ?: answer
                 }
             }
         server.start()
     }
 
     @After
-    fun tearDown() = server.shutdown()
+    fun tearDown() {
+        AppOrders.restoreRoot(context).setWritable(true)
+        server.shutdown()
+    }
 
     // ---------------------------------------------------------------- 搭建（与 AppModule 同一套接线）
 
@@ -284,13 +305,17 @@ class AppOrdersIntegrationTest {
         content: (@androidx.compose.runtime.Composable () -> Unit)? = null,
         withWeb: Boolean = false,
         configFetcher: ((String?, (ConfigReply) -> Unit) -> Unit)? = null,
+        serverClock: Boolean = false,
+        /** 撤回同意走 AppModule 的真实凭据清理器（含订单页恢复记录，R2-02）。 */
+        moduleCleaners: Boolean = false,
     ) {
         val gate =
             PrivacyGate(MemoryStore(), clock = { now }, bundledPolicyVersion = "1").apply {
-                withdrawalCleanup = { inFlight.onPrivacyRevoked() }
+                withdrawalCleanup = if (moduleCleaners) ({ withdrawalCleaners().cleanAll() }) else ({ inFlight.onPrivacyRevoked() })
                 retryScheduler = RetryScheduler { _, _ -> }
             }
         val privacy = AppPrivacy(gate, environmentSettled = { true }, clock = { now }).also { it.coldStart() }
+        appPrivacy = privacy
         val environment = EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED }.also { it.settleAtStartup() }
         tokens = MemorySessionTokens("access-one", "refresh-one", "full", "user-one")
         routing =
@@ -344,7 +369,14 @@ class AppOrdersIntegrationTest {
                     mask = AmountMaskStore(context),
                     sdkInt = sdkInt,
                     clock = { now },
-                ).also { it.connectSession() }
+                    // 与 AppModule 同一个展示时钟（服务端 Date 校准，共性第 34 条）；不测它时固定为 now
+                    displayClock = if (serverClock) api::serverNow else ({ now }),
+                    // 与 AppModule 同一个恢复记录落盘（R1-03、R2-02）
+                    restoreStore = orderRestoreStore(context),
+                ).also {
+                    it.connectSession()
+                    it.connectCleanup(privacy, envCleaners)
+                }
         }
         val web = if (withWeb) appWeb(api, store, privacy, permissions) else null
         composeRule.setContent {
@@ -2043,35 +2075,48 @@ class AppOrdersIntegrationTest {
     private fun launchRestored(
         owner: RestoredOwner,
         restoreGate: (suspend () -> Unit)? = null,
+        moduleCleaners: Boolean = false,
     ) {
         restoredOwner.value = owner
         launch(
+            moduleCleaners = moduleCleaners,
             content = {
+                // 订单页还没创建（停在别的 Tab）：不组合列表
                 val current = restoredOwner.value
-                androidx.compose.runtime.CompositionLocalProvider(
-                    androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides current,
-                    androidx.lifecycle.compose.LocalLifecycleOwner provides current,
-                ) {
-                    val base = orders.listConfig(RouteDestination("OrderList", "{}", false))
-                    com.couli.feature.orders.OrderListScreen(
-                        com.couli.feature.orders.OrderListConfig(
-                            api = base.api,
-                            env = base.env,
-                            texts = base.texts,
-                            cache = base.cache,
-                            mask = base.mask,
-                            pending = base.pending,
-                            clock = base.clock,
-                            bindController = base.bindController,
-                            restoreGate = restoreGate,
-                            rateGate = base.rateGate,
-                            closedAttempts = base.closedAttempts,
-                        ),
-                    )
+                if (restoredVisible.value) {
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides current,
+                        androidx.lifecycle.compose.LocalLifecycleOwner provides current,
+                    ) {
+                        val base = orders.listConfig(RouteDestination("OrderList", "{}", false))
+                        com.couli.feature.orders.OrderListScreen(
+                            com.couli.feature.orders.OrderListConfig(
+                                api = base.api,
+                                env = base.env,
+                                texts = base.texts,
+                                cache = base.cache,
+                                mask = base.mask,
+                                pending = base.pending,
+                                clock = base.clock,
+                                bindController = base.bindController,
+                                restoreGate = restoreGate,
+                                rateGate = base.rateGate,
+                                closedAttempts = base.closedAttempts,
+                                // 进程重建的用例换成新实例（内存里的待清理状态随进程丢失）；平时与 AppModule 同一个
+                                restoreStore = restoreStoreOverride ?: base.restoreStore,
+                            ),
+                        )
+                    }
                 }
             },
         )
     }
+
+    /** 进程重建后的恢复记录落盘（新实例）；null 用 AppModule 的那一个。 */
+    private var restoreStoreOverride: OrderRestoreStore? = null
+
+    /** 恢复测试里订单页是否在组合中（false = 进程恢复后停在别的 Tab，订单 ViewModel 还没创建）。 */
+    private val restoredVisible = androidx.compose.runtime.mutableStateOf(true)
 
     private fun amountLabel(text: String): androidx.compose.ui.geometry.Rect =
         composeRule
@@ -2110,6 +2155,752 @@ class AppOrdersIntegrationTest {
         assertEquals("仍是原页面", "FindOrder", top()?.name)
         assertEquals("加载失败页已消失", 0, texts(failedText))
     }
+
+    // ---------------------------------------------------------------- FU-AND-0710：APP-08 共性第 30–43 条
+
+    /** 第 30 条：下拉刷新在途时页面出栈（执行器 leave）：同步结束「刷新中」，不依赖已被取消、只会被丢弃的响应。 */
+    @Test
+    fun fu0710_l30_leaveEndsRefreshingSynchronously() {
+        launch()
+        openOrders()
+        hold = CountDownLatch(1)
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        composeRule.runOnUiThread { model.refresh() }
+        assertTrue("前提：刷新中", model.controller.state.value.refreshing)
+        var after = true
+        composeRule.runOnUiThread {
+            model.controller.leave()
+            after = model.controller.state.value.refreshing
+        }
+        assertFalse("leave 同步结束刷新中", after)
+        hold?.countDown()
+        settle()
+        assertFalse(model.controller.state.value.refreshing)
+    }
+
+    /** 第 31 条：卡内【开启通知】的申请带点击时的有效性：失效的点击不记「点过」、不弹系统框。 */
+    @Test
+    fun fu0710_l31_anInvalidNotificationClickNeitherRecordsNorRequests() {
+        launch(sdkInt = 33, notificationsEnabled = false)
+        val permissions =
+            AndroidPermissionRequester(
+                AndroidPermissionSystem(
+                    context,
+                    context.getSharedPreferences("couli_permission", Context.MODE_PRIVATE),
+                    sdkInt = 33,
+                    declared = { true },
+                    granted = { false },
+                    notificationsEnabled = { false },
+                ),
+                PermissionPrompts(),
+                context.getSharedPreferences("couli_permission", Context.MODE_PRIVATE),
+            )
+        composeRule.runOnUiThread {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate).launch {
+                orders.pendingEnv.requestNotification { false }
+            }
+        }
+        settle()
+        assertFalse("失效的点击不记「点过」", permissions.hasLocalRecord(com.couli.core.clientcore.PermissionTypeRaw.PUSH))
+        assertEquals("不弹系统框", 0, host.requests)
+    }
+
+    /**
+     * 第 42 条：待跟单卡的关闭与【开启通知】用渲染时的票据。商品详情页显示卡片 → 会话失效后同账号重新登录、重新拉到同一张卡 → 旧画面上的回调
+     * （旧票据）不发关闭请求、不记「点过」、不弹框；新票据照常。
+     */
+    @Test
+    fun fu0710_l42_staleCardCallbacksAfterSameAccountReloginDoNothing() {
+        launch(sdkInt = 33, notificationsEnabled = false)
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        lateinit var page: AppOrders.PendingPage
+        composeRule.runOnUiThread {
+            page = orders.pendingFor("product-entry")!!
+            page.jumped("taobao")
+            page.onStop()
+            page.onStart()
+        }
+        idleUntil {
+            page.service.state.value.cards
+                .any { it.notificationRow }
+        }
+        val card =
+            page.service.state.value.cards
+                .single()
+        val oldTicket = page.service.state.value.ticket
+        composeRule.runOnUiThread {
+            tokens.clear()
+            login.syncSession()
+            tokens.save("access-one-b", "refresh-one-b", "full", "user-one")
+            login.syncSession()
+        }
+        settle()
+        composeRule.runOnUiThread { page.service.refresh("taobao") }
+        idleUntil {
+            page.service.state.value.cards
+                .isNotEmpty()
+        }
+        assertEquals(
+            "同一张卡重新出现",
+            card,
+            page.service.state.value.cards
+                .single(),
+        )
+        assertTrue("前提：票据已换", oldTicket != page.service.state.value.ticket)
+        val dismissBefore = synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } }
+        var sent = true
+        composeRule.runOnUiThread {
+            sent = page.service.dismiss(card, oldTicket)
+            page.service.requestNotification(card, oldTicket)
+        }
+        settle()
+        assertFalse("旧票据的关闭不发", sent)
+        assertEquals(dismissBefore, synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } })
+        assertEquals("旧票据不弹系统框", 0, host.requests)
+        assertTrue(
+            "旧票据不记「点过」：通知行还在",
+            page.service.state.value.cards
+                .single()
+                .notificationRow,
+        )
+        // 新票据照常
+        val fresh = page.service.state.value.ticket
+        composeRule.runOnUiThread { page.service.requestNotification(card, fresh) }
+        idleUntil { host.requests == 1 }
+        composeRule.runOnUiThread { orders.followBackStackIds(emptySet()) }
+    }
+
+    /** 第 34 条：订单相对时间用服务端 Date 校准后的时钟（偏差超过 5 分钟）：服务端说今天是 10-08，付款 10-08 09:05 显示「今天」。 */
+    @Test
+    fun fu0710_l34_relativeTimeUsesTheServerCalibratedClock() {
+        serverDate = "Thu, 08 Oct 2026 02:00:00 GMT"
+        launch(serverClock = true)
+        openOrders()
+        idleUntil { texts("${com.couli.core.designsystem.PriceTerms.TODAY} 09:05") > 0 }
+        assertEquals(0, texts("${com.couli.core.designsystem.PriceTerms.YESTERDAY} 09:05"))
+    }
+
+    /** 第 37 条：订单列表滚到第 8 条 → 切到首页 Tab → 回订单 Tab：仍停在原来的位置，锚点不被首次排版覆盖。 */
+    @Test
+    fun fu0710_l37_switchingMainTabsKeepsTheScrollPosition() {
+        synchronized(answers) { answers[LIST_PATH] = { envelope(listData((1..20).map { self1("ord-$it") }, cursor = null)) } }
+        launch()
+        openOrders()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-1").fetchSemanticsNodes().isNotEmpty() }
+        composeRule.onNodeWithTag(OrderTags.LIST).performScrollToNode(hasTestTag(OrderTags.CARD_PREFIX + "ord-8"))
+        settle()
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        val before = model.anchor
+        assertTrue("前提：已经滚下去", before.index > 1)
+        open("Home")
+        settle()
+        open("OrderList")
+        settle()
+        assertEquals("锚点不被首次排版覆盖", before, model.anchor)
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + before.orderId).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(
+            "第一张可见订单不变",
+            0,
+            composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-1").fetchSemanticsNodes().size,
+        )
+    }
+
+    /**
+     * 第 38、43 条：撤回同意 / 切换环境时，商品详情与搜索页上已显示的待跟单卡清空、在途请求作废、旧外跳记录丢弃；之后再外跳回来照常出卡。
+     */
+    @Test
+    fun fu0710_l38_withdrawalAndEnvSwitchClearLaunchingPageCardsAndTheyWorkAgainAfterwards() {
+        launch()
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        lateinit var page: AppOrders.PendingPage
+
+        fun showCard() {
+            composeRule.runOnUiThread {
+                page.jumped("taobao")
+                page.onStop()
+                page.onStart()
+            }
+            idleUntil {
+                page.service.state.value.cards
+                    .isNotEmpty()
+            }
+        }
+        composeRule.runOnUiThread { page = orders.pendingFor("product-entry")!! }
+        showCard()
+        // 切环境（清理注册表的同步出口；不等会话通知）
+        composeRule.runOnUiThread {
+            envCleaners.cleanAll(com.couli.core.config.AppEnvironment.TEST, com.couli.core.config.AppEnvironment.STAGING)
+        }
+        assertTrue(
+            "切环境：卡片立即清空",
+            page.service.state.value.cards
+                .isEmpty(),
+        )
+        // 切走之前点过购买、清理之后才回来：不按旧外跳拉卡
+        composeRule.runOnUiThread { page.jumped("taobao") }
+        composeRule.runOnUiThread {
+            envCleaners.cleanAll(com.couli.core.config.AppEnvironment.TEST, com.couli.core.config.AppEnvironment.STAGING)
+        }
+        val before = count(PENDING_PATH)
+        composeRule.runOnUiThread {
+            page.onStop()
+            page.onStart()
+        }
+        settle()
+        assertEquals("旧外跳记录已丢弃", before, count(PENDING_PATH))
+        // 新环境里再外跳回来：执行器照常出卡
+        showCard()
+        // 撤回同意（隐私结论不再是已同意）
+        composeRule.runOnUiThread { appPrivacy.withdraw() }
+        settle()
+        assertTrue(
+            "撤回同意：卡片清空",
+            page.service.state.value.cards
+                .isEmpty(),
+        )
+        composeRule.runOnUiThread { orders.followBackStackIds(emptySet()) }
+    }
+
+    /**
+     * 第 36 条：完整订单号搜索之后切换环境（清理注册表的同步出口，不等会话通知）：搜索框、请求与页面保存状态里都不再有这个单号，系统回收后重建也
+     * 恢复不出来；撤回同意同样。Android 的页面恢复记录只在 SavedStateHandle（系统托管，App 不另落盘），按账号哈希归属。
+     */
+    @Test
+    fun fu0710_l36_fullOrderNoSearchIsDroppedByEnvSwitchAndWithdrawalCleanup() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        assertEquals(A_ORDER_NO, searchText())
+        // 清理之后的列表为空：页面上任何位置出现这个单号都只能是残留
+        synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
+        val before = listRequests().size
+        composeRule.runOnUiThread {
+            envCleaners.cleanAll(com.couli.core.config.AppEnvironment.TEST, com.couli.core.config.AppEnvironment.STAGING)
+        }
+        assertEquals("切环境同步清空搜索框", "", (orders.listHandle() as com.couli.feature.orders.OrderListViewModel).input.value)
+        idleUntil { listRequests().size > before }
+        settle()
+        assertEquals("", searchText())
+        assertEquals("页面上没有完整单号", 0, texts(A_ORDER_NO))
+        assertTrue("之后的请求不带这个搜索词", listRequests().drop(before).none { it.containsKey("q") })
+        val beforeRecreate = listRequests().size
+        recreateRestored()
+        idleUntil { listRequests().size > beforeRecreate }
+        settle()
+        assertEquals("重建后搜索框是空的", "", searchText())
+        assertTrue("重建后的请求不带这个搜索词", listRequests().drop(beforeRecreate).none { it.containsKey("q") })
+        // 撤回同意：同样同步清掉
+        search(A_ORDER_NO)
+        assertEquals(A_ORDER_NO, searchText())
+        composeRule.runOnUiThread { appPrivacy.withdraw() }
+        assertEquals("撤回同意同步清空搜索框", "", (orders.listHandle() as com.couli.feature.orders.OrderListViewModel).input.value)
+    }
+
+    /**
+     * 第 41 条：列表卡【复制订单号】的回调用渲染时的轮次，执行前核对会话世代：会话已换代、作废通知还没到时执行旧回调，零写入；轮次变了的旧回调同样零写入。
+     */
+    @Test
+    fun fu0710_l41_staleListCopyCallbacksWriteNothing() {
+        launch()
+        openOrders()
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        val round = model.controller.state.value.round
+        val writes = system.writes
+        var copied = true
+        composeRule.runOnUiThread {
+            // 会话换代（同账号重新登录），列表还没收到通知：旧按钮执行
+            tokens.save("access-one-b", "refresh-one-b", "full", "user-one")
+            copied = model.controller.copy("ord-self-1", A_ORDER_NO, round)
+        }
+        assertFalse(copied)
+        assertEquals("零写入", writes, system.writes)
+        // 会话通知随后到达（AppModule 经网络层的会话通知接到 AppOrders）：按新会话重取，开新一轮
+        composeRule.runOnUiThread { orders.onSessionChanged() }
+        settle()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-self-1").fetchSemanticsNodes().isNotEmpty() }
+        val fresh = model.controller.state.value.round
+        assertTrue("前提：新一轮", fresh != round)
+        composeRule.runOnUiThread { copied = model.controller.copy("ord-self-1", A_ORDER_NO, round) }
+        assertFalse("上一轮的旧回调", copied)
+        assertEquals(writes, system.writes)
+        composeRule.runOnUiThread { copied = model.controller.copy("ord-self-1", A_ORDER_NO, fresh) }
+        assertTrue("当前轮次照常", copied)
+        assertEquals(writes + 1, system.writes)
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0710 第 1 轮评审修复
+
+    /**
+     * R1-01（S0，共性第 44 条）：A 的列表已有数据与下一页游标 → 会话存储换成 B，但会话通知（AppModule 经 main.post 投递）还没执行 → 迟到的翻页
+     * 回调进来：先作废 A 的列表（不经 begin() 把 A 的数据接到 B），A 的旧复制回调零写入 → 会话通知随后到达：按「最近处理的会话通知」判断仍要
+     * 重置一次（重新取第一页），列表里不再有 A 的数据。
+     */
+    @Test
+    fun r1_01_lateLoadMoreAfterTheSessionStoreSwitchesDoesNotRebindTheOldList() {
+        synchronized(answers) { answers[LIST_PATH] = { envelope(listData(listOf(self1()), cursor = "cursor-2")) } }
+        launch()
+        openOrders()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-self-1").fetchSemanticsNodes().isNotEmpty() }
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        // 渲染时取出的普通值（复制回调捕获的那一份）
+        val identity = model.controller.state.value.identity
+        val round = model.controller.state.value.round
+        assertTrue("前提：已显示 A 的数据", identity != null)
+        assertFalse("前提：还有下一页", model.controller.state.value.endReached)
+        // B 的列表为空：页面上任何位置出现 A 的单号都只能是残留
+        synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
+        val writes = system.writes
+        var copied = true
+        var itemsAfterLoadMore = -1
+        var identityAfterLoadMore: com.couli.feature.orders.OrderListIdentity? = identity
+        composeRule.runOnUiThread {
+            // 会话存储换成 B，通知还没执行
+            tokens.save("access-two", "refresh-two", "full", "user-two")
+            // 迟到的翻页回调
+            model.controller.loadMore()
+            itemsAfterLoadMore = model.controller.state.value.items.size
+            identityAfterLoadMore = model.controller.state.value.identity
+            // A 的旧复制回调
+            copied = model.controller.copy("ord-self-1", A_ORDER_NO, round, identity)
+        }
+        assertEquals("翻页入口先作废 A 的列表", 0, itemsAfterLoadMore)
+        assertTrue("旧数据的身份不再是当前身份", identityAfterLoadMore != identity)
+        assertFalse("旧复制回调不写", copied)
+        assertEquals("零写入", writes, system.writes)
+        settle()
+        val beforeNotice = listRequests().size
+        // 会话通知到达（AppModule 经会话通知调到 AppOrders）
+        composeRule.runOnUiThread {
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        idleUntil { listRequests().size > beforeNotice }
+        settle()
+        assertTrue(
+            "通知到后列表里没有 A 的数据",
+            model.controller.state.value.items
+                .isEmpty(),
+        )
+        assertEquals("页面上没有 A 的完整单号", 0, texts(A_ORDER_NO))
+        composeRule.runOnUiThread { copied = model.controller.copy("ord-self-1", A_ORDER_NO, round, identity) }
+        assertFalse(copied)
+        assertEquals("零写入", writes, system.writes)
+    }
+
+    /**
+     * R1-04（共性第 42、46 条）：订单列表自购子 Tab 显示待跟单卡（渲染时的票据交给关闭与【开启通知】回调）→ 切到分享子 Tab（clear）→ 切回自购、
+     * 取回同一张卡（相同 link_id / attempt_id）→ 执行旧画面上的回调（旧票据）：不发关闭请求、不记「点过」、不弹系统框；新票据照常。
+     */
+    @Test
+    fun r1_04_staleListCardCallbacksAfterSelfShareSelfDoNothing() {
+        launch(sdkInt = 33, notificationsEnabled = false)
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        openOrders()
+        idleUntil { composeRule.onAllNodesWithTag(PendingTrackTags.NOTIFY_ROW, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        val service = model.pending!!
+        val card =
+            service.state.value.cards
+                .single()
+        // 组合时取出的那份票据（PendingTrackCards 交给回调的普通值）
+        val oldTicket = service.state.value.ticket
+        composeRule.onNodeWithTag(OrderTags.TAB_SHARE).performClick()
+        settle()
+        assertTrue(
+            "分享子 Tab 不显示卡",
+            service.state.value.cards
+                .isEmpty(),
+        )
+        composeRule.onNodeWithTag(OrderTags.TAB_SELF).performClick()
+        settle()
+        idleUntil {
+            service.state.value.cards
+                .isNotEmpty()
+        }
+        assertEquals(
+            "取回同一张卡（相同 link_id / attempt_id）",
+            card,
+            service.state.value.cards
+                .single(),
+        )
+        assertTrue("前提：票据已换", oldTicket != service.state.value.ticket)
+        val dismissBefore = synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } }
+        var sent = true
+        composeRule.runOnUiThread {
+            sent = service.dismiss(card, oldTicket)
+            service.requestNotification(card, oldTicket)
+        }
+        settle()
+        assertFalse("旧回调不发关闭", sent)
+        assertEquals(dismissBefore, synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } })
+        assertEquals("旧回调不弹系统框", 0, host.requests)
+        assertTrue(
+            "旧回调不记「点过」：通知行还在",
+            service.state.value.cards
+                .single()
+                .notificationRow,
+        )
+        // 新票据照常
+        val fresh = service.state.value.ticket
+        composeRule.runOnUiThread { service.requestNotification(card, fresh) }
+        idleUntil { host.requests == 1 }
+    }
+
+    /**
+     * R1-01 排查（待跟单卡）：会话存储换代、通知还没到时按通知权限重算（recompute 重新发布）：旧卡片的票据仍是拉到它们的那一代会话，渲染出的
+     * 回调执行时与当前会话比较不通过，不发关闭请求。
+     */
+    @Test
+    fun r1_01_pendingCardsRepublishedBeforeTheSessionNoticeKeepTheirOldEpoch() {
+        launch()
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        lateinit var page: AppOrders.PendingPage
+        composeRule.runOnUiThread {
+            page = orders.pendingFor("product-entry")!!
+            page.jumped("taobao")
+            page.onStop()
+            page.onStart()
+        }
+        idleUntil {
+            page.service.state.value.cards
+                .isNotEmpty()
+        }
+        val card =
+            page.service.state.value.cards
+                .single()
+        val dismissBefore = synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } }
+        var sent = true
+        composeRule.runOnUiThread {
+            tokens.save("access-two", "refresh-two", "full", "user-two")
+            page.service.recompute()
+            // 重新发布之后渲染时取出的票据
+            sent = page.service.dismiss(card, page.service.state.value.ticket)
+        }
+        settle()
+        assertFalse("旧会话的卡片不发关闭", sent)
+        assertEquals(dismissBefore, synchronized(requests) { requests.count { it.method == "POST" && it.path.startsWith(DISMISS_PREFIX) } })
+        composeRule.runOnUiThread { orders.followBackStackIds(emptySet()) }
+    }
+
+    /**
+     * R1-03（共性第 36、40、45 条）：A 用完整订单号搜索 → 切到别的 Tab、系统保存状态并回收进程 → 恢复后订单页还没创建时撤回同意 → 补同意、同账号
+     * 重新登录 → 打开订单：系统保存状态里那份没消费的记录因清理世代已推进而不恢复，搜索框与查询条件都是空的。
+     */
+    @Test
+    fun r1_03_withdrawalBeforeTheOrdersPageExistsInvalidatesTheUnconsumedRestoreRecord() {
+        launchRestored(RestoredOwner(android.os.Bundle()), moduleCleaners = true)
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        assertEquals(A_ORDER_NO, searchText())
+        // 切走、进程被回收：系统留下保存状态，订单 ViewModel 不再存在
+        lateinit var state: android.os.Bundle
+        composeRule.runOnUiThread {
+            val old = restoredOwner.value
+            state = old.save()
+            old.viewModelStore.clear()
+            restoredVisible.value = false
+        }
+        settle()
+        // 订单页还没创建时撤回同意（清理出口同步执行）
+        composeRule.runOnUiThread { appPrivacy.withdraw() }
+        settle()
+        // 补同意、同账号重新登录
+        composeRule.runOnUiThread {
+            appPrivacy.requestFullFunction()
+            appPrivacy.agree()
+            tokens.save("access-one-c", "refresh-one-c", "full", "user-one")
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        settle()
+        // 打开订单：用回收前保存的那份状态重建
+        val beforeReopen = listRequests().size
+        composeRule.runOnUiThread {
+            restoredOwner.value = RestoredOwner(android.os.Bundle(), state)
+            restoredVisible.value = true
+        }
+        settle()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.SEARCH).fetchSemanticsNodes().isNotEmpty() }
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        assertEquals("搜索框不恢复旧搜索词", "", searchText())
+        assertEquals("", model.input.value)
+        assertEquals("查询条件不恢复旧搜索词", null, model.controller.state.value.conditions.q)
+        assertTrue("重开后的请求不带旧搜索词", listRequests().drop(beforeReopen).none { it.containsKey("q") })
+        assertTrue("撤回时恢复记录已删除", restoreFilesWith(A_ORDER_NO).isEmpty())
+    }
+
+    /** R1-03 对照：同样回收、没有撤回，恢复照常（清理世代没变）。 */
+    @Test
+    fun r1_03_controlWithoutCleanupTheRecordIsRestored() {
+        launchRestored(RestoredOwner(android.os.Bundle()), moduleCleaners = true)
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        lateinit var state: android.os.Bundle
+        composeRule.runOnUiThread {
+            val old = restoredOwner.value
+            state = old.save()
+            old.viewModelStore.clear()
+            restoredVisible.value = false
+        }
+        settle()
+        composeRule.runOnUiThread {
+            restoredOwner.value = RestoredOwner(android.os.Bundle(), state)
+            restoredVisible.value = true
+        }
+        settle()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.SEARCH).fetchSemanticsNodes().isNotEmpty() }
+        assertEquals(A_ORDER_NO, searchText())
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0710 第 2 轮评审修复
+
+    /**
+     * R2-01（S0，APP-09 共性第 63、65 条）：保留 A 页面真实的旧回调（页面根语义属性上本次组合交给搜索框、筛选、子 Tab、刷新、重试、复制、锚点等
+     * 控件的同一批对象）→ 换成 B、页面按 B 重组 → 执行全部旧回调：搜索框与内存不写入、不发任何请求、剪贴板零写入、恢复记录与系统保存状态里没有
+     * A 的单号；重建后也恢复不出。当前组合的新回调照常。
+     */
+    @Test
+    @Suppress("LongMethod") // 旧回调逐个执行、逐项断言
+    fun r2b_01_staleCallbacksAfterAccountSwitchWriteNothingAndSendNothing() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-self-1").fetchSemanticsNodes().isNotEmpty() }
+        settle()
+        val old = pageActions()
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        val round = model.controller.state.value.round
+        val identity = model.controller.state.value.identity
+        synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
+        switchSession("user-two")
+        idleUntil { pageActions().ticket != old.ticket }
+        settle()
+        val requestsBefore = synchronized(requests) { requests.size }
+        val writes = system.writes
+        composeRule.runOnUiThread {
+            old.onInput(A_ORDER_NO)
+            old.onSubmit()
+            old.onPlatform("taobao")
+            old.onMonth("2026-09")
+            old.onGroup("credited")
+            old.onScope("share")
+            old.onSheet(com.couli.feature.orders.OrderSheet.PLATFORM)
+            old.onRefresh()
+            old.onRetry()
+            old.onLoadMore()
+            old.onCopy("ord-self-1", A_ORDER_NO, round, identity)
+            old.onScrolled(
+                com.couli.feature.orders
+                    .OrderAnchor(3, 0, "ord-self-1"),
+            )
+            old.onOpen("ord-self-1")
+        }
+        settle()
+        assertEquals("搜索框不写入 A 的单号", "", searchText())
+        assertEquals("", model.input.value)
+        assertNull("旧回调不打开半屏", model.sheet.value)
+        assertEquals("条件没被旧回调改动", com.couli.core.orders.OrderQuery.SELF, model.controller.state.value.scope)
+        assertNull(model.controller.state.value.conditions.q)
+        assertNull(model.controller.state.value.conditions.platform)
+        assertEquals("不发任何请求", requestsBefore, synchronized(requests) { requests.size })
+        assertEquals("剪贴板零写入", writes, system.writes)
+        assertTrue("恢复记录里没有 A 的单号", restoreFilesWith(A_ORDER_NO).isEmpty())
+        assertTrue("恢复记录里没有 A 的锚点订单", restoreFilesWith("ord-self-1").isEmpty())
+        assertFalse(
+            "系统保存状态里没有 A 的单号",
+            restoredOwner.value
+                .save()
+                .toString()
+                .contains(A_ORDER_NO),
+        )
+        val beforeRecreate = listRequests().size
+        recreateRestored()
+        idleUntil { listRequests().size > beforeRecreate }
+        settle()
+        assertEquals("重建后也恢复不出", "", searchText())
+        assertTrue(listRequests().drop(beforeRecreate).none { it.containsKey("q") })
+        // 当前组合的新回调照常写入并进恢复记录
+        val fresh = pageActions()
+        composeRule.runOnUiThread { fresh.onInput("纯牛奶") }
+        settle()
+        assertEquals("纯牛奶", searchText())
+        assertTrue(restoreFilesWith("纯牛奶").isNotEmpty())
+    }
+
+    /** R2-01：同一账号、会话世代不变的清理（切环境 / 撤回的同步通知）之后，旧页面的输入与提交回调同样失效。 */
+    @Test
+    fun r2b_01_staleInputCallbacksAfterCleanupOfTheSameAccountDoNothing() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        val old = pageActions()
+        composeRule.runOnUiThread { orders.onCleanup() }
+        idleUntil { pageActions().ticket != old.ticket }
+        settle()
+        val before = listRequests().size
+        composeRule.runOnUiThread {
+            old.onInput(A_ORDER_NO)
+            old.onSubmit()
+        }
+        settle()
+        assertEquals("", searchText())
+        assertEquals("不发请求", before, listRequests().size)
+        assertTrue(restoreFilesWith(A_ORDER_NO).isEmpty())
+    }
+
+    /**
+     * R2-02（S1）：撤回的基本模式与待清理标记已落盘，但隐私结论通知发出前进程被杀（AppOrders 没收到任何通知）→ 下次启动 PrivacyGate 经 AppModule
+     * 的凭据清理器补清理：订单页恢复记录被删除、补清理计入成功 → 同账号回到订单页恢复不出旧搜索词。
+     */
+    @Test
+    fun r2b_02_withdrawalPersistedButKilledBeforeTheNoticeIsCleanedAtStartup() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        val state = killOrders()
+        assertTrue("前提：恢复记录在盘上", restoreFilesWith(A_ORDER_NO).isNotEmpty())
+        assertFalse("前提：系统保存状态里只有引用", state.toString().contains(A_ORDER_NO))
+        // 下次启动：撤回事务已落盘（待清理 + 基本模式），AppOrders 没收到通知
+        val store = PendingWithdrawalStore()
+        PrivacyGate(store, clock = { now }, bundledPolicyVersion = "1")
+            .apply {
+                retryScheduler = RetryScheduler { _, _ -> }
+                withdrawalCleanup = { withdrawalCleaners().cleanAll() }
+            }.coldStart()
+        assertTrue("启动补清理删掉恢复记录", restoreFilesWith(A_ORDER_NO).isEmpty())
+        assertFalse("补清理计入成功、去掉待清理", store.withdrawalCleanupPending)
+        assertReopenedWithoutTheOldSearch(state)
+    }
+
+    /** R2-02：启动时的环境对账（上次生效的环境与本次不同）经 AppModule 的环境清理器删除恢复记录，对账计入成功。 */
+    @Test
+    fun r2b_02_startupEnvironmentReconcileDeletesTheRestoreRecord() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        val state = killOrders()
+        assertTrue(restoreFilesWith(A_ORDER_NO).isNotEmpty())
+        val reconciler = EnvironmentStartupReconciler(context, workingEnvironmentCleaners())
+        reconciler.markApplied(com.couli.core.config.AppEnvironment.STAGING)
+        val outcome = reconciler.reconcile(com.couli.core.config.AppEnvironment.TEST)
+        assertEquals(EnvironmentStartupReconciler.Outcome.CLEANED_AND_RECORDED, outcome)
+        assertTrue("环境对账删掉恢复记录", restoreFilesWith(A_ORDER_NO).isEmpty())
+        assertReopenedWithoutTheOldSearch(state)
+    }
+
+    /**
+     * R1-03（S1）：撤回时恢复记录删不掉 → 清理器抛错上报、待清理落到记录目录之外 → 进程被杀、重建（新实例，内存状态丢失）→ 同账号回到订单页：
+     * 盘上旧记录还在，但恢复不出、也不写新记录 → 删除恢复后下一次读取先补清理，旧记录删除。
+     */
+    @Test
+    fun r2b_03_deleteFailureKeepsTheRecordUnrestorableAcrossProcessRebuild() {
+        launchRestored(RestoredOwner(android.os.Bundle()))
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        search(A_ORDER_NO)
+        val state = killOrders()
+        val root = AppOrders.restoreRoot(context)
+        root.setWritable(false)
+        assumeTrue("文件系统按目录权限拒绝删除", !root.canWrite())
+        val failure = runCatching { withdrawalCleaners().cleanAll() }.exceptionOrNull()
+        assertTrue("删除失败上报给清理器", failure is java.io.IOException)
+        assertTrue("前提：旧记录删不掉、仍在盘上", restoreFilesWith(A_ORDER_NO).isNotEmpty())
+        // 进程重建：新的落盘实例
+        restoreStoreOverride = OrderRestoreStore(root, orderRestorePendingFlag(context))
+        assertReopenedWithoutTheOldSearch(state)
+        assertTrue("旧记录仍在盘上（删不掉），只是恢复不出", restoreFilesWith(A_ORDER_NO).isNotEmpty())
+        root.setWritable(true)
+        // 删除恢复：下一次读取前补清理
+        assertNull(
+            OrderRestoreStore(root, orderRestorePendingFlag(context)).read(
+                java.util.UUID
+                    .randomUUID()
+                    .toString(),
+            ),
+        )
+        assertTrue("补清理删掉旧记录", restoreFilesWith(A_ORDER_NO).isEmpty())
+    }
+
+    /** 本次组合交给列表页控件的回调（页面根节点的语义属性）。 */
+    private fun pageActions(): com.couli.feature.orders.OrderListActions =
+        composeRule
+            .onNodeWithTag(OrderTags.LIST_PAGE)
+            .fetchSemanticsNode()
+            .config[com.couli.feature.orders.OrderListActions.Key]
+
+    /** 恢复记录目录里内容含 [text] 的文件。 */
+    private fun restoreFilesWith(text: String): List<File> =
+        AppOrders
+            .restoreRoot(context)
+            .walkTopDown()
+            .filter { it.isFile && runCatching { it.readText() }.getOrDefault("").contains(text) }
+            .toList()
+
+    /** 切走、进程被回收：系统留下保存状态，订单 ViewModel 不再存在。 */
+    private fun killOrders(): android.os.Bundle {
+        lateinit var state: android.os.Bundle
+        composeRule.runOnUiThread {
+            val old = restoredOwner.value
+            state = old.save()
+            old.viewModelStore.clear()
+            restoredVisible.value = false
+        }
+        settle()
+        return state
+    }
+
+    /** 用回收前保存的状态重开订单页：搜索框、查询条件、请求都没有旧搜索词。 */
+    private fun assertReopenedWithoutTheOldSearch(state: android.os.Bundle) {
+        val beforeReopen = listRequests().size
+        composeRule.runOnUiThread {
+            restoredOwner.value = RestoredOwner(android.os.Bundle(), state)
+            restoredVisible.value = true
+        }
+        settle()
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.SEARCH).fetchSemanticsNodes().isNotEmpty() }
+        val model = orders.listHandle() as com.couli.feature.orders.OrderListViewModel
+        assertFalse("没有恢复", model.restored)
+        assertEquals("搜索框不恢复旧搜索词", "", searchText())
+        assertNull("查询条件不恢复旧搜索词", model.controller.state.value.conditions.q)
+        assertTrue("重开后的请求不带旧搜索词", listRequests().drop(beforeReopen).none { it.containsKey("q") })
+    }
+
+    /** 撤回事务已落盘（待清理 + 基本模式）的隐私存储。 */
+    private class PendingWithdrawalStore : PrivacyStore {
+        override var decisionRaw: String = "basic_mode"
+        override var consentedVersion: String? = null
+        override var consentedAtMillis: Long? = null
+        override var basicMode: Boolean = true
+        override var withdrawalCleanupPending: Boolean = true
+    }
+
+    /** 与 AppModule 同一份环境清理注册（各清理项都给真实对象）。 */
+    private fun workingEnvironmentCleaners() =
+        AppModule.environmentSwitchCleaners(
+            context,
+            MemorySessionTokens(),
+            NoCipher,
+            inFlight,
+            Provider { noDevice() },
+            Provider {
+                com.couli.app.clientcore.AppConfig(
+                    ConfigStore(
+                        readFile = { null },
+                        writeFile = {},
+                        fetcher = { _, done -> done(ConfigReply(ConfigReply.OK, CONFIG, null)) },
+                        clock = { now },
+                        bundled = CONFIG,
+                    ),
+                ) { true }
+            },
+            Provider { noTracker() },
+            Provider { EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED } },
+            Provider { error("no privacy gate") },
+            BridgeHostRegistry(),
+        )
 
     /** 真实点击 [tag] → 栈顶路由名与参数精确等于 [route] / [expected]；[back] 时再返回。 */
     private fun landsOn(
@@ -2158,7 +2949,7 @@ class AppOrdersIntegrationTest {
             androidx.lifecycle.viewmodel.MutableCreationExtras().apply {
                 set(androidx.lifecycle.SAVED_STATE_REGISTRY_OWNER_KEY, this@RestoredOwner)
                 set(androidx.lifecycle.VIEW_MODEL_STORE_OWNER_KEY, this@RestoredOwner)
-                set(androidx.lifecycle.DEFAULT_ARGS_KEY, args)
+                set(androidx.lifecycle.DEFAULT_ARGS_KEY, seededArgs(args))
             }
 
         /** 进程被回收前系统保存的状态（SavedStateHandle 随之写出）。 */
@@ -2197,6 +2988,175 @@ class AppOrdersIntegrationTest {
             .getOrNull(SemanticsProperties.EditableText)
             ?.text
             .orEmpty()
+
+    // ---------------------------------------------------------------- FU-AND-0710 第 3 轮评审修复
+
+    /**
+     * R3-02（APP-08 共性第 44 条、APP-09 共性第 63 条）：A 的详情错误态（50001）→ 会话存储换成 B，但会话通知（AppModule 经 main.post 投递）
+     * 还没执行，页面没有重组 → 点画面上真实的【重试】（A 渲染时的旧回调）：零请求；通知到达后（清空旧页面的会话出口）才按 B 重新请求。
+     */
+    @Test
+    fun r3_02_oldDetailErrorRetryBeforeTheSessionNoticeSendsNothing() {
+        launch()
+        openOrders()
+        synchronized(answers) { answers["$LIST_PATH/ord-o7"] = { envelope("null", code = 50001).setResponseCode(500) } }
+        open("OrderDetail", mapOf("order_id" to "ord-o7"))
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_ERROR).fetchSemanticsNodes().isNotEmpty() }
+        settle()
+        val before = count("$LIST_PATH/ord-o7")
+        assertTrue("前提：A 已请求过详情", before >= 1)
+        // 会话存储换成 B，通知还没执行
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule
+            .onNode(
+                hasText("重试") and hasClickAction() and
+                    androidx.compose.ui.test
+                        .hasAnyAncestor(
+                            androidx.compose.ui.test
+                                .hasTestTag(OrderTags.DETAIL_ERROR),
+                        ),
+            ).performClick()
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals("旧【重试】回调不以 B 的会话请求 A 页面的订单", before, count("$LIST_PATH/ord-o7"))
+        assertTrue(
+            "旧回调执行前即返回：页面不被改成加载中",
+            composeRule.onAllNodesWithTag(OrderTags.DETAIL_ERROR).fetchSemanticsNodes().isNotEmpty(),
+        )
+        // 通知到达：清空旧页面的会话出口按 B 重新绑定并请求一次
+        composeRule.runOnUiThread {
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        idleUntil { count("$LIST_PATH/ord-o7") == before + 1 }
+    }
+
+    /** R3-02：A 的断网缓存态（内容态）→ 会话存储换成 B、通知未到 → 点画面上真实的缓存态刷新【重试】：零请求，复制等按钮也失效。 */
+    @Test
+    fun r3_02_oldStaleDetailRefreshBeforeTheSessionNoticeSendsNothing() {
+        launch()
+        openOrders()
+        open("OrderDetail", mapOf("order_id" to "ord-self-1"))
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_AMOUNTS).fetchSemanticsNodes().isNotEmpty() }
+        composeRule.runOnUiThread { navController.popBackStack() }
+        settle()
+        synchronized(answers) { answers["$LIST_PATH/ord-self-1"] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START) } }
+        open("OrderDetail", mapOf("order_id" to "ord-self-1"))
+        idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_STALE).fetchSemanticsNodes().isNotEmpty() }
+        settle()
+        val before = count("$LIST_PATH/ord-self-1")
+        val writes = system.writes
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule.onNodeWithTag(OrderTags.DETAIL_COPY, useUnmergedTree = true).performClick()
+        composeRule.onNodeWithTag(OrderTags.DETAIL_STALE_RETRY, useUnmergedTree = true).performClick()
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals("旧刷新回调零请求", before, count("$LIST_PATH/ord-self-1"))
+        assertEquals("旧复制回调零写入", writes, system.writes)
+        assertTrue(
+            "旧回调执行前即返回：页面不被改成加载中",
+            composeRule.onAllNodesWithTag(OrderTags.DETAIL_STALE).fetchSemanticsNodes().isNotEmpty(),
+        )
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0710 第 3 轮定向复核修复（RC-01）
+
+    /**
+     * RC-01（APP-08 共性第 21 条、APP-09 共性第 65 条）：A 会话下进程恢复的详情 ViewModel 停在 restoreGate → 会话存储换成 B，会话通知还没执行
+     * → 恢复等待结束：零请求（不以 B 的会话请求 A 页面的 order_id，也不按 A 的旧身份发出），页面状态不被改写；通知到达后（清空旧页面的会话
+     * 出口）才按 B 重新绑定并请求一次。
+     */
+    @Test
+    fun rc01_restoredDetailWaitEndingAfterTheStoreSwitchBeforeTheNoticeSendsNothing() {
+        launch()
+        openOrders()
+        settle()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val path = "$LIST_PATH/ord-o7"
+        val before = count(path)
+        lateinit var model: com.couli.feature.orders.OrderDetailViewModel
+        composeRule.runOnUiThread {
+            val base = orders.detailConfig(RouteDestination("OrderDetail", """{"order_id":"ord-o7"}""", false), RC01_ENTRY) {}!!
+            val config =
+                com.couli.feature.orders.OrderDetailConfig(
+                    api = base.api,
+                    env = base.env,
+                    texts = base.texts,
+                    cache = base.cache,
+                    mask = base.mask,
+                    orderId = base.orderId,
+                    onBack = base.onBack,
+                    bindLeave = base.bindLeave,
+                    clock = base.clock,
+                    restoreGate = { gate.await() },
+                    rateGate = base.rateGate,
+                    bindSession = base.bindSession,
+                )
+            // 进程恢复：保存状态里已有「开始过」标记 → 先等 restoreGate
+            model =
+                com.couli.feature.orders.OrderDetailViewModel(
+                    config,
+                    androidx.lifecycle.SavedStateHandle(mapOf("order_detail.started" to true)),
+                )
+        }
+        settle()
+        assertEquals("前提：恢复等待期间不发请求", before, count(path))
+        // 会话存储换成 B，通知还没执行；随后恢复等待结束
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule.runOnUiThread { gate.complete(Unit) }
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals("恢复等待结束：会话存储已换号而通知未到 → 零请求", before, count(path))
+        assertNull("等待结束后没有按任何身份发起加载（状态未被绑定）", model.controller.state.value.owner)
+        // 通知到达：清空旧页面的会话出口按 B 重新绑定并请求一次
+        composeRule.runOnUiThread {
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        idleUntil { count(path) == before + 1 }
+        settle()
+        assertEquals("只请求一次", before + 1, count(path))
+        composeRule.runOnUiThread { model.controller.leave() }
+    }
+
+    /**
+     * RC-01 同机制（待跟单发起页）：A 会话下外跳 → 会话存储换成 B、通知未到 → 回到前台：不按 A 的外跳记录替 B 拉卡（零请求）；通知到达后再回前台
+     * 也不再按旧外跳拉。
+     */
+    @Test
+    fun rc01_jumpReturnAfterTheStoreSwitchBeforeTheNoticeFetchesNoCards() {
+        launch()
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        lateinit var page: AppOrders.PendingPage
+        composeRule.runOnUiThread { page = orders.pendingFor("product-entry")!! }
+        composeRule.runOnUiThread { page.jumped("taobao") }
+        settle()
+        val before = count(PENDING_PATH)
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule.runOnUiThread {
+            page.onStop()
+            page.onStart()
+        }
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals("外跳等待结束：会话存储已换号而通知未到 → 零请求", before, count(PENDING_PATH))
+        composeRule.runOnUiThread {
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        settle()
+        composeRule.runOnUiThread {
+            page.onStop()
+            page.onStart()
+        }
+        settle()
+        assertEquals("旧外跳记录已丢弃", before, count(PENDING_PATH))
+        composeRule.runOnUiThread { orders.followBackStackIds(emptySet()) }
+    }
 
     /** 会话换成 [user]（null = 失效 / 退出）：Router 会话状态与网络层会话通知都交给 AppOrders（与 AppModule 同一入口）。 */
     private fun switchSession(user: String?) {
@@ -2467,6 +3427,9 @@ class AppOrdersIntegrationTest {
         const val POLL_MS = 10L
         const val SETTLE_ROUNDS = 5
         const val LATE_MS = 200L
+
+        /** RC-01 用例里进程恢复的详情页的回退栈条目。 */
+        const val RC01_ENTRY = "rc01-restored-detail"
         const val SHARE_DETAIL_TAIL =
             ""","product_key":"tb:sampleE","reason_action":[],"timeline":[],"expected_credit_period":null,"credit_overdue":false,""" +
                 """"actual_fen":null,"clawback_fen":null,"appeal_pending":false,"is_price_compare":false}"""
@@ -2478,5 +3441,31 @@ class AppOrdersIntegrationTest {
         const val CONFIG_WITH_HELP =
             """{"features":{"flags":{},"platform_status":{"taobao":"on"}},""" +
                 """"help_links":{"price_compare":{"route":"Help","params":{"article_id":"price-compare"}}}}"""
+    }
+}
+
+/**
+ * 旧格式的恢复种子（个人数据直接放在系统保存状态里，含 orders.owner）→ 本轮的格式：个人数据写进与 AppModule 同一个恢复记录落盘，系统保存状态只留
+ * 随机引用与不含个人数据的值（R1-03）。原有恢复用例的种子不用改写。
+ */
+private fun seededArgs(args: android.os.Bundle): android.os.Bundle {
+    if (!args.containsKey("orders.owner")) return args
+    val store = orderRestoreStore(ApplicationProvider.getApplicationContext())
+    val ref = store.newRef()
+    store.write(
+        ref,
+        store.epoch,
+        OrderRestoreRecord(
+            owner = args.getString("orders.owner"),
+            platform = args.getString("orders.platform"),
+            month = args.getString("orders.month"),
+            q = args.getString("orders.q"),
+            input = args.getString("orders.input").orEmpty(),
+            anchorOrderId = args.getString("orders.anchor_order_id"),
+        ),
+    )
+    return android.os.Bundle(args).apply {
+        listOf("orders.owner", "orders.platform", "orders.month", "orders.q", "orders.input", "orders.anchor_order_id").forEach(::remove)
+        putString("orders.restore_ref", ref)
     }
 }

@@ -24,9 +24,15 @@ data class ParseOutcome(
 class ParseInputService(
     private val api: PageApi,
 ) {
+    /**
+     * [title]：请求前从原文本地抽出的「」标题片段（[ClipboardText.quotedTitle]），随这次请求绑定；整体 30132（data=null）时用它预填
+     * 【用商品名搜索】，没有就留空（APP-07 共性第 30 条，BR-TEXT-14）。不依赖契约外的 data.raw，也不从上传片段里猜（标题本身可能以
+     * http 开头）。原文不保存。
+     */
     suspend fun parse(
         uploadText: String,
         owner: CallOwnership,
+        title: String? = null,
     ): ParseOutcome {
         val body =
             buildJsonObject {
@@ -48,11 +54,11 @@ class ParseInputService(
 
             is ApiResult.Failure -> {
                 val mapped = ParseResultAction.map(null, result.code, retryAfter = null, traceId = result.traceId)
-                // 42901 的时长取网络层已解析的 Retry-After（缺省 5 秒）；整体 30132 用本次上传的「」标题预填（BR-TEXT-14）
+                // 42901 的时长取网络层已解析的 Retry-After（缺省 5 秒）；整体 30132 用请求前本地抽出的「」标题预填（BR-TEXT-14）
                 val action =
                     when (mapped.actionRaw) {
                         ParseResultAction.RETRY_AFTER -> mapped.copy(disableMs = ResultSignals.disableMillis(result))
-                        ParseResultAction.SEARCH_PREFILL -> mapped.copy(prefill = titleOf(uploadText))
+                        ParseResultAction.SEARCH_PREFILL -> mapped.copy(prefill = title)
                         else -> mapped
                     }
                 ParseOutcome(action)
@@ -68,12 +74,6 @@ class ParseInputService(
             }
         }
     }
-
-    private fun titleOf(uploadText: String): String? =
-        uploadText
-            .lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.isNotEmpty() && !it.startsWith("http", ignoreCase = true) }
 
     companion object {
         const val OPERATION = "parseInput"

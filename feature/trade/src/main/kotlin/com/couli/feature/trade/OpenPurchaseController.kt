@@ -983,7 +983,9 @@ class OpenPurchaseController(
                 toast(COPIED_KEY)
             }
 
+            // 平台未安装但口令已复制成功：同样算成功外跳（BR-ATTR-21，APP-08 共性第 33 条），回到前台后拉待跟单卡；安装提示照常
             JumpTypes.FINAL_NOT_INSTALLED -> {
+                env.jumped(jump.attempt.platform)
                 mutableState.value = mutableState.value.copy(notInstalled = true)
                 toast(NOT_INSTALLED_COPIED_KEY)
             }

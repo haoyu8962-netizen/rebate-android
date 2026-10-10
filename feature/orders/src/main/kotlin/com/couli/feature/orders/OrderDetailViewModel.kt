@@ -84,7 +84,8 @@ import kotlinx.coroutines.launch
 
 /**
  * 订单详情的 ViewModel：状态来自 [OrderDetailController]。页面一确定出栈（App 在回退栈移除的同步出口调 bindLeave 给的入口）即作废请求；
- * ViewModel 清理时兜底再调一次。进程被系统回收后恢复本页时先等本轮版本检查结果（restoreGate）再取详情。
+ * ViewModel 清理时兜底再调一次。进程被系统回收后恢复本页时先等本轮版本检查结果（restoreGate）再取详情。会话身份在构造时固定（执行器构造即取），
+ * 恢复等待前捕获票据、等待结束后只比较（RC-01）。
  */
 class OrderDetailViewModel(
     initial: OrderDetailConfig,
@@ -110,11 +111,13 @@ class OrderDetailViewModel(
         saved[K_STARTED] = true
         val gate = initial.restoreGate
         if (restored && gate != null) {
+            // 等待前捕获固定身份、绑定代次与版本；等待结束后先比较，失效直接返回，请求沿用原身份（RC-01，APP-08 共性第 21 条）
+            val ticket = controller.restoreTicket()
             restoreJob =
                 viewModelScope.launch {
                     gate()
                     restoreJob = null
-                    if (controller.alive) controller.load()
+                    controller.resumeRestore(ticket)
                 }
         } else {
             controller.load()
@@ -174,12 +177,19 @@ fun OrderDetailScreen(config: OrderDetailConfig) {
 
                 state.phase == OrderDetailPhase.ERROR -> {
                     val view = state.error
+                    // 渲染时的版本与会话身份（普通值，R2-01、R3-02；APP-09 共性第 63 条）
+                    val version = state.version
+                    val owner = state.owner
                     Box(modifier = Modifier.fillMaxWidth().testTag(OrderTags.DETAIL_ERROR)) {
                         ErrorState(
                             title = texts.text("order_list.load_failed"),
                             message = view?.let { OrderErrorAction.message(texts, it) },
                             // 42901 禁用期内【重试】置灰（与执行层同一份禁用期）
-                            retry = StateAction(texts.text("order_list.retry"), enabled = !state.blocked) { model.controller.retry() },
+                            retry =
+                                StateAction(
+                                    texts.text("order_list.retry"),
+                                    enabled = !state.blocked,
+                                ) { model.controller.retry(version, owner) },
                         )
                     }
                 }
@@ -205,7 +215,9 @@ private fun DetailContent(
     modifier: Modifier,
 ) {
     val texts = config.texts
+    // 渲染时的版本与会话身份（普通值）：回调只拿它们比较（R3-02）
     val version = state.version
+    val owner = state.owner
     val controller = model.controller
     val why = WhyNoRebate.of(detail)
     val help = PriceCompareEntry.of(detail, config.env.helpLinks(), Routes.all)
@@ -219,7 +231,7 @@ private fun DetailContent(
             // 断网缓存态的刷新入口（共性第 26 条）：遵守会话级 42901 禁用期（置灰、执行层也拦）；成功后更新内容与缓存、提示条消失
             CouliButton(
                 text = texts.text("order_list.retry"),
-                onClick = { controller.retry() },
+                onClick = { controller.retry(version, owner) },
                 variant = CouliButtonVariant.SECONDARY,
                 size = CouliButtonSize.COMPACT,
                 enabled = !state.blocked,

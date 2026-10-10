@@ -13,7 +13,7 @@ data class UpdateStoreListing(
  * 一次成功的版本检查（check.data 的投影，APP-02c 任务书 §2.1）。
  *
  * @property recheckIntervalSec 回前台复查间隔：契约在 /v1/config.app_update，不在 check 响应里（rule-gaps G01）；
- *   没有配置时用包内默认 [UpdateGate.DEFAULT_RECHECK_INTERVAL_SEC]。TODO(APP-03): 接 /v1/config（LKG）。
+ *   没有配置时用包内默认 [UpdateGate.DEFAULT_RECHECK_INTERVAL_SEC]（[UpdateConfigReader]，F-X-01）。
  * @property updateTitle、[updateNotes] 只给界面显示（强更页标题与更新内容、可关闭提示），不参与判定。
  */
 data class UpdateCheckResult(
@@ -74,17 +74,18 @@ sealed interface UpdateCheckOutcome {
     ) : UpdateCheckOutcome
 
     data object Failure : UpdateCheckOutcome
+
+    /**
+     * 检查开始后归属已失效（撤回同意、进入基本模式、切换环境；FU-AND-0710 R1-02）：结果作废。调用方什么都不应用——不落盘、不改强更结论、
+     * 不选店，只结束「检查中」。
+     */
+    data object Invalidated : UpdateCheckOutcome
 }
 
 /**
- * 版本检查器（GET /v1/app-versions/check）。网络层（APP-03）之前：debug / staging 用读契约示例的假实现（调试面板切换场景），
- * Release 用 [PlaceholderUpdateChecker]（永远失败 → 按 unknown 处理，不会误拦用户）。
+ * 版本检查器（GET /v1/app-versions/check）。debug / staging 用读契约示例的假实现（调试面板切换场景）；Release 用经 ApiClient 发请求的
+ * 真实检查器（core:network ApiUpdateChecker，F-X-01）。失败一律按 unknown 处理，不会误拦用户。
  */
 fun interface UpdateChecker {
     suspend fun check(): UpdateCheckOutcome
-}
-
-/** Release 的占位检查器：永远失败。TODO(APP-03): 换成真实请求 GET /v1/app-versions/check。 */
-object PlaceholderUpdateChecker : UpdateChecker {
-    override suspend fun check(): UpdateCheckOutcome = UpdateCheckOutcome.Failure
 }

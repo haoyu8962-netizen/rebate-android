@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.collapse
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.expand
@@ -118,6 +119,9 @@ fun OrderListScreen(config: OrderListConfig) {
     val state by model.controller.state.collectAsStateWithLifecycle()
     val input by model.input.collectAsStateWithLifecycle()
     val sheet by model.sheet.collectAsStateWithLifecycle()
+    // 渲染身份（R2-01，APP-09 共性第 63 条）：组合时取出普通值，本次组合交给控件的每个回调都捕获这一份；执行时只比较
+    val ticket = model.ticket.collectAsStateWithLifecycle().value
+    val actions = remember(model, ticket) { OrderListActions(model, ticket) }
     val noMask = remember { MutableStateFlow(false) }
     val masked by (config.mask?.hidden ?: noMask).collectAsStateWithLifecycle()
     val texts = config.texts
@@ -130,7 +134,12 @@ fun OrderListScreen(config: OrderListConfig) {
     val platformFocus = remember { FocusRequester() }
     val monthFocus = remember { FocusRequester() }
     Box(
-        modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas).testTag(OrderTags.LIST_PAGE),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .background(CouliColors.backgroundCanvas)
+                .semantics { this[OrderListActions.Key] = actions }
+                .testTag(OrderTags.LIST_PAGE),
         contentAlignment = Alignment.TopCenter,
     ) {
         Column(modifier = Modifier.widthIn(max = OrderUi.MAX_WIDTH.dp).fillMaxSize().statusBarsPadding()) {
@@ -140,17 +149,17 @@ fun OrderListScreen(config: OrderListConfig) {
                 modifier = Modifier.padding(horizontal = CouliSpacing.space4).padding(top = CouliSpacing.space2),
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
             ) {
-                ScopeTabs(texts, state.scope, model::selectScope)
+                ScopeTabs(texts, state.scope, actions.onScope)
                 SearchField(
                     texts,
                     input,
                     state.scope,
                     enabled = !state.blocked,
-                    onInput = model::onInput,
-                    onSubmit = model::submit,
-                    onClear = model::clearInput,
+                    onInput = actions.onInput,
+                    onSubmit = actions.onSubmit,
+                    onClear = actions.onClear,
                 )
-                GroupChips(texts, state.conditions.group, enabled = !state.blocked) { model.selectGroup(it) }
+                GroupChips(texts, state.conditions.group, enabled = !state.blocked, onSelect = actions.onGroup)
                 FilterRow(
                     texts = texts,
                     state = state,
@@ -158,11 +167,11 @@ fun OrderListScreen(config: OrderListConfig) {
                     masked = masked,
                     platformFocus = platformFocus,
                     monthFocus = monthFocus,
-                    onSheet = model::openSheet,
+                    onSheet = actions.onSheet,
                     onMask = { config.mask?.toggle() },
                 )
             }
-            OrderListBody(model, config, state, masked, Modifier.weight(1f))
+            OrderListBody(model, actions, config, state, masked, Modifier.weight(1f))
         }
         state.toast?.let { toast ->
             // 错误提示经统一的错误消息生成（带 trace6；APP-08 共性第 8 条）
@@ -172,7 +181,7 @@ fun OrderListScreen(config: OrderListConfig) {
     }
     when (sheet) {
         OrderSheet.PLATFORM -> {
-            PlatformSheet(texts, state.conditions.platform, platformFocus, model::choosePlatform, model::closeSheet)
+            PlatformSheet(texts, state.conditions.platform, platformFocus, actions.onPlatform, actions.onCloseSheet)
         }
 
         OrderSheet.MONTH -> {
@@ -182,8 +191,8 @@ fun OrderListScreen(config: OrderListConfig) {
                 state.earliestVisibleDate,
                 config.clock(),
                 monthFocus,
-                model::chooseMonth,
-                model::closeSheet,
+                actions.onMonth,
+                actions.onCloseSheet,
             )
         }
 
@@ -503,6 +512,7 @@ private fun monthText(
 @Composable
 private fun OrderListBody(
     model: OrderListViewModel,
+    actions: OrderListActions,
     config: OrderListConfig,
     state: OrderListSnapshot,
     masked: Boolean,
@@ -510,7 +520,7 @@ private fun OrderListBody(
 ) {
     val texts = config.texts
     val listState = rememberLazyListState(model.anchor.index, model.anchor.offset)
-    ScrollKeeping(model, state, listState, leading = if (state.scope == OrderQuery.SELF && model.pending != null) 1 else 0)
+    ScrollKeeping(model, actions, state, listState, leading = if (state.scope == OrderQuery.SELF && model.pending != null) 1 else 0)
     val pullState = rememberPullToRefreshState()
     // 下拉刷新：42901 禁用期内手势不可用（enabled = false；执行层也拦）
     Box(
@@ -521,7 +531,7 @@ private fun OrderListBody(
                     isRefreshing = state.refreshing,
                     state = pullState,
                     enabled = !state.blocked,
-                    onRefresh = model::refresh,
+                    onRefresh = actions.onRefresh,
                 ),
     ) {
         LazyColumn(
@@ -549,7 +559,7 @@ private fun OrderListBody(
                 }
 
                 OrderListPhase.ERROR -> {
-                    item(key = ERROR_KEY) { ListError(texts, state, model) }
+                    item(key = ERROR_KEY) { ListError(texts, state, actions.onRetry) }
                 }
 
                 OrderListPhase.EMPTY -> {
@@ -557,17 +567,20 @@ private fun OrderListBody(
                 }
 
                 OrderListPhase.CONTENT -> {
+                    // 渲染时取出普通值（APP-09 共性第 63 条）：复制回调只用这一轮的轮次，执行时不读最新状态（APP-08 共性第 41 条）
+                    val round = state.round
+                    val identity = state.identity
                     items(state.items, key = { it.orderId }) { item ->
                         OrderCard(
                             item = item,
                             texts = texts,
                             masked = masked,
                             now = config.clock(),
-                            onOpen = { model.controller.openDetail(item.orderId) },
-                            onCopy = item.orderNo?.let { no -> { model.controller.copy(item.orderId, no) } },
+                            onOpen = { actions.onOpen(item.orderId) },
+                            onCopy = item.orderNo?.let { no -> { actions.onCopy(item.orderId, no, round, identity) } },
                         )
                     }
-                    item(key = FOOTER_KEY) { ListFooter(texts, state, model) }
+                    item(key = FOOTER_KEY) { ListFooter(texts, state, actions.onRetry) }
                 }
 
                 else -> {
@@ -604,6 +617,7 @@ private fun OrderListBody(
 @Suppress("CyclomaticComplexMethod") // 一次性恢复逐步判定
 private fun ScrollKeeping(
     model: OrderListViewModel,
+    actions: OrderListActions,
     state: OrderListSnapshot,
     listState: LazyListState,
     leading: Int,
@@ -611,7 +625,7 @@ private fun ScrollKeeping(
     // 放弃恢复（换条件、列表变空或失败、被挪动、翻到底仍找不到）：恢复期间冻结的锚点立即改记当前位置，不留旧目标（共性第 17、24 条）
     val giveUp = {
         model.restoreDone()
-        model.onScrolled(anchorOf(listState, model))
+        actions.onScrolled(anchorOf(listState, model))
     }
     LaunchedEffect(state.round) {
         if (model.seenRound != state.round) {
@@ -619,7 +633,7 @@ private fun ScrollKeeping(
             // 用户换了条件（新一轮查询）：放弃进行中的恢复，之后照常记录锚点（APP-08 共性第 17 条）
             model.restoreDone()
             listState.scrollToItem(0)
-            model.onScrolled(anchorOf(listState, model))
+            actions.onScrolled(anchorOf(listState, model))
         }
     }
     val restoreBase = remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -627,7 +641,7 @@ private fun ScrollKeeping(
         val target = model.pendingRestore ?: return@LaunchedEffect
         // 每次挂起（滚动）之后复核：恢复任务仍是这一个、查询轮次没变（会话换代、换条件都会清掉恢复或换轮次），失效后不滚动、不持久化（共性第 24 条）
         val round = state.round
-        val valid = { model.pendingRestore == target && model.controller.state.value.round == round }
+        val valid = { model.pendingRestore == target && model.controller.state.value.round == round && model.live(actions.ticket) }
         when (state.phase) {
             OrderListPhase.CONTENT -> Unit
             OrderListPhase.EMPTY, OrderListPhase.ERROR -> return@LaunchedEffect giveUp()
@@ -648,7 +662,7 @@ private fun ScrollKeeping(
                 if (!valid()) return@LaunchedEffect
                 model.restoreDone()
                 // 对齐完成才更新持久化锚点（恢复期间的滚动记录被冻结，这里补记一次落点）
-                model.onScrolled(OrderAnchor(leading + row, 0, target))
+                actions.onScrolled(OrderAnchor(leading + row, 0, target))
             }
 
             state.loadMoreError != null || state.endReached -> {
@@ -656,7 +670,7 @@ private fun ScrollKeeping(
             }
 
             !state.loadingMore -> {
-                if (!model.controller.loadMore()) giveUp()
+                if (!actions.onLoadMore()) giveUp()
             }
 
             else -> {
@@ -664,18 +678,19 @@ private fun ScrollKeeping(
             }
         }
     }
-    LaunchedEffect(listState) {
+    // 渲染身份换了（换号、清理）就重启：旧收集器捕获的旧身份不再写锚点
+    LaunchedEffect(listState, actions) {
         snapshotFlow { anchorOf(listState, model) }
             .distinctUntilChanged()
-            .collect { model.onScrolled(it) }
+            .collect { actions.onScrolled(it) }
     }
-    LaunchedEffect(listState, state.items.size, state.endReached) {
+    LaunchedEffect(listState, state.items.size, state.endReached, actions) {
         snapshotFlow {
             listState.layoutInfo.visibleItemsInfo
                 .lastOrNull()
                 ?.index ?: 0
         }.distinctUntilChanged()
-            .collect { last -> if (last >= listState.layoutInfo.totalItemsCount - LOAD_AHEAD) model.controller.loadMore() }
+            .collect { last -> if (last >= listState.layoutInfo.totalItemsCount - LOAD_AHEAD) actions.onLoadMore() }
     }
 }
 
@@ -699,7 +714,7 @@ private fun anchorOf(
 private fun ListError(
     texts: OrderTexts,
     state: OrderListSnapshot,
-    model: OrderListViewModel,
+    onRetry: () -> Boolean,
 ) {
     val view = state.error ?: return
     Box(modifier = Modifier.fillMaxWidth().testTag(OrderTags.ERROR)) {
@@ -707,7 +722,7 @@ private fun ListError(
             title = texts.text("order_list.load_failed"),
             message = OrderErrorAction.message(texts, view),
             // 42901 禁用期内【重试】置灰（与执行层同一份禁用期）
-            retry = StateAction(texts.text("order_list.retry"), enabled = !state.blocked) { model.controller.retry() },
+            retry = StateAction(texts.text("order_list.retry"), enabled = !state.blocked) { onRetry() },
         )
     }
 }
@@ -748,7 +763,7 @@ private fun ListEmpty(
 private fun ListFooter(
     texts: OrderTexts,
     state: OrderListSnapshot,
-    model: OrderListViewModel,
+    onRetry: () -> Boolean,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -773,7 +788,7 @@ private fun ListFooter(
                 )
                 CouliButton(
                     text = texts.text("order_list.retry"),
-                    onClick = { model.controller.retry() },
+                    onClick = { onRetry() },
                     variant = CouliButtonVariant.SECONDARY,
                     size = CouliButtonSize.COMPACT,
                     enabled = !state.blocked,
@@ -1035,3 +1050,38 @@ private const val TOAST_MILLIS = 2_000L
 private const val ARROW_SUFFIX = "_arrow"
 
 private fun LazyListState.position(): Pair<Int, Int> = firstVisibleItemIndex to firstVisibleItemScrollOffset
+
+/**
+ * 本次组合交给列表页控件的全部用户回调（R2-01）：每个都捕获组合时取出的渲染身份 [ticket]（普通值），执行时交给 ViewModel 比较；身份失效（换号、
+ * 撤回 / 切环境清理、作废旧列表）后不写内存、保存状态与恢复记录，不发请求。挂在页面根节点的语义属性 [Key] 上（同一批对象），测试与无障碍工具可取出。
+ */
+class OrderListActions internal constructor(
+    model: OrderListViewModel,
+    val ticket: OrderPageTicket,
+) {
+    val onScope: (String) -> Unit = { model.selectScope(ticket, it) }
+    val onInput: (String) -> Unit = { model.onInput(ticket, it) }
+    val onSubmit: () -> Unit = { model.submit(ticket) }
+    val onClear: () -> Unit = { model.clearInput(ticket) }
+    val onGroup: (String) -> Unit = { model.selectGroup(ticket, it) }
+    val onSheet: (OrderSheet) -> Unit = { model.openSheet(ticket, it) }
+    val onCloseSheet: () -> Unit = { model.closeSheet(ticket) }
+    val onPlatform: (String?) -> Unit = { model.choosePlatform(ticket, it) }
+    val onMonth: (String?) -> Unit = { model.chooseMonth(ticket, it) }
+    val onRefresh: () -> Unit = { model.pullRefresh(ticket) }
+    val onRetry: () -> Boolean = { model.retry(ticket) }
+    val onLoadMore: () -> Boolean = { model.loadMore(ticket) }
+    val onOpen: (String) -> Unit = { model.openDetail(ticket, it) }
+    val onCopy: (
+        String,
+        String,
+        Long,
+        OrderListIdentity?,
+    ) -> Unit = { id, no, round, identity -> model.copy(ticket, id, no, round, identity) }
+    val onScrolled: (OrderAnchor) -> Unit = { model.onScrolled(ticket, it) }
+
+    companion object {
+        /** 页面根节点上的语义属性：本次组合的回调。 */
+        val Key = SemanticsPropertyKey<OrderListActions>("OrderListActions")
+    }
+}

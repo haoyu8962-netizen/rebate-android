@@ -9,15 +9,18 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavBackStackEntry
+import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
 import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clientcore.PermissionTypeRaw
+import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.network.PageApi
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderDraftTexts
 import com.couli.core.orders.OrderRateGate
+import com.couli.core.orders.OrderRestoreStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.OrderTexts
 import com.couli.core.orders.PendingClosedAttempts
@@ -25,6 +28,7 @@ import com.couli.core.orders.PendingTrackEnv
 import com.couli.core.orders.PendingTrackRaw
 import com.couli.core.orders.PendingTrackService
 import com.couli.core.privacy.AndroidPermissionRequester
+import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
@@ -79,6 +83,17 @@ class AppOrders(
     val texts: OrderTexts = OrderDraftTexts,
     private val sdkInt: Int = Build.VERSION.SDK_INT,
     private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * 页面展示用的时钟（订单付款时间的「今天 / 昨天」、缓存的「更新于」、月份选项；BR-TEXT-11）：App 接 ApiClient.serverNow（服务端 Date 校准，
+     * 偏差超过 5 分钟才采用，APP-08 共性第 34 条）。42901 禁用期等计时仍用 [clock]。缺省同 [clock]。
+     */
+    private val displayClock: () -> Long = clock,
+    /**
+     * 订单页恢复记录里的个人数据（搜索词、输入框、筛选、锚点订单、账号归属；FU-AND-0710 R1-03、R2-02）：AppModule 给 noBackupFilesDir 下的
+     * [OrderRestoreStore]，并把它的删除直接登记进凭据清理器与环境清理器（Application 启动的补清理、环境对账同样执行并计入成败）。[onCleanup] 不再
+     * 负责落盘的清理，只清已创建页面的内存状态。没给时恢复记录不保存。
+     */
+    val restoreStore: OrderRestoreStore? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -151,18 +166,21 @@ class AppOrders(
 
             override fun sessionEpoch(): Long = this@AppOrders.sessionEpoch()
 
-            override suspend fun requestNotification() {
+            override suspend fun requestNotification(stillValid: () -> Boolean) {
                 val requester = permissions ?: return
+                // 点击时那张卡的有效性（页面、会话、隐私 / 环境世代、卡片票据，APP-08 共性第 31、42 条）：失效的旧点击不记「点过」、不申请
+                val valid = { stillValid() && routing.session.value.loggedIn() }
+                if (!valid()) return
                 // 先记下「点过」（这一行之后不再出现，无论结果），再经 PermissionRequester 申请（只有用户点了才弹系统框）。通知行本身就是用途
                 // 说明：不再经统一入口重复弹说明浮层，直接进系统申请；状态检查、节流与有效性复核照常（共性第 4 条，BR-ID-13、AC-S1-84④）
                 requester.noteTapped(PermissionTypeRaw.PUSH)
                 // 「点过」同步给所有显示位置（订单列表、商品详情、搜索页的卡片）：各处立即去掉通知行（共性第 25 条）
                 recomputeNotificationRows()
-                val epoch = this@AppOrders.sessionEpoch()
                 requester.request(
                     PermissionTypeRaw.PUSH,
-                    // 有效性复核：排队期间、调系统接口前会话已换代或已退出就不弹
-                    isValid = { this@AppOrders.sessionEpoch() == epoch && routing.session.value.loggedIn() },
+                    // 有效性复核：排队期间、调系统接口前页面已离开、会话已换代或已退出、撤回同意或切了环境就不弹（点击时的有效性一路带下去：
+                    // 票据里的会话世代只比较，不在这里再读当前会话来绑定，R1-01 排查）
+                    isValid = valid,
                     purposeShown = true,
                 )
             }
@@ -187,7 +205,7 @@ class AppOrders(
             pending = pendingEnv,
             scope = pendingScope ?: params(destination).text(SCOPE),
             readonly = destination.readonly,
-            clock = clock,
+            clock = displayClock,
             bindController = { handle ->
                 list = handle
                 pendingScope = null
@@ -195,6 +213,7 @@ class AppOrders(
             restoreGate = ::awaitUpdateCheck,
             rateGate = rateGate,
             closedAttempts = closedAttempts,
+            restoreStore = restoreStore,
         )
 
     /** OrderDetail 的配置；路由参数不全（Router 已校验，这里兜底）为 null。 */
@@ -213,7 +232,7 @@ class AppOrders(
             orderId = orderId,
             onBack = onBack,
             bindLeave = { leave -> if (entryId != null) leaves[entryId] = leave },
-            clock = clock,
+            clock = displayClock,
             restoreGate = ::awaitUpdateCheck,
             rateGate = rateGate,
             bindSession = { handler -> if (entryId != null) detailSessions[entryId] = handler },
@@ -261,7 +280,24 @@ class AppOrders(
         list?.onSessionChanged()
         // 栈里的详情页（含被别的页盖住的）：同步清掉旧账号的详情快照、按新会话重取（不能返回后仍看到旧账号的订单号和金额）
         detailSessions.values.toList().forEach { it() }
-        pages.values.forEach { it.service.onSessionChanged() }
+        // 发起页的待跟单卡：清掉旧账号的卡、作废在途请求与旧会话里的外跳记录（旧会话点的购买，回来不替新会话拉卡）
+        pages.values.forEach { it.reset() }
+    }
+
+    /**
+     * 撤回同意、进入基本模式、切换环境（同步出口，APP-08 共性第 38、43 条）：订单列表与仍在栈里的商品详情、搜索页上已显示的待跟单卡一并清空，
+     * 作废在途的拉取、关闭与通知申请，清掉旧环境 / 旧会话的外跳记录、已关闭记录与禁用期。执行器本身保留并按新环境、新会话重新绑定
+     * （每次请求按当时的隐私 / 环境世代与会话世代绑定），之后再外跳回来照常出卡。不依赖会话状态通知是否到达。
+     * 落盘的订单页恢复记录不在这里删：AppModule 已把 [restoreStore] 的删除登记进凭据清理器与环境清理器（R2-02），这里只清内存状态与旧回调。
+     */
+    fun onCleanup() {
+        rateGate.reset()
+        closedAttempts.clear()
+        // 订单列表：搜索框与保存状态里的搜索词（可能是完整订单号）、结果、待跟单卡一并清掉（共性第 36 条，不等会话通知）
+        list?.onCleanup()
+        // 栈里的详情页：同步清掉已显示的详情快照（完整订单号、金额），按清理后的会话重取
+        detailSessions.values.toList().forEach { it() }
+        pages.values.forEach { it.reset() }
     }
 
     /** 接 Router 的会话状态（登录、退出、换账号、受限会话等每次变化；AppModule 与集成测试共用）。网络层的会话通知另由 AppModule 接。 */
@@ -288,7 +324,7 @@ class AppOrders(
     /** 一个发起页的待跟单卡：外跳执行了（[jumped]）→ 回到前台（[onStart]）后拉一次，只显示同平台那一张。 */
     class PendingPage(
         api: PageApi,
-        env: PendingTrackEnv,
+        private val env: PendingTrackEnv,
         clock: () -> Long,
         rateGate: OrderRateGate,
         closedAttempts: PendingClosedAttempts,
@@ -297,11 +333,15 @@ class AppOrders(
         private val pageScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val service = PendingTrackService(api, env, pageScope, clock, rateGate, closedAttempts)
         private var awaiting: String? = null
+
+        /** 外跳执行时的会话世代（外跳等待前捕获；回到前台后只比较，RC-01 同机制）。 */
+        private var awaitingEpoch = 0L
         private var stopped = false
 
         /** 购买执行器报告外跳已执行（拉起平台 App、浏览器或已复制口令）。 */
         fun jumped(platform: String) {
             awaiting = platform
+            awaitingEpoch = env.sessionEpoch()
             stopped = false
         }
 
@@ -309,12 +349,19 @@ class AppOrders(
             if (awaiting != null) stopped = true
         }
 
-        /** 回到前台：外跳之后确实离开过（ON_STOP）才拉卡；之后的回前台按最新通知权限重算通知行。 */
+        /**
+         * 回到前台：外跳之后确实离开过（ON_STOP）才拉卡；之后的回前台按最新通知权限重算通知行。外跳时的会话世代已不是当前（会话存储已换号而通知
+         * 还没到）：丢掉这条外跳记录、不拉卡（不替新会话按旧会话的外跳拉卡；之后到达的会话通知照常清卡，RC-01 同机制）。
+         */
         fun onStart() {
             val platform = awaiting
             if (platform != null && stopped) {
                 awaiting = null
                 stopped = false
+                if (awaitingEpoch != env.sessionEpoch()) {
+                    service.recompute()
+                    return
+                }
                 service.refresh(platform)
             } else {
                 service.recompute()
@@ -322,6 +369,13 @@ class AppOrders(
         }
 
         fun openFindOrder() = findOrder()
+
+        /** 会话换代、撤回、切环境：清卡、作废在途请求与票据，丢掉旧的外跳记录（回来不再按旧外跳拉卡）。 */
+        fun reset() {
+            awaiting = null
+            stopped = false
+            service.onSessionChanged()
+        }
 
         fun release() {
             service.leave()
@@ -347,6 +401,13 @@ class AppOrders(
         const val CACHE_DIR = "couli_orders"
         const val ORDER_CACHE_CLEANER = "order_cache"
 
+        /** 订单页恢复记录（撤回清理名单，R2-02）。 */
+        const val ORDER_RESTORE_CLEANER = "order_restore"
+        const val RESTORE_DIR = "couli_order_restore"
+
+        /** 订单页恢复记录的目录：App 私有、不参与备份（noBackupFilesDir）。 */
+        fun restoreRoot(context: Context): File = File(context.applicationContext.noBackupFilesDir, RESTORE_DIR)
+
         /** 订单缓存目录：App 私有、不参与备份（noBackupFilesDir），「清除缓存」不清（03 §4.3）。 */
         fun cacheRoot(context: Context): File = File(context.applicationContext.noBackupFilesDir, CACHE_DIR)
     }
@@ -360,6 +421,18 @@ private fun JsonObject.text(key: String): String? =
             it.isString
         }?.content
         ?.takeIf(String::isNotEmpty)
+
+/**
+ * 清理出口的接线（AppModule 与集成测试共用，APP-08 共性第 38、43 条）：隐私结论不再是已同意（撤回、基本模式）、切换环境时同步调
+ * [AppOrders.onCleanup]，清空各显示位置的待跟单卡并作废其在途请求（不等会话状态通知）。
+ */
+fun AppOrders.connectCleanup(
+    privacy: AppPrivacy,
+    cleaners: EnvironmentSwitchCleanerRegistry?,
+) {
+    privacy.onConclusionChanged { if (it != PrivacyState.CONSENTED) onCleanup() }
+    cleaners?.register { _, _ -> onCleanup() }
+}
 
 /** OrderList 路由（订单 Tab 根）：真实订单列表（APP-08）。 */
 @Composable
