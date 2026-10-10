@@ -235,7 +235,8 @@ class ApiClient(
     /**
      * 一次调用的选项。
      * @property abandonFor 这是放弃未决键的作废请求，原敏感操作（R1-14）。
-     * @property pendingAccount 确认 / 放弃未决键：记录所属的账号；发出前当前会话账号必须仍是它（lessons 15）。
+     * @property pendingAccount 确认 / 放弃未决键：记录所属的账号；首次提交：点击时固定的账号（[ApiCall.expectedAccount]）。发出前（读取凭据、
+     *   登记未决记录之前）当前会话账号必须仍是它（lessons 15、APP-09 共性第 39 条）。
      */
     private data class RunOptions(
         val abandonFor: ApiOperation? = null,
@@ -305,7 +306,8 @@ class ApiClient(
     /** 阻塞执行一次调用。 */
     fun execute(call: ApiCall): ApiResult {
         val operation = requireNotNull(ApiOperations.byId(call.operationId)) { "未知 operationId：${call.operationId}" }
-        return runLogical(call, operation, RunOptions(), newId())
+        // 点击时固定的账号（共性第 39 条）：会话已换成别的账号的，不读凭据、不登记未决记录、不发送
+        return runLogical(call, operation, RunOptions(pendingAccount = call.expectedAccount), newId())
     }
 
     /** 撤回同意（清理的第一步）：作废并取消全部在途请求，之后的内部续发不再发出（A-R2-01）。 */
@@ -440,13 +442,15 @@ class ApiClient(
     fun confirmPending(
         operationId: String,
         stepUpToken: String? = null,
+        target: PendingTarget? = null,
     ): ApiResult {
         val record =
-            when (val owned = ownedPending(operationId)) {
+            when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
                 is Owned.Rejected -> return ApiResult.LocalReject(owned.reason)
             }
         val operation = ApiOperations.byId(operationId) ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
+        targetReject(target)?.let { return ApiResult.LocalReject(it) }
         val holder = newId()
         when (startUserAction { pendingKeys.confirm(record.key, holder, record.account) }) {
             null -> return ApiResult.LocalReject(LocalRejectReason.PENDING_STORE_FAILED)
@@ -454,7 +458,14 @@ class ApiClient(
             true -> Unit
         }
         val call =
-            ApiCall(operationId, body = record.body, idempotencyKey = record.key, stepUpToken = stepUpToken, summary = record.summary)
+            ApiCall(
+                operationId,
+                body = record.body,
+                idempotencyKey = record.key,
+                stepUpToken = stepUpToken,
+                summary = record.summary,
+                ownership = target?.ownership,
+            )
         try {
             return runLogical(call, operation, RunOptions(pendingAccount = record.account), holder)
         } finally {
@@ -469,15 +480,19 @@ class ApiClient(
      * [ApiResult.Failure]（Effect 按原操作映射，A-R2-06）；没有外壳或其他码（如 40901）→ 保持待确认。10001 / 10004 / 10005 等
      * 前置码只引导，不登记 pending_action、不自动重放，键保持待确认，由用户补办后再点（R1-14）。
      */
-    fun abandonPending(operationId: String): ApiResult {
+    fun abandonPending(
+        operationId: String,
+        target: PendingTarget? = null,
+    ): ApiResult {
         val record =
-            when (val owned = ownedPending(operationId)) {
+            when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
                 is Owned.Rejected -> return ApiResult.LocalReject(owned.reason)
             }
         val original = ApiOperations.byId(operationId) ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
         val action = original.stepUp ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
         val abandon = ApiOperations.byId(ABANDON) ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
+        targetReject(target)?.let { return ApiResult.LocalReject(it) }
         val holder = newId()
         when (startUserAction { pendingKeys.abandon(record.key, holder, record.account) }) {
             null -> return ApiResult.LocalReject(LocalRejectReason.PENDING_STORE_FAILED)
@@ -488,7 +503,7 @@ class ApiClient(
         val result =
             try {
                 val options = RunOptions(abandonFor = original, pendingAccount = record.account)
-                runLogical(ApiCall(ABANDON, body = body), abandon, options, newId()).also { outcome ->
+                runLogical(ApiCall(ABANDON, body = body, ownership = target?.ownership), abandon, options, newId()).also { outcome ->
                     pendingKeys.onResponse(record.key, abandonOutcome(outcome), holder)
                 }
             } finally {
@@ -521,18 +536,33 @@ class ApiClient(
      * 读取之前就确定，别的账号的记录不读不解密。没有会话账号或没有记录 → pending_key_unresolved；存储读不出 → pending_store_failed
      * （无法确认未决状态，不当成没有记录，lessons 38）。
      */
-    @Suppress("TooGenericExceptionCaught", "SwallowedException") // 安全存储读取失败一律按明确的失败返回
-    private fun ownedPending(operationId: String): Owned {
+    @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount") // 安全存储读取失败一律按明确的失败返回；逐项核对
+    private fun ownedPending(
+        operationId: String,
+        target: PendingTarget?,
+    ): Owned {
+        targetReject(target)?.let { return Owned.Rejected(it) }
         val read = rawRead(context())
         if (read is RawRead.Unreadable) return Owned.Rejected(LocalRejectReason.SESSION_UNREADABLE)
         val account = live(read)?.userId ?: return Owned.Rejected(LocalRejectReason.PENDING_KEY_UNRESOLVED)
+        // 点击时的账号（APP-09 共性第 14 条）：会话已换成别的账号的，不读不选它的记录
+        if (target != null && target.account != account) return Owned.Rejected(LocalRejectReason.ACCOUNT_MISMATCH)
         val record =
             try {
                 pendingKeys.pendingFor(operationId, account)
             } catch (error: Exception) {
                 return Owned.Rejected(LocalRejectReason.PENDING_STORE_FAILED)
             }
+        // 点击时的原键：记录已换成另一个键（原键已结束、又有新的未决）的，不作用于新记录
+        if (record != null && target != null && record.key != target.key) return Owned.Rejected(LocalRejectReason.PENDING_KEY_UNRESOLVED)
         return record?.let(Owned::Record) ?: Owned.Rejected(LocalRejectReason.PENDING_KEY_UNRESOLVED)
+    }
+
+    /** 点击时的归属与发送前闸门（APP-09 共性第 14、15 条）：会话世代已变或禁用期内 → call_cancelled，不读、不占用、不发。 */
+    private fun targetReject(target: PendingTarget?): String? {
+        val ownership = target?.ownership ?: return null
+        if (inFlight.epochs() != ownership.epochs || ownership.expired() || !ownership.stillOwned()) return LocalRejectReason.CALL_CANCELLED
+        return LocalRejectReason.CALL_CANCELLED.takeIf { ownership.sendAllowed?.invoke() == false }
     }
 
     /**

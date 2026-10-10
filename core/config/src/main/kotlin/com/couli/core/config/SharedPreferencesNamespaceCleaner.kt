@@ -69,8 +69,12 @@ object CouliPreferenceNamespaces {
      */
     const val ORDER_CACHE_PENDING = "couli_order_cache_pending"
 
+    /** 钱包摘要断网缓存的「待清理」状态（APP-09，G22）：同 [ORDER_CACHE_PENDING]，故意不以 [PREFIX] 开头，由钱包缓存确认删完后自己清掉。 */
+    const val WALLET_CACHE_PENDING = "couli_wallet_cache_pending"
+
     /** 已登记、但切换环境时保留的 SharedPreferences（不在命名空间内）。 */
-    val preservedAcrossEnvironmentSwitch: List<String> = listOf(PRIVACY_DECISION, PERMISSION, CLIPBOARD, AMOUNT_MASK, ORDER_CACHE_PENDING)
+    val preservedAcrossEnvironmentSwitch: List<String> =
+        listOf(PRIVACY_DECISION, PERMISSION, CLIPBOARD, AMOUNT_MASK, ORDER_CACHE_PENDING, WALLET_CACHE_PENDING)
 
     init {
         registered.forEach { name ->

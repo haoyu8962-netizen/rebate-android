@@ -116,6 +116,9 @@ class AppRouting
          */
         val session = MutableStateFlow(SessionState.GUEST)
 
+        /** 守卫的实名状态来源（APP-09 AppWallet 接上；没接时按未实名）。 */
+        var realnameSource: () -> Boolean = { false }
+
         /** 已处理过的会话状态（[updateSession] 同步处理过的变化，收集器不再重复处理）。只在主线程读写。 */
         private var handledSession: SessionState = session.value
 
@@ -238,8 +241,9 @@ class AppRouting
                 environmentSettled = environmentGate.isSettled,
                 appVersion = BuildConfig.VERSION_NAME,
                 isDebugBuild = BuildConfig.DEBUG_FEATURES,
-                // TODO(APP-05): 实名状态来自会话。external_hosts、可信 H5 源来自生效配置（APP-04，[webTargets]）。
-                realnameVerified = false,
+                // 实名状态：APP-09 由 AppWallet 按当前会话取 GET /v1/me 的 realname_status（[realnameSource]，没查清按未实名）。
+                // external_hosts、可信 H5 源来自生效配置（APP-04，[webTargets]）。
+                realnameVerified = realnameSource(),
                 externalHosts = webTargets().externalHosts,
                 bridgeOrigins = webTargets().bridgeOrigins,
             )

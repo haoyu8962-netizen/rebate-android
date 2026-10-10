@@ -11,10 +11,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavBackStackEntry
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
+import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clientcore.PermissionTypeRaw
 import com.couli.core.network.PageApi
-import com.couli.core.orders.AmountMaskStore
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderDraftTexts
 import com.couli.core.orders.OrderRateGate

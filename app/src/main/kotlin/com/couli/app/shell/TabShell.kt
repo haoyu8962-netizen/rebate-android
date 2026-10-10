@@ -42,6 +42,7 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.TabBar
 import com.couli.core.designsystem.TabItem
+import com.couli.core.wallet.WalletDraftTexts
 import com.couli.generated.DefaultTexts
 
 const val TAB_SHELL_TAG = "tab_shell"
@@ -220,6 +221,7 @@ const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"
 fun MeWithEntries(
     onAuthManage: () -> Unit,
     onSettings: () -> Unit,
+    onWallet: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
@@ -231,6 +233,27 @@ fun MeWithEntries(
                     .background(CouliColors.backgroundSurface, RoundedCornerShape(CouliRadius.card)),
         ) {
             AuthManageEntry(onOpen = onAuthManage)
+            // 【钱包】冒烟入口（APP-09；「我的」页正文属 APP-12）
+            if (onWallet != null) {
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = CouliSizes.touchTarget)
+                            .clickable(role = Role.Button, onClick = onWallet)
+                            .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
+                            .testTag(ME_WALLET_ENTRY_TAG),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = WalletDraftTexts.text(WALLET_TEXT_KEY),
+                        style = CouliTypography.body,
+                        color = CouliColors.textPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(CouliIcons.chevron, contentDescription = null, tint = CouliColors.textSecondary)
+                }
+            }
             Row(
                 modifier =
                     Modifier
@@ -255,6 +278,10 @@ fun MeWithEntries(
 }
 
 private const val SETTINGS_TEXT_KEY = "login.settings"
+private const val WALLET_TEXT_KEY = "wallet.title"
+
+/** 「我的」占位页上的【钱包】冒烟入口（APP-09）。 */
+const val ME_WALLET_ENTRY_TAG = "me_wallet_entry"
 
 /** 提示条：品牌浅底、圆角 16、内边距 16；信息图标 + 说明，下面整行主按钮（紧凑尺寸）。 */
 @Composable

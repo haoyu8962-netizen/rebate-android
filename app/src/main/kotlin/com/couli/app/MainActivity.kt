@@ -22,6 +22,7 @@ import com.couli.app.search.AppSearch
 import com.couli.app.shell.AppShell
 import com.couli.app.trade.AppProductImages
 import com.couli.app.update.AppUpdate
+import com.couli.app.wallet.AppWallet
 import com.couli.app.web.AppWeb
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.designsystem.CouliTheme
@@ -80,6 +81,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var orders: AppOrders
 
+    @Inject
+    lateinit var wallet: AppWallet
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +119,7 @@ class MainActivity : ComponentActivity() {
                                 search = search,
                                 clipboard = clipboard,
                                 orders = orders,
+                                wallet = wallet,
                                 homeContent = { VariantRootContent(trace = trace) },
                             )
                         },

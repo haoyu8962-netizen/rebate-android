@@ -48,6 +48,7 @@ import com.couli.app.routing.RouteDestination
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.shell.AppShell
 import com.couli.app.web.BridgeHostRegistry
+import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.ClientPlatformRaw
 import com.couli.core.clientcore.ConfigReply
 import com.couli.core.clientcore.ConfigStore
@@ -75,7 +76,6 @@ import com.couli.core.network.PendingKeyStore
 import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.SecretCipher
 import com.couli.core.network.UpdateRaw
-import com.couli.core.orders.AmountMaskStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.PendingClosedAttempts
 import com.couli.core.orders.PendingTrackTags

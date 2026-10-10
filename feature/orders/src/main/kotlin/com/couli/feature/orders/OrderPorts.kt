@@ -1,7 +1,7 @@
 package com.couli.feature.orders
 
+import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.network.PageApi
-import com.couli.core.orders.AmountMaskStore
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderRateGate
 import com.couli.core.orders.OrderStaleCache

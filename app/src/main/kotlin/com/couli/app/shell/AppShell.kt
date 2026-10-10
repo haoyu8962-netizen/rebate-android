@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -52,6 +53,9 @@ import com.couli.app.update.ForceUpdateActions
 import com.couli.app.update.ForceUpdatePage
 import com.couli.app.update.UpdatePromptDialog
 import com.couli.app.update.UpdateUi
+import com.couli.app.wallet.AppWallet
+import com.couli.app.wallet.WALLET_ROUTES
+import com.couli.app.wallet.WalletRoute
 import com.couli.app.web.AppWeb
 import com.couli.app.web.ExternalPageRoute
 import com.couli.app.web.H5RoutePage
@@ -68,6 +72,7 @@ import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.router.UpdateState
 import com.couli.core.update.UpdateStatus
+import com.couli.core.wallet.WalletRoutes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -111,6 +116,7 @@ fun AppShell(
     search: AppSearch? = null,
     clipboard: AppClipboard? = null,
     orders: AppOrders? = null,
+    wallet: AppWallet? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -121,7 +127,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search, clipboard, orders) {
+        remember(homeContent, update, web, login, search, clipboard, orders, wallet) {
             RoutePageRegistry(
                 mapOf<String, @Composable (RouteDestination) -> Unit>(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -172,11 +178,13 @@ fun AppShell(
                     PRIVACY_CENTER_ROUTE to { page ->
                         PlaceholderRoutePage(page, fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN)
                     },
-                ) + h5RoutePages(web, routing) { navController.popBackStack() },
+                ) + h5RoutePages(web, routing) { navController.popBackStack() } +
+                    // 钱包、提现、提现记录、收款账号、实名、劳务协议（APP-09）；没有接线（只测外壳的单测）时是占位页
+                    walletRoutePages(wallet) { navController.popBackStack() },
             )
         }
     val hooks =
-        remember(privacy, login, search, clipboard, orders) {
+        remember(privacy, login, search, clipboard, orders, wallet) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly ->
@@ -197,6 +205,8 @@ fun AppShell(
                     search?.followBackStack(entries)
                     // 订单详情、发起购买页的待跟单卡出栈的同步出口：立即作废其在途请求（APP-08）
                     orders?.followBackStack(entries)
+                    // 钱包类页面出栈的同步出口：立即作废其读请求（APP-09；提交、确认、放弃不取消，未决记录兜底）
+                    wallet?.followBackStack(entries)
                     // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
                     clipboard?.let { followClipboard(it, entries) }
                 },
@@ -231,6 +241,14 @@ fun AppShell(
         onDispose { unsubscribe() }
     }
 
+    // 钱包（APP-09）：提交成功替换栈顶、收款账号保存后出栈都经这个 NavController
+    if (wallet != null) {
+        DisposableEffect(wallet, navController) {
+            wallet.attach(navController)
+            onDispose { wallet.detach(navController) }
+        }
+    }
+
     // 登录（APP-05a）：执行器关闭登录页、恢复待办都经这个 NavController
     if (login != null) {
         DisposableEffect(login, navController) {
@@ -263,6 +281,7 @@ fun AppShell(
                             routing = routing,
                             onEnableFullFunction = { privacy.requestFullFunction() },
                             clipboard = clipboard,
+                            wallet = wallet,
                         )
                     },
                 )
@@ -376,6 +395,7 @@ private fun TabRoot(
     routing: AppRouting,
     onEnableFullFunction: () -> Unit,
     clipboard: AppClipboard?,
+    wallet: AppWallet?,
 ) {
     val destination = RouteDestination(tab.route, EMPTY_PARAMS, readonly = readonly)
     if (tab == ShellTab.HOME && basicMode) {
@@ -396,6 +416,13 @@ private fun TabRoot(
         MeWithEntries(
             onAuthManage = { openAuthManage(routing) },
             onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
+            // 「我的」页正文属 APP-12：先放【钱包】冒烟入口（APP-09，钱包不是 Tab，是从「我的」进入的普通路由）
+            onWallet = {
+                wallet?.open(
+                    WalletRoutes.WALLET,
+                    JsonObject(emptyMap()),
+                ) ?: routing.router.open(inAppRequest(WalletRoutes.WALLET))
+            },
         ) { registry.Render(destination) }
     } else {
         registry.Render(destination)
@@ -474,6 +501,21 @@ private const val UPGRADE_PAGE = "UpgradePrompt"
  * routes.json 里 kind=h5 的路由（FindOrder、Ledger、Help 等）→ 可信容器按 h5_base_url + h5_path 加载（[H5RoutePage]）；没有接线（只测外壳的单测）
  * 时是占位页。
  */
+private fun walletRoutePages(
+    wallet: AppWallet?,
+    onBack: () -> Unit,
+): Map<String, @Composable (RouteDestination) -> Unit> =
+    WALLET_ROUTES.associateWith { _ ->
+        { page: RouteDestination ->
+            if (wallet != null) {
+                val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
+                WalletRoute(wallet, page, entryId, onBack)
+            } else {
+                PlaceholderRoutePage(page)
+            }
+        }
+    }
+
 private fun h5RoutePages(
     web: AppWeb?,
     routing: AppRouting,

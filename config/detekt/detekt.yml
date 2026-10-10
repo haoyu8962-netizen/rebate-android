@@ -23,8 +23,11 @@ complexity:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
       # APP-08 的订单向量测试同样由 Codex 先写、本仓库不改
       - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
+      # APP-09 的钱包向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
+      - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
       - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
       - '**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt'
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
@@ -51,7 +54,10 @@ style:
   ThrowsCount:
     excludes: ['**/feature/search/src/test/kotlin/com/couli/feature/search/SearchProductVectorTest.kt']
   LoopWithTooManyJumpStatements:
-    excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
+    excludes:
+      - '**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt'
+      # APP-09 的钱包向量测试由 Codex 先写、本仓库不改
+      - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
   UseCheckOrError:
     excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
   MaxLineLength:

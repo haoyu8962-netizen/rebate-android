@@ -94,6 +94,8 @@ class NetworkHooks(
  * @property ifNoneMatch 读接口的 If-None-Match（原样发送上次成功响应的 ETag，03 §4.3）；304 时结果为 [ApiResult.NotModified]。
  * @property ownership 调用方自带的归属（APP-03b R2-02，设备注册）：有它时这次调用按其中的世代绑定（不再取当前世代），每次写出前的
  *   守卫另外核对 [CallOwnership.stillOwned]；失效即 call_cancelled，不会被重新绑定到切换后的新环境。
+ * @property expectedAccount 点击时固定的账号（APP-09 Android R2-01、共性第 39 条）：不为 null 时，每次发送（含内部续发）在读取凭据、登记未决记录
+ *   之前都核对当前会话账号仍是它，不是即 account_mismatch，不发送、不登记到别的账号；没有为 null（行为与之前相同）。
  */
 data class ApiCall(
     val operationId: String,
@@ -106,6 +108,7 @@ data class ApiCall(
     val fromProductCard: Boolean = true,
     val ifNoneMatch: String? = null,
     val ownership: CallOwnership? = null,
+    val expectedAccount: String? = null,
 )
 
 /**
@@ -142,6 +145,18 @@ class CallOwnership(
     /** 截止时刻已过。 */
     fun expired(now: Long = System.nanoTime()): Boolean = deadlineNanos != null && now - deadlineNanos >= 0
 }
+
+/**
+ * 用户点【确认上一笔】/【放弃上一笔】时看到的那条未决记录（APP-09 共性第 14、15 条，Android R1-01、R1-02）：[account] 与 [key] 是点击时的账号与原键，
+ * 读取记录、占用记录与实际发送前都核对仍是它们，不按 operationId 改选当前账号的另一条记录。[ownership] 是点击时的归属：
+ * [CallOwnership.stillOwned] 核对会话世代仍是点击时的；[CallOwnership.sendAllowed] 是共享禁用期的发送前闸门（首次发送与管线内部续发前都核对）。
+ * 读取与占用之前任一不满足即本地拒绝，记录保持待确认。
+ */
+class PendingTarget(
+    val account: String,
+    val key: String,
+    val ownership: CallOwnership? = null,
+)
 
 /**
  * 触发设备重新注册（10402）的调用方（APP-04 Android 第 3 轮评审 R3-03、共性第 58 条）：[deadlineNanos] 是它整次调用的截止时刻

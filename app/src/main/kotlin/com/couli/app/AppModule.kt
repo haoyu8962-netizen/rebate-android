@@ -32,9 +32,11 @@ import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
 import com.couli.app.update.variantUpdateStore
+import com.couli.app.wallet.AppWallet
 import com.couli.app.web.AppWeb
 import com.couli.app.web.BridgeHostRegistry
 import com.couli.core.bridge.WebConfigReader
+import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.AtomicTextFile
 import com.couli.core.clientcore.BundledConfig
 import com.couli.core.clientcore.ClientPlatformRaw
@@ -68,7 +70,6 @@ import com.couli.core.network.SecretCipher
 import com.couli.core.network.SecurePendingKeyBackend
 import com.couli.core.network.SessionTokens
 import com.couli.core.network.UpdateRaw
-import com.couli.core.orders.AmountMaskStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.privacy.AndroidPermissionRequester
 import com.couli.core.privacy.AndroidPermissionSystem
@@ -84,8 +85,10 @@ import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.core.update.UpdateGate
+import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.wallet.ApiClientWalletApi
 import com.couli.generated.ClientPlatform
 import com.couli.generated.InstallChannel
 import dagger.Module
@@ -159,6 +162,8 @@ object AppModule {
             register { _, _ -> tracker.get().clear() }
             // 订单缓存（APP-08，G10）：属于连接的那套服务器与账号，切换环境时删除（删不掉保留待清理、不读回）
             register { _, _ -> orderCacheStore(context).clearAll() }
+            // 钱包摘要缓存（APP-09，G22）：同上
+            register { _, _ -> walletCacheStore(context).clearAll() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -203,6 +208,7 @@ object AppModule {
         device: DeviceRegistry,
         login: Provider<AppLogin>,
         orders: Provider<AppOrders>,
+        wallet: Provider<AppWallet>,
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -250,6 +256,8 @@ object AppModule {
                             login.get().onSessionStored(generation)
                             // 订单（APP-08）：会话换代即作废列表、详情、待跟单卡的在途请求，清掉旧账号的结果与缓存
                             orders.get().onSessionChanged()
+                            // 钱包（APP-09）：会话换代即清掉已显示的余额、金额与已填内容，重置禁用期与 step-up token，按新会话重取
+                            wallet.get().onSessionChanged()
                         }
                     },
                 ),
@@ -307,6 +315,8 @@ object AppModule {
             register(CLIPBOARD_HASHES_CLEANER) { ClipboardPreferences(context).clearHashes() }
             // 订单缓存（APP-08，G10；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
             register(AppOrders.ORDER_CACHE_CLEANER) { orderCacheStore(context).clearAll() }
+            // 钱包摘要缓存（APP-09，G22；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
+            register(AppWallet.WALLET_CACHE_CLEANER) { walletCacheStore(context).clearAll() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -614,6 +624,7 @@ object AppModule {
         clipboard: AppClipboard,
         permissions: AndroidPermissionRequester,
         update: Provider<AppUpdate>,
+        mask: AmountMaskStore,
     ): AppOrders =
         AppOrders(
             api = ApiClientPageApi(client),
@@ -626,8 +637,52 @@ object AppModule {
             notificationsEnabled = { NotificationManagerCompat.from(context).areNotificationsEnabled() },
             forceUpdate = { update.get().onServerForced() },
             cache = orderCacheStore(context),
-            mask = AmountMaskStore(context),
+            mask = mask,
         ).also { orders -> orders.connectSession() }
+
+    /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
+    @Provides
+    @Singleton
+    fun amountMaskStore(
+        @ApplicationContext context: Context,
+    ): AmountMaskStore = AmountMaskStore(context)
+
+    /**
+     * 钱包、提现、提现记录、收款账号、实名、劳务协议（APP-09）：读请求经 ApiClient（带页面归属与会话世代）；提交、确认、放弃经未决键管线
+     * （SecurePendingKeyBackend）；交易流水号复制经剪贴板唯一写入口（APP-07）；10405 强制进入强更；断网缓存在 noBackupFilesDir 下按账号隔离（撤回、
+     * 切换环境、登出、换账号时删除）；实名与劳务协议的待定接口只在 debug / staging 由进程内假服务实现（G01、G02），release 为空（页面置灰）；
+     * route_params_dropped 进 Tracker 本地队列。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 网络、配置、路由、会话、剪贴板、埋点与强更逐项注入
+    fun appWallet(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        config: AppConfig,
+        routing: AppRouting,
+        tokens: SessionTokens,
+        clipboard: AppClipboard,
+        mask: AmountMaskStore,
+        tracker: Provider<TrackerQueue>,
+        update: Provider<AppUpdate>,
+    ): AppWallet =
+        AppWallet(
+            api = ApiClientWalletApi(client),
+            store = config.store,
+            routing = routing,
+            sessionEpoch = { tokens.loginEpoch },
+            account = { client.activeUserId() },
+            writer = { text -> clipboard.writer.write(text) },
+            forceUpdate = { update.get().onServerForced() },
+            cache = walletCacheStore(context),
+            mask = mask,
+            realname = variantRealNameBackend(context),
+            labor = variantLaborBackend(context),
+            stepUpPhone = variantStepUpPhone(context),
+            track = { event -> tracker.get().track(event) },
+            onOverlay = clipboard::onSensitiveOverlay,
+        ).also { wallet -> wallet.connectSession() }
 
     /**
      * 购买、外跳与授权（APP-06b）：open 经 ApiClient（请求带页面归属）；百川是不可用实现（SDK 未引入、AppKey 占位，TODO(N-28)）；
@@ -795,6 +850,31 @@ internal fun orderCachePendingFlag(context: Context): OrderStaleCache.PendingCle
 }
 
 private const val ORDER_CACHE_PENDING_KEY = "pending_clear"
+
+/** 钱包摘要缓存（APP-09，G22）：noBackupFilesDir 下按账号分目录；钱包页与两个清理入口共用同一个实例。 */
+internal fun walletCacheStore(context: Context): WalletStaleCache.Store {
+    val root = AppWallet.cacheRoot(context)
+    return synchronized(WalletCacheStores) {
+        WalletCacheStores.instances.getOrPut(root.absolutePath) { WalletStaleCache.Store(root, walletCachePendingFlag(context)) }
+    }
+}
+
+/** 钱包缓存的「待清理」状态：缓存目录之外的 SharedPreferences，commit 确认写入（APP-08 共性第 28 条）。 */
+@SuppressLint("ApplySharedPref", "UseKtx") // 必须 commit 并拿到返回值确认写入
+internal fun walletCachePendingFlag(context: Context): WalletStaleCache.PendingClearFlag {
+    val prefs = context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.WALLET_CACHE_PENDING, Context.MODE_PRIVATE)
+    return object : WalletStaleCache.PendingClearFlag {
+        override fun isSet(): Boolean = prefs.getBoolean(ORDER_CACHE_PENDING_KEY, false)
+
+        override fun set(): Boolean = prefs.edit().putBoolean(ORDER_CACHE_PENDING_KEY, true).commit()
+
+        override fun clear(): Boolean = prefs.edit().remove(ORDER_CACHE_PENDING_KEY).commit()
+    }
+}
+
+private object WalletCacheStores {
+    val instances = mutableMapOf<String, WalletStaleCache.Store>()
+}
 
 private object OrderCacheStores {
     /** 按绝对路径各一份（生产只有一个；单测每个用例的目录不同）。 */

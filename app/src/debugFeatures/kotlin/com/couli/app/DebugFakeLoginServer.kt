@@ -25,7 +25,7 @@ import okio.Buffer
  *   444444 → 44001；100070 → 10007 processing；104050 → 10405 no_account；999999 → 受限会话 deletion_only；
  * - 刷新：换一对令牌（full）；登出、其余：code 0。
  * - 第三方登录（APP-05b）：取授权尝试 → 假的 attempt_id / nonce；微信登录 → 第三方新号（is_new_user=true）；
- *   getMe → phone_bound（本进程里绑定成功之前为 false）；
+ *   getMe → phone_bound（第三方新号在本进程里绑定成功之前为 false，其余为 true）、realname_status（APP-09 假钱包服务）；
  * - 绑手机：13800005678 → 30411 mergeable（带假的 merge_ticket）；13800001111 → 30411；13800004444 → 44001；
  *   验证码 123456 → 成功；200030 → 20003；其余 → 20002。绑手机发码（purpose=bind）同登录发码。
  */
@@ -35,15 +35,21 @@ internal class DebugFakeLoginServer(
 ) : Interceptor {
     private var serial = 0
 
-    /** 本进程里假账号是否已绑手机（绑手机成功后 getMe 回 true；新的第三方登录重置）。 */
+    /**
+     * 本进程里假账号是否已绑手机（新的第三方登录重置为 false，绑手机成功后回 true）。APP-09：缺省按已绑手机（短信登录的账号冷启动后 getMe 也回 true，
+     * 资金页的守卫不再引去绑手机）。
+     */
     @Volatile
-    private var phoneBound = false
+    private var phoneBound = true
 
     /** 购买、外跳与授权（APP-06b，[DebugFakeTrade]）；状态开关文件与开关文件同目录。 */
     private val trade = DebugFakeTrade(File(switch.parentFile, FAKE_TRADE_STATE_FILE))
 
     /** 订单（APP-08，[DebugFakeOrders]）；状态开关文件与开关文件同目录。 */
     private val orders = DebugFakeOrders(File(switch.parentFile, FAKE_ORDERS_STATE_FILE))
+
+    /** 钱包、提现、收款账号、二次验证与作废（APP-09，[DebugFakeWallet]，进程内唯一）；状态开关文件与开关文件同目录。 */
+    private val wallet = DebugFakeWallet.of(File(switch.parentFile, FAKE_WALLET_STATE_FILE)).also { it.switchOn = { switch.exists() } }
 
     @Suppress("ReturnCount") // 开关关着、商品图、其余三个出口
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -69,7 +75,8 @@ internal class DebugFakeLoginServer(
         // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
         val loggedIn = request.header("Authorization") != null
         val (code, data, headers) =
-            orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
+            wallet.answer(request.method, request.url.encodedPath, request.url.encodedQuery, body, request.headers.toMap())
+                ?: orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
                 ?: trade.answer(
                     request.method,
                     request.url.encodedPath,
@@ -122,7 +129,7 @@ internal class DebugFakeLoginServer(
 
             "/v1/auth/login/wechat" -> wechatLogin()
 
-            "/v1/me" -> ok("""{"user_id":"fake-user-0002","phone_bound":$phoneBound}""")
+            "/v1/me" -> ok("""{"user_id":"fake-user-0002","phone_bound":$phoneBound,"realname_status":"${wallet.realnameStatus()}"}""")
 
             "/v1/me/phone" -> bindPhone(body.text("phone"), body.text("code"))
 
@@ -142,8 +149,10 @@ internal class DebugFakeLoginServer(
     private fun login(
         code: String?,
         invite: String?,
-    ): Triple<Int, String, Map<String, String>> =
-        when (code) {
+    ): Triple<Int, String, Map<String, String>> {
+        // 短信登录的账号就是已绑手机（APP-09 冒烟：冷启动后 getMe 回 phone_bound=true，资金页的守卫不再引去绑手机）
+        if (code == "123456" || code == "222222") phoneBound = true
+        return when (code) {
             "123456" -> ok(loggedIn("full", isNew = true, invite = invite))
             "222222" -> ok(loggedIn("full", isNew = false, invite = invite))
             "999999" -> ok(loggedIn("deletion_only", isNew = false, invite = null))
@@ -154,6 +163,7 @@ internal class DebugFakeLoginServer(
             "104050" -> Triple(FORCE_UPDATE, """{"reason":"no_account","min_supported_version":"9.0.0"}""", emptyMap())
             else -> fail(WRONG_CODE)
         }
+    }
 
     private fun attempt(): String {
         serial += 1

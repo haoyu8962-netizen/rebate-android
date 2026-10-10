@@ -394,6 +394,10 @@ fun WalletHeroCard(
     hiddenMask: String = "",
     onToggleHidden: (() -> Unit)? = null,
     onRecords: (() -> Unit)? = null,
+    /** 【提现】可点（APP-09 G11：withdraw_enabled=false、待抵扣、风控暂停、断网缓存时置灰）。 */
+    withdrawEnabled: Boolean = true,
+    /** 【提现】的测试标记（APP-09）。 */
+    withdrawModifier: Modifier = Modifier,
     bottom: @Composable () -> Unit = {},
 ) {
     Column(
@@ -463,7 +467,8 @@ fun WalletHeroCard(
                     text = texts.withdraw,
                     onClick = onWithdraw,
                     variant = CouliButtonVariant.ON_SOLID,
-                    modifier = Modifier.heightIn(min = CouliSizes.touchTarget),
+                    enabled = withdrawEnabled,
+                    modifier = withdrawModifier.heightIn(min = CouliSizes.touchTarget),
                 )
             },
         )
