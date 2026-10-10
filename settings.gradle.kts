@@ -43,6 +43,7 @@ listOf(
     "push",
     "storage",
     "wallet",
+    "me",
 ).forEach { include(":core:$it") }
 
 listOf(

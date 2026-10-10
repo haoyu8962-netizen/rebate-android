@@ -128,6 +128,16 @@ class PermissionRequester(
             else -> true
         }
 
+    /**
+     * 本机记下的 [permission] 最近一次被拒时刻（只读，不改节流；APP-12 G28 通知引导条的「距上次拒绝满 48 小时」）。没有记录为 null；记录读不出或损坏时
+     * 按「此刻刚被拒」（保守：引导条不出现）。
+     */
+    fun lastDeniedAt(permission: String): Long? =
+        when (val stored = readRecords()) {
+            is Records.Loaded -> maxOfNullable(stored.values[permission], memory[permission])
+            else -> clock()
+        }
+
     /** Android 用顶部说明浮层，没有继续按钮；iOS、鸿蒙先出一屏说明，点【继续】后弹系统框。 */
     private fun continueKey(): String? = if (platform == ClientPlatformRaw.ANDROID) null else CONTINUE
 

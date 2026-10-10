@@ -22,6 +22,10 @@ object HeaderNames {
     const val RETRY_AFTER = "Retry-After"
     const val DATE = "Date"
 
+    /** 个性化推荐已关闭（APP-12 G03，BR-ID-13）：值固定为 off；只读本机偏好，基本模式不带。 */
+    const val PERSONALIZATION = "X-Personalization"
+    const val PERSONALIZATION_OFF = "off"
+
     /** 配置拉取的条件请求（03 §4.3，APP-03b）。 */
     const val IF_NONE_MATCH = "If-None-Match"
     const val ETAG = "ETag"

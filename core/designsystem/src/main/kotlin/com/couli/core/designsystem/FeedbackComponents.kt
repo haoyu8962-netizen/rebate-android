@@ -33,6 +33,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
@@ -272,6 +273,11 @@ fun CouliDialog(
     body: (@Composable () -> Unit)? = null,
     /** 主按钮可点（如 42901 限流期间置灰，到期恢复）。 */
     confirmEnabled: Boolean = true,
+    /** 点遮罩是否关闭（APP-12：撤回同意、退出登录的确认框点遮罩不执行任何操作、也不关闭；系统返回仍按 [dismissible] 走 [onDismissRequest]）。 */
+    dismissOnClickOutside: Boolean = dismissible,
+    /** 次按钮、主按钮的测试标记（撤回确认框的【确认撤回】是次按钮）。 */
+    dismissTag: String? = null,
+    confirmTag: String? = null,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
     Dialog(
@@ -279,7 +285,7 @@ fun CouliDialog(
         properties =
             DialogProperties(
                 dismissOnBackPress = dismissible,
-                dismissOnClickOutside = dismissible,
+                dismissOnClickOutside = dismissOnClickOutside,
                 usePlatformDefaultWidth = false,
             ),
     ) {
@@ -300,6 +306,8 @@ fun CouliDialog(
                 titleFocus = titleFocus,
                 body = body,
                 confirmEnabled = confirmEnabled,
+                dismissTag = dismissTag,
+                confirmTag = confirmTag,
             )
         }
     }
@@ -321,6 +329,8 @@ fun CouliDialogContent(
     titleFocus: FocusRequester? = null,
     body: (@Composable () -> Unit)? = null,
     confirmEnabled: Boolean = true,
+    dismissTag: String? = null,
+    confirmTag: String? = null,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -346,7 +356,12 @@ fun CouliDialogContent(
         footer = {
             DialogButtons(
                 primary = {
-                    CouliButton(text = confirmText, onClick = onConfirm, enabled = confirmEnabled, modifier = Modifier.fillMaxWidth())
+                    CouliButton(
+                        text = confirmText,
+                        onClick = onConfirm,
+                        enabled = confirmEnabled,
+                        modifier = Modifier.fillMaxWidth().then(confirmTag?.let { Modifier.testTag(it) } ?: Modifier),
+                    )
                 },
                 secondary =
                     if (dismissText != null) {
@@ -355,7 +370,7 @@ fun CouliDialogContent(
                                 text = dismissText,
                                 onClick = onDismiss,
                                 variant = CouliButtonVariant.SECONDARY,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().then(dismissTag?.let { Modifier.testTag(it) } ?: Modifier),
                             )
                         }
                     } else {

@@ -203,7 +203,7 @@ const val FORCE_UPDATE_ENTRY_TAG = "route_from_force_update"
 /**
  * 占位页：只显示路由名、参数与是否只读（开发字样，不是业务文案）。
  * [restrictedLogin]：从强更页进入的登录（受限登录）。TODO(APP-05): 真实登录页按这个标记隐藏邀请码等业务输入。
- * [fromForceUpdate]：强更状态下从强更页进入（隐私中心等次要入口）。TODO(APP-12): 真实隐私中心按这个标记只给协议、清单与撤回同意。
+ * [fromForceUpdate]：强更状态下从强更页进入（隐私中心等次要入口）。真实隐私中心（APP-12 PrivacyCenterScreen）按强更状态只给协议、清单与撤回同意；占位页只留给没接「我的」的外壳单测。
  */
 @Composable
 fun PlaceholderRoutePage(

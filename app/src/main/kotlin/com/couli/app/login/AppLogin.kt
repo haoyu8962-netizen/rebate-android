@@ -18,6 +18,7 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
+import com.couli.core.wallet.WalletRateGate
 import com.couli.feature.login.AfterLoginUpdate
 import com.couli.feature.login.BindPhoneHost
 import com.couli.feature.login.BindPhonePageActions
@@ -30,6 +31,7 @@ import com.couli.feature.login.LoginOutcome
 import com.couli.feature.login.LoginPageActions
 import com.couli.feature.login.LoginPageConfig
 import com.couli.feature.login.LoginService
+import com.couli.feature.login.MeReadLimit
 import com.couli.feature.login.OAuthLoginOutcome
 import com.couli.feature.login.OAuthLoginRoute
 import com.couli.feature.login.OAuthLoginService
@@ -105,6 +107,11 @@ class AppLogin(
     private val sessionScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     /** 第三方登录适配器（APP-05b）：Release 是恒不可用的微信适配器；Debug / Staging 在本机假服务打开时是假适配器。 */
     adapters: List<ThirdPartyAuthAdapter> = listOf(UnavailableWechatAdapter()),
+    /**
+     * Me 读取（GET /v1/me）的会话级共享禁用期（APP-12 Android R2-05，共性第 32 条）：冷启动 / 登录后校验 phone_bound 的 getMe、绑定成功后的 getMe 与「我的」类
+     * 页面（AppMe 的 MeGates.read 就是这一个）共用同一个截止时间。AppLogin 先于 AppMe 建，所以由这里持有。
+     */
+    val meReadGate: WalletRateGate = WalletRateGate(sessionScope),
 ) : LoginHost,
     BindPhoneHost {
     val service: LoginService = LoginService(client, tokens, this, legal, sessionScope)
@@ -114,10 +121,18 @@ class AppLogin(
 
     /** 第三方登录执行器（APP-05b）。 */
     val oauth: OAuthLoginService =
-        OAuthLoginService(client, tokens, service, adapters, phoneBinding, legal, followUpScope = sessionScope)
+        OAuthLoginService(client, tokens, service, adapters, phoneBinding, legal, followUpScope = sessionScope, meRead = meReadLimit())
 
     /** 绑手机执行器（APP-05b）。 */
-    val bindPhone: BindPhoneService = BindPhoneService(client, tokens, service, phoneBinding, this)
+    val bindPhone: BindPhoneService = BindPhoneService(client, tokens, service, phoneBinding, this, meRead = meReadLimit())
+
+    /** 登录侧看到的 Me 读取禁用期（与「我的」同一个 [meReadGate]）。 */
+    private fun meReadLimit(): MeReadLimit =
+        object : MeReadLimit {
+            override val active: Boolean get() = meReadGate.active
+
+            override fun start(millis: Long) = meReadGate.start(millis)
+        }
 
     /** 最近一次第三方登录的方式（并号确认正文的 {provider_name}；Android 只有微信）。 */
     private var lastProvider: String = OAuthProvider.WECHAT
@@ -328,6 +343,12 @@ class AppLogin(
     /** 邀请码的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
     var invite: InvitePasteSource? = null
 
+    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
+    var customerService: (fromRoute: String) -> Unit = { open(HELP_ROUTE) }
+
+    /** 登录有效完成时的登录世代（APP-12 推送上报只认它为「真实登录成功」，共性第 3 条；AppModule 接 AppMe）。 */
+    var onLoginCompleted: (loginEpoch: Long) -> Unit = {}
+
     /** 登录页配置。[restricted]：从强更页进入（APP-02c 已有标记：强更 below_min 时 Login 只能从强更页进入）。 */
     fun pageConfig(restricted: Boolean): LoginPageConfig {
         val expired = sessionExpiredPending
@@ -349,8 +370,8 @@ class AppLogin(
                     // login.help_entry：help_links.login_help 未配置时打开帮助中心首页（BR-TEXT-14 表 C）。TODO(N-26)：接 help_links.login_help
                     onHelp = { open(HELP_ROUTE) },
                     onAgreement = { type -> openAgreement(type, restricted) },
-                    // TODO(N-26)：客服入口（cs.open，/v1/config.kf）在客服任务实现；先打开帮助中心
-                    onCustomerService = { open(HELP_ROUTE) },
+                    // 统一客服出口（APP-12 brief §2.9，G20）：原样 kf.url，未装微信给复制客服链接与帮助中心
+                    onCustomerService = { customerService(RouteNames.LOGIN) },
                     onForceUpdate = { message ->
                         closeLogin()
                         if (message.isNotEmpty()) mutableNotice.value = LoginNotice.Message(message)
@@ -371,8 +392,8 @@ class AppLogin(
             actions =
                 BindPhonePageActions(
                     onBack = { closeRoute(RouteNames.BIND_PHONE) },
-                    // TODO(N-26)：客服入口（cs.open）在客服任务实现；先打开帮助中心（同 APP-05a）
-                    onCustomerService = { open(HELP_ROUTE) },
+                    // 统一客服出口（APP-12 brief §2.9，G20）
+                    onCustomerService = { customerService(RouteNames.BIND_PHONE) },
                     // 10007 stage=cooling：经 Router 打开可撤回的注销进度页（APP-05b 共性第 10 条）
                     onOpenRoute = ::open,
                 ),
@@ -519,6 +540,7 @@ class AppLogin(
     override fun loginCompleted(loginEpoch: Long) {
         // 拷贝一份再逐个结束：结束会就地恢复等待方（主线程 immediate），它的收尾会从列表里移除自己
         bridgeWaits.toList().forEach { it.result.complete(loginEpoch) }
+        onLoginCompleted(loginEpoch)
     }
 
     private fun onLoggedIn(outcome: LoginOutcome) {

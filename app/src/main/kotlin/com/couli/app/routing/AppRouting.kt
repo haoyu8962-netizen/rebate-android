@@ -116,6 +116,9 @@ class AppRouting
          */
         val session = MutableStateFlow(SessionState.GUEST)
 
+        /** 导航票据（APP-12 G09：10006 统一落点核对发起之后有没有再导航）。 */
+        val navTickets = NavTickets()
+
         /** 守卫的实名状态来源（APP-09 AppWallet 接上；没接时按未实名）。 */
         var realnameSource: () -> Boolean = { false }
 
@@ -341,11 +344,13 @@ class AppRouting
                 readonly: Boolean,
             ) {
                 trace()
+                navTickets.onNavigate()
                 navigator?.open(route, params, readonly)
             }
 
             override fun showUpgradePrompt(request: RouteRequest) {
                 trace()
+                navTickets.onNavigate()
                 navigator?.showUpgradePrompt(request)
             }
 

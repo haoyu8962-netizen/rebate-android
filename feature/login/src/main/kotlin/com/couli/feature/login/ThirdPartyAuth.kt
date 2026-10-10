@@ -1,5 +1,12 @@
 package com.couli.feature.login
 
+import com.couli.core.network.ApiCall
+import com.couli.core.network.ApiClient
+import com.couli.core.network.ApiResult
+import com.couli.core.network.CallOwnership
+import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.ResultSignals
+
 /** 第三方授权的结果种类。 */
 object ThirdPartyAuthKind {
     /** 拿到授权凭证。 */
@@ -137,4 +144,59 @@ class PhoneBindingState {
     fun treatAsUnbound(loginEpoch: Long): Boolean = synchronized(lock) { known[loginEpoch] != true }
 
     fun get(loginEpoch: Long): Boolean? = synchronized(lock) { known[loginEpoch] }
+}
+
+/**
+ * Me 读取（GET /v1/me）的会话级共享禁用期（APP-12 Android R2-05，共性第 32 条；brief §0「Me 读取一个截止时间」）：登录校验 phone_bound 的 getMe 与「我的」类
+ * 页面的 getMe 共用**同一个**截止时间（App 把「我的」的读取闸门交进来）。两条路径都在每次实际写出前（[CallOwnership.sendAllowed]）核对 [active]，收到 42901
+ * 都按 Retry-After（缺省或非法 5 秒）[start]；各自的请求归属不变。没有接「我的」（更早任务的单测）时是 [NONE]。
+ */
+interface MeReadLimit {
+    /** 此刻在禁用期内（任意线程可读）。 */
+    val active: Boolean
+
+    /** 收到 42901：按 Retry-After 启动 / 延长禁用期。 */
+    fun start(millis: Long)
+
+    companion object {
+        val NONE: MeReadLimit =
+            object : MeReadLimit {
+                override val active: Boolean get() = false
+
+                override fun start(millis: Long) = Unit
+            }
+
+        /**
+         * 登录侧的一次 getMe（OAuthLoginService / BindPhoneService 共用）：禁用期内不发（页面层 + 执行层两处），写出前每次核对同一截止时间；收到 42901 立即启动
+         * 共享禁用期。[stillOwned] 是调用方自己的请求归属（会话世代）。
+         */
+        suspend fun sendGetMe(
+            client: ApiClient,
+            limit: MeReadLimit,
+            stillOwned: () -> Boolean,
+        ): ApiResult {
+            if (limit.active) return ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED)
+            val owner = CallOwnership(client.inFlight.epochs(), sendAllowed = { !limit.active }, stillOwned = stillOwned)
+            val result = client.send(ApiCall(OAuthLoginService.GET_ME_OPERATION, ownership = owner))
+            settle(result, owner, client.inFlight::epochs, limit::start)
+            return result
+        }
+
+        /**
+         * getMe 的限流结算（Android R3-02，共性第 34 条）：只有 42901、且结算这一刻发起时的归属（[CallOwnership.stillOwned]：会话世代 / 发起页 / 桥调用）
+         * 与隐私、环境世代（[CallOwnership.epochs] 对 [epochsNow]）都没变，才写入共享截止时间；网络结果已返回、主线程结算之前换了账号、撤回同意、切了环境的
+         * 旧结果一律不改当前闸门（旧会话的 42901 不限流新会话）。返回是否写入。登录、「我的」之外的 getMe 路径（钱包实名查询、桥 auth.getUser）同样经它。
+         */
+        fun settle(
+            result: ApiResult,
+            owner: CallOwnership,
+            epochsNow: () -> com.couli.core.network.CallEpochs,
+            start: (Long) -> Unit,
+        ): Boolean {
+            val limited = result is ApiResult.Failure && result.code == ResultSignals.RATE_LIMITED
+            val live = limited && owner.stillOwned() && epochsNow() == owner.epochs
+            if (live) start(ResultSignals.disableMillis(result))
+            return live
+        }
+    }
 }

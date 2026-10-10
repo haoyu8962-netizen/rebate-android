@@ -18,10 +18,16 @@ import com.couli.app.clipboard.connectRules
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
+import com.couli.app.me.AndroidMeSystem
+import com.couli.app.me.AppMe
+import com.couli.app.me.variantNicknameBackend
+import com.couli.app.me.variantNotifyBackend
+import com.couli.app.me.variantPushTokenSource
 import com.couli.app.orders.AppOrders
 import com.couli.app.orders.connectCleanup
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
+import com.couli.app.routing.NavTickets
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
 import com.couli.app.search.AppSearch
@@ -54,6 +60,7 @@ import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.EnvironmentSwitchListener
 import com.couli.core.config.SharedPreferencesNamespaceCleaner
+import com.couli.core.me.MeLocalStore
 import com.couli.core.network.AndroidDeviceIdReader
 import com.couli.core.network.AndroidKeystoreCipher
 import com.couli.core.network.ApiClient
@@ -86,6 +93,7 @@ import com.couli.core.privacy.SharedPreferencesPrivacyStore
 import com.couli.core.privacy.permissionPreferences
 import com.couli.core.privacy.registerPlaceholderCredentialCleaners
 import com.couli.core.privacy.registerProductionInitSteps
+import com.couli.core.push.PushTokenSource
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
@@ -114,7 +122,7 @@ import kotlinx.coroutines.flow.StateFlow
 /** App 级依赖。 */
 @Module
 @InstallIn(SingletonComponent::class)
-@Suppress("TooManyFunctions") // Hilt 的 @Provides 逐项一个函数（APP-03a 加了网络核心的令牌、加密、在途请求登记）
+@Suppress("TooManyFunctions", "LargeClass") // Hilt 的 @Provides 逐项一个函数（APP-03a 加了网络核心的令牌、加密、在途请求登记）
 object AppModule {
     /**
      * 切换环境时的清理入口注册表（03 §3.6：会话、令牌、device_id、install_secret、LKG、页面缓存与 pending_action）。
@@ -172,6 +180,8 @@ object AppModule {
             register { _, _ -> orderRestoreStore(context).clearAll() }
             // 钱包摘要缓存（APP-09，G22）：同上
             register { _, _ -> walletCacheStore(context).clearAll() }
+            // 「我的」（APP-12，G29）：会话级数据（Me 快照、推送上报状态、客服半屏）；设备级偏好（couli_me_prefs）不清
+            register { _, _ -> meInstance?.onEnvironmentSwitched() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -241,6 +251,8 @@ object AppModule {
                     // 只看「待清理」标记，不在网络线程里重试清理（清理由主线程的 PrivacyGate 负责）
                     credentialsReadable = !privacy.credentialAccess.cleanupPending,
                     update = update.routerUpdate.toNetworkUpdate(),
+                    // 个性化推荐已关闭（APP-12 G03）：本机设备级偏好，网络层只在已同意时带 X-Personalization: off
+                    personalizationOff = meLocalStore(context).personalizationOffNow(),
                 )
             },
             device = device,
@@ -268,8 +280,13 @@ object AppModule {
                             orders.get().onSessionChanged()
                             // 钱包（APP-09）：会话换代即清掉已显示的余额、金额与已填内容，重置禁用期与 step-up token，按新会话重取
                             wallet.get().onSessionChanged()
+                            // 「我的」（APP-12）：按新会话重算身份（清 Me 快照、移出只能登录访问的页面、推送会话跟踪）
+                            meInstance?.syncIdentity()
                         }
                     },
+                    // 10006 的统一落点（APP-12 G09）：入口时的导航票据（AppRouting 建好之前没有，落点一律不放行）与切到主线程后的一处判断
+                    navigationTicket = { navTickets?.ticket() },
+                    onRiskNotice = { ticket, stillValid -> main.post { meInstance?.on10006(ticket, stillValid) } },
                 ),
             inFlight = inFlight,
             // debug / staging：Debug 专用的本机假登录服务（打开时整段在本机回答，不连任何地址）；release 是普通 OkHttpClient
@@ -330,6 +347,10 @@ object AppModule {
             register(AppOrders.ORDER_RESTORE_CLEANER) { orderRestoreStore(context).clearAll() }
             // 钱包摘要缓存（APP-09，G22；APP-03b 撤回清理名单）：删除要确认落盘，失败保留待清理标记、清理完成之前不读回旧数据
             register(AppWallet.WALLET_CACHE_CLEANER) { walletCacheStore(context).clearAll() }
+            // 「我的」的设备级偏好（APP-12 G03、G28、G29：引导条关闭时刻、个性化开关与切换时间）：删除确认落盘，失败记待清理并抛错
+            register(MeLocalStore.CLEANER) { meLocalStore(context).clearAll() }
+            // 「我的」的会话级数据（G18、G29：推送上报的在途与待报、Me 快照、客服半屏；草稿随页面执行器按新身份重建作废）
+            register(AppMe.ME_SESSION_CLEANER) { meInstance?.clearForConsentRevoked() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -342,6 +363,7 @@ object AppModule {
         credentialCleaners: CredentialCleanerRegistry,
         device: Provider<DeviceRegistry>,
         trade: Provider<AppTrade>,
+        push: Provider<PushTokenSource>,
     ): PrivacyGate =
         PrivacyGate(
             store = SharedPreferencesPrivacyStore(context),
@@ -351,7 +373,11 @@ object AppModule {
             retryScheduler = MainThreadRetryScheduler()
             withdrawalCleanup = { credentialCleaners.cleanAll() }
             // 设备注册（APP-03b）在后台执行，失败按已有退避重试
-            registerProductionInitSteps(union = { trade.get().initializeUnionSdk() }) { onResult -> device.get().registerAsync(onResult) }
+            registerProductionInitSteps(
+                union = { trade.get().initializeUnionSdk() },
+                // 推送（APP-12 G17）：只启动令牌来源（Release 为空操作，不初始化任何推送 SDK）
+                push = { push.get().start() },
+            ) { onResult -> device.get().registerAsync(onResult) }
             val main = Handler(Looper.getMainLooper())
             // 10402 后重新注册失败（凭据已丢）：回到主线程从第 1 次开始按退避重新注册
             device.get().onCredentialsLost = { main.post { restartDeviceRegistration() } }
@@ -560,6 +586,8 @@ object AppModule {
                 ),
             initialUpdate = update.routerUpdate,
         ).also { routing ->
+            // 导航票据（APP-12 G09）：网络层的入口取票据经它
+            navTickets = routing.navTickets
             // 目标网页白名单（APP-04）：external_hosts 与可信 H5 源取生效配置（current → LKG → 包内）
             routing.webTargets = {
                 val data = config.store.snapshots.value.data
@@ -676,6 +704,67 @@ object AppModule {
             orders.connectCleanup(privacy, cleaners)
         }
 
+    /** 推送令牌来源（APP-12 G17）：Release 恒为无令牌；debug / staging 在假服务接管时给测试令牌。 */
+    @Provides
+    @Singleton
+    fun pushTokenSource(
+        @ApplicationContext context: Context,
+    ): PushTokenSource = variantPushTokenSource(context)
+
+    /**
+     * 「我的」、设置、隐私中心、关于、封禁说明、申诉、推送上报与统一客服出口（APP-12）：读写经 ApiClient（带页面归属、身份与 expectedAccount）；邀请码、客服链接、
+     * 诊断信息复制经剪贴板唯一写入口（APP-07）；10405 进已有强更分流；本机偏好 couli_me_prefs（撤回清理名单）；改昵称、通知设置的待定 operation 只在 debug /
+     * staging 由进程内假服务实现（G01、G02），release 为空。各处「联系客服」改接统一客服出口。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 各能力的来源逐项注入
+    fun appMe(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        tokens: SessionTokens,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+        update: AppUpdate,
+        config: AppConfig,
+        login: AppLogin,
+        clipboard: AppClipboard,
+        mask: AmountMaskStore,
+        permissions: AndroidPermissionRequester,
+        device: DeviceRegistry,
+        images: AppProductImages,
+        trade: AppTrade,
+        wallet: AppWallet,
+        orders: AppOrders,
+        push: PushTokenSource,
+    ): AppMe =
+        AppMe(
+            client = client,
+            tokens = tokens,
+            routing = routing,
+            privacy = privacy,
+            store = config.store,
+            login = { login },
+            updateCheck = { update.routerUpdate },
+            serverForced = { update.onServerForced() },
+            writer = { text -> clipboard.writer.write(text) },
+            local = meLocalStore(context),
+            mask = mask,
+            system = AndroidMeSystem(context, permissions, device, images),
+            pushSource = push,
+            nickname = variantNicknameBackend(context),
+            notify = variantNotifyBackend(context),
+            tipsReset = { trade.tips.invalidate() },
+        ).also { me ->
+            me.connect { listener -> update.onRouterUpdate(listener) }
+            // 各处「联系客服」改接统一客服出口（brief §2.9）
+            login.customerService = me.cs::open
+            trade.customerService = me.cs::open
+            wallet.customerService = me.cs::open
+            orders.customerService = me.cs::open
+            meInstance = me
+        }
+
     /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
     @Provides
     @Singleton
@@ -702,6 +791,7 @@ object AppModule {
         mask: AmountMaskStore,
         tracker: Provider<TrackerQueue>,
         update: Provider<AppUpdate>,
+        login: Provider<AppLogin>,
     ): AppWallet =
         AppWallet(
             api = ApiClientWalletApi(client),
@@ -718,6 +808,8 @@ object AppModule {
             stepUpPhone = variantStepUpPhone(context),
             track = { event -> tracker.get().track(event) },
             onOverlay = clipboard::onSensitiveOverlay,
+            // 实名查询的 getMe 与登录校验、「我的」、桥 auth.getUser 共用一份 Me 读取截止时间（APP-12 Android R3-01）
+            meRead = { login.get().meReadGate },
         ).also { wallet -> wallet.connectSession() }
 
     /**
@@ -835,6 +927,14 @@ object AppModule {
      */
     private const val BUNDLED_PRIVACY_POLICY_VERSION = "1"
 
+    /** 已构造的 AppMe（网络层的会话通知、10006 落点、清理入口在它建好之前不取它，避免 Dagger 循环依赖）。 */
+    @Volatile
+    private var meInstance: AppMe? = null
+
+    /** AppRouting 的导航票据（网络层每个调用入口取一次，APP-12 G09）。 */
+    @Volatile
+    private var navTickets: NavTickets? = null
+
     /** AppLogin 已构造完成（剪贴板浮层来源在此之前不取它，见 appClipboard）。 */
     @Volatile
     private var loginBuilt = false
@@ -864,6 +964,14 @@ private object TrackerQueueFile {
 
     /** 按绝对路径各一份（生产只有一个 filesDir；单测每个用例的 filesDir 不同）。 */
     val instances = mutableMapOf<String, AtomicTextFile>()
+}
+
+/** 「我的」的设备级本机偏好（APP-12）：进程内一份（网络层、隐私中心、撤回清理共用）。 */
+internal fun meLocalStore(context: Context): MeLocalStore =
+    synchronized(MeLocalStores) { MeLocalStores.instance ?: MeLocalStore(context).also { MeLocalStores.instance = it } }
+
+private object MeLocalStores {
+    var instance: MeLocalStore? = null
 }
 
 /** 订单缓存（APP-08，G10）：noBackupFilesDir 下按账号分目录；订单页与两个清理入口共用同一个实例（同步、互斥）。 */

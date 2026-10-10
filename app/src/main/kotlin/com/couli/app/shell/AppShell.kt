@@ -31,6 +31,10 @@ import com.couli.app.login.BindPhoneRoute
 import com.couli.app.login.LoginNoticeHost
 import com.couli.app.login.LoginRoute
 import com.couli.app.login.SettingsRoute
+import com.couli.app.me.AppMe
+import com.couli.app.me.MeOverlayHost
+import com.couli.app.me.MeTabRoute
+import com.couli.app.me.meRoutePages
 import com.couli.app.orders.AppOrders
 import com.couli.app.orders.OrderDetailRoute
 import com.couli.app.orders.OrderListRoute
@@ -102,6 +106,8 @@ import kotlinx.serialization.json.jsonObject
  * @param clipboard 剪贴板识别（APP-07）：首页提示条与粘贴卡、设置页开关、parse 结果；外壳把「当前前台界面」（回退栈栈顶、选中的 Tab、
  *   基本模式页）同步告诉它。为 null 时都不显示（只测外壳的单测）。
  * @param orders 订单（APP-08）：订单 Tab 根（OrderList）与 OrderDetail；为 null 时是占位页（只测外壳的单测）。
+ * @param me 「我的」、设置、隐私中心、关于、封禁说明、申诉与统一客服出口（APP-12）。为 null 时（只测外壳与更早任务的单测）保留更早任务的占位：
+ *   「我的」入口行、设置页的退出登录与剪贴板开关、隐私中心占位页。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 外壳按可选接线（强更、桥、登录）逐项组合
@@ -117,6 +123,7 @@ fun AppShell(
     clipboard: AppClipboard? = null,
     orders: AppOrders? = null,
     wallet: AppWallet? = null,
+    me: AppMe? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -127,7 +134,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search, clipboard, orders, wallet) {
+        remember(homeContent, update, web, login, search, clipboard, orders, wallet, me) {
             RoutePageRegistry(
                 mapOf<String, @Composable (RouteDestination) -> Unit>(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -148,7 +155,7 @@ fun AppShell(
                     RouteNames.BIND_PHONE to { page ->
                         login?.let { BindPhoneRoute(it) } ?: PlaceholderRoutePage(page)
                     },
-                    // 设置页占位：APP-05a 只放【退出登录】（SettingsLogoutConfirm）
+                    // 设置页：接了「我的」（APP-12）时由下面的 meRoutePages 替换；没接时（只测外壳与更早任务的单测）保留 APP-05a 的退出登录与 APP-07 的剪贴板开关
                     SETTINGS_ROUTE to { page ->
                         login?.let {
                             SettingsRoute(it, routing, onBack = { navController.popBackStack() }) {
@@ -174,24 +181,41 @@ fun AppShell(
                     AUTH_MANAGE_ROUTE to { page ->
                         search?.trade?.let { AuthManageRoute(it, search) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
-                    // 隐私中心占位（TODO(APP-12)）：强更状态下只可能从强更页进入，带强更状态标记（R1-05）
+                    // 隐私中心：接了「我的」（APP-12）时由下面的 meRoutePages 替换（强更受限上下文只给协议、清单与撤回）；没接时保留占位与强更标记（R1-05）
                     PRIVACY_CENTER_ROUTE to { page ->
                         PlaceholderRoutePage(page, fromForceUpdate = routing.update.value == UpdateCheck.BELOW_MIN)
                     },
                 ) + h5RoutePages(web, routing) { navController.popBackStack() } +
                     // 钱包、提现、提现记录、收款账号、实名、劳务协议（APP-09）；没有接线（只测外壳的单测）时是占位页
-                    walletRoutePages(wallet) { navController.popBackStack() },
+                    walletRoutePages(wallet) { navController.popBackStack() } +
+                    // 设置、隐私中心、关于、封禁说明、申诉（APP-12）：接线后替换更早任务的占位
+                    (
+                        if (me != null) {
+                            meRoutePages(
+                                me,
+                                { navController.popBackStack() },
+                                clipboard?.let { board ->
+                                    { ClipboardSettingsSlot(board, privacy) }
+                                },
+                            )
+                        } else {
+                            emptyMap()
+                        }
+                    ),
             )
         }
     val hooks =
-        remember(privacy, login, search, clipboard, orders, wallet) {
+        remember(privacy, login, search, clipboard, orders, wallet, me) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly ->
                     ShellTab.ofRoute(route)?.let {
+                        routing.navTickets.onTab(it.route)
                         // 剪贴板（APP-07，A-R1-03）：在提交 Tab 切换的同步出口先告知剪贴板（作废首页提示条与首页发起的 parse），再改选中项；
                         // 不等下一次重组的 SideEffect
                         clipboard?.onShell(it.route, privacy.conclusion == PrivacyState.BASIC_MODE)
+                        // 「我的」（APP-12 R2-01）：同一同步出口先撤销「我的」这一次进入的读取许可与在途 getMe，再改选中项
+                        me?.onTab(it.route)
                         selection = TabSelection(it, readonly)
                     }
                 },
@@ -207,6 +231,8 @@ fun AppShell(
                     orders?.followBackStack(entries)
                     // 钱包类页面出栈的同步出口：立即作废其读请求（APP-09；提交、确认、放弃不取消，未决记录兜底）
                     wallet?.followBackStack(entries)
+                    // 「我的」类页面出栈的同步出口：立即作废读请求（APP-12）；导航票据的栈顶（10006 落点，G09）
+                    me?.followBackStack(entries)
                     // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
                     clipboard?.let { followClipboard(it, entries) }
                 },
@@ -246,6 +272,15 @@ fun AppShell(
             }
         onDispose { unsubscribe() }
     }
+
+    // 「我的」（APP-12）：10006 落点、退出后的落点、只能登录访问的页面在会话换代时出栈，都经这个 NavController；导航票据的选中 Tab
+    if (me != null) {
+        DisposableEffect(me, navController) {
+            me.attach(navController)
+            onDispose { me.detach(navController) }
+        }
+    }
+    SideEffect { routing.navTickets.onTab(selection.tab.route) }
 
     // 钱包（APP-09）：提交成功替换栈顶、收款账号保存后出栈都经这个 NavController
     if (wallet != null) {
@@ -288,6 +323,7 @@ fun AppShell(
                             onEnableFullFunction = { privacy.requestFullFunction() },
                             clipboard = clipboard,
                             wallet = wallet,
+                            me = me,
                         )
                     },
                 )
@@ -309,6 +345,8 @@ fun AppShell(
     if (login != null && !showPrompt) LoginNoticeHost(login) { routing.router.open(inAppRequest(ME_ROUTE)) }
     // 剪贴板 parse / 手动粘贴的结果（轻提示、30132【用商品名搜索】、多卡弹层）：只在发起页仍是当前页时显示
     if (clipboard != null && !showPrompt) ClipboardResultHost(clipboard)
+    // 统一客服出口的半屏、撤回同意落盘失败的提示（APP-12）
+    if (me != null && !showPrompt) MeOverlayHost(me)
     if (showPrompt) {
         PrivacyPromptDialog(
             stage = privacyState.promptStage,
@@ -402,6 +440,7 @@ private fun TabRoot(
     onEnableFullFunction: () -> Unit,
     clipboard: AppClipboard?,
     wallet: AppWallet?,
+    me: AppMe?,
 ) {
     val destination = RouteDestination(tab.route, EMPTY_PARAMS, readonly = readonly)
     if (tab == ShellTab.HOME && basicMode) {
@@ -417,8 +456,11 @@ private fun TabRoot(
             onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
             header = { clipboard?.let { HomeClipboardArea(it) } },
         ) { registry.Render(destination) }
+    } else if (tab == ShellTab.ME && me != null) {
+        // 「我的」页正文（APP-12）：身份卡、余额卡、宫格（授权管理、设置、钱包都在宫格里）
+        MeTabRoute(me)
     } else if (tab == ShellTab.ME) {
-        // 「我的」Tab 顶部的账号入口：授权管理（A-R1-14）、设置；「我的」页正文在后续任务（占位）
+        // 没有接「我的」（只测外壳与更早任务的单测）：保留更早任务的入口行（授权管理 A-R1-14、设置、钱包冒烟入口）
         MeWithEntries(
             onAuthManage = { openAuthManage(routing) },
             onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },

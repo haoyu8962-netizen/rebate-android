@@ -51,7 +51,10 @@ internal class DebugFakeLoginServer(
     /** 钱包、提现、收款账号、二次验证与作废（APP-09，[DebugFakeWallet]，进程内唯一）；状态开关文件与开关文件同目录。 */
     private val wallet = DebugFakeWallet.of(File(switch.parentFile, FAKE_WALLET_STATE_FILE)).also { it.switchOn = { switch.exists() } }
 
-    @Suppress("ReturnCount") // 开关关着、商品图、其余三个出口
+    /** 「我的」、申诉、配置与推送上报（APP-12，[DebugFakeMe]，进程内唯一）；状态开关文件与开关文件同目录。 */
+    private val me = DebugFakeMe.of(File(switch.parentFile, FAKE_ME_STATE_FILE)).also { it.switchOn = { switch.exists() } }
+
+    @Suppress("ReturnCount", "CyclomaticComplexMethod") // 开关关着、商品图、其余三个出口；各假服务逐个应答
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (!switch.exists()) return chain.proceed(request)
@@ -74,8 +77,11 @@ internal class DebugFakeLoginServer(
             } ?: JsonObject(emptyMap())
         // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
         val loggedIn = request.header("Authorization") != null
+        val path = request.url.encodedPath
         val (code, data, headers) =
-            wallet.answer(request.method, request.url.encodedPath, request.url.encodedQuery, body, request.headers.toMap())
+            (if (me.blocks(path)) Triple(BANNED, "null", emptyMap()) else null)
+                ?: me.answer(request.method, path, body, wallet.realnameStatus(), phoneBound)
+                ?: wallet.answer(request.method, request.url.encodedPath, request.url.encodedQuery, body, request.headers.toMap())
                 ?: orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
                 ?: trade.answer(
                     request.method,
@@ -254,6 +260,7 @@ internal class DebugFakeLoginServer(
         const val HTTP_TOO_MANY = 429
         const val HTTP_UNAUTHORIZED = 401
         const val LOGIN_REQUIRED = 10001
+        const val BANNED = 10006
     }
 }
 

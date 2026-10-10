@@ -30,8 +30,10 @@ import com.couli.core.wallet.StepUpTokenCache
 import com.couli.core.wallet.WalletError
 import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletGates
+import com.couli.core.wallet.WalletRateGate
 import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletStaleCache
+import com.couli.feature.login.MeReadLimit
 import com.couli.feature.wallet.LaborAgreementScreen
 import com.couli.feature.wallet.LaborBackend
 import com.couli.feature.wallet.Notice
@@ -91,9 +93,25 @@ class AppWallet(
     private val track: (ClientEvent) -> Unit = {},
     private val onOverlay: () -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * Me 读取（GET /v1/me）的全局唯一截止时间（APP-12 Android R3-01，共性第 33 条；AppModule 接 AppLogin.meReadGate）：实名查询发的也是 getMe，
+     * 与登录校验、「我的」、桥 auth.getUser 共用这一份——每次实际写出前核对、收到 42901 按 Retry-After 写入，双向生效。没有接（更早任务的单测）时为 null。
+     */
+    private val meRead: () -> WalletRateGate? = { null },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val gates = WalletGates(scope, clock)
+
+    /** 共享 Me 读取截止时间（页面置灰【重试】用）。 */
+    internal fun meReadGate(): WalletRateGate? = meRead()
+
+    /** 实名查询的【重试】是否被禁用期挡住（钱包读取闸门或共享 Me 读取截止时间，R3-01）。 */
+    private fun realnameBlocked(): Boolean = gates.read.active || meRead()?.active == true
+
+    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
+    var customerService: (
+        fromRoute: String,
+    ) -> Unit = { routing.router.open(RouteRequest(HELP, JsonObject(emptyMap()), RouteSource.IN_APP)) }
     val tokens = StepUpTokenCache()
     private var navController: NavController? = null
 
@@ -142,6 +160,8 @@ class AppWallet(
             override fun copy(text: String): Boolean = writer(text)
 
             override fun forceUpdate() = this@AppWallet.forceUpdate()
+
+            override fun contactService(fromRoute: String) = customerService(fromRoute)
 
             override fun stepUpPhone(account: String): String? = this@AppWallet.stepUpPhone(account)
 
@@ -287,8 +307,13 @@ class AppWallet(
         realnameOwner?.let(api::cancelOwned)
         // 本次查询的发送前限流闸门（共性第 62 条）：被它拦下时记下原因，回调按原因结算
         val probe = gates.read.probe()
+        // 实名查询是 getMe：另受共享 Me 读取截止时间约束（R3-01），每次实际写出前两份都核对；请求归属仍是本次查询
+        val meGate = meRead()
+        val meProbe = meGate?.probe()
         val owner =
-            CallOwnership(api.epochs(), sendAllowed = probe::allowed) { realnameSeq == request && sessionEpoch() == epoch }
+            CallOwnership(api.epochs(), sendAllowed = { probe.allowed() && meProbe?.allowed() != false }) {
+                realnameSeq == request && sessionEpoch() == epoch
+            }
         realnameOwner = owner
         scope.launch {
             val result =
@@ -310,12 +335,14 @@ class AppWallet(
             // 读取错误统一处理（共性第 3 条）：42901 更新共享截止时间、10405 进强更；5xxxx 带 trace6 显示在发起页并可重试，不当成未实名继续导航
             val error = WalletErrors.of(result)
             if (error.kind == WalletError.RETRY_AFTER) gates.read.start(error.disableMillis)
+            // 共享 Me 读取截止时间：结算这一刻复核发起时的归属与隐私、环境世代，失效结果不改它（R3-02）
+            if (meGate != null) MeReadLimit.settle(result, owner, api::epochs, meGate::start)
             if (error.kind == WalletError.FORCE_UPDATE) forceUpdate()
             val origin = intent?.origin ?: return@launch
             // 仍属当前点击、被共享 read 闸门在发送前拦下（共性第 56 条，Android R3-06）：同样在发起页给 42901 与受限流控制的【重试】；
             // 其余作废（真正失效的旧请求在上面已丢弃）静默
             // 按本请求记下的拒绝原因（共性第 62 条，Android RC-04），不看回调时刻的禁用期（拒绝之后可能已到期）
-            val gated = probe.gated(error)
+            val gated = probe.gated(error) || meProbe?.gated(error) == true
             val silent = (error.kind == WalletError.CANCELLED && !gated) || error.kind == WalletError.FORCE_UPDATE
             if (silent || !stillOnOrigin(intent)) return@launch
             val notice =
@@ -328,8 +355,8 @@ class AppWallet(
         origin: String,
         intent: OpenIntent,
     ) {
-        // 【重试】受共享 read 禁用期控制（页面上置灰，执行层也拦）
-        if (gates.read.active) return
+        // 【重试】受共享 read 禁用期与共享 Me 读取截止时间控制（页面上置灰，执行层也拦）
+        if (realnameBlocked()) return
         openErrors.value -= origin
         if (navController?.currentBackStackEntry?.id != origin) return
         open(intent.route, intent.params)
@@ -442,6 +469,7 @@ class AppWallet(
 
     companion object {
         private const val GET_ME = "getMe"
+        private const val HELP = "Help"
         private const val VERIFIED = "verified"
         private const val AUTH_REALNAME = "realname"
         const val CACHE_DIR = "couli_wallet"
@@ -478,10 +506,12 @@ fun WalletRoute(
         if (error != null && entryId != null) {
             val readBlocked by wallet.gates.read.blocked
                 .collectAsState()
+            val meBlocked by (wallet.meReadGate()?.blocked ?: kotlinx.coroutines.flow.MutableStateFlow(false))
+                .collectAsState()
             OpenErrorBar(
                 notice = error.notice,
                 texts = config.deps.texts,
-                retryEnabled = !readBlocked,
+                retryEnabled = !readBlocked && !meBlocked,
                 onRetry = error.retry,
                 onDismiss = { wallet.dismissOpenError(entryId) },
             )

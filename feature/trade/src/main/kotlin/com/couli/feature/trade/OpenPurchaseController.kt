@@ -148,7 +148,11 @@ data class PurchaseState(
 )
 
 /** 购买流程要的页面环境（App 给）。 */
+@Suppress("TooManyFunctions") // 每项能力一个入口（APP-12 加了统一客服出口）
 interface PurchaseEnv {
+    /** 【联系客服】：统一客服出口（APP-12 brief §2.9；App 接 AppMe）。没接时经 Router 打开帮助中心。 */
+    fun contactService() = open(OpenPurchaseController.HELP_ROUTE, JsonObject(emptyMap()))
+
     /** 有登录会话（游客 open 返回 10001）。 */
     fun loggedIn(): Boolean
 
@@ -1380,10 +1384,10 @@ class OpenPurchaseController(
         startClick(target, keys.start(), noRebate = true, noRebateReason = reason, userAuthRetry = false)
     }
 
-    /** 【联系客服】：统一客服出口未接入前经 Router 打开帮助中心（TODO(N-28)）。 */
+    /** 【联系客服】：统一客服出口（APP-12 brief §2.9，G20）。 */
     fun contactService() {
         hideDialog()
-        env.open(HELP_ROUTE, JsonObject(emptyMap()))
+        env.contactService()
     }
 
     /**

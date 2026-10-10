@@ -505,7 +505,7 @@ private fun ErrorRow(
 /**
  * 设置页「打开 App 自动识别剪贴板」一行（Settings / SettingsGuest；只 Android）：标题 17、副标题 12，右侧开关；读屏为开关角色，名称为标题、
  * 说明为副标题。设备级、默认开启；已同意隐私政策的游客也显示，基本模式与撤回同意后不显示（由调用方按隐私结论决定是否组合本行）。
- * TODO(APP-09)：设置整页（分组、其余设置项）在设置任务里实现，这里只把这一行挂到现有设置页上。
+ * APP-12：这一行原样挂进正式设置页的「通用」组（存储与键不变，基本模式不显示）。
  */
 @Composable
 fun ClipboardSettingsRow(clipboard: AppClipboard) {

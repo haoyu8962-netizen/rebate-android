@@ -29,6 +29,7 @@ enum class ConsentEvent {
  * 2. [onConclusionChanged]：隐私结论变化（AppModule 接到 AppRouting.privacy：Router.onPrivacyChanged、重排恢复）；
  * 3. [onConsentEvent]：明确的【同意】/【仍不同意】（AppModule 接到 AppRouting.onConsentCompleted / onConsentDeclined）。
  */
+@Suppress("TooManyFunctions") // 闸门的每个动作一个入口
 class AppPrivacy(
     private val gate: PrivacyGate,
     private val environmentSettled: () -> Boolean,
@@ -94,6 +95,9 @@ class AppPrivacy(
      * R1-01），错误继续抛给调用方。
      */
     fun withdraw() = update { gate.withdraw(clock()) }
+
+    /** 本机已同意的隐私政策版本（APP-12 撤回记录的 version）；没有为 null。 */
+    fun consentedVersion(): String? = gate.consentedVersion()
 
     /** 会话层读凭据前调 [CredentialAccessGuard.readable]（R1-01）：撤回清理未完成时先重试，仍未完成返回 false（当作没有凭据）。 */
     val credentialAccess: CredentialAccessGuard get() = gate.credentialAccess

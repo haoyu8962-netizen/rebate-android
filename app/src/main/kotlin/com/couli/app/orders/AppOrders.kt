@@ -97,6 +97,11 @@ class AppOrders(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
+    var customerService: (
+        fromRoute: String,
+    ) -> Unit = { routing.router.open(RouteRequest(HELP_ROUTE, JsonObject(emptyMap()), RouteSource.IN_APP)) }
+
     /** 订单 Tab 根（只有一份；ViewModel 建好后交过来）。 */
     private var list: OrderListHandle? = null
 
@@ -142,6 +147,8 @@ class AppOrders(
             }
 
             override fun forceUpdate() = this@AppOrders.forceUpdate()
+
+            override fun contactService() = customerService(ORDER_DETAIL)
 
             override fun onDetailLoaded(detail: OrderDetail) {
                 list?.patch(detail)
@@ -396,6 +403,8 @@ class AppOrders(
         private const val ORDER_ID = "order_id"
         private const val HELP_LINKS = "help_links"
         private const val FIND_ORDER = "FindOrder"
+        private const val HELP_ROUTE = "Help"
+        private const val ORDER_DETAIL = "OrderDetail"
         private const val NOTIFICATION_RUNTIME_SDK = 33
         private const val UPDATE_WAIT_MILLIS = 5_000L
         const val CACHE_DIR = "couli_orders"

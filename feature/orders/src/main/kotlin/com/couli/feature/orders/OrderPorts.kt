@@ -14,6 +14,8 @@ import kotlinx.serialization.json.JsonObject
 /**
  * 订单页要的环境（App 给；都在主线程调用）。请求归属绑定 [sessionEpoch]（登录、退出、换账号都会变）；缓存按 [account] 隔离。
  */
+private const val HELP_ROUTE = "Help"
+
 interface OrderEnv {
     /** 有登录会话（订单页 auth=login，游客不发请求）。 */
     fun loggedIn(): Boolean
@@ -38,6 +40,9 @@ interface OrderEnv {
 
     /** 10405：强制进入已有的强更分流。 */
     fun forceUpdate()
+
+    /** 【联系客服】（reason.action CONTACT_CS）：统一客服出口（APP-12 brief §2.9；App 接 AppMe）。没接时经 Router 打开帮助中心。 */
+    fun contactService() = open(HELP_ROUTE, JsonObject(emptyMap()))
 
     /** 详情请求成功（G17：回到列表时只替换那一行）。 */
     fun onDetailLoaded(detail: OrderDetail) = Unit

@@ -46,14 +46,13 @@ fun AuthManageRoute(
                 controller = { scope -> trade.authManageController(scope) },
                 texts = trade.texts,
                 onBack = onBack,
-                onContact = { trade.open(HELP_ROUTE, JsonObject(emptyMap())) },
+                // 统一客服出口（APP-12 brief §2.9，G20）
+                onContact = { trade.customerService(AUTH_MANAGE_ROUTE_NAME) },
                 bindLeave = { leave -> search.bindPageLeave(entryId, leave) },
             )
         }
     AuthManageScreen(config)
 }
-
-private const val HELP_ROUTE = "Help"
 
 /** 「我的」与设置里的授权管理入口（R1-14 测试与冒烟用）。 */
 const val AUTH_MANAGE_ENTRY_TAG = "auth_manage_entry"

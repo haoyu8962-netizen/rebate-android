@@ -223,6 +223,12 @@ class ApiClient(
         val deadlineNanos: Long? = null,
         /** 调用方自带的归属对象（在途 Call 的标记、登录保存会话的同步区，APP-05a 共性第 1 条）；没有为 null。 */
         val ownership: CallOwnership? = null,
+        /**
+         * 逻辑调用入口时的导航票据（APP-12 G09，鸿蒙 R1-08 / R2-03 / R3-01 的 Android 对应）：[NetworkHooks.navigationTicket] 在每个逻辑调用入口
+         * （[send] 在调用方线程、[execute]、[confirmPending]、[abandonPending]）同步取一次；重放、刷新后的续发沿用。10006 的统一落点据此判断发起之后
+         * 用户有没有再导航。取不到为 null（App 一律不放行）。
+         */
+        val ticket: Any? = null,
     ) {
         /** 调用方自带的归属已失效：调用方核对为 false，或截止时间已到（R2-01）。 */
         fun disowned(): Boolean = deadlineNanos?.let { System.nanoTime() - it >= 0 } == true || stillOwned?.invoke() == false
@@ -308,14 +314,32 @@ class ApiClient(
             forceUpdateNow = { context().update == UpdateRaw.BELOW },
         )
 
-    suspend fun send(call: ApiCall): ApiResult = withContext(Dispatchers.IO) { execute(call) }
+    suspend fun send(call: ApiCall): ApiResult {
+        // 导航票据在调用方线程（主线程）同步取，早于切到 IO（APP-12 G09）
+        val ticket = navigationTicket()
+        return withContext(Dispatchers.IO) { execute(call, ticket) }
+    }
 
     /** 阻塞执行一次调用。 */
-    fun execute(call: ApiCall): ApiResult {
+    fun execute(call: ApiCall): ApiResult = execute(call, navigationTicket())
+
+    private fun execute(
+        call: ApiCall,
+        ticket: Any?,
+    ): ApiResult {
         val operation = requireNotNull(ApiOperations.byId(call.operationId)) { "未知 operationId：${call.operationId}" }
         // 点击时固定的账号（共性第 39 条）：会话已换成别的账号的，不读凭据、不登记未决记录、不发送
-        return runLogical(call, operation, RunOptions(pendingAccount = call.expectedAccount), newId())
+        return runLogical(call, operation, RunOptions(pendingAccount = call.expectedAccount), newId(), ticket)
     }
+
+    /** 当前导航票据（钩子出错按取不到）。 */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
+    private fun navigationTicket(): Any? =
+        try {
+            hooks.navigationTicket()
+        } catch (error: Exception) {
+            null
+        }
 
     /** 撤回同意（清理的第一步）：作废并取消全部在途请求，之后的内部续发不再发出（A-R2-01）。 */
     fun onPrivacyRevoked() = inFlight.onPrivacyRevoked()
@@ -465,6 +489,7 @@ class ApiClient(
         stepUpToken: String? = null,
         target: PendingTarget? = null,
     ): ApiResult {
+        val ticket = navigationTicket()
         val record =
             when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
@@ -488,7 +513,7 @@ class ApiClient(
                 ownership = target?.ownership,
             )
         try {
-            return runLogical(call, operation, RunOptions(pendingAccount = record.account), holder)
+            return runLogical(call, operation, RunOptions(pendingAccount = record.account), holder, ticket)
         } finally {
             // 没拿到结果就结束的（本地拒绝、会话结束、账号不符等）：在途占用退回待确认；已由响应结算的不动（R1-13、lessons 18）
             pendingKeys.release(record.key, holder)
@@ -505,6 +530,7 @@ class ApiClient(
         operationId: String,
         target: PendingTarget? = null,
     ): ApiResult {
+        val ticket = navigationTicket()
         val record =
             when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
@@ -524,7 +550,8 @@ class ApiClient(
         val result =
             try {
                 val options = RunOptions(abandonFor = original, pendingAccount = record.account)
-                runLogical(ApiCall(ABANDON, body = body, ownership = target?.ownership), abandon, options, newId()).also { outcome ->
+                val call = ApiCall(ABANDON, body = body, ownership = target?.ownership)
+                runLogical(call, abandon, options, newId(), ticket).also { outcome ->
                     pendingKeys.onResponse(record.key, abandonOutcome(outcome), holder)
                 }
             } finally {
@@ -595,8 +622,9 @@ class ApiClient(
         operation: ApiOperation,
         options: RunOptions,
         holder: String,
+        ticket: Any?,
     ): ApiResult {
-        val logical = Logical(owner(context(), call.ownership), holder)
+        val logical = Logical(owner(context(), call.ownership, ticket), holder)
         try {
             return attempts(call, operation, options, logical)
         } finally {
@@ -883,6 +911,12 @@ class ApiClient(
             }
         }
         hooks.onEffect(effect)
+        // 10006 的统一落点（APP-12 G09）：只交付仍有效的调用（归属没失效、隐私 / 环境世代没变；会话类 Effect 失效时已被换成通用错误、没有 route），
+        // 带上入口时的导航票据，由 App 一处判断能否替换到 RiskNotice
+        if (stale == null && effect.kind == ErrorEffectKind.NAVIGATE && effect.route == RISK_NOTICE_ROUTE) {
+            val owner = logical.owner
+            hooks.onRiskNotice?.invoke(owner.ticket) { !owner.disowned() && inFlight.epochs() == owner.epochs }
+        }
         return effect
     }
 
@@ -936,6 +970,7 @@ class ApiClient(
     private fun owner(
         state: NetworkContext,
         ownership: CallOwnership?,
+        ticket: Any? = null,
     ): CallOwner {
         val epochs = ownership?.epochs ?: inFlight.epochs()
         val read = rawRead(state)
@@ -946,7 +981,7 @@ class ApiClient(
                 is RawRead.Present -> read.snapshot.generation
                 is RawRead.Unreadable -> read.generation
             }
-        return CallOwner(epochs, generation, live(read), ownership?.stillOwned, ownership?.deadlineNanos, ownership)
+        return CallOwner(epochs, generation, live(read), ownership?.stillOwned, ownership?.deadlineNanos, ownership, ticket)
     }
 
     /**
@@ -1188,6 +1223,12 @@ class ApiClient(
         key?.let { headers[HeaderNames.IDEMPOTENCY_KEY] = it }
         if (readable && operation.stepUp != null) call.stepUpToken?.let { headers[HeaderNames.STEP_UP_TOKEN] = it }
         if (operation.isRead) call.ifNoneMatch?.let { headers[HeaderNames.IF_NONE_MATCH] = it }
+        // 个性化推荐已关闭（APP-12 G03）：只在已同意隐私政策时带；基本模式、尚未决定不带（brief §2.5）
+        if (state.privacy == PrivacyRaw.FULL &&
+            state.personalizationOff
+        ) {
+            headers[HeaderNames.PERSONALIZATION] = HeaderNames.PERSONALIZATION_OFF
+        }
         if (decision.includeSignature) {
             val secret = device.installSecret?.takeIf { readable } ?: return Prepared.Rejected(LocalRejectReason.DEVICE_NOT_READY)
             headers +=
@@ -2056,6 +2097,7 @@ class ApiClient(
     companion object {
         private const val REFRESH = "refreshToken"
         private const val ABANDON = "abandonIdempotencyKey"
+        private const val RISK_NOTICE_ROUTE = "RiskNotice"
         private const val REGISTER_DEVICE = "registerDevice"
         private const val HTTP_NOT_MODIFIED = 304
         private const val LOGIN = "Login"

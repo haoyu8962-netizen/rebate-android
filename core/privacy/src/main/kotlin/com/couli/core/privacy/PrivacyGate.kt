@@ -166,6 +166,9 @@ class PrivacyGate(
     fun state(now: Long = clock()): PrivacyGateState =
         PrivacyGateState(decision = store.effectiveDecision(), mustPrompt = stage != PromptStage.NONE, promptStage = stage)
 
+    /** 本机已同意的隐私政策版本（十进制整数串；撤回记录的 version，APP-12 G24 / H12）；没有同意记录为 null。只读。 */
+    fun consentedVersion(): String? = store.consentedVersion
+
     /** 冷启动：按本地记录与包内版本决定是否弹首启弹窗。 */
     @Suppress("UnusedParameter")
     fun coldStart(now: Long = clock()) {
@@ -219,7 +222,7 @@ class PrivacyGate(
      * 每次读凭据前（[CredentialAccessGuard.readable]）、每次初始化前（[onConsented]）重试清理，直到成功；
      * 完成前 [CredentialAccessGuard.readable] 为 false、[onConsented] 不初始化。
      * 隐私决定照样记为基本模式（基本模式不带任何凭据、不初始化 SDK，比留在已同意更保守）；清理失败的错误抛给调用方。
-     * TODO(APP-12): 服务端撤回（写设备级 accepted=false 记录、吊销会话）。
+     * 服务端撤回记录（设备级 accepted=false）由 APP-12 的撤回协调器（App AppMe.withdrawConsent）在调本入口之前发出（G24）。
      */
     @Suppress("UnusedParameter")
     fun withdraw(now: Long = clock()) {
@@ -416,13 +419,15 @@ private fun orderedInitSteps(steps: List<Pair<String, () -> Unit>>): List<Pair<S
  */
 fun PrivacyGate.registerProductionInitSteps(
     union: () -> Unit = {},
+    push: () -> Unit = {},
     deviceRegistration: (onResult: (Boolean) -> Unit) -> Unit,
 ) {
     // POST /v1/devices 设备注册（APP-03b DeviceRegistry.registerAsync，后台执行，失败退避重试）。
     // TODO(APP-12): 注册成功后上报本地同意记录（client_at = consentedAtMillis，BR-ID-12）；TODO(APP-15): 推送 token。
     registerDeviceStep(deviceRegistration)
-    // TODO(APP-15): MobPush（同意后调用其隐私授权接口，03 §3.5）。
-    registerInitStep(PrivacyGate.PUSH) {}
+    // 推送令牌来源（APP-12 G17）：只启动 PushTokenSource（Release 为空操作，不初始化任何推送 SDK）。
+    // TODO(N-33): MobPush（同意后调用其隐私授权接口，03 §3.5；AppKey 等由负责人提供，不写进源码字面量）。
+    registerInitStep(PrivacyGate.PUSH) { push() }
     // 联盟 SDK（03 §3.5）：百川适配层（APP-06b；SDK 未引入、AppKey 未给，不可用实现初始化一律失败并上报 sdk_init_failed，TODO(N-28)）。
     // 京东 / 拼多多 SDK 不引入（任务书 APP-06b §2.4）。
     registerInitStep(PrivacyGate.UNION) { union() }

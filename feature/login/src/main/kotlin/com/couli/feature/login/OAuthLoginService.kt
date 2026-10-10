@@ -80,6 +80,8 @@ class OAuthLoginService(
      * 走。App 给主线程的 App 级作用域；缺省是独立的后台作用域（单测）。
      */
     private val followUpScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    /** Me 读取的会话级共享禁用期（APP-12 R2-05）：phone_bound 校验的 getMe 与「我的」页面共用一个截止时间。 */
+    private val meRead: MeReadLimit = MeReadLimit.NONE,
 ) {
     private val adapters: Map<String, ThirdPartyAuthAdapter> = adapters.associateBy { it.provider }
 
@@ -320,8 +322,8 @@ class OAuthLoginService(
         loginEpoch: Long,
         generation: Long,
     ): Boolean {
-        val owner = CallOwnership(client.inFlight.epochs()) { tokens.loginEpoch == loginEpoch }
-        val result = client.send(ApiCall(GET_ME_OPERATION, ownership = owner))
+        // 与「我的」共用 Me 读取的截止时间（R2-05）：禁用期内不发（每次实际写出前核对），42901 启动共享禁用期；请求归属仍是发起时的会话
+        val result = MeReadLimit.sendGetMe(client, meRead) { tokens.loginEpoch == loginEpoch }
         if (result !is ApiResult.Success || tokens.loginEpoch != loginEpoch) return false
         val bound =
             ((result.data as? JsonObject)?.get("phone_bound") as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: return false

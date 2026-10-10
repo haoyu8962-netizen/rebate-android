@@ -267,7 +267,7 @@ class PayoutAccountController(
     /** 44001 弹窗的【联系客服申诉】：接入前经 Router 打开 Help。 */
     fun appeal() {
         flow.dismissRisk()
-        deps.env.open(WalletRoutes.HELP, EMPTY)
+        deps.env.contactService(WalletRoutes.PAYOUT_ACCOUNT)
     }
 
     // ---------------------------------------------------------------- FlowHost

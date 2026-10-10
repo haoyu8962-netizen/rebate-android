@@ -421,7 +421,7 @@ class WithdrawRecordsController(
     }
 
     /** 【联系客服】：统一客服出口接入前经 Router 打开 Help（同 APP-08 G09）。 */
-    fun contact() = deps.env.open(WalletRoutes.HELP, EMPTY)
+    fun contact() = deps.env.contactService(WalletRoutes.WITHDRAW_RECORDS)
 
     fun consumeToast(id: Long) {
         if (s.toast?.id == id) update { it.copy(toast = null) }

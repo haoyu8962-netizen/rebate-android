@@ -143,6 +143,8 @@ class AppSearch(
             params: JsonObject,
         ) = owner.open(route, params)
 
+        override fun contactService() = owner.customerService(PRODUCT_ROUTE)
+
         /**
          * 详情：静默重取本页商品（不进加载态）；搜索卡：按这张卡的 product_key + item_ref 重取（A-R1-07 / 09）。两处都按执行器给的 [merge]
          * 落到页面（补齐价格只补未知字段、重新加载带版本校验，A-R2-02）。

@@ -214,8 +214,8 @@ private const val HOME_HEADER_WEIGHT = 3f
 const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"
 
 /**
- * 「我的」Tab：顶部账号入口（【授权管理】经 Router 打开 AuthManage，BR-ID-17 细则「授权管理页」，A-R1-14；【设置】），下面是「我的」页
- * 正文（占位，后续任务）。
+ * 「我的」Tab 的早期占位（【授权管理】A-R1-14、【设置】、钱包冒烟入口）：生产已由 APP-12 的正式「我的」页（feature:me MeTabScreen，宫格里有授权管理、设置、
+ * 钱包）取代；这里只留给没有接「我的」的外壳单测（更早任务的测试不改）。
  */
 @Composable
 fun MeWithEntries(

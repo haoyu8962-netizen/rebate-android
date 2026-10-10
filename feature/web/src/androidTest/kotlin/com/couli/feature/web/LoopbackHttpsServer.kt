@@ -29,11 +29,15 @@ class LoopbackHttpsServer(
         val path: String,
     )
 
-    /** 应答：状态码、额外的头、HTML 正文。 */
+    /**
+     * 应答：状态码、额外的头、HTML 正文。[cacheControl] 缺省 no-store（原有用例不变）；[contentType] 缺省为 HTML（APP-12 R1-10 的可缓存脚本资源用）。
+     */
     data class Reply(
         val status: Int,
         val headers: Map<String, String> = emptyMap(),
         val html: String = "",
+        val cacheControl: String = "no-store",
+        val contentType: String = "text/html; charset=utf-8",
     )
 
     val requests: MutableList<Recorded> = Collections.synchronizedList(mutableListOf())
@@ -80,9 +84,9 @@ class LoopbackHttpsServer(
         val head =
             buildString {
                 append("HTTP/1.1 ${reply.status} X\r\n")
-                if (reply.html.isNotEmpty()) append("Content-Type: text/html; charset=utf-8\r\n")
+                if (reply.html.isNotEmpty()) append("Content-Type: ${reply.contentType}\r\n")
                 append("Content-Length: ${body.size}\r\n")
-                append("Cache-Control: no-store\r\n")
+                append("Cache-Control: ${reply.cacheControl}\r\n")
                 append("Connection: close\r\n")
                 reply.headers.forEach { (name, value) -> append("$name: $value\r\n") }
                 append("\r\n")

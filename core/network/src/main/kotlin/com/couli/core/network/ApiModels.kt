@@ -44,12 +44,15 @@ object UpdateRaw {
  * @property environmentSettled EnvironmentGate 已通过；未通过时不发任何请求。
  * @property credentialsReadable 撤回同意的本地清理已完成；false 时不读、不带任何凭据。
  * @property update [UpdateRaw]：强更检查结论（checking 按 unknown）。
+ * @property personalizationOff 个性化推荐开关已关闭（APP-12 G03，本机设备级偏好）：已同意隐私政策时每个请求带 `X-Personalization: off`；
+ *   基本模式、尚未决定时不带。
  */
 data class NetworkContext(
     val privacy: String,
     val environmentSettled: Boolean,
     val credentialsReadable: Boolean,
     val update: String,
+    val personalizationOff: Boolean = false,
 )
 
 /** 网络层对外的回调。 */
@@ -87,6 +90,16 @@ class NetworkHooks(
      * 这一刻的会话世代（[SessionTokens.generation]，单调递增，接收方据此丢弃乱序的旧通知）。在网络线程上调用，接收方自己切到主线程。
      */
     val onSessionStored: (generation: Long) -> Unit = {},
+    /**
+     * 逻辑调用入口时的导航票据（APP-12 G09）：App 给「此刻的导航状态」（栈顶条目、经 Router 的导航次数、选中的 Tab、进后台次数）；不透明，网络层只原样
+     * 保存、交回 [onRiskNotice]。[ApiClient.send] 在调用方线程调用，其余入口在执行线程调用；要快、不阻塞。缺省 null。
+     */
+    val navigationTicket: () -> Any? = { null },
+    /**
+     * 10006 → RiskNotice 的统一落点（APP-12 G09，只此一处）：有效调用得到 10006 时调一次，带入口时的导航票据与这次调用此刻是否仍有效（[stillValid]
+     * 线程安全）。在网络线程上调用，接收方自己切到主线程、再核对票据与 [stillValid]。缺省不处理。
+     */
+    val onRiskNotice: ((ticket: Any?, stillValid: () -> Boolean) -> Unit)? = null,
 )
 
 /**

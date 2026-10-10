@@ -73,6 +73,9 @@ class AppTrade(
     val tips = JumpTipService(api) { sessionKey() }
     val pending: PurchasePending = RouterPurchasePending()
 
+    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
+    var customerService: (fromRoute: String) -> Unit = { open(HELP_ROUTE, JsonObject(emptyMap())) }
+
     /**
      * 活着的发起页执行器（登录完成后的自动恢复只交给它们）。主线程在登记与出栈的同步出口整体替换成新的不可变列表（A-R2-04）：任何线程
      * 读到的都是一份完整快照，遍历时不会被并发修改。
@@ -234,6 +237,7 @@ class AppTrade(
 
     companion object {
         private const val PAGE = "ProductDetail"
+        private const val HELP_ROUTE = "Help"
 
         /** 生效配置（ConfigStore 的快照：冷启动是 LKG 或包内，拉取成功后是当前）里的平台购买状态；快照缺这一项时取包内。 */
         fun platformStatusIn(

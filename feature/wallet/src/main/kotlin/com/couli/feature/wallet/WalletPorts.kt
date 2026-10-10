@@ -9,6 +9,7 @@ import com.couli.core.network.PendingTarget
 import com.couli.core.wallet.StepUpTokenCache
 import com.couli.core.wallet.WalletDraftTexts
 import com.couli.core.wallet.WalletGates
+import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.core.wallet.WalletTexts
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +133,9 @@ interface WalletEnv {
 
     /** 10405：强制进入已有的强更分流（服务端已判定）。 */
     fun forceUpdate()
+
+    /** 【联系客服】/【联系客服申诉】：统一客服出口（APP-12 brief §2.9；App 接 AppMe）。没接时经 Router 打开帮助中心。 */
+    fun contactService(fromRoute: String) = open(WalletRoutes.HELP, JsonObject(emptyMap()))
 
     /** 二次验证发码用的手机号（G31）：本机有当前账号、并且绑定了账号归属的号码才给；没有为 null（不编造，不让用户另填）。 */
     fun stepUpPhone(account: String): String?

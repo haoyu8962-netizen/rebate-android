@@ -33,6 +33,9 @@ class AppProductImages(
             .build()
     private val cache = LruCache<String, ImageBitmap>(CACHE_ENTRIES)
 
+    /** 设置页「清除缓存」（APP-12，AC-S1-137）：清掉内存里的图片缓存。 */
+    fun clearMemory() = cache.evictAll()
+
     @Suppress("ReturnCount") // 非 https、命中缓存、取不到、解不出、成功
     override suspend fun load(url: String): ImageBitmap? {
         if (!url.startsWith(HTTPS)) return null

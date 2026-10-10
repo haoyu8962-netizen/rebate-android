@@ -360,7 +360,8 @@ class OrderDetailController(
     ): Boolean {
         val detail = current(version) ?: return false
         if (button !in OrderDetailActions.of(detail).buttons) return false
-        env.open(button.route, JsonObject(emptyMap()))
+        // 联系客服走统一客服出口（APP-12 brief §2.9，替换「联系客服 → Help」占位）
+        if (button.actionRaw == CONTACT_CS) env.contactService() else env.open(button.route, JsonObject(emptyMap()))
         return true
     }
 
@@ -432,6 +433,7 @@ class OrderDetailController(
 
     companion object {
         const val GET_OPERATION = "getOrder"
+        private const val CONTACT_CS = "contact_cs"
         private const val GENERIC_SERVER_ERROR = 50_001
 
         /** 测试用：把路由参数 order_id 包成 JSON。 */

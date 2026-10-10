@@ -39,6 +39,7 @@ import com.couli.core.network.InFlightCalls
 import com.couli.core.network.SessionTokens
 import com.couli.core.privacy.AndroidPermissionRequester
 import com.couli.core.router.UpdateCheck
+import com.couli.feature.login.MeReadLimit
 import com.couli.feature.web.ExternalNavFlags
 import com.couli.feature.web.TrustedWebConfig
 import com.couli.generated.ClientPlatform
@@ -212,8 +213,10 @@ class AppWeb(
                 ),
             )
 
-        override suspend fun user(validity: BridgeCallValidity): BridgeOutcome =
-            when (val result = client.get().send(ApiCall(GET_ME, ownership = owned(validity)))) {
+        override suspend fun user(validity: BridgeCallValidity): BridgeOutcome {
+            // 禁用期内被拦下（本地拒绝）按 90500 结束，与服务端 42901 相同
+            val result = bridgeGetMe(client.get(), login.get().meReadGate, tokens, inFlight, validity)
+            return when (result) {
                 is ApiResult.Success -> {
                     (result.data as? JsonObject)?.let { BridgeOutcome.Ok(userView(it)) }
                         ?: fail(BridgeCode.NATIVE_ERROR)
@@ -223,6 +226,7 @@ class AppWeb(
                     failure(result)
                 }
             }
+        }
 
         override suspend fun h5Token(
             readOnly: Boolean,
@@ -351,7 +355,6 @@ class AppWeb(
 
     companion object {
         private const val PAGE = "WebPage"
-        private const val GET_ME = "getMe"
         private const val ISSUE_H5_TOKEN = "issueH5Token"
         private const val SCOPE_READ_ONLY = "read_only"
         private const val SCOPE_STANDARD = "standard"
@@ -436,6 +439,31 @@ internal fun bridgeOwnership(
     inFlight: InFlightCalls,
     validity: BridgeCallValidity,
 ): CallOwnership = CallOwnership(inFlight.epochs(), validity.deadlineNanos(), stillOwned = validity::stillValid)
+
+/**
+ * 桥 auth.getUser 的 getMe（APP-12 Android R3-01 / R3-02，共性第 33、34 条）：与登录校验、「我的」、钱包实名查询共用一份 Me 读取截止时间 [gate]——
+ * 禁用期内不发（本地拒绝 call_cancelled）；每次实际写出前（含重试、重放）核对同一截止时间；收到 42901 时在这次桥调用仍有效、会话世代与隐私 / 环境世代
+ * 都没变的前提下写入（[MeReadLimit.settle]）。请求归属仍是这次桥调用（截止时间一并交给 ApiClient）。
+ */
+internal suspend fun bridgeGetMe(
+    client: ApiClient,
+    gate: com.couli.core.wallet.WalletRateGate,
+    tokens: SessionTokens,
+    inFlight: InFlightCalls,
+    validity: BridgeCallValidity,
+): ApiResult {
+    if (gate.active) return ApiResult.LocalReject(com.couli.core.network.LocalRejectReason.CALL_CANCELLED)
+    val epoch = tokens.loginEpoch
+    val owner =
+        CallOwnership(inFlight.epochs(), validity.deadlineNanos(), sendAllowed = { !gate.active }) {
+            validity.stillValid() && tokens.loginEpoch == epoch
+        }
+    val result = client.send(ApiCall(BRIDGE_GET_ME, ownership = owner))
+    MeReadLimit.settle(result, owner, inFlight::epochs, gate::start)
+    return result
+}
+
+private const val BRIDGE_GET_ME = "getMe"
 
 /** 回环源只在 debug 构建保留。 */
 private fun Set<String>.onlyInDebug(): Set<String> = if (BuildConfig.BUILD_KIND == DEBUG_BUILD_KIND) this else emptySet()

@@ -14,6 +14,7 @@ import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.login.AppLogin
+import com.couli.app.me.AppMe
 import com.couli.app.orders.AppOrders
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -84,6 +85,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var wallet: AppWallet
 
+    @Inject
+    lateinit var me: AppMe
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -120,6 +124,7 @@ class MainActivity : ComponentActivity() {
                                 clipboard = clipboard,
                                 orders = orders,
                                 wallet = wallet,
+                                me = me,
                                 homeContent = { VariantRootContent(trace = trace) },
                             )
                         },
@@ -163,6 +168,8 @@ class MainActivity : ComponentActivity() {
         // 进后台（配置变更重建除外）：作废未点击的提示条、在途读取与 parse
         if (isChangingConfigurations) clipboardRebuilt = true else clipboard.onBackground()
         if (!isChangingConfigurations) search.trade?.onAppBackground()
+        // 导航票据（APP-12 G09）：真正进入后台算一次（回前台后，进后台之前发起的请求得到 10006 不再导航）
+        if (!isChangingConfigurations) appRouting.navTickets.onBackground()
         // 旋转等配置变更的重建不算回前台
         skipNextForeground = isChangingConfigurations
     }

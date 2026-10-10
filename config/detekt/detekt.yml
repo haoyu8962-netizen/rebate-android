@@ -27,6 +27,8 @@ complexity:
       - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
       # FU-CLIP 的剪贴板候选向量测试同样由 Codex 先写、本仓库不改
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
+      # APP-12 的「我的」向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
       - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
@@ -35,9 +37,11 @@ complexity:
       - '**/core/network/src/test/kotlin/com/couli/core/network/NetworkVectorTest.kt'
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
+      - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
   NestedBlockDepth:
     excludes:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
+      - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 
@@ -55,6 +59,8 @@ style:
       - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
       # FU-CLIP 的剪贴板候选向量测试由 Codex 先写、本仓库不改
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
+      # APP-12 的「我的」向量测试由 Codex 先写、本仓库不改
+      - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
   # APP-06a 的搜索与详情向量测试由 Codex 先写、本仓库不改：只对这一个文件放宽它触发的这一条
   ThrowsCount:
     excludes: ['**/feature/search/src/test/kotlin/com/couli/feature/search/SearchProductVectorTest.kt']

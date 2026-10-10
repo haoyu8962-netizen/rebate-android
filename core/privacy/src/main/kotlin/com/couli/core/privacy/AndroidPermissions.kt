@@ -251,6 +251,9 @@ class AndroidPermissionRequester(
     /** 只读状态（perm.getPushStatus、隐私中心的系统权限一节），不触发申请。 */
     fun status(type: String): String = system.status(type)
 
+    /** 本机记下的最近一次被拒时刻（只读，APP-12 G28）；没有为 null，读不出按此刻。 */
+    fun lastDeniedAt(type: String): Long? = core.lastDeniedAt(type)
+
     /**
      * 本机有没有 [type] 的申请记录（APP-08 G22「从未决定过」只认本机记录）：弹过系统框、被拒的节流记录，或用户点过页面上的申请入口（[noteTapped]，
      * 如待跟单卡的【开启通知】——点过之后那一行不再出现，无论结果）。

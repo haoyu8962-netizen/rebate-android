@@ -502,7 +502,7 @@ class WithdrawController(
     /** 44001 弹窗的【联系客服申诉】：统一客服出口接入前经 Router 打开 Help（同 APP-08 G09）。 */
     fun appeal() {
         flow.dismissRisk()
-        deps.env.open(WalletRoutes.HELP, EMPTY)
+        deps.env.contactService(WalletRoutes.WITHDRAW)
     }
 
     // ---------------------------------------------------------------- FlowHost

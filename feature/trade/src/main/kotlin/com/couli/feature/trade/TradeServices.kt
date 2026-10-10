@@ -119,13 +119,27 @@ class JumpTipService(
     private var cachedFor: Any? = null
     private var read: MutableSet<String>? = null
 
+    /** 已读缓存的世代（APP-12「重新显示下单须知」，鸿蒙 R1-10）：[invalidate] 推进它，之前发出的 getTips 结果不再写回缓存。 */
+    private var generation = 0L
+
+    /** 设置页「重新显示下单须知」成功（resetTip jump_tip）：清掉已读缓存并推进世代；在途的旧 getTips 不得恢复已读。 */
+    fun invalidate() {
+        generation += 1
+        cachedFor = null
+        read = null
+    }
+
+    @Suppress("ReturnCount") // 没有会话、缓存被作废、按缓存三个出口
     suspend fun shouldShow(
         platform: String,
         owner: CallOwnership,
     ): Boolean {
         val key = sessionKey() ?: return false
         if (cachedFor != key || read == null) {
+            val gen = generation
             val result = api.send(ApiCall(TradeOperations.GET_TIPS, ownership = owner))
+            // 发出之后缓存被作废（重新显示下单须知）：这次结果不写回，按未读展示
+            if (gen != generation) return true
             val tips = ((result as? ApiResult.Success)?.data as? JsonObject)?.get("jump_tip") as? JsonObject
             cachedFor = key
             read = tips?.filterValues { it is JsonPrimitive && it.isString }?.keys?.toMutableSet()

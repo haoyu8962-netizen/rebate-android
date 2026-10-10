@@ -62,13 +62,15 @@ interface BindPhoneHost {
  *   （另一账号的会话已保存 → 不发出，共性第 15 条）；绑定结果只记到发起时的那个会话。
  * 页面在主线程调用。
  */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LongParameterList") // 依赖逐项注入（单测替身）
 class BindPhoneService(
     private val client: ApiClient,
     private val tokens: SessionTokens,
     private val login: LoginService,
     private val phoneBinding: PhoneBindingState,
     private val host: BindPhoneHost,
+    /** Me 读取的会话级共享禁用期（APP-12 R2-05）：绑定成功后的 getMe 与「我的」页面共用一个截止时间。 */
+    private val meRead: MeReadLimit = MeReadLimit.NONE,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     @Volatile
@@ -276,8 +278,7 @@ class BindPhoneService(
     private suspend fun refreshMe(epoch: Long) {
         if (tokens.loginEpoch != epoch) return
         val generation = phoneBinding.generation()
-        val owner = CallOwnership(client.inFlight.epochs()) { tokens.loginEpoch == epoch }
-        val result = client.send(ApiCall(OAuthLoginService.GET_ME_OPERATION, ownership = owner))
+        val result = MeReadLimit.sendGetMe(client, meRead) { tokens.loginEpoch == epoch }
         if (result !is ApiResult.Success || tokens.loginEpoch != epoch) return
         val bound = ((result.data as? JsonObject)?.get("phone_bound") as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
         if (bound != null) phoneBinding.applyIfCurrent(epoch, generation, bound)
