@@ -154,6 +154,12 @@ class AppMe(
     /** [identity] 在本次运行里因 10006 进入过 RiskNotice（G10）：只比较触发时固定的归属。 */
     fun enteredBy10006(identity: MeIdentity): Boolean = entered10006?.let { it == identity && identity.member } == true
 
+    /**
+     * 诊断信息「首页版本」的来源（APP-11 G31：AppHome.currentVersion，AppModule 接线）。接上之后只取它（没有显示中的页面整行省略，不再借用 h5_release.version）；
+     * 没接首页（只测「我的」的单测）时保留 APP-12 的旧取值。
+     */
+    var homeVersion: (() -> String?)? = null
+
     /** 退出登录进行中（同一时刻一次）。 */
     private var loggingOut = false
 
@@ -593,7 +599,13 @@ class AppMe(
             fields["push_reported"] = JsonPrimitive(push.reportedThisRun)
             // 最近 3 个 trace_id：网络层没有记录，整行省略（rule-gaps A 段）
             (data?.get(DICT_VERSION) as? JsonPrimitive)?.let { fields["config_version"] = it }
-            ((data?.get(H5_RELEASE) as? JsonObject)?.get(VERSION) as? JsonPrimitive)?.let { fields["home_version"] = it }
+            // 首页版本（G31）：当前显示的首页 version 与来源级别（APP-11 HomeStore.currentVersion）；没有显示中的页面整行省略
+            val home = homeVersion
+            if (home != null) {
+                home()?.let { fields["home_version"] = JsonPrimitive(it) }
+            } else {
+                ((data?.get(H5_RELEASE) as? JsonObject)?.get(VERSION) as? JsonPrimitive)?.let { fields["home_version"] = it }
+            }
             return JsonObject(fields)
         }
 

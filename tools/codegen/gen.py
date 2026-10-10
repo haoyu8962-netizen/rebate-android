@@ -23,6 +23,8 @@ APP-03b 加（包 com.couli.core.clientcore，三端测试接线约定）：
   - specs/device-hash.vectors.json 的 invalid_hash_seeds → DeviceHashSeeds（BR-ID-09 无效设备哈希清单的种子）；
   - openapi GET /v1/config 的 200 响应示例 data → 资源 default_config.json 与读取它的 BundledConfig（包内默认配置；
     去掉示例里的非生产地址，TODO(N-21)：发布构建改为取生产配置当时的值生成）。
+APP-11 加：specs/home-sdui-vectors.json 的 goldenPages.default_home → 资源 default_home.json 与读取它的 BundledHome（包内默认首页，
+三端逐字一致；--check 保证与向量一致）。
 APP-04 加：contracts/bridge.schema.json 原样复制为资源 bridge.schema.json（BridgeProtocol 按方法的 params schema 校验、
 按 levels / signed_paths / events / not_exposed 判定）；contracts/apps.json 的 trade_only 目标 → BridgeAppTargets（ext.openApp 的 90403）。
 只用 Python 3 标准库；输出不含时间戳，可重复。
@@ -104,6 +106,7 @@ GENERATOR_TYPE_NAMES = {
     "ClientEvents",
     "DeviceHashSeeds",
     "BundledConfig",
+    "BundledHome",
 }
 # Kotlin 默认导入（kotlin.*、kotlin.collections.* 等）里常见的类型名；同包声明会遮蔽它们。
 KOTLIN_STANDARD_TYPE_NAMES = {
@@ -1426,6 +1429,48 @@ object BundledConfig {
     ]
 
 
+HOME_VECTORS = "specs/home-sdui-vectors.json"
+
+
+def gen_bundled_home(out_root: str):
+    """包内 default_home.json（APP-11 G17）：逐项取向量 goldenPages.default_home（三端同一来源），按固定格式序列化
+    （json.dumps(ensure_ascii=False, indent=2) + 换行，与鸿蒙 rawfile/default_home.json 逐字一致）；--check 保证与向量一致。"""
+    path = os.path.join(ROOT, HOME_VECTORS)
+    if not os.path.isfile(path):
+        raise GenError("缺 " + HOME_VECTORS)
+    with open(path, encoding="utf-8") as f:
+        vectors = json.load(f)
+    page = vectors.get("goldenPages", {}).get("default_home")
+    if not isinstance(page, dict):
+        raise GenError(HOME_VECTORS + " 缺 goldenPages.default_home")
+    for where, text in string_leaves(page):
+        if re.search(r"https?://", text):
+            raise GenError(f"包内默认首页不得引用网络图片或链接：{where} {text!r}")
+    claim_output(f"{RESOURCES}/default_home.json")
+    dest = os.path.join(out_root, RESOURCES, "default_home.json")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(page, ensure_ascii=False, indent=2) + "\n")
+    body_kt = """/**
+ * 包内默认首页（APP-11 G17；03 §6.2 第 4 步三级兜底的最后一级）：读取 Java 资源 default_home.json（由 specs/home-sdui-vectors.json 的
+ * goldenPages.default_home 逐项生成，三端同一来源）。只含不依赖数据源的金刚区与双入口卡；没有 banner、公告、商品卡、popup，不引用网络图片。
+ */
+object BundledHome {
+    const val RESOURCE: kotlin.String = "default_home.json"
+
+    /** 页面 JSON 文本；读不出为 null（首页按包内默认解码失败处理，显示 StateLoadFailed）。 */
+    fun pageJson(): kotlin.String? =
+        runCatching {
+            BundledHome::class.java.classLoader?.getResourceAsStream(RESOURCE)?.use { it.readBytes().decodeToString() }
+        }.getOrNull()
+}
+"""
+    return [
+        write(out_root, f"{CLIENT_CORE_KOTLIN}/BundledHome.kt", kotlin_file(body_kt, package=CLIENT_CORE_PACKAGE)),
+        f"{RESOURCES}/default_home.json",
+    ]
+
+
 # ---------------------------------------------------------------- 入口
 
 
@@ -1443,6 +1488,7 @@ def generate(out_root: str) -> list:
     written += gen_client_events(out_root)
     written += gen_device_hash_seeds(out_root)
     written += gen_bundled_config(out_root)
+    written += gen_bundled_home(out_root)
     return sorted(written)
 
 

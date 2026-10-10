@@ -2,6 +2,8 @@ package com.couli.app.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -13,6 +15,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
@@ -26,6 +29,8 @@ import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardSettingsRow
 import com.couli.app.clipboard.HomeClipboardArea
+import com.couli.app.home.AppHome
+import com.couli.app.home.variantHomePreviewPages
 import com.couli.app.login.AppLogin
 import com.couli.app.login.BindPhoneRoute
 import com.couli.app.login.LoginNoticeHost
@@ -77,6 +82,7 @@ import com.couli.core.router.UpdateCheck
 import com.couli.core.router.UpdateState
 import com.couli.core.update.UpdateStatus
 import com.couli.core.wallet.WalletRoutes
+import com.couli.feature.home.homeGrayscale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -124,6 +130,7 @@ fun AppShell(
     orders: AppOrders? = null,
     wallet: AppWallet? = null,
     me: AppMe? = null,
+    home: AppHome? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -134,7 +141,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search, clipboard, orders, wallet, me) {
+        remember(homeContent, update, web, login, search, clipboard, orders, wallet, me, home) {
             RoutePageRegistry(
                 mapOf<String, @Composable (RouteDestination) -> Unit>(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -201,11 +208,15 @@ fun AppShell(
                         } else {
                             emptyMap()
                         }
-                    ),
+                    ) +
+                    // HomePreview（APP-11，debug / staging；Release 为空表）：【退出预览】只关发起的这一个回退栈条目（APP-09 第 50 条）
+                    variantHomePreviewPages(home, routing) { entryId ->
+                        if (entryId == null || navController.currentBackStackEntry?.id == entryId) navController.popBackStack()
+                    },
             )
         }
     val hooks =
-        remember(privacy, login, search, clipboard, orders, wallet, me) {
+        remember(privacy, login, search, clipboard, orders, wallet, me, home) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly ->
@@ -216,6 +227,8 @@ fun AppShell(
                         clipboard?.onShell(it.route, privacy.conclusion == PrivacyState.BASIC_MODE)
                         // 「我的」（APP-12 R2-01）：同一同步出口先撤销「我的」这一次进入的读取许可与在途 getMe，再改选中项
                         me?.onTab(it.route)
+                        // 首页（APP-11，共性第 22、28 条）：同一同步出口先写目标 Tab（轮播暂停、弹窗等待），再改选中项
+                        home?.onTab(it.route)
                         selection = TabSelection(it, readonly)
                     }
                 },
@@ -233,6 +246,8 @@ fun AppShell(
                     wallet?.followBackStack(entries)
                     // 「我的」类页面出栈的同步出口：立即作废读请求（APP-12）；导航票据的栈顶（10006 落点，G09）
                     me?.followBackStack(entries)
+                    // 首页（APP-11）：首页之上有没有别的页面（可见性）；HomePreview 实例出栈的同步出口
+                    home?.followBackStack(entries)
                     // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
                     clipboard?.let { followClipboard(it, entries) }
                 },
@@ -324,6 +339,7 @@ fun AppShell(
                             clipboard = clipboard,
                             wallet = wallet,
                             me = me,
+                            home = home,
                         )
                     },
                 )
@@ -441,21 +457,30 @@ private fun TabRoot(
     clipboard: AppClipboard?,
     wallet: AppWallet?,
     me: AppMe?,
+    home: AppHome?,
 ) {
     val destination = RouteDestination(tab.route, EMPTY_PARAMS, readonly = readonly)
+    // 全局置灰只作用于首页根视图（含固定区与 SDUI 区，03 §6.2 第 8 步，G27）；配置变化即时应用或移除
+    val noGray = remember { MutableStateFlow(false) }
+    val gray by (home?.grayscale ?: noGray).collectAsStateWithLifecycle()
     if (tab == ShellTab.HOME && basicMode) {
-        BasicModePage(
-            onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
-            onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
-            onEnableFullFunction = onEnableFullFunction,
-        ) { registry.Render(destination) }
+        Box(modifier = Modifier.fillMaxSize().homeGrayscale(gray)) {
+            BasicModePage(
+                onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
+                onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
+                onEnableFullFunction = onEnableFullFunction,
+            ) { registry.Render(destination) }
+        }
     } else if (tab == ShellTab.HOME) {
-        // 首页 Tab 顶部的搜索入口（经 Router 打开 Search，APP-06a 冒烟入口）；首页内容在首页任务（TODO(APP-11)）
-        // 剪贴板（APP-07）：提示条（只在首页根页）、Android 开关关闭时的粘贴按钮、「粘贴链接，先查返利」卡
-        HomeWithSearch(
-            onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
-            header = { clipboard?.let { HomeClipboardArea(it) } },
-        ) { registry.Render(destination) }
+        // 首页 Tab 顶部的原生固定区（G26）：搜索入口与【问 AI】（经 Router 打开 Search / AgentChat）、剪贴板区（APP-07：提示条、粘贴按钮、
+        // 「粘贴链接，先查返利」卡），下方是首页 SDUI 区（APP-11）
+        Box(modifier = Modifier.fillMaxSize().homeGrayscale(gray)) {
+            HomeWithSearch(
+                onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
+                header = { clipboard?.let { HomeClipboardArea(it) } },
+                onAskAi = home?.let { { routing.router.open(inAppRequest(ShellTab.AGENT.route)) } },
+            ) { registry.Render(destination) }
+        }
     } else if (tab == ShellTab.ME && me != null) {
         // 「我的」页正文（APP-12）：身份卡、余额卡、宫格（授权管理、设置、钱包都在宫格里）
         MeTabRoute(me)

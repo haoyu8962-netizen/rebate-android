@@ -1,6 +1,7 @@
 package com.couli.app
 
 import android.content.Context
+import com.couli.app.home.debugFakeHome
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -32,6 +33,8 @@ import okio.Buffer
 @Suppress("TooManyFunctions") // 每类接口一个场景函数
 internal class DebugFakeLoginServer(
     private val switch: File,
+    /** 首页的 previewPage、listArticles(category=notice)（APP-11）：环境不允许假数据时交给真实网络（F-X-02）。 */
+    private val home: DebugFakeHome? = null,
 ) : Interceptor {
     private var serial = 0
 
@@ -75,11 +78,15 @@ internal class DebugFakeLoginServer(
                 content.writeTo(buffer)
                 runCatching { Json.parseToJsonElement(buffer.readUtf8()) as? JsonObject }.getOrNull()
             } ?: JsonObject(emptyMap())
+        // 首页（APP-11）：先过环境闸门；不允许假数据时整条交给真实网络，不落到下面的通用回答
+        val homeAnswer = home?.answer(request.url.encodedPath, request.url.encodedQuery)
+        if (homeAnswer === DebugFakeHome.PROCEED) return chain.proceed(request)
         // 搜索与详情（APP-06a，DebugFakeSearch）先答；其余按登录场景
         val loggedIn = request.header("Authorization") != null
         val path = request.url.encodedPath
         val (code, data, headers) =
-            (if (me.blocks(path)) Triple(BANNED, "null", emptyMap()) else null)
+            homeAnswer
+                ?: (if (me.blocks(path)) Triple(BANNED, "null", emptyMap()) else null)
                 ?: me.answer(request.method, path, body, wallet.realnameStatus(), phoneBound)
                 ?: wallet.answer(request.method, request.url.encodedPath, request.url.encodedQuery, body, request.headers.toMap())
                 ?: orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
@@ -272,4 +279,4 @@ internal fun fakeLoginServerSwitch(context: Context): File = File(context.applic
 
 /** debug / staging：带 Debug 专用假登录服务的 OkHttpClient（开关文件不存在时不接管）。 */
 internal fun variantHttpClient(context: Context): OkHttpClient =
-    OkHttpClient.Builder().addInterceptor(DebugFakeLoginServer(fakeLoginServerSwitch(context))).build()
+    OkHttpClient.Builder().addInterceptor(DebugFakeLoginServer(fakeLoginServerSwitch(context), debugFakeHome(context))).build()

@@ -60,6 +60,7 @@ dependencies {
     implementation(project(":core:orders"))
     implementation(project(":core:push"))
     implementation(project(":core:storage"))
+    implementation(project(":core:home"))
     implementation(project(":feature:home"))
     implementation(project(":feature:search"))
     implementation(project(":feature:product"))
@@ -89,6 +90,9 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.compose.ui.test.junit4)
+    // 首页设计稿比对截图（APP-11；只写到 build/home-shots，不入库、不比对）：复用已锁定的 Roborazzi
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
     debugImplementation(libs.compose.ui.test.manifest)
 
     androidTestImplementation(libs.androidx.test.core)

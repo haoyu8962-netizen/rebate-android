@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -42,6 +43,7 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.TabBar
 import com.couli.core.designsystem.TabItem
+import com.couli.core.home.HomeDraftTexts
 import com.couli.core.wallet.WalletDraftTexts
 import com.couli.generated.DefaultTexts
 
@@ -50,6 +52,7 @@ const val BASIC_MODE_PAGE_TAG = "basic_mode_page"
 const val BASIC_MODE_ENABLE_TAG = "basic_mode_enable_full"
 const val BASIC_MODE_SETTINGS_TAG = "basic_mode_settings"
 const val HOME_SEARCH_ENTRY_TAG = "home_search_entry"
+const val HOME_ASK_AI_TAG = "home_ask_ai"
 
 /** 底部四个 Tab：路由名（routes.json）→ 图标与名称（名称取 [ShellDraftTexts]，TODO(N-16)）。 */
 enum class ShellTab(
@@ -176,23 +179,43 @@ private fun SearchEntry(
 fun HomeWithSearch(
     onSearch: () -> Unit,
     header: @Composable () -> Unit = {},
+    onAskAi: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
-        SearchEntry(
-            onClick = onSearch,
+        Row(
             modifier =
                 Modifier
                     .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
                     .fillMaxWidth()
-                    .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
-                    .testTag(HOME_SEARCH_ENTRY_TAG),
-        )
+                    .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        ) {
+            SearchEntry(
+                onClick = onSearch,
+                modifier = Modifier.weight(1f).testTag(HOME_SEARCH_ENTRY_TAG),
+            )
+            // 【问 AI】（G26 固定区，照 Main 稿；经 Router 打开 AgentChat，APP-11）
+            if (onAskAi != null) {
+                CouliButton(
+                    text = HomeDraftTexts.text(HomeDraftTexts.ASK_AI),
+                    onClick = onAskAi,
+                    size = CouliButtonSize.COMPACT,
+                    modifier = Modifier.testTag(HOME_ASK_AI_TAG),
+                )
+            }
+        }
         Box(
             modifier =
                 Modifier
-                    .weight(HOME_HEADER_WEIGHT, fill = false)
-                    .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
+                    // 最多占剩余高度的 3/4（按实际高度，不预留空白：首页 SDUI 区拿到其余全部高度，APP-11）
+                    .layout { measurable, constraints ->
+                        val cap =
+                            if (constraints.hasBoundedHeight) (constraints.maxHeight * HOME_HEADER_SHARE).toInt() else constraints.maxHeight
+                        val placeable = measurable.measure(constraints.copy(maxHeight = cap))
+                        layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                    }.widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .testTag(HOME_HEADER_TAG),
@@ -208,7 +231,7 @@ const val HOME_HEADER_TAG = "home_header"
 private const val HOME_CONTENT_MAX_WIDTH = 600
 
 /** 剪贴板区与首页内容分剩余高度：剪贴板区最多占 3/4（内容不够时按实际高度）。 */
-private const val HOME_HEADER_WEIGHT = 3f
+private const val HOME_HEADER_SHARE = 0.75f
 
 /** 「我的」Tab 的入口行：设置（ME_SETTINGS_ENTRY_TAG）。 */
 const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"

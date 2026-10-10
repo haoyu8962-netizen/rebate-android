@@ -13,6 +13,8 @@ import com.couli.app.clientcore.ActivityPermissionHost
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
 import com.couli.app.clipboard.AppClipboard
+import com.couli.app.home.AppHome
+import com.couli.app.home.VariantHomeContent
 import com.couli.app.login.AppLogin
 import com.couli.app.me.AppMe
 import com.couli.app.orders.AppOrders
@@ -88,6 +90,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var me: AppMe
 
+    @Inject
+    lateinit var home: AppHome
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,7 +130,9 @@ class MainActivity : ComponentActivity() {
                                 orders = orders,
                                 wallet = wallet,
                                 me = me,
-                                homeContent = { VariantRootContent(trace = trace) },
+                                home = home,
+                                // 首页 SDUI（APP-11）：debug / staging 在列表底部多一个开发入口（调试首屏）
+                                homeContent = { VariantHomeContent(home, trace) },
                             )
                         },
                     )
@@ -138,6 +145,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // 首页（APP-11）：App 在前台（弹窗、轮播的可见性）
+        home.onForeground(true)
         // 剪贴板（APP-07）：冷启动进入前台、或真正经过后台之后回到前台，才算一次回前台（配置变更重建不算）；之后第一次获得窗口焦点时读 1 次
         if (!clipboardRebuilt) clipboard.onForeground(cold = clipboardColdStart, hasFocus = hasWindowFocus())
         clipboardColdStart = false
@@ -165,6 +174,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // 首页（APP-11）：进后台（含配置变更重建的短暂停留）时轮播暂停、弹窗等待
+        home.onForeground(false)
         // 进后台（配置变更重建除外）：作废未点击的提示条、在途读取与 parse
         if (isChangingConfigurations) clipboardRebuilt = true else clipboard.onBackground()
         if (!isChangingConfigurations) search.trade?.onAppBackground()

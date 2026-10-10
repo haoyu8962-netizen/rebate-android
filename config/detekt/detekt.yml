@@ -29,6 +29,8 @@ complexity:
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
       # APP-12 的「我的」向量测试同样由 Codex 先写、本仓库不改
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
+      # APP-11 的首页 SDUI 向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
       - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
@@ -38,10 +40,12 @@ complexity:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
+      - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
   NestedBlockDepth:
     excludes:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
+      - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 

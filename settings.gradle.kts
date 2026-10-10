@@ -44,6 +44,7 @@ listOf(
     "storage",
     "wallet",
     "me",
+    "home",
 ).forEach { include(":core:$it") }
 
 listOf(

@@ -18,6 +18,8 @@
 #         - Debug 本机假订单服务的标记 COULI_FAKE_ORDERS_SERVER_APP08（app/src/debugFeatures 的 DebugFakeOrders.kt；APP-08）
 #         - Debug 本机假钱包服务的标记 COULI_FAKE_WALLET_SERVER_APP09（app/src/debugFeatures 的 DebugFakeWallet.kt；APP-09）
 #         - Debug 本机假「我的」服务的标记 COULI_FAKE_ME_SERVER_APP12（app/src/debugFeatures 的 DebugFakeMe.kt；APP-12）
+#         - Debug 本机假首页服务的标记 COULI_FAKE_HOME_SERVER_APP11（app/src/debugFeatures 的 DebugFakeHome.kt；APP-11）
+#         - 首页草稿预览 HomePreview 的标记 COULI_HOME_PREVIEW_APP11（app/src/debugFeatures/home 的 HomePreviewPage.kt；APP-11，路由名另按 debug_only 检查）
 #         - Debug 模拟安装状态 / 假授权码的外跳与授权端口 debug-web-code（app/src/debugFeatures 的 trade/VariantTrade.kt；APP-06b 共性第 42 条：
 #           开关与执行分支都只在调试编译单元，Release 制品里不得出现）
 #         - 一致性页的假登录账号（conformance-harness）、adb 入口 extra（couli.conformance）、替换配置用的示例域（example.test）；
@@ -161,7 +163,7 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'debug-web-code'; do
+  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'COULI_FAKE_HOME_SERVER_APP11' 'COULI_HOME_PREVIEW_APP11' 'debug-web-code'; do
     case "$pattern" in
       "$conformance_marker") label="bridge_conformance" ;;
       "$LOOPBACK_PATTERN") label="loopback_origin" ;;
@@ -175,6 +177,8 @@ scan_apk() {
       COULI_FAKE_ORDERS_SERVER_APP08) label="fake_orders_server" ;;
       COULI_FAKE_WALLET_SERVER_APP09) label="fake_wallet_server" ;;
       COULI_FAKE_ME_SERVER_APP12) label="fake_me_server" ;;
+      COULI_FAKE_HOME_SERVER_APP11) label="fake_home_server" ;;
+      COULI_HOME_PREVIEW_APP11) label="home_preview" ;;
       debug-web-code) label="fake_trade_ports" ;;
       "$marker") label="debug_routes_marker" ;;
       "$catalog_marker") label="component_catalog" ;;
@@ -280,6 +284,8 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "fake_orders_server"
   require_label "debug" "fake_wallet_server"
   require_label "debug" "fake_me_server"
+  require_label "debug" "fake_home_server"
+  require_label "debug" "home_preview"
   require_label "debug" "fake_trade_ports"
   require_label "debug" "debuggable"
   echo "  debug 共命中 $SCAN_HITS 项"
@@ -301,6 +307,8 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "fake_orders_server"
   require_label "staging" "fake_wallet_server"
   require_label "staging" "fake_me_server"
+  require_label "staging" "fake_home_server"
+  require_label "staging" "home_preview"
   require_label "staging" "fake_trade_ports"
   forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"

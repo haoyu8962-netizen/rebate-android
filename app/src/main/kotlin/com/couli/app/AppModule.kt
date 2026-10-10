@@ -15,6 +15,12 @@ import com.couli.app.clipboard.ClipboardPreferences
 import com.couli.app.clipboard.connect
 import com.couli.app.clipboard.connectPurchaseStatus
 import com.couli.app.clipboard.connectRules
+import com.couli.app.home.AppHome
+import com.couli.app.home.connectScreenReader
+import com.couli.app.home.homeLkgStore
+import com.couli.app.home.homePrefsStore
+import com.couli.app.home.variantEnvironmentKey
+import com.couli.app.home.variantHomePort
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
@@ -31,6 +37,7 @@ import com.couli.app.routing.NavTickets
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
 import com.couli.app.search.AppSearch
+import com.couli.app.search.SearchDraftTexts
 import com.couli.app.trade.AndroidJumpPorts
 import com.couli.app.trade.AppProductImages
 import com.couli.app.trade.AppTrade
@@ -99,6 +106,7 @@ import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.core.update.UpdateConfigReader
 import com.couli.core.update.UpdateGate
+import com.couli.core.update.UpdateStatus
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
@@ -118,6 +126,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.launch
 
 /** App 级依赖。 */
 @Module
@@ -160,6 +170,8 @@ object AppModule {
                         environmentGate.get().reopenAfterSwitch()
                         privacyGate.get().restartDeviceRegistration()
                         config.get().onEnvironmentSwitched()
+                        // 首页（APP-11）：按新环境重建控制器（新环境作用域的 LKG → 包内默认）
+                        homeInstance?.sync()
                     }
                 },
             )
@@ -182,6 +194,11 @@ object AppModule {
             register { _, _ -> walletCacheStore(context).clearAll() }
             // 「我的」（APP-12，G29）：会话级数据（Me 快照、推送上报状态、客服半屏）；设备级偏好（couli_me_prefs）不清
             register { _, _ -> meInstance?.onEnvironmentSwitched() }
+            // 首页（APP-11，G16 ②、G11）：先作废控制器与在途请求；LKG（含临时文件）、公告关闭记录与弹窗计数全清（删除确认，失败保留待清理并抛错）。
+            // 直接按 context 取存储：Application 启动时的环境对账就能执行，不依赖 AppHome 是否已创建
+            register { _, _ -> homeInstance?.onEnvironmentSwitching() }
+            register { _, _ -> homeLkgStore(context).clearAll() }
+            register { _, _ -> homePrefsStore(context).clearAll() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -282,6 +299,8 @@ object AppModule {
                             wallet.get().onSessionChanged()
                             // 「我的」（APP-12）：按新会话重算身份（清 Me 快照、移出只能登录访问的页面、推送会话跟踪）
                             meInstance?.syncIdentity()
+                            // 首页（APP-11）：会话换代即作废旧控制器、按新身份重建（旧账号作用域的 LKG 清掉）
+                            homeInstance?.sync()
                         }
                     },
                     // 10006 的统一落点（APP-12 G09）：入口时的导航票据（AppRouting 建好之前没有，落点一律不放行）与切到主线程后的一处判断
@@ -328,6 +347,8 @@ object AppModule {
             register(IN_FLIGHT_CALLS_CLEANER) { inFlight.onPrivacyRevoked() }
             // APP-04：作废全部容器里在途的桥调用（撤回之后晚到的结果不交回页面）
             register(BRIDGE_CALLS_CLEANER) { bridges.invalidateAll() }
+            // 首页（APP-11 R1-01）：在任何存储清理之前先作废首页控制器与预览实例（已排程的写入不再发起；存储层的世代票据挡住已在等锁的写入）
+            register(AppHome.HOME_CONTROLLER_CLEANER) { homeInstance?.onConsentWithdrawing() }
             registerPlaceholderCredentialCleaners(context)
             // 真实的会话令牌（APP-03a，含 session_scope）；h5_token 仍由占位项按键删（APP-05）
             register(SESSION_TOKENS_CLEANER) { tokens.clear() }
@@ -351,6 +372,10 @@ object AppModule {
             register(MeLocalStore.CLEANER) { meLocalStore(context).clearAll() }
             // 「我的」的会话级数据（G18、G29：推送上报的在途与待报、Me 快照、客服半屏；草稿随页面执行器按新身份重建作废）
             register(AppMe.ME_SESSION_CLEANER) { meInstance?.clearForConsentRevoked() }
+            // 首页（APP-11，G16 ②、G11）：LKG 全部作用域（含临时文件）与设备级的公告关闭记录、弹窗计数；直接登记在这里，启动时 PrivacyGate 的补清理同样执行，
+            // 删除要确认，失败保留待清理（LKG 的标记在目录外）并抛错
+            register(AppHome.HOME_LKG_CLEANER) { homeLkgStore(context).clearAll() }
+            register(AppHome.HOME_PREFS_CLEANER) { homePrefsStore(context).clearAll() }
             val missing = CredentialCleanerRegistry.REQUIRED - registeredNames().toSet()
             check(missing.isEmpty()) { "撤回同意的清理项没有注册：$missing" }
         }
@@ -765,6 +790,68 @@ object AppModule {
             meInstance = me
         }
 
+    /**
+     * 首页 SDUI（APP-11）：控制器按身份建立与作废、三级兜底（LKG noBackupFilesDir/couli_home_lkg，待清理标记在目录外）、公告关闭记录与弹窗计数（couli_home_prefs）、
+     * 待定 operation 的本机假服务（debug / staging，环境允许 MOCK_DATA 才接管；Release 为 null）、sdui_card_error 进 Tracker 本地队列、
+     * 弹窗的阻挡项（首启隐私弹窗、强更、可选更新提示、剪贴板提示条、半屏 / 对话框）、读屏状态与置灰开关；诊断信息「首页版本」改取它（G31）。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 各能力的来源逐项注入
+    fun appHome(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        tokens: SessionTokens,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+        config: AppConfig,
+        tracker: Provider<TrackerQueue>,
+        update: AppUpdate,
+        images: AppProductImages,
+        trade: AppTrade,
+        clipboard: AppClipboard,
+        me: AppMe,
+        permissions: AndroidPermissionRequester,
+    ): AppHome =
+        AppHome(
+            client = client,
+            tokens = tokens,
+            routing = routing,
+            privacy = privacy,
+            port = variantHomePort(context),
+            lkg = homeLkgStore(context),
+            prefs = homePrefsStore(context),
+            images = images,
+            envKey = { variantEnvironmentKey(context) },
+            configData = { config.store.snapshots.value.data },
+            track = { event -> tracker.get().track(event) },
+            serverForced = { update.onServerForced() },
+            cardTexts = SearchDraftTexts,
+            purchaseStatus = trade::platformStatus,
+            appVersion = BuildConfig.VERSION_NAME.substringBefore('-'),
+        ).also { home ->
+            home.connect()
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
+                config.store.snapshots.collect { home.onConfigChanged() }
+            }
+            // 弹窗的阻挡项（G14 ④）：任一来源变化都通知首页与预览实例复核（共性第 21 条）
+            home.addBlocker(BLOCKER_PRIVACY, { privacy.promptShowing }, privacy.state)
+            home.addBlocker(BLOCKER_FORCE_UPDATE, { update.ui.value.status == UpdateStatus.BELOW_MIN }, update.ui)
+            home.addBlocker(BLOCKER_UPDATE_PROMPT, { update.ui.value.state.showPrompt }, update.ui)
+            home.addBlocker(BLOCKER_CLIPBOARD, { clipboard.prompt.value != null }, clipboard.prompt)
+            home.addBlocker(
+                BLOCKER_SHEET,
+                {
+                    clipboard.result.value != null || me.cs.sheet.value != null || permissions.prompts.current.value != null ||
+                        trade.sensitiveOverlay() != null
+                },
+                merge(clipboard.result, me.cs.sheet, permissions.prompts.current),
+            )
+            connectScreenReader(context, home)
+            me.homeVersion = { home.currentVersion() }
+            homeInstance = home
+        }
+
     /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
     @Provides
     @Singleton
@@ -930,6 +1017,16 @@ object AppModule {
     /** 已构造的 AppMe（网络层的会话通知、10006 落点、清理入口在它建好之前不取它，避免 Dagger 循环依赖）。 */
     @Volatile
     private var meInstance: AppMe? = null
+
+    /** 已构造的 AppHome（环境切换的清理与结束通知在它建好之前不取它）。 */
+    @Volatile
+    private var homeInstance: AppHome? = null
+
+    private const val BLOCKER_PRIVACY = "privacy_dialog"
+    private const val BLOCKER_FORCE_UPDATE = "force_update"
+    private const val BLOCKER_UPDATE_PROMPT = "update_prompt"
+    private const val BLOCKER_CLIPBOARD = "clipboard_prompt"
+    private const val BLOCKER_SHEET = "sheet_open"
 
     /** AppRouting 的导航票据（网络层每个调用入口取一次，APP-12 G09）。 */
     @Volatile
