@@ -39,6 +39,14 @@ internal object ClipboardDraftTexts {
             // ---- 设置页开关（BR-TEXT-14 表 C settings.clipboard_auto / .desc，契约快照未同步）
             "settings.clipboard_auto" to "打开 App 自动识别剪贴板",
             "settings.clipboard_auto.desc" to "打开 App 时识别复制的商品链接，可以随时关闭",
+            // ---- FU-CLIP C6 / C7：系统分享提示条与「上传前可见平台」（K26、K28；TODO(N-34) 待契约补键，提审前替换；与鸿蒙同键同字）
+            "clipboard.share_prompt" to "收到分享的{platform_name}商品，查返利？",
+            "clipboard.share_prompt.action" to "查返利",
+            "clipboard.share_prompt.label" to "检测到{platform_name}商品链接，查返利",
+            "clipboard.share_prompt.label_tpwd" to "检测到{platform_name}口令，查返利",
+            "clipboard.prompt.detail" to "{platform_name}商品链接 {display}",
+            "clipboard.prompt.detail.tpwd" to "{platform_name}口令",
+            "clipboard.prompt.detail.more" to "等 {count} 个",
         )
 
     private val PLACEHOLDER = Regex("\\{[a-z0-9_]+\\}")

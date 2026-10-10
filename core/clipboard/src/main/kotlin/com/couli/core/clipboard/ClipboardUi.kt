@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,6 +35,7 @@ import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.PlatformBadge
 import com.couli.core.designsystem.couliCard
 
 /** 剪贴板界面组件的测试标记（UI 测试、冒烟用）。 */
@@ -41,6 +43,10 @@ object ClipboardUi {
     const val PROMPT_BAR = "clipboard_prompt_bar"
     const val PROMPT_ACTION = "clipboard_prompt_action"
     const val PROMPT_CLOSE = "clipboard_prompt_close"
+
+    /** 带平台的提示文字区（FU-CLIP C7）与第二行（平台名 + 缩略候选）。 */
+    const val PROMPT_MESSAGE = "clipboard_prompt_message"
+    const val PROMPT_DETAIL = "clipboard_prompt_detail"
     const val PASTE_ENTRY = "clipboard_paste_entry"
     const val HOME_PASTE_CARD = "clipboard_home_paste_card"
 }
@@ -61,6 +67,9 @@ fun ClipboardPromptBar(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     busy: Boolean = false,
+    detail: String? = null,
+    badge: String? = null,
+    messageLabel: String? = null,
 ) {
     val shape = RoundedCornerShape(CouliRadius.card)
     Row(
@@ -73,12 +82,16 @@ fun ClipboardPromptBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        Text(
-            text = message,
-            style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-            color = CouliColors.textPrimary,
-            modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-        )
+        if (detail == null && badge == null) {
+            Text(
+                text = message,
+                style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
+                color = CouliColors.textPrimary,
+                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        } else {
+            PromptMessage(message, detail, badge, messageLabel, Modifier.weight(1f))
+        }
         PillButton(
             text = actionText,
             label = actionLabel,
@@ -94,6 +107,50 @@ fun ClipboardPromptBar(
             iconSize = CouliSizes.iconMedium,
             modifier = Modifier.testTag(ClipboardUi.PROMPT_CLOSE),
         )
+    }
+}
+
+/**
+ * 带平台的提示文字（FU-CLIP C7，K26）：第一行 [message]（14/600），第二行平台来源标签 [badge] +「{平台}商品链接 {缩略主机}」[detail]（12，灰）。
+ * 文字区合成一个读屏单元，读作 [label]（「检测到淘宝商品链接，查返利」），出现时礼貌播报一次。只显示缩略主机，不显示路径与查询。
+ */
+@Composable
+private fun PromptMessage(
+    message: String,
+    detail: String?,
+    badge: String?,
+    label: String?,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier =
+            modifier
+                .semantics(mergeDescendants = true) {
+                    liveRegion = LiveRegionMode.Polite
+                    if (label != null) contentDescription = label
+                }.testTag(ClipboardUi.PROMPT_MESSAGE),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+    ) {
+        Text(
+            text = message,
+            style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
+            color = CouliColors.textPrimary,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (badge != null) PlatformBadge(name = badge)
+            if (detail != null) {
+                Text(
+                    text = detail,
+                    style = CouliTypography.caption,
+                    color = CouliColors.textSecondary,
+                    modifier = Modifier.testTag(ClipboardUi.PROMPT_DETAIL),
+                )
+            }
+        }
     }
 }
 

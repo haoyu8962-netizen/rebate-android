@@ -182,5 +182,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         appRouting.onLaunchIntent(intent.dataString, coldStart = false)
         setIntent(LaunchIntentSanitizer.sanitize(intent, variantLaunchExtraAllowlist()))
+        // 系统分享（FU-CLIP C6）：接收 Activity 已把候选交给剪贴板模块（这个 Intent 不带任何分享内容）；已在前台时立即处理，否则回前台时处理
+        clipboard.onShareDelivered()
     }
 }

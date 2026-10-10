@@ -33,11 +33,13 @@ class ParseInputService(
         uploadText: String,
         owner: CallOwnership,
         title: String? = null,
+        /** clipboard（剪贴板、手动粘贴）或 share_ext（系统分享导入，FU-CLIP K16）。 */
+        scene: String = SCENE_CLIPBOARD,
     ): ParseOutcome {
         val body =
             buildJsonObject {
                 put("text", uploadText.take(MAX_TEXT))
-                put("scene", SCENE_CLIPBOARD)
+                put("scene", scene)
             }.toString()
         val result = api.send(ApiCall(OPERATION, body = body, ownership = owner))
         if (!owner.stillOwned()) return ParseOutcome(null, dropped = true)
@@ -78,6 +80,7 @@ class ParseInputService(
     companion object {
         const val OPERATION = "parseInput"
         const val SCENE_CLIPBOARD = "clipboard"
+        const val SCENE_SHARE = "share_ext"
         const val MAX_TEXT = 4000
 
         /** 传输失败：通用错误文案（没有 trace_id，不带编号）。 */

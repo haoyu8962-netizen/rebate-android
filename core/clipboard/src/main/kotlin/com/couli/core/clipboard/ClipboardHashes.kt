@@ -27,6 +27,16 @@ class MemoryClipboardHashStore : ClipboardHashStore {
         synchronized(values) { if (value == null) values.remove(key) else values[key] = value }
         return true
     }
+
+    /** 全部实际存储的键与值（测试扫描「存储里搜不到原文片段」用）。 */
+    fun dump(): List<String> = synchronized(values) { values.flatMap { (key, value) -> listOf(key, value) } }
+}
+
+/** 自写记录的端口（[ClipboardWriter] 用）：写入前 [record]（确认落盘返回 true），识别时 [contains]。生产是加盐的 [ClipboardRecords]。 */
+interface ClipboardSelfWriteLedger {
+    fun record(text: String): Boolean
+
+    fun contains(text: String): Boolean
 }
 
 /**
@@ -37,13 +47,15 @@ class ClipboardWriteLedger(
     private val capacity: Int = DEFAULT_CAPACITY,
     private val hash: (String) -> String = ClipboardText::sha256,
     private val store: ClipboardHashStore = MemoryClipboardHashStore(),
-) {
+    /** 存储键（FU-CLIP：加盐记录用新键，旧版未加盐记录在 [KEY] 下，升级后删除）。 */
+    private val key: String = KEY,
+) : ClipboardSelfWriteLedger {
     private val lock = Any()
 
     /** 记下自写内容的 hash；返回是否确认落盘（APP-07 共性第 23、25 条）。 */
-    fun record(text: String): Boolean = recordHash(hash(text))
+    override fun record(text: String): Boolean = recordHash(hash(text))
 
-    fun contains(text: String): Boolean = hash(text) in hashes()
+    override fun contains(text: String): Boolean = hash(text) in hashes()
 
     /**
      * 记下 [value]；存储没确认持久化（同步提交返回 false）或写入抛错时返回 false，调用方据此不写系统剪贴板（APP-07 共性第 23、25 条）。
@@ -53,7 +65,7 @@ class ClipboardWriteLedger(
         synchronized(lock) {
             runCatching {
                 val next = (hashes() - value + value).takeLast(capacity)
-                store.write(KEY, next.joinToString(SEPARATOR))
+                store.write(key, next.joinToString(SEPARATOR))
             }.getOrDefault(false)
         }
 
@@ -61,20 +73,20 @@ class ClipboardWriteLedger(
     fun hashes(): List<String> =
         synchronized(lock) {
             store
-                .read(KEY)
+                .read(key)
                 ?.split(SEPARATOR)
                 ?.filter { it.isNotEmpty() }
                 .orEmpty()
                 .takeLast(capacity)
         }
 
-    fun clear() {
-        synchronized(lock) { store.write(KEY, null) }
-    }
+    fun clear(): Boolean = synchronized(lock) { runCatching { store.write(key, null) }.getOrDefault(false) }
 
     companion object {
         const val DEFAULT_CAPACITY = 10
-        private const val KEY = "self_written"
+
+        /** 旧版（APP-07）未加盐记录的键。 */
+        const val KEY = "self_written"
         private const val SEPARATOR = ","
     }
 }
@@ -87,22 +99,24 @@ class ClipboardWriteLedger(
 class PromptHistory(
     private val clock: () -> Long = System::currentTimeMillis,
     private val store: ClipboardHashStore = MemoryClipboardHashStore(),
+    /** 存储键（FU-CLIP：加盐记录用新键）。 */
+    private val key: String = KEY,
 ) {
     private val lock = Any()
 
-    fun record(hash: String) {
+    /** 记下 [hash]；返回是否确认落盘。 */
+    fun record(hash: String): Boolean =
         synchronized(lock) {
             val now = clock()
             val kept = stamps().filter { it.hash != hash && now - it.atMs in 0 until ClipboardClassifier.PROMPT_WINDOW_MS }
             val next = kept + ClipboardPromptStamp(hash, now)
-            store.write(KEY, next.joinToString(SEPARATOR) { "${it.hash}$FIELD${it.atMs}" })
+            runCatching { store.write(key, next.joinToString(SEPARATOR) { "${it.hash}$FIELD${it.atMs}" }) }.getOrDefault(false)
         }
-    }
 
     fun stamps(): List<ClipboardPromptStamp> =
         synchronized(lock) {
             store
-                .read(KEY)
+                .read(key)
                 ?.split(SEPARATOR)
                 ?.mapNotNull { entry ->
                     val hash = entry.substringBefore(FIELD, "")
@@ -111,13 +125,12 @@ class PromptHistory(
                 }.orEmpty()
         }
 
-    fun clear() {
-        synchronized(lock) { store.write(KEY, null) }
-    }
+    fun clear(): Boolean = synchronized(lock) { runCatching { store.write(key, null) }.getOrDefault(false) }
 
-    private companion object {
+    companion object {
+        /** 旧版（APP-07）未加盐记录的键。 */
         const val KEY = "prompted"
-        const val SEPARATOR = ","
-        const val FIELD = "@"
+        private const val SEPARATOR = ","
+        private const val FIELD = "@"
     }
 }

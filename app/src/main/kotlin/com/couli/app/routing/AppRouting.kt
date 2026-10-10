@@ -282,6 +282,9 @@ class AppRouting
             if (this.navigator === navigator) this.navigator = null
         }
 
+        /** 当前有 NavHost 接着（Router 的结论能落到界面上）；剪贴板的系统分享据此判断外壳是否就绪（FU-CLIP R1-01）。 */
+        val navigatorAttached: Boolean get() = navigator != null
+
         /** 状态变化（环境闸门、隐私、强更）或等待到点时调用：把满足条件的启动意图交给 Router。 */
         fun drain() {
             drainCount++

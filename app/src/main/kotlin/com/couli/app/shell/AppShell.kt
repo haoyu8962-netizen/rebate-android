@@ -216,6 +216,12 @@ fun AppShell(
     // 剪贴板（APP-07）：选中的 Tab 与基本模式页的兜底同步（隐私结论变化、恢复保存的选中项等）；用户点 Tab 已在 onOpenTab 同步告知（A-R1-03）
     if (clipboard != null) {
         val basicShell = conclusion == PrivacyState.BASIC_MODE
+        // 外壳的组合进出（Activity 重建、进程恢复）：重新同步 Tab 与回退栈之前，冷启动收到的系统分享不处理（FU-CLIP R1-01）。
+        // DisposableEffect 先于同一次组合的 SideEffect 执行
+        DisposableEffect(clipboard) {
+            clipboard.onShellAttached()
+            onDispose { clipboard.onShellDetached() }
+        }
         SideEffect { clipboard.onShell(selection.tab.route, basicShell) }
     }
 

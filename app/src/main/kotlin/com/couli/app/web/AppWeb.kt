@@ -1,6 +1,5 @@
 package com.couli.app.web
 
-import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import com.couli.app.BuildConfig
@@ -66,6 +65,8 @@ import kotlinx.serialization.json.put
  */
 @Suppress("LongParameterList", "TooManyFunctions") // 各能力的来源逐项注入
 class AppWeb(
+    // 构造签名保留（AppModule 与各集成测试按位置传入）；FU-CLIP 起 clipboard.read 经 AppClipboard 读，不再直接取系统服务
+    @Suppress("UnusedPrivateProperty")
     private val context: Context,
     private val config: AppConfig,
     private val client: Provider<ApiClient>,
@@ -292,15 +293,10 @@ class AppWeb(
         }
 
         override suspend fun clipboardRead(): BridgeOutcome {
-            val manager = context.getSystemService(ClipboardManager::class.java) ?: return fail(BridgeCode.NATIVE_ERROR)
-            val clip =
-                manager.primaryClip
-                    ?.takeIf { it.itemCount > 0 }
-                    ?.getItemAt(0)
-                    ?.coerceToText(context)
-                    ?.toString()
-                    .orEmpty()
-            return BridgeOutcome.Ok(JsonObject(mapOf("text" to JsonPrimitive(clip))))
+            // FU-CLIP C4：只回本地抽出的商品候选（白名单链接 / 口令最多 3 个 + 最小化标题），抽不到回 ""；读之前核对隐私（K12）。
+            // 读到的原文只在 AppClipboard.bridgeRead 这一次调用里经过，不进日志、不进桥事件；调用期间失效由 BridgeHost 以 90500 结算、不交回文本
+            val text = clipboard.get().bridgeRead()
+            return BridgeOutcome.Ok(JsonObject(mapOf("text" to JsonPrimitive(text))))
         }
 
         override fun setClipboardAutoDetect(enabled: Boolean): BridgeOutcome {

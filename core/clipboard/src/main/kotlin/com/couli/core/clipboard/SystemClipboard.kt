@@ -78,7 +78,7 @@ class AndroidSystemClipboard(
  */
 class ClipboardWriter(
     private val system: SystemClipboard,
-    private val ledger: ClipboardWriteLedger,
+    private val ledger: ClipboardSelfWriteLedger,
 ) {
     fun write(
         text: String,

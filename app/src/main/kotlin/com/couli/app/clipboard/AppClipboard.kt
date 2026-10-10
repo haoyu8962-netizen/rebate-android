@@ -5,15 +5,23 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.trade.AppTrade
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clipboard.ClipRead
+import com.couli.core.clipboard.ClipboardBridgeRead
+import com.couli.core.clipboard.ClipboardCandidate
 import com.couli.core.clipboard.ClipboardClassifier
 import com.couli.core.clipboard.ClipboardContext
+import com.couli.core.clipboard.ClipboardFingerprint
+import com.couli.core.clipboard.ClipboardLimits
+import com.couli.core.clipboard.ClipboardPromptDisplay
+import com.couli.core.clipboard.ClipboardPromptInfo
 import com.couli.core.clipboard.ClipboardReadPolicy
 import com.couli.core.clipboard.ClipboardReadState
+import com.couli.core.clipboard.ClipboardRecords
 import com.couli.core.clipboard.ClipboardRules
+import com.couli.core.clipboard.ClipboardSelfWriteLedger
 import com.couli.core.clipboard.ClipboardSensitive
 import com.couli.core.clipboard.ClipboardText
+import com.couli.core.clipboard.ClipboardTitlePolicy
 import com.couli.core.clipboard.ClipboardWatcher
-import com.couli.core.clipboard.ClipboardWriteLedger
 import com.couli.core.clipboard.ClipboardWriter
 import com.couli.core.clipboard.InviteConfirmAction
 import com.couli.core.clipboard.ManualPasteAction
@@ -21,7 +29,8 @@ import com.couli.core.clipboard.ParseAction
 import com.couli.core.clipboard.ParseInputService
 import com.couli.core.clipboard.ParseResultAction
 import com.couli.core.clipboard.ParseRow
-import com.couli.core.clipboard.PromptHistory
+import com.couli.core.clipboard.ShareImportAction
+import com.couli.core.clipboard.ShareImportDecision
 import com.couli.core.clipboard.SystemClipboard
 import com.couli.core.clipboard.WatcherReadOutcome
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
@@ -36,6 +45,7 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,13 +62,20 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
-/** 首页提示条（界面状态；不含剪贴板原文，只有抽出的邀请码）。 */
+/**
+ * 首页提示条（界面状态；不含剪贴板原文，只有抽出的邀请码与缩略候选）。
+ * [display]：商品提示条上显示的平台与缩略候选（FU-CLIP C7，K26；点击上传的就是同一编号下的那一份候选）；[share]：系统分享提示条（C6）。
+ */
 data class ClipboardPrompt(
     val id: Long,
     val kind: String,
     val inviteCode: String? = null,
     val busy: Boolean = false,
+    val display: ClipboardPromptInfo? = null,
+    val share: Boolean = false,
 )
 
 /**
@@ -135,15 +152,46 @@ class AppClipboard(
     val invitePrefill: InvitePrefill = InvitePrefill(),
     private val sessionEpoch: () -> Long = { 0L },
     private val clock: () -> Long = System::currentTimeMillis,
+    /** 本机盐的随机源（FU-CLIP C3：生产为系统 CSPRNG；测试注入样例字节）。 */
+    randomSalt: () -> ByteArray = ::secureSalt,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    val ledger = ClipboardWriteLedger(store = prefs.hashes)
-    val history = PromptHistory(clock, prefs.hashes)
+    /** 去重与自写记录（FU-CLIP C3）：只存本机盐的 HMAC 指纹与时间（盐经 Keystore 包裹存在 [ClipboardPreferences.salt]）。 */
+    val records = ClipboardRecords(prefs.hashes, prefs.salt, clock, randomSalt)
+
+    /** 加盐的自写记录（观察用）。 */
+    val ledger get() = records.ledger
+
+    /** 加盐的 24 小时提示记录（观察用）。 */
+    val history get() = records.history
+
+    /**
+     * 自写记录的写入口：已同意时记加盐指纹（记不上 → 不写系统剪贴板，APP-07 第 23、25 条）；未同意（基本模式）不生成盐、不记、照常写
+     * （识别在未同意时整体关闭，撤回 / 再同意时记录本就清空；规则空白 AS03，同鸿蒙 HS02）。
+     */
+    private val selfWrites =
+        object : ClipboardSelfWriteLedger {
+            override fun record(text: String): Boolean = privacy() != PrivacyState.CONSENTED || records.recordSelfWritten(text)
+
+            override fun contains(text: String): Boolean = records.isSelfWritten(text)
+        }
 
     /** App 写剪贴板的唯一入口（桥 clipboard.write、复制口令 copy_tpwd、各原生复制按钮）。 */
-    val writer = ClipboardWriter(system, ledger)
+    val writer = ClipboardWriter(system, selfWrites)
     private val parser = ParseInputService(api)
+
+    /** 升级迁移（FU-CLIP §2.2 第 6 条）：旧版未加盐记录还没确认删掉（失败时下一次回前台重试）。 */
+    private var legacyPending = true
+
+    private fun dropLegacy() {
+        if (legacyPending) legacyPending = !records.dropLegacy()
+    }
+
+    init {
+        // 升级后第一次运行（已同意或未同意都做）主动删掉旧版未加盐的记录
+        dropLegacy()
+    }
 
     /** 进入强更分流（APP-03a 的同一个入口 AppUpdate.on10405；App 接线时给，APP-07 共性第 20 条）。 */
     var onForceUpdate: () -> Unit = {}
@@ -254,8 +302,12 @@ class AppClipboard(
         val kind: String,
         val upload: String?,
         val inviteCode: String?,
-        /** 请求前本地抽出的「」标题片段（整体 30132 预填用，APP-07 共性第 30 条）；不是原文。 */
+        /** 请求前本地抽出、已最小化的「」标题片段（整体 30132 预填用，APP-07 共性第 30 条、FU-CLIP 共性第 8 条）；不是原文。 */
         val title: String? = null,
+        /** 提示条显示与点击上传的同一份候选（FU-CLIP C7）；规则表变化时据此作废（§2.1 第 5 条）。 */
+        val candidates: List<ClipboardCandidate> = emptyList(),
+        /** parse 的 scene：剪贴板 clipboard，系统分享 share_ext（K16）。 */
+        val scene: String = ParseInputService.SCENE_CLIPBOARD,
     )
 
     /**
@@ -299,8 +351,11 @@ class AppClipboard(
         cold: Boolean,
         hasFocus: Boolean,
     ) {
+        dropLegacy()
         watcher.onForeground(cold, hasFocus)
         publish()
+        // 不在前台时到达的系统分享：前台与外壳都就绪后处理一次（FU-CLIP 共性第 2、7 条）
+        processShare()
     }
 
     /** ON_STOP（配置变更重建不调）：作废未点击的提示条、在途读取与 parse、结果提示。 */
@@ -329,17 +384,38 @@ class AppClipboard(
         topEntryId = entryId
         homeOnTop = top == null
         screenChanged()
+        // 先同步回退栈、再宣布就绪（R1-01）：恢复后的栈顶已知，冷启动收到的分享才按真实界面处理
+        stackSynced = true
+        processShare()
     }
 
-    /** 外壳选中的 Tab 与基本模式页（首页 Tab 的根在基本模式下是基本模式页，不显示提示条）。 */
+    /**
+     * 外壳选中的 Tab 与基本模式页（首页 Tab 的根在基本模式下是基本模式页，不显示提示条）。先同步恢复后的 Tab 与基本模式，再判断外壳是否就绪、
+     * 处理冷启动收到的分享（R1-01：不能在 Tab 还是缺省首页时就出条，随后恢复成「我的」又被清掉）。
+     */
     fun onShell(
         selectedTab: String,
         basicMode: Boolean,
     ) {
-        if (selectedTab == tab && basicMode == basicShell) return
-        tab = selectedTab
-        basicShell = basicMode
-        screenChanged()
+        if (selectedTab != tab || basicMode != basicShell) {
+            tab = selectedTab
+            basicShell = basicMode
+            screenChanged()
+        }
+        tabSynced = true
+        processShare()
+    }
+
+    /** 外壳（AppShell）进入组合：之后要重新收到 Tab 与回退栈的同步才算就绪（Activity 重建、进程恢复，R1-01）。 */
+    fun onShellAttached() {
+        tabSynced = false
+        stackSynced = false
+    }
+
+    /** 外壳离开组合：Router 的结论落不到界面上，暂存的分享等下一次外壳就绪。 */
+    fun onShellDetached() {
+        tabSynced = false
+        stackSynced = false
     }
 
     /** SearchTyping（回退栈条目 [entryId]）登记本页搜索框的填入：30132 的【用商品名搜索】直接填进本页，不另开一页。 */
@@ -384,11 +460,14 @@ class AppClipboard(
             // 发起页被覆盖、出栈或切走（同步出口）：界面世代加 1，离开前发起的 parse 作废并取消；回到同一页面实例也不恢复（A-R1-02）
             lastOrigin = origin
             screenGen += 1
+            pageMoved(nowHome)
         }
         // 先发布新快照、再取消：网络线程此后读到的已是作废后的归属（A-R2-04）
         publish()
         if (moved) cancelOwned()
         if (mutableResult.value?.origin != origin) mutableResult.value = null
+        // 分享已经回首页：到达首页 Tab 根页时再出提示条，身份按此刻一次取定（共性第 7 条）
+        presentShare()
     }
 
     /**
@@ -396,6 +475,10 @@ class AppClipboard(
      * 浮层关闭后旧请求也不恢复（A-R1-04）。
      */
     fun onSensitiveOverlay() {
+        // 暂存与正回首页的系统分享同步作废（R1-02）
+        pageGen += 1
+        pendingShare = null
+        awaitingShare = null
         homeGen += 1
         bumpScreen()
         clearPrompt()
@@ -413,19 +496,36 @@ class AppClipboard(
         clearRecords()
     }
 
-    /** 撤回同意的本地清理（CredentialCleanerRegistry 登记）：hash 记录全部删除。 */
+    /**
+     * 撤回同意的本地清理：先删盐、再删两份记录（FU-CLIP §2.2 第 4 条）。这里是隐私结论通知里的即时清理；确认落盘与失败重试由
+     * CredentialCleanerRegistry 登记的 [ClipboardPreferences.clearHashes] 负责（APP-07 第 14 条）。
+     */
     fun clearRecords() {
-        ledger.clear()
-        history.clear()
+        records.withdraw()
     }
 
-    /** 登录、退出、切换账号：作废提示条与在途 parse（请求绑定会话世代）。 */
-    fun onSessionChanged() = invalidateAll()
+    /**
+     * 登录、退出、切换账号：作废提示条与在途 parse（请求绑定会话世代）。还没处理的系统分享只在登录世代真的变了时作废（冷启动时会话状态恢复
+     * 的通知不算换号，FU-CLIP 共性第 7 条）。
+     */
+    fun onSessionChanged() {
+        val keep = listOfNotNull(pendingShare, awaitingShare).all { it.session == sessionEpoch() }
+        val pending = pendingShare
+        val awaiting = awaitingShare
+        invalidateAll()
+        if (keep) {
+            pendingShare = pending
+            awaitingShare = awaiting
+        }
+    }
 
     /** 切换环境：作废全部。 */
     fun onEnvironmentSwitched() = invalidateAll()
 
     private fun invalidateAll() {
+        // 系统分享的暂存与「回首页后出条」同步作废（FU-CLIP 共性第 2 条）
+        pendingShare = null
+        awaitingShare = null
         homeGen += 1
         bumpScreen()
         clearPrompt()
@@ -484,7 +584,14 @@ class AppClipboard(
             ?.mapNotNull { (it as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content }
             .orEmpty()
 
-    private fun rules(): ClipboardRules = ClipboardRules.fromConfig(configData()["clipboard"] as? JsonElement)
+    /**
+     * 当前规则：包内默认（config.clipboard 键名未定，整体回落，G02 / K02）按 features.flags 的 clipboard.enabled.<电商平台>=false 收紧（K03，
+     * F-CLIP-05「按平台一键关闭」，只收紧）。
+     */
+    private fun rules(): ClipboardRules {
+        val data = configData()
+        return ClipboardRules.fromConfig(data["clipboard"] as? JsonElement).tightened(ClipboardLimits.fromConfigData(data))
+    }
 
     fun readState(): ClipboardReadState =
         ClipboardReadState(
@@ -498,9 +605,12 @@ class AppClipboard(
         )
 
     /** 回前台后第一次获得焦点：读 1 次（只在首页根页），读到的原文立即分类后丢弃。 */
+    @Suppress("ReturnCount") // 不在首页、分享优先、读取结果
     private fun autoRead(round: Long): WatcherReadOutcome {
         // TODO(N-30) rule-gaps A01：提示条只在首页根页显示，别的页面上回前台不读（读了也不会提示）
         if (!homeRoot()) return WatcherReadOutcome.DONE
+        // 用户刚从别的 App 分享过来（暂存、正回首页或分享提示条显示中）：这一次前台不再读剪贴板，不用剪贴板提示条替换分享（AS04）
+        if (pendingShare != null || awaitingShare != null || ticket?.scene == ShareImportAction.SCENE_SHARE) return WatcherReadOutcome.DONE
         return when (val read = system.read()) {
             ClipRead.Unavailable -> {
                 WatcherReadOutcome.UNAVAILABLE
@@ -522,24 +632,31 @@ class AppClipboard(
         round: Long,
     ) {
         val guest = routing.session.value == SessionState.GUEST
+        // 加盐视图（FU-CLIP C3）：盐不可用 → 24 小时去重与自写排除都判断不了，这一次不自动出提示条（不回落到未加盐 hash）
+        val view = records.view() ?: return
         val context =
             ClipboardContext(
-                selfWritten = ledger.hashes(),
-                prompted = history.stamps(),
+                selfWritten = view.selfWritten,
+                prompted = view.prompted,
                 // 已登录用户的邀请分支只写判定（G01），界面不出提示条：这里按不可绑定；TODO(N-30) G01 契约补接口后接 getMe
                 inviteEligible = guest,
                 selfInviteCode = null,
                 shareDomains = shareDomains(),
+                hash = view.fingerprint::hash,
             )
-        val verdict = ClipboardClassifier.classify(text, context, rules(), clock())
+        val rules = rules()
+        val verdict = ClipboardClassifier.classify(text, context, rules, clock())
         val hash = verdict.hash ?: return
+        val stamp = Stamp(view.fingerprint, hash)
         when (verdict.kindRaw) {
             ClipboardClassifier.KIND_PRODUCT -> {
-                show(round, hash, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null, ClipboardText.quotedTitle(text))
+                // 只有候选非空才出条（分类已保证）；「」标题按上传同一套最小化后才留作 30132 预填（FU-CLIP 共性第 5、8 条）
+                val title = ClipboardTitlePolicy.minimize(ClipboardText.quotedTitle(text), rules, shareDomains())
+                show(round, stamp, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null, title, verdict.candidates)
             }
 
             ClipboardClassifier.KIND_INVITE -> {
-                if (guest) show(round, hash, ClipboardClassifier.KIND_INVITE, null, verdict.inviteCode)
+                if (guest) show(round, stamp, ClipboardClassifier.KIND_INVITE, null, verdict.inviteCode)
             }
 
             else -> {
@@ -548,21 +665,29 @@ class AppClipboard(
         }
     }
 
+    /** 分类时的加盐指纹与原文指纹（出提示条时记入提示记录）。 */
+    private class Stamp(
+        val fingerprint: ClipboardFingerprint,
+        val hash: String,
+    )
+
+    @Suppress("LongParameterList") // 提示条的各项一次取定
     private fun show(
         round: Long,
-        hash: String,
+        stamp: Stamp,
         kind: String,
         upload: String?,
         inviteCode: String?,
         title: String? = null,
+        candidates: List<ClipboardCandidate> = emptyList(),
     ) {
         if (!homeRoot() || privacy() != PrivacyState.CONSENTED) return
-        // 出了提示条就记录（点了或关了都算，G08）
-        history.record(hash)
+        // 出了提示条就记录（点了或关了都算，G08）；只记加盐指纹（FU-CLIP C3）
+        records.recordPromptedHash(stamp.fingerprint, stamp.hash)
         counter += 1
-        val next = Ticket(counter, round, homeGen, screenGen, sessionEpoch(), api.epochs(), kind, upload, inviteCode, title)
+        val next = Ticket(counter, round, homeGen, screenGen, sessionEpoch(), api.epochs(), kind, upload, inviteCode, title, candidates)
         ticket = next
-        mutablePrompt.value = ClipboardPrompt(next.id, kind, inviteCode)
+        mutablePrompt.value = ClipboardPrompt(next.id, kind, inviteCode, display = ClipboardPromptDisplay.describe(candidates))
         publish()
     }
 
@@ -603,14 +728,14 @@ class AppClipboard(
             clearPrompt()
             return
         }
-        if (gate.active) return
+        // 共享限流与共享 busy 在所有分支（邀请、商品、分享）之前（FU-CLIP R1-03）：已有商品 parse 在途（提示条或任一粘贴入口发起的）时，
+        // 重组前到达的确认点击、排队的旧回调都不执行——不预填邀请码、不打开登录页、不再发 parse，不打断在途识别
+        if (gate.active || mutableBusy.value) return
         if (t.kind == ClipboardClassifier.KIND_INVITE) {
             confirmInvite(t)
             return
         }
         val upload = t.upload ?: return
-        // 共享 busy（R1-05）：已有商品 parse 在途（提示条或任一粘贴入口发起的）就不再发
-        if (mutableBusy.value) return
         val busy = takeBusy()
         mutablePrompt.value = mutablePrompt.value?.copy(busy = true)
         publish()
@@ -620,7 +745,7 @@ class AppClipboard(
         scope.launch {
             val outcome =
                 try {
-                    parser.parse(upload, owner, t.title)
+                    parser.parse(upload, owner, t.title, t.scene)
                 } finally {
                     releaseBusy(busy)
                 }
@@ -676,8 +801,9 @@ class AppClipboard(
         val read = system.read()
         val text = (read as? ClipRead.Text)?.value
         // App 自己写入的内容（复制口令、桥 clipboard.write 等）手动粘贴同样排除（APP-07 共性第 17 条，BR-ID-16、03 §4.6）：不上传 parse、不出提示
-        if (text != null && ClipboardText.sha256(text) in ledger.hashes()) return
-        val decision = ManualPasteAction.decide(entry, text, rules(), shareDomains())
+        if (text != null && records.isSelfWritten(text)) return
+        val rules = rules()
+        val decision = ManualPasteAction.decide(entry, text, rules, shareDomains())
         when (decision.actionRaw) {
             ManualPasteAction.OPEN_SEARCH_TYPING -> {
                 if (entry == ManualPasteAction.ENTRY_HOME) open(SEARCH_ROUTE, JsonObject(emptyMap()))
@@ -689,7 +815,8 @@ class AppClipboard(
 
             ManualPasteAction.PARSE -> {
                 // 「」标题在请求前本地抽出、随请求绑定（整体 30132 预填，共性第 30 条）；原文只留在这个局部变量里
-                decision.uploadText?.let { manualParse(it, origin, text?.let(ClipboardText::quotedTitle)) }
+                val title = text?.let { ClipboardTitlePolicy.minimize(ClipboardText.quotedTitle(it), rules, shareDomains()) }
+                decision.uploadText?.let { manualParse(it, origin, title) }
             }
 
             // 只有邀请内容：不上传 parse（A-R3-01）。游客出确认条，确认后预填登录页；已登录按 G01 不出邀请提示、不发绑定请求
@@ -797,6 +924,217 @@ class AppClipboard(
         return ManualPasteAction.decide(ManualPasteAction.ENTRY_LOGIN_INVITE, text, rules()).code
     }
 
+    // ---------------------------------------------------------------- 桥 clipboard.read（FU-CLIP C4）
+
+    /**
+     * H5 经桥 clipboard.read（L2：白名单来源、主框架、已登录、1 秒内手势由 BridgeHost 先判）：读之前再核对隐私已同意当前版本（K12：不满足不读、
+     * 回 ""）；读到的原文只在这一次调用里做候选拼接（白名单链接 / 口令最多 3 个 + 最小化标题），抽不到回 ""；邀请内容、非白名单链接与其余文字
+     * 都不回；不套自写排除与 24 小时去重（K13）。原文不进日志与桥事件。
+     */
+    fun bridgeRead(): String =
+        ClipboardBridgeRead.respond(
+            consentRaw = consentRaw(),
+            read = { (system.read() as? ClipRead.Text)?.value },
+            rules = rules(),
+            shareDomains = shareDomains(),
+        )
+
+    // ---------------------------------------------------------------- 规则表变化（FU-CLIP §2.1 第 5 条）
+
+    /** 配置快照换了：已显示但未点击的提示条、暂存的分享，若候选已不被允许就同步作废（在途 parse 不追回）。 */
+    fun onRulesChanged() {
+        val rules = rules()
+
+        fun stale(candidates: List<ClipboardCandidate>) = candidates.any { !it.stillAllowed(rules) }
+        if (ticket?.let { it.busyFree() && stale(it.candidates) } == true) clearPrompt()
+        if (pendingShare?.let { stale(it.decision.candidates) } == true) pendingShare = null
+        if (awaitingShare?.let { stale(it.decision.candidates) } == true) awaitingShare = null
+    }
+
+    /** 提示条没有在途 parse（在途的不追回）。 */
+    private fun Ticket.busyFree(): Boolean = mutablePrompt.value?.let { it.id != id || !it.busy } ?: true
+
+    // ---------------------------------------------------------------- 系统分享导入（FU-CLIP C6）
+
+    /**
+     * 收到的一次分享（不含原文）：[serial] 递增接收编号；身份在到达时一次取定（隐私 / 环境世代 [epochs]、登录世代 [session]、前台轮次 [round]
+     * 与此刻是否在前台 [foreground]，共性第 1、2 条）；之后只拿它们与当前状态比较。
+     */
+    @Suppress("LongParameterList") // 到达时一次取定的身份逐项
+    private class PendingShare(
+        val serial: Long,
+        val decision: ShareImportDecision,
+        val epochs: CallEpochs,
+        val session: Long,
+        val round: Long,
+        val foreground: Boolean,
+        /**
+         * 到达时的页面票据（[pageGen]，R1-02）：外壳已就绪时取定，之后页面每变一次（入站路由、待办恢复、切 Tab、敏感浮层）都同步作废这次分享；
+         * 外壳还没就绪（冷启动、进程恢复）时为 null——此时还没有可确定的页面实例，恢复过程中的 Tab / 回退栈同步不算页面变化（R1-01）。
+         */
+        val page: Long?,
+    )
+
+    private var shareSerial = 0L
+
+    /** 已收到、还没处理（等前台与外壳就绪）的分享。 */
+    private var pendingShare: PendingShare? = null
+
+    /** 已经经 Router 回首页、等到达首页 Tab 根页再出条的分享。 */
+    private var awaitingShare: PendingShare? = null
+
+    /** 外壳已同步过当前的 Tab 与基本模式（[onShell]）、回退栈（[onBackStack]）；外壳重新进入组合时清零（[onShellAttached]）。 */
+    private var tabSynced = false
+    private var stackSynced = false
+
+    /**
+     * 页面世代（系统分享用，R1-02）：当前前台界面每变一次（[screenChanged] 判定为移动）、敏感浮层每出现一次加 1。不随作废出口（进后台、会话恢复
+     * 通知等）变化，所以只反映「页面换了」。
+     */
+    private var pageGen = 0L
+
+    /** 正在执行本次分享主动回首页的受控交接（[processShare] 里 Router 打开首页的同步调用期间）。 */
+    private var shareHandoff = false
+
+    /** 外壳就绪：Tab、基本模式与回退栈都已按恢复后的状态同步，且 NavHost 接着 Router（R1-01：确认导航器已接好）。 */
+    private fun shellReady(): Boolean = tabSynced && stackSynced && routing.navigatorAttached
+
+    /**
+     * 页面换了（同步出口）：暂存的分享若已有页面票据就作废（R1-02）；正回首页的分享只在本次受控交接的导航中、或这次变化正好到达首页 Tab 根页
+     * （交接的回退栈通知稍后才到）时保留，其余一律作废，不给失效的分享重新绑定当前页面。
+     */
+    private fun pageMoved(nowHome: Boolean) {
+        pageGen += 1
+        if (pendingShare?.page != null) pendingShare = null
+        if (awaitingShare != null && !shareHandoff && !nowHome) awaitingShare = null
+    }
+
+    /**
+     * 系统分享到达（专用接收 Activity 的 onCreate 当场调，FU-CLIP §2.5）：[text] 是 EXTRA_TEXT，当场抽候选后即丢弃，不保存、不进日志。
+     * 到达这一刻就过闸门（隐私、首启弹窗、敏感页与敏感浮层、parse 在途，K18、K19、K22）并固定身份与递增接收编号（共性第 1 条）；
+     * 每次到达都替代之前未处理的分享（HS15 同口径）。返回是否留下待处理的分享（测试与诊断用；不含内容）。
+     */
+    fun receiveShare(
+        mime: String?,
+        text: String?,
+    ): Boolean {
+        shareSerial += 1
+        pendingShare = null
+        awaitingShare = null
+        val decision = ShareImportAction.decideWith(shareState(), ShareImportAction.payload(mime, text, rules(), shareDomains()))
+        if (decision.actionRaw !in HANDLED_SHARES) return false
+        val page = if (shellReady()) pageGen else null
+        pendingShare = PendingShare(shareSerial, decision, api.epochs(), sessionEpoch(), watcher.round, watcher.inForeground, page)
+        processShare()
+        return true
+    }
+
+    /** 分享接收 Activity 拉起 MainActivity 之后（onNewIntent）：已在前台时立即处理暂存的分享。 */
+    fun onShareDelivered() = processShare()
+
+    /** 是否有还没处理完的分享（测试与诊断用）。 */
+    val sharePending: Boolean get() = pendingShare != null || awaitingShare != null
+
+    private fun shareState(): JsonObject =
+        buildJsonObject {
+            put("consent", consentRaw())
+            put("route", if (homeOnTop) tab else topRoute)
+            put("overlay", currentOverlay())
+            put("parseInFlight", mutableBusy.value)
+        }
+
+    /** 分享到达时取定的归属仍成立：隐私仍已同意、隐私 / 环境世代与登录世代都没变（真实撤回、切环境、换号立即作废，共性第 7 条）。 */
+    private fun shareOwned(p: PendingShare): Boolean =
+        privacy() == PrivacyState.CONSENTED && api.epochs() == p.epochs && sessionEpoch() == p.session
+
+    /**
+     * 处理暂存的分享：前台与外壳都就绪后才处理（冷启动等环境、首屏与前台，共性第 7 条）；只消费正好这一轮前台（到达时在前台）或紧接着的下一次
+     * 回前台（到达时在后台、冷启动）的交接（共性第 2 条）；再过一次闸门，经 Router 回到首页 Tab 根页，到达后出条。
+     */
+    @Suppress("ReturnCount") // 未就绪、归属失效、闸门逐项短路
+    private fun processShare() {
+        val p = pendingShare ?: return
+        if (!watcher.inForeground || !shellReady()) return
+        pendingShare = null
+        if (!shareStillCurrent(p)) return
+        // 等待之后复核：此刻停在敏感页 / 敏感浮层、parse 在途 → 丢弃，不跳走（K19、K22）
+        if (ClipboardSensitive.sensitive(if (homeOnTop) tab else topRoute, currentOverlay()) || mutableBusy.value) return
+        awaitingShare = p
+        if (!homeRoot()) handOffHome(p)
+        presentShare()
+    }
+
+    /**
+     * 暂存的分享仍属于这次交接：正好这一轮前台（到达时在前台）或紧接着的下一次回前台（到达时在后台、冷启动），归属未变，且到达后页面没换过
+     * （页面票据，R1-02；页面变化的同步出口已作废，这里再核对一次）。
+     */
+    private fun shareStillCurrent(p: PendingShare): Boolean {
+        val expectedRound = if (p.foreground) p.round else p.round + 1
+        val samePage = p.page == null || p.page == pageGen
+        return watcher.round == expectedRound && shareOwned(p) && samePage
+    }
+
+    /** 本次分享主动回首页的受控交接（R1-02）：只有这次导航引起的页面变化不作废它。 */
+    private fun handOffHome(p: PendingShare) {
+        shareHandoff = true
+        try {
+            open(RouteNames.HOME, JsonObject(emptyMap()))
+        } finally {
+            shareHandoff = false
+        }
+        // 没有切到首页 Tab（Router 拦下、导航器不在）：不留着等以后碰巧回到首页再出旧分享
+        if (awaitingShare === p && tab != RouteNames.HOME) awaitingShare = null
+    }
+
+    /** 回到首页 Tab 根页之后出分享提示条或本地 30132（身份按此刻一次取定，之后只比较，共性第 7 条、APP-09 第 65 条）。 */
+    @Suppress("ReturnCount") // 未到首页、归属失效、规则失效逐项短路
+    private fun presentShare() {
+        val p = awaitingShare ?: return
+        if (!homeRoot() || !watcher.inForeground) return
+        awaitingShare = null
+        if (!shareOwned(p) || !overlayClear() || mutableBusy.value) return
+        val decision = p.decision
+        // 发布前按此刻的规则再校验全部候选（FU-CLIP 共性第 9 条）：配置收紧后已不被允许 → 丢弃（不改用当前身份重新判定）
+        val rules = rules()
+        if (decision.candidates.any { !it.stillAllowed(rules) }) return
+        when (decision.actionRaw) {
+            ShareImportAction.PROMPT -> {
+                // 新分享替换未点击的提示条（剪贴板或分享，K22）与首页的结果提示；不记提示历史、不查自写（K21）
+                mutableResult.value = null
+                counter += 1
+                val next =
+                    Ticket(
+                        counter,
+                        watcher.round,
+                        homeGen,
+                        screenGen,
+                        sessionEpoch(),
+                        api.epochs(),
+                        ClipboardClassifier.KIND_PRODUCT,
+                        decision.uploadText,
+                        null,
+                        decision.prefill,
+                        decision.candidates,
+                        ShareImportAction.SCENE_SHARE,
+                    )
+                ticket = next
+                mutablePrompt.value =
+                    ClipboardPrompt(next.id, ClipboardClassifier.KIND_PRODUCT, display = decision.display, share = true)
+                publish()
+            }
+
+            ShareImportAction.SEARCH_PREFILL -> {
+                // 非商品：本地 30132 同款提示，预填只取最小化后的「」标题（没有就留空，不拿原文首行），不上传
+                clearPrompt()
+                mutableResult.value = unrecognized(currentOrigin(), decision.prefill)
+            }
+
+            else -> {
+                Unit
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- 结果
 
     private var serial = 0L
@@ -883,7 +1221,7 @@ class AppClipboard(
      * 结果按钮（打开卡片、用商品名搜索、邀请确认）在执行层的统一核对（APP-07 共性第 16 条，F1-04）：共享限流（42901 禁用期）中不执行，
      * 且必须仍是当前结果（F1-05）。界面同步置灰（[blocked]）。
      */
-    private fun actionable(result: ClipboardResult): Boolean = !gate.active && current(result)
+    private fun actionable(result: ClipboardResult): Boolean = !gate.active && !mutableBusy.value && current(result)
 
     /** 30132 的【用商品名搜索】：[fill] 是 SearchTyping 本页的搜索框；没有时经 Router 打开 Search（q 预填，提取不到就留空）。 */
     fun searchByName(result: ClipboardResult.Unrecognized) {
@@ -988,6 +1326,13 @@ class AppClipboard(
         /** 结果的发起页是首页根页（[currentOrigin] 的首页形态）。 */
         fun isHomeOrigin(origin: String): Boolean = origin.startsWith(HOME_ORIGIN_PREFIX)
 
+        /** 分享判定里需要继续处理（回首页）的几种。 */
+        private val HANDLED_SHARES =
+            setOf(ShareImportAction.PROMPT, ShareImportAction.SEARCH_PREFILL, ShareImportAction.HOME_ONLY)
+
+        /** 系统 CSPRNG 生成 32 字节盐（FU-CLIP §2.2 第 2 条）。 */
+        fun secureSalt(): ByteArray = ByteArray(ClipboardFingerprint.SALT_BYTES).also { SecureRandom().nextBytes(it) }
+
         const val SEARCH_ROUTE = "Search"
         const val PRODUCT_DETAIL_ROUTE = "ProductDetail"
         private const val HOME_ORIGIN_PREFIX = "home:"
@@ -1016,7 +1361,11 @@ fun AppClipboard.connectPurchaseStatus(
     trade?.subscribeStatus(::onPurchaseStatusChanged)
     if (store != null) {
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
-            store.snapshots.drop(1).collect { onPurchaseStatusChanged() }
+            store.snapshots.drop(1).collect {
+                onPurchaseStatusChanged()
+                // 规则表（features.flags 的电商平台开关）可能变了：已显示的提示条若候选不再被允许就作废（FU-CLIP §2.1 第 5 条）
+                onRulesChanged()
+            }
         }
     }
 }
@@ -1036,5 +1385,12 @@ fun AppClipboard.connect(
     cleaners?.register { _, _ -> onEnvironmentSwitched() }
     CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
         routing.session.drop(1).collect { onSessionChanged() }
+    }
+}
+
+/** 规则表的接线（AppModule）：配置快照每换一次，复核已显示的提示条与暂存分享的候选（FU-CLIP §2.1 第 5 条）。 */
+fun AppClipboard.connectRules(store: ConfigStore) {
+    CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
+        store.snapshots.drop(1).collect { onRulesChanged() }
     }
 }

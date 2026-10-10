@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.app.search.SearchDraftTexts
 import com.couli.core.clipboard.ClipboardClassifier
 import com.couli.core.clipboard.ClipboardPromptBar
+import com.couli.core.clipboard.ClipboardPromptInfo
 import com.couli.core.clipboard.HomePasteCard
 import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.ParseResultAction
@@ -82,6 +84,7 @@ object ClipboardScreens {
  * 「粘贴链接，先查返利 · 去粘贴」卡。42901 限流中按钮与卡置灰。
  */
 @Composable
+@Suppress("CyclomaticComplexMethod") // 剪贴板、邀请、分享三种提示条的文案逐项选择
 fun HomeClipboardArea(clipboard: AppClipboard) {
     val prompt by clipboard.prompt.collectAsStateWithLifecycle()
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
@@ -98,23 +101,47 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         prompt?.let { current ->
-            val invite = current.kind == ClipboardClassifier.KIND_INVITE
-            ClipboardPromptBar(
-                message =
-                    if (invite) {
-                        texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.inviteCode.orEmpty()))
-                    } else {
-                        texts.text(PROMPT_KEY)
-                    },
-                actionText = texts.text(if (invite) "clipboard.invite_prompt.action" else "clipboard.prompt.action"),
-                actionLabel = texts.text(if (invite) "clipboard.invite_prompt.action_label" else "clipboard.prompt.action_label"),
-                closeLabel = texts.text("clipboard.prompt.close"),
-                // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
-                onAction = { clipboard.onPromptAction(current.id) },
-                onClose = { clipboard.onPromptClose(current.id) },
-                enabled = !blocked && (current.busy || !busy),
-                busy = current.busy,
-            )
+            // 每条提示一个独立节点（按编号 key）：换成新提示时旧节点整体丢弃，旧节点上已捕获的点击 / 关闭回调只带旧编号，执行时与当前提示比较后
+            // 无效果，不会转调新提示的回调（FU-CLIP 共性第 3 条、APP-09 第 63 条）
+            key(current.id) {
+                val invite = current.kind == ClipboardClassifier.KIND_INVITE
+                val platform = current.display?.let { PromptPlatformTexts.of(it, current.share) }
+                val id = current.id
+                ClipboardPromptBar(
+                    message =
+                        when {
+                            invite -> texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.inviteCode.orEmpty()))
+                            platform != null && current.share -> platform.title
+                            else -> texts.text(PROMPT_KEY)
+                        },
+                    actionText =
+                        texts.text(
+                            when {
+                                invite -> "clipboard.invite_prompt.action"
+                                current.share -> "clipboard.share_prompt.action"
+                                else -> "clipboard.prompt.action"
+                            },
+                        ),
+                    // 分享条按钮读屏名与可见字一致「查返利」（分享不是粘贴）；剪贴板与邀请条的读屏名不变
+                    actionLabel =
+                        texts.text(
+                            when {
+                                invite -> "clipboard.invite_prompt.action_label"
+                                current.share -> "clipboard.share_prompt.action"
+                                else -> "clipboard.prompt.action_label"
+                            },
+                        ),
+                    closeLabel = texts.text("clipboard.prompt.close"),
+                    // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
+                    onAction = { clipboard.onPromptAction(id) },
+                    onClose = { clipboard.onPromptClose(id) },
+                    enabled = !blocked && (current.busy || !busy),
+                    busy = current.busy,
+                    detail = platform?.detail,
+                    badge = platform?.badge,
+                    messageLabel = platform?.label,
+                )
+            }
         }
         UnrecognizedInline(clipboard, origin = AppClipboard::isHomeOrigin)
         InviteConfirmInline(clipboard, origin = AppClipboard::isHomeOrigin, enabled = !blocked)
@@ -184,6 +211,22 @@ fun InviteConfirmInline(
     val message = texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.code))
     // 提示条自带礼貌型实时区域（文字变了会读）；连续两次同一邀请码时文字不变，按结果编号补读一次（APP-07 共性第 33 条）
     AnnounceResult(current.id, message, surfaceAnnouncesChanges = true)
+    // 共享 busy：读取或 parse 在途时确认按钮同步置灰（FU-CLIP 共性第 4 条）；按结果编号独立节点（共性第 3 条）
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    key(current.id) {
+        InviteConfirmBar(clipboard, current, message, enabled && !busy, modifier)
+    }
+}
+
+@Composable
+private fun InviteConfirmBar(
+    clipboard: AppClipboard,
+    current: ClipboardResult.InviteConfirm,
+    message: String,
+    enabled: Boolean,
+    modifier: Modifier,
+) {
+    val texts = ClipboardDraftTexts
     Box(modifier = modifier.fillMaxWidth().testTag(ClipboardScreens.INVITE_CONFIRM)) {
         ClipboardPromptBar(
             message = message,
@@ -253,6 +296,19 @@ fun UnrecognizedInline(
     if (!origin(current.origin)) return
     // 每个新结果读一次（按结果编号，APP-07 共性第 33 条）：连续两次 30132 文字相同、视图不重建，实时区域不会再读
     AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
+    // 按结果编号独立节点：旧节点的点击回调只带旧结果（FU-CLIP 共性第 3 条）
+    key(current.id) { UnrecognizedRow(clipboard, current, blocked, modifier) }
+}
+
+@Composable
+private fun UnrecognizedRow(
+    clipboard: AppClipboard,
+    current: ClipboardResult.Unrecognized,
+    blocked: Boolean,
+    modifier: Modifier,
+) {
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    val disabled = blocked || busy
     Row(
         modifier =
             modifier
@@ -284,14 +340,14 @@ fun UnrecognizedInline(
                 modifier =
                     Modifier
                         .heightIn(min = CouliSizes.touchTarget)
-                        .wrapClick(enabled = !blocked) { clipboard.searchByName(current) }
+                        .wrapClick(enabled = !disabled) { clipboard.searchByName(current) }
                         .testTag(ClipboardScreens.SEARCH_BY_NAME),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
                     text = ClipboardDraftTexts.text("clipboard.search_by_name"),
                     style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-                    color = if (blocked) CouliColors.textSecondary else CouliColors.brandEmphasis,
+                    color = if (disabled) CouliColors.textSecondary else CouliColors.brandEmphasis,
                 )
             }
         }
@@ -339,9 +395,11 @@ private fun CardListSheet(
     result: ClipboardResult.CardList,
     clipboard: AppClipboard,
 ) {
-    val texts = SearchDraftTexts
     // 42901 共享禁用期（含本次结果里的行内 42901）：卡片与【用商品名搜索】一并置灰（执行层另在 openCard / searchByName 拦，APP-07 共性第 16 条）
-    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    val rateLimited by clipboard.blocked.collectAsStateWithLifecycle()
+    // 共享 busy：读取或 parse 在途时卡片、购买与【用商品名搜索】一并置灰（FU-CLIP 共性第 4 条；执行层另拦）
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    val blocked = rateLimited || busy
     // 平台购买状态变了（配置、50301 覆盖）按当前结果重新映射（APP-07 共性第 32 条）；读它即订阅
     val statusVersion by clipboard.purchaseStatusVersion.collectAsStateWithLifecycle()
     val title = ClipboardDraftTexts.text("clipboard.card_list.title")
@@ -352,29 +410,43 @@ private fun CardListSheet(
         onDismissRequest = { clipboard.consumeResult(result) },
         closeLabel = ClipboardDraftTexts.text("clipboard.card_list.close"),
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().testTag(ClipboardScreens.CARD_LIST),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-        ) {
-            result.rows.forEachIndexed { index, row ->
-                val card = row.card
-                if (card != null) {
-                    // 与搜索卡同一映射与同一平台购买状态：not_launched 隐藏返利金额、预估返后与读屏金额，maintenance 禁用购买
-                    val mapped = statusVersion.let { ProductCardMapper.map(card, texts, purchaseStatus = clipboard.purchaseStatusOf(card)) }
-                    val open = { clipboard.openCard(result, card) }
-                    val buyState = if (blocked) BuyButtonState.DISABLED else mapped.buyState
-                    Box(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .wrapClick(enabled = !blocked, onClick = open)
-                                .testTag(ClipboardScreens.CARD_PREFIX + index),
-                    ) {
-                        ProductCardList(data = mapped.data, onBuy = open, buyState = buyState, retryLaterText = mapped.retryLaterText)
-                    }
-                } else {
-                    ErrorRow(result, row, index, clipboard, enabled = !blocked)
+        // 弹层内容按结果编号独立节点：换成新的一组结果时旧卡片、旧按钮整体丢弃，旧回调不会转调新结果（FU-CLIP 共性第 3 条）
+        key(result.id) {
+            CardListRows(result, clipboard, blocked, statusVersion)
+        }
+    }
+}
+
+@Composable
+private fun CardListRows(
+    result: ClipboardResult.CardList,
+    clipboard: AppClipboard,
+    blocked: Boolean,
+    statusVersion: Long,
+) {
+    val texts = SearchDraftTexts
+    Column(
+        modifier = Modifier.fillMaxWidth().testTag(ClipboardScreens.CARD_LIST),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    ) {
+        result.rows.forEachIndexed { index, row ->
+            val card = row.card
+            if (card != null) {
+                // 与搜索卡同一映射与同一平台购买状态：not_launched 隐藏返利金额、预估返后与读屏金额，maintenance 禁用购买
+                val mapped = statusVersion.let { ProductCardMapper.map(card, texts, purchaseStatus = clipboard.purchaseStatusOf(card)) }
+                val open = { clipboard.openCard(result, card) }
+                val buyState = if (blocked) BuyButtonState.DISABLED else mapped.buyState
+                Box(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .wrapClick(enabled = !blocked, onClick = open)
+                            .testTag(ClipboardScreens.CARD_PREFIX + index),
+                ) {
+                    ProductCardList(data = mapped.data, onBuy = open, buyState = buyState, retryLaterText = mapped.retryLaterText)
                 }
+            } else {
+                ErrorRow(result, row, index, clipboard, enabled = !blocked)
             }
         }
     }
@@ -474,5 +546,34 @@ fun ClipboardSettingsRow(clipboard: AppClipboard) {
 }
 
 private const val PROMPT_KEY = "clipboard.prompt"
+
+/**
+ * 提示条上的平台文字（FU-CLIP C7；K26、K28 草稿键，TODO(N-34)）：分享条标题 clipboard.share_prompt「收到分享的{平台}商品，查返利？」；第二行
+ * clipboard.prompt.detail「{平台}商品链接 {缩略主机}」或 .tpwd「{平台}口令」，多个候选加 .more「等 {count} 个」；读屏整条读 clipboard.share_prompt.label
+ * 「检测到{平台}商品链接，查返利」（口令为 label_tpwd）。只用缩略候选，不含路径与查询。
+ */
+internal class PromptPlatformTexts(
+    val title: String,
+    val detail: String,
+    val badge: String,
+    val label: String,
+) {
+    companion object {
+        fun of(
+            info: ClipboardPromptInfo,
+            share: Boolean,
+        ): PromptPlatformTexts {
+            val texts = ClipboardDraftTexts
+            val vars = mapOf("platform_name" to info.displayName, "display" to info.display.orEmpty(), "count" to info.count.toString())
+            val tpwd = info.labelRaw == ClipboardPromptInfo.LABEL_TPWD || info.display == null
+            var detail = texts.format(if (tpwd) "clipboard.prompt.detail.tpwd" else "clipboard.prompt.detail", vars)
+            if (info.count > 1) detail += texts.format("clipboard.prompt.detail.more", vars)
+            val title = if (share) texts.format("clipboard.share_prompt", vars) else texts.text(PROMPT_KEY)
+            val label = texts.format(if (tpwd) "clipboard.share_prompt.label_tpwd" else "clipboard.share_prompt.label", vars)
+            return PromptPlatformTexts(title, detail, info.displayName, label)
+        }
+    }
+}
+
 private const val INVITE_PROMPT_KEY = "clipboard.invite_prompt"
 private const val NOTICE_MILLIS = 2_000L

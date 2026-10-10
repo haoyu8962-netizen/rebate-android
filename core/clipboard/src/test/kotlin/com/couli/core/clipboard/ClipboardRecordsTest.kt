@@ -127,11 +127,16 @@ class ClipboardRecordsTest {
 
     @Test
     fun manualPasteWithoutLinkStaysLocal() {
+        // FU-CLIP K04：￥Zx8Cv7Bn6Mq￥（11 位、成对包裹、前后不紧贴字母数字）按新规则是淘口令，属于商品候选，改为断言只上传口令与标题；
+        // 「没有候选 → 本地 30132」改用无法识别的口令（主体纯数字）断言
         val decision = ManualPasteAction.decide(ManualPasteAction.ENTRY_HOME, "￥Zx8Cv7Bn6Mq￥「全脂纯牛奶 250ml」", ClipboardRules.defaults)
-        assertEquals(ManualPasteAction.SEARCH_PREFILL, decision.actionRaw)
-        assertNull("没抽到链接不上传", decision.uploadText)
-        assertEquals("全脂纯牛奶 250ml", decision.prefill)
-        assertEquals("error.30132", decision.textKey)
+        assertEquals(ManualPasteAction.PARSE, decision.actionRaw)
+        assertEquals("￥Zx8Cv7Bn6Mq￥\n全脂纯牛奶 250ml", decision.uploadText)
+        val local = ManualPasteAction.decide(ManualPasteAction.ENTRY_HOME, "￥12345678901￥「全脂纯牛奶 250ml」", ClipboardRules.defaults)
+        assertEquals(ManualPasteAction.SEARCH_PREFILL, local.actionRaw)
+        assertNull("没抽到候选不上传", local.uploadText)
+        assertEquals("全脂纯牛奶 250ml", local.prefill)
+        assertEquals("error.30132", local.textKey)
     }
 
     /** A-R3-01：手动粘贴与自动识别同一套上传过滤，share_domains 下的邀请落地页不上传，只本地抽码。 */

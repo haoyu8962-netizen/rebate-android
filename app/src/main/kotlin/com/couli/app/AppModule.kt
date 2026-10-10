@@ -14,6 +14,7 @@ import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardPreferences
 import com.couli.app.clipboard.connect
 import com.couli.app.clipboard.connectPurchaseStatus
+import com.couli.app.clipboard.connectRules
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.variantWechatAdapter
@@ -824,6 +825,8 @@ object AppModule {
             board.onForceUpdate = { update.get().onServerForced() }
             // 隐私结论（撤回、基本模式）、登录 / 退出 / 切换账号、切换环境：作废提示条与在途 parse
             board.connect(privacy, routing, cleaners)
+            // 规则表变化（features.flags 的电商平台开关）：作废候选已不被允许的提示条（FU-CLIP §2.1 第 5 条）
+            board.connectRules(config.store)
         }
 
     /**

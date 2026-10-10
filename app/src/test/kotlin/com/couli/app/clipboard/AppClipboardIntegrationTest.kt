@@ -51,6 +51,7 @@ import com.couli.app.trade.AppTrade
 import com.couli.core.clientcore.ConfigReply
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clipboard.ClipRead
+import com.couli.core.clipboard.ClipboardFingerprint
 import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardUi
 import com.couli.core.clipboard.ManualPasteAction
@@ -111,6 +112,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -346,9 +348,11 @@ class AppClipboardIntegrationTest {
                         privacy.promptShowing
                     },
                     configData = { Json.parseToJsonElement(config) as JsonObject },
-                    prefs = ClipboardPreferences(context),
+                    // FU-CLIP C3：盐经 Keystore 包裹存储；Robolectric 没有 AndroidKeyStore，注入样例加密与样例盐字节（接线改动，见交回清单）
+                    prefs = ClipboardPreferences(context, SampleCipher),
                     sessionEpoch = { sessionEpoch },
                     clock = { now },
+                    randomSalt = { SAMPLE_SALT.copyOf() },
                 )
             clipboard.overlay = {
                 countOffMain()
@@ -497,14 +501,14 @@ class AppClipboardIntegrationTest {
         assertEquals(0, system.writes)
         assertEquals(ClipRead.Text(raw), system.content)
         assertNoRawInStorage("e.tb.cn", "降噪", "备注")
-        assertEquals(
-            "提示记录只存 hash",
-            ClipboardText.sha256(raw),
+        // FU-CLIP C3（K32 允许的断言改动）：提示记录只存本机盐的 HMAC 指纹，不等于未加盐 SHA-256
+        val stored =
             clipboard.history
                 .stamps()
                 .single()
-                .hash,
-        )
+                .hash
+        assertEquals("提示记录只存加盐指纹", ClipboardFingerprint(SAMPLE_SALT).hash(raw), stored)
+        assertNotEquals("不是未加盐 SHA-256", ClipboardText.sha256(raw), stored)
     }
 
     // ---------------------------------------------------------------- b / c
@@ -906,7 +910,8 @@ class AppClipboardIntegrationTest {
     @Test
     fun manualPasteWithoutALinkShows30132LocallyAndSearchesByName() {
         launch()
-        copy("￥Zx8Cv7Bn6Mq￥「全脂纯牛奶 250ml」")
+        // FU-CLIP K04（K32 允许的改动）：原样例 ￥Zx8Cv7Bn6Mq￥ 按新规则是淘口令（商品候选）；「识别不了」改用主体纯数字的口令形态
+        copy("￥12345678901￥「全脂纯牛奶 250ml」")
         composeRule.runOnUiThread { clipboard.setAutoSwitch(false) }
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
         composeRule.waitForIdle()

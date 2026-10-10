@@ -2,6 +2,7 @@ package com.couli.app.clipboard
 
 import android.content.SharedPreferences
 import com.couli.core.clipboard.ClipRead
+import com.couli.core.clipboard.ClipboardRecords
 import com.couli.core.clipboard.ClipboardWriteLedger
 import com.couli.core.clipboard.ClipboardWriter
 import com.couli.core.clipboard.SystemClipboard
@@ -25,6 +26,9 @@ class ClipboardHashCommitTest {
         private val memory = disk.toMutableMap()
         var commits = 0
         var applies = 0
+
+        /** 还能成功落盘的提交次数（之后的提交只改内存、返回 false；R1-04 同类排查用）。 */
+        var okCommits = Int.MAX_VALUE
 
         override fun getAll(): MutableMap<String, *> = memory.toMutableMap()
 
@@ -123,8 +127,10 @@ class ClipboardHashCommitTest {
             override fun commit(): Boolean {
                 commits += 1
                 mergeInto(memory)
-                if (diskOk) mergeInto(disk)
-                return diskOk
+                val ok = diskOk && okCommits > 0
+                if (okCommits > 0) okCommits -= 1
+                if (ok) mergeInto(disk)
+                return ok
             }
 
             override fun apply() {
@@ -172,5 +178,23 @@ class ClipboardHashCommitTest {
         assertTrue(ClipboardWriter(system, ClipboardWriteLedger(store = ClipboardPreferences(prefs).hashes)).write(link))
         assertEquals(1, system.writes)
         assertTrue("重建后仍能排除自写内容", ClipboardWriteLedger(store = ClipboardPreferences(FlakyPrefs(prefs.disk)).hashes).contains(link))
+    }
+
+    /**
+     * R1-04 同类（撤回清理）：第一次删记录的提交失败时内存里的键已删、磁盘还在；重试不能只按内存列键（那样提交的是空改动，磁盘不变），
+     * 必须重新提交已知记录键的删除，确认落盘后磁盘上才没有记录。
+     */
+    @Test
+    fun r1_04_aWithdrawalRetryResubmitsRecordDeletesThatMemoryAlreadyForgot() {
+        val salted = listOf(ClipboardRecords.KEY_SELF, ClipboardRecords.KEY_PROMPTED, ClipboardRecords.KEY_SALT_ID)
+        val keys = salted + ClipboardRecords.LEGACY_KEYS
+        val prefs = FlakyPrefs(keys.associate { "hash.$it" to "样例值" }.toMutableMap<String, Any?>())
+        prefs.okCommits = 1
+        assertTrue(runCatching { ClipboardPreferences(prefs).clearHashes() }.isFailure)
+        assertTrue("内存里已删", prefs.all.keys.none { it.startsWith("hash.") })
+        assertTrue("磁盘还在", prefs.disk.keys.any { it.startsWith("hash.") })
+        prefs.okCommits = Int.MAX_VALUE
+        ClipboardPreferences(prefs).clearHashes()
+        assertTrue("确认落盘后磁盘上没有记录", prefs.disk.keys.none { it.startsWith("hash.") })
     }
 }

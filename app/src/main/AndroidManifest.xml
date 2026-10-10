@@ -41,5 +41,23 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            系统分享接收（FU-CLIP C6；K17、K23）：只收 ACTION_SEND + text/plain。专用 Activity 当场抽候选、原文丢弃，再以不带内容的
+            Intent 拉起 MainActivity（原文不进 MainActivity 的 Intent 与最近任务）。不进最近任务、不留历史、无界面。
+        -->
+        <activity
+            android:name=".clipboard.ShareReceiverActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

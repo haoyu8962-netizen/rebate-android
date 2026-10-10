@@ -13,7 +13,7 @@ data class ClipboardPromptStamp(
  * @property inviteEligible 用户可以绑定上级（游客一律可以；已登录看 getMe 的 invite_backfill.eligible 与 inviter_bound，拿不到不可以）；
  * @property selfInviteCode 本人的邀请码（本人码不提示）；
  * @property shareDomains config.share_domains（邀请落地页 `/i/{code}` 的域名）；
- * @property hash 原文 → hash（生产为 [ClipboardText.sha256]，向量测试注入假 hash）。
+ * @property hash 原文 → hash（生产注入本机加盐指纹 [ClipboardFingerprint.hash]，FU-CLIP C3；缺省的未加盐 SHA-256 只给旧向量测试）。
  */
 class ClipboardContext(
     val selfWritten: List<String>,
@@ -32,13 +32,16 @@ data class ClipboardClassification(
     val uploadText: String? = null,
     /** 原文的 hash（出提示条时记入 PromptHistory）。 */
     val hash: String? = null,
+    /** 商品的本地候选（FU-CLIP：提示条显示平台与缩略候选，点击上传同一份）。 */
+    val candidates: List<ClipboardCandidate> = emptyList(),
 )
 
 /**
  * 本地分类（brief §2.2；BR-ID-16、BR-INV-04、OPS-06；规则空白 G03、G04、G08、G14）。顺序：
  * 1. App 自写的 hash → none（self_written）；
  * 2. 24 小时内（严格小于）提示过的同一 hash → none（prompted_recently）；
- * 3. 商品候选：通过长度与纯字母数字、排除词规则，并且含 http(s) 链接（G03；邀请落地页 `/i/{code}` 链接不算商品链接）→ product；
+ * 3. 商品候选：通过长度与纯字母数字、排除词规则，并且有本地候选（FU-CLIP：白名单链接与淘口令；邀请落地页 `/i/{code}` 链接不算；没有候选
+ *    仍回 no_link）→ product；
  * 4. 否则邀请：抽到码、满足触发前提（落地页或「邀请码」字样）、不是本人码、用户可绑定 → invite（邀请不套用商品的长度规则，G14）；
  * 5. 否则 none：抽到了码就给邀请的拒绝原因（no_trigger / self_code / not_eligible），抽不到给商品的拒绝原因。
  * 商品优先：同一段文本命中商品就只出商品提示条（OPS-06）。
@@ -76,13 +79,15 @@ object ClipboardClassifier {
         if (context.prompted.any { it.hash == hash && nowMs - it.atMs in 0 until PROMPT_WINDOW_MS }) {
             return none(REASON_PROMPTED_RECENTLY, hash)
         }
-        val productLinks = ClipboardText.links(text).filterNot { inviteLanding(it, context.shareDomains) }
-        val productReason = productRejection(text, productLinks, rules)
+        // FU-CLIP C2 / C8：商品判据从「有 http(s) 链接」换成「有本地候选」（白名单链接去掉邀请落地页 + 淘口令，K01、K04、K07）
+        val candidates = ClipboardCandidates.extract(text, rules, context.shareDomains)
+        val productReason = productRejection(text, candidates.map { it.raw }, rules)
         if (productReason == null) {
             return ClipboardClassification(
                 kindRaw = KIND_PRODUCT,
-                uploadText = ClipboardText.uploadText(productLinks, text, rules.maxUploadLinks),
+                uploadText = ClipboardCandidates.uploadOf(candidates, text, rules, context.shareDomains),
                 hash = hash,
+                candidates = candidates,
             )
         }
         val code = InviteCodeExtractor.extract(text) ?: return none(productReason, hash)

@@ -182,9 +182,10 @@ object ManualPasteAction {
         if (text.isNullOrEmpty()) return ManualPasteDecision(OPEN_SEARCH_TYPING)
         // 与自动识别同一套过滤（A-R3-01）：邀请落地页不是商品链接，不进上传片段；长度 / 形态过滤（过长、过短、纯字母数字、排除词）
         // 同样适用于手动粘贴的商品入口（APP-07 共性第 22 条，F-CLIP-02）：不合格的不上传，按「识别不了」给用商品名搜索
-        val links = ClipboardText.links(text).filterNot { ClipboardClassifier.inviteLanding(it, shareDomains) }
-        if (links.isNotEmpty() && ClipboardClassifier.productRejection(text, links, rules) == null) {
-            return ManualPasteDecision(PARSE, uploadText = ClipboardText.uploadText(links, text, rules.maxUploadLinks))
+        // FU-CLIP C2 / C8：只认本地候选（白名单链接去掉邀请落地页 + 淘口令），抽不到候选 → 本地 30132（G10 不变）
+        val candidates = ClipboardCandidates.extract(text, rules, shareDomains)
+        if (candidates.isNotEmpty() && ClipboardClassifier.productRejection(text, candidates.map { it.raw }, rules) == null) {
+            return ManualPasteDecision(PARSE, uploadText = ClipboardCandidates.uploadOf(candidates, text, rules, shareDomains))
         }
         val code = InviteCodeExtractor.extract(text)
         if (code != null && ClipboardClassifier.inviteTriggered(text, shareDomains, rules)) {
@@ -192,7 +193,7 @@ object ManualPasteAction {
         }
         return ManualPasteDecision(
             SEARCH_PREFILL,
-            prefill = ClipboardText.searchPrefill(text),
+            prefill = ClipboardText.localPrefill(text, rules, shareDomains),
             textKey = "error.${ParseResultAction.UNRECOGNIZED}",
         )
     }
