@@ -15,12 +15,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import com.couli.app.DebugFakeHome
+import com.couli.app.DebugMockGate
 import com.couli.app.FAKE_HOME_STATE_FILE
 import com.couli.app.VariantRootContent
 import com.couli.app.buildDefaultEnvironment
-import com.couli.app.fakeLoginServerSwitch
 import com.couli.app.routing.RoutingTrace
-import com.couli.core.config.DebugCapability
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.EnvironmentSwitcher
 import com.couli.core.home.HomeContractPort
@@ -42,15 +41,11 @@ internal fun debugFakeHome(context: Context): DebugFakeHome =
     synchronized(FakeHomes) {
         FakeHomes.instance ?: run {
             val app = context.applicationContext
-            val switch = fakeLoginServerSwitch(app)
+            // 统一闸门（F-X-02，DebugMockGate）：开关 + MOCK_DATA + 环境就绪；第二道只核对环境（双重核对，结果相同）
             DebugFakeHome(
-                stateFile = File(switch.parentFile, FAKE_HOME_STATE_FILE),
-                switchOn = { switch.exists() },
-                mockAllowed = {
-                    EnvironmentSwitcher(app, buildDefaultEnvironment(), EnvironmentSwitchCleanerRegistry())
-                        .capabilities
-                        .isAvailable(DebugCapability.MOCK_DATA)
-                },
+                stateFile = File(DebugMockGate.stateDir(app), FAKE_HOME_STATE_FILE),
+                switchOn = DebugMockGate.of(app),
+                mockAllowed = { DebugMockGate.mockDataAllowed(app) },
             ).also { FakeHomes.instance = it }
         }
     }

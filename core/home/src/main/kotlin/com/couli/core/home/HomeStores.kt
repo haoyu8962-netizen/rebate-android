@@ -20,9 +20,13 @@ import java.util.concurrent.atomic.AtomicLong
  *   [clearAll] / [clearScope] 进锁后先推进世代再删除。已经在等锁的旧写入，等清理完成后拿到锁也会因世代不符被拒，不会让文件复活（只取消协程挡不住它）。
  * - **接受顺序序号**（共性第 32 条，R2-01）：写入方在**接受结果的那一刻**（主线程）取 [reserve]（进程内单调递增，跨控制器也单调），[write] / [discard]
  *   在同一把锁里拒绝不比「该作用域已落盘的序号」更新的写入。两次有效写入即使逆序拿到锁，旧结果也盖不掉新结果。
+ * - **持久化登录世代分区**（F-AND-25，FU-AND-0714 第 1 轮评审 R1-07）：接上 [bindLoginEpoch] 之后，会员作用域（[HomeLkgScope.isMember]）的页面存在
+ *   作用域目录下再按「登录世代摘要」分的子目录里（<作用域摘要>/e-<世代摘要>/page.json）；作用域目录名与 [HomeLkgScope] 向量不变。世代读不出（null、空串、抛错）
+ *   按未知：不读、不写。写入票据记下取票时的世代，写入时世代已变的不写。待清理标记与删除都失败、残留的旧页面，同账号重新登录（新世代）或进程重建之后都读不回；
+ *   [clearScope] / [clearAll] 删整个作用域目录（含全部世代子目录）。游客、基本模式不分世代（原口径）。没接（单测、预览）时按原口径。
  * 只做同步文件操作（调用方放在 IO 线程）；线程安全。
  */
-@Suppress("TooManyFunctions") // 读、写（两种）、删坏件、两种清理、核验与票据、发号
+@Suppress("TooManyFunctions") // 读、写（两种）、删坏件、两种清理、核验与票据、发号、登录世代
 class HomeLkgStore(
     private val root: File,
     private val flag: PendingFlag,
@@ -45,7 +49,31 @@ class HomeLkgStore(
         val key: String,
         val allGeneration: Long,
         val scopeGeneration: Long,
+        /** 会员作用域取票时的登录世代分区（[bindLoginEpoch] 之后；世代未知为 [UNKNOWN_EPOCH]，写入一律拒绝）；不分世代为 null。 */
+        val epochDir: String? = null,
     )
+
+    /**
+     * 持久化登录世代的来源（F-AND-25，R1-07，[bindLoginEpoch]）：接上之后会员作用域按世代分区；没接为 null（原口径）。
+     */
+    @Volatile
+    private var loginEpoch: (() -> String?)? = null
+
+    /** 接上令牌存储里的持久化登录世代（App 取首页实例时接；只能从未接变为接上）。 */
+    fun bindLoginEpoch(source: () -> String?) {
+        if (loginEpoch == null) loginEpoch = source
+    }
+
+    /**
+     * [scope] 此刻的世代分区：不分世代（没接、非会员作用域）为 null；会员作用域世代读不出为 [UNKNOWN_EPOCH]；否则 `e-<世代摘要>`。
+     */
+    private fun epochDirOf(scope: String): String? = if (HomeLkgScope.isMember(scope)) currentEpochDir() else null
+
+    /** 页面文件：作用域目录（+ 世代子目录）下的 page.json。 */
+    private fun pageFile(
+        key: String,
+        epochDir: String?,
+    ): File = File(if (epochDir == null) File(root, key) else File(File(root, key), epochDir), PAGE_FILE)
 
     /** 本进程内的阻断（标记写不进时兜底；进程退出后由目录外标记核验，三者都失败的残留见 rule-gaps）。 */
     private val blocked = mutableSetOf<String>()
@@ -64,15 +92,16 @@ class HomeLkgStore(
     /** 取一张写入票据（身份固定时取一次：控制器构造时）。 */
     fun ticket(scope: String): WriteTicket {
         val key = digest(scope)
-        return WriteTicket(key, allGeneration, scopeGenerations[key] ?: 0L)
+        return WriteTicket(key, allGeneration, scopeGenerations[key] ?: 0L, epochDirOf(scope))
     }
 
-    /** 读一个作用域的 LKG 原文；待清理未完成、没有文件、读不出 → null。 */
+    /** 读一个作用域的 LKG 原文；待清理未完成、登录世代未知（会员作用域）、没有文件、读不出 → null。 */
     @Synchronized
     fun read(scope: String): String? {
         val key = digest(scope)
         if (!settle() || key in blocked || ALL in blocked) return null
-        return runCatching { AtomicTextFile(File(File(root, key), PAGE_FILE)).read() }.getOrNull()
+        val epochDir = epochDirOf(scope)
+        return if (epochDir == UNKNOWN_EPOCH) null else runCatching { AtomicTextFile(pageFile(key, epochDir)).read() }.getOrNull()
     }
 
     /**
@@ -88,7 +117,7 @@ class HomeLkgStore(
     ): Boolean {
         val key = ticket.key
         if (!open(ticket) || order <= (persisted[key] ?: 0L)) return false
-        val done = runCatching { AtomicTextFile(File(File(root, key), PAGE_FILE)).write(text) }.isSuccess
+        val done = runCatching { AtomicTextFile(pageFile(key, ticket.epochDir)).write(text) }.isSuccess
         // 只有真正落盘才推进：没写成的较新结果不挡住之后到达的较旧结果（它仍比盘上的新）
         if (done) persisted[key] = order
         return done
@@ -113,18 +142,29 @@ class HomeLkgStore(
     ): Boolean {
         val key = ticket.key
         if (!open(ticket) || order <= (persisted[key] ?: 0L)) return false
-        val file = AtomicTextFile(File(File(root, key), PAGE_FILE))
+        val file = AtomicTextFile(pageFile(key, ticket.epochDir))
         if (runCatching { file.read() }.getOrNull() != expected) return false
         val done = runCatching { file.write(null) }.isSuccess
         if (done) persisted[key] = order
         return done
     }
 
-    /** 票据仍有效（世代未变）、没有待清理：锁内调用。 */
+    /**
+     * 票据仍有效（清理世代未变）、登录世代已知且仍是取票时那一份（会员作用域）、没有待清理：锁内调用。
+     * 登录世代的复核只看「此刻的世代分区 == 票据的」：取票后重新登录（新世代）的旧写入不落进新世代。
+     */
     private fun open(ticket: WriteTicket): Boolean {
         val key = ticket.key
         val current = ticket.allGeneration == allGeneration && ticket.scopeGeneration == (scopeGenerations[key] ?: 0L)
-        return current && settle() && key !in blocked && ALL !in blocked
+        val epochOk = ticket.epochDir != UNKNOWN_EPOCH && (ticket.epochDir == null || ticket.epochDir == currentEpochDir())
+        return current && epochOk && settle() && key !in blocked && ALL !in blocked
+    }
+
+    /** 此刻会员作用域的世代分区（不看具体作用域；没接为 null）。 */
+    private fun currentEpochDir(): String? {
+        val source = loginEpoch ?: return null
+        val epoch = runCatching(source).getOrNull()?.takeIf { it.isNotEmpty() }
+        return if (epoch == null) UNKNOWN_EPOCH else EPOCH_PREFIX + digest(epoch)
     }
 
     /** 清一个作用域（登出、换账号、会话失效时的旧作用域）：删不掉保留待清理并抛错。 */
@@ -189,6 +229,12 @@ class HomeLkgStore(
         const val ALL = "*"
         private const val PAGE_FILE = "page.json"
         private const val HASH_HEX = 16
+
+        /** 会员作用域的登录世代子目录前缀（e-<世代摘要>）。 */
+        private const val EPOCH_PREFIX = "e-"
+
+        /** 登录世代未知（读不出）：不是任何真实目录名，读写一律拒绝。 */
+        private const val UNKNOWN_EPOCH = "?"
 
         /** 作用域 → 目录名（SHA-256 前 16 位十六进制）。 */
         fun digest(scope: String): String =

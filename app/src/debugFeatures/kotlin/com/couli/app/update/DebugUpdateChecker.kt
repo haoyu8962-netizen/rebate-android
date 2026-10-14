@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.core.content.edit
+import com.couli.app.DebugMockGate
 import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliTypography
@@ -84,12 +85,25 @@ internal class DebugUpdateScenarioStore(
     }
 }
 
-/** 读调试场景、返回假结果的检查器；模拟一点网络耗时，让「检查中」可见。 */
+/**
+ * 读调试场景、返回假结果的检查器；模拟一点网络耗时，让「检查中」可见。
+ *
+ * 闸门（F-X-02）：[mockAllowed] 放行才给假结果，否则交给真实检查器 [real]；开始时与交付前各判一次（等待期间切到 prod、关掉假服务的不交假结果，
+ * 改走真实检查）。生产接统一闸门 [DebugMockGate.of]（假服务开关 + MOCK_DATA + 环境就绪，FU-AND-0714 R1-06：与其余替身同一双重闸门，不再例外）。
+ */
 internal class DebugUpdateChecker(
     private val scenarios: DebugUpdateScenarioStore,
+    private val real: UpdateChecker,
+    private val mockAllowed: () -> Boolean,
+    private val latencyMillis: Long = FAKE_LATENCY_MILLIS,
 ) : UpdateChecker {
+    private fun allowed(): Boolean = runCatching(mockAllowed).getOrDefault(false)
+
+    @Suppress("ReturnCount") // 入口、交付前两次闸门与失败场景
     override suspend fun check(): UpdateCheckOutcome {
-        delay(FAKE_LATENCY_MILLIS)
+        if (!allowed()) return real.check()
+        delay(latencyMillis)
+        if (!allowed()) return real.check()
         val scenario = scenarios.current
         if (scenario == DebugUpdateScenario.FAILURE) return UpdateCheckOutcome.Failure
         return UpdateCheckOutcome.Success(adapt(scenarioData(scenario)))
@@ -142,12 +156,17 @@ internal interface DebugUpdateEntryPoint {
     fun appUpdate(): AppUpdate
 }
 
-/** debug / staging 的版本检查器：调试假数据（不用 App 组合的真实检查器 [real]，Release 才用它）。 */
-@Suppress("UnusedParameter")
+/**
+ * debug / staging 的版本检查器：统一闸门 [DebugMockGate.of] 放行（假服务开 且 环境允许 MOCK_DATA 且 环境就绪）时给调试假数据，否则（假服务关、prod、
+ * 切换中）用 App 组合的真实检查器 [real]（F-X-02；FU-AND-0714 R1-06：不再保留只看 MOCK_DATA 的例外）。入口与交付前各判一次。
+ */
 internal fun variantUpdateChecker(
     context: Context,
     real: UpdateChecker,
-): UpdateChecker = DebugUpdateChecker(DebugUpdateScenarioStore(context))
+): UpdateChecker {
+    val app = context.applicationContext
+    return DebugUpdateChecker(DebugUpdateScenarioStore(app), real, mockAllowed = DebugMockGate.of(app))
+}
 
 /**
  * debug / staging 的版本检查结论存储（R1-03）：调试假结果只写 couli.update_debug，不写 Release 读取的 couli.update，

@@ -12,6 +12,7 @@ import java.security.GeneralSecurityException
 import java.security.InvalidKeyException
 import java.security.KeyStore
 import java.security.ProviderException
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -226,6 +227,12 @@ class EncryptedPreferences(
         write(keys.associateWith { null })
     }
 
+    /** 整组删除（同 [remove]，一次提交）。 */
+    @Synchronized
+    fun removeAll(keys: Collection<String>) {
+        write(keys.associateWith { null })
+    }
+
     /** 按原始（已加密）值整组写入；写盘失败恢复内存值并隔离这些键（R3-05）。 */
     @SuppressLint("ApplySharedPref") // 凭据与未决记录必须同步落盘
     private fun write(changes: Map<String, String?>) {
@@ -347,15 +354,46 @@ interface SessionTokens {
     }
 }
 
+/**
+ * 持久化登录世代（F-AND-25 / F-AND-29，FU-AND-0714；三端口径见 FU-HM-0711c decision.md）：一个不透明标识，**与令牌整组同一次原子写入**令牌存储——
+ * 每次登录（[SessionTokens.save] / [SessionTokens.saveIf]）换新，刷新令牌（[SessionTokens.replaceIf]）沿用，清除（[SessionTokens.clear]）随令牌一起删。
+ * 同一账号退出后重新登录也是新的世代。订单缓存、钱包摘要缓存、订单页恢复记录按「账号 + 它」绑定归属：清理标记与删除都失败、残留的旧数据，在同账号
+ * 重新登录（或进程重建）之后也因世代不同而永久读不回。
+ *
+ * 不是凭据（不发给服务端、不参与签名）；只用于本机缓存的归属比较。
+ */
+interface PersistedLoginEpochs {
+    /**
+     * 当前会话的持久化登录世代；没有会话、这份会话没有记下世代（升级前登录）、读不出或内容损坏都为 null（调用方按未知：不读缓存、不恢复）。
+     * 口径与**整份会话的可用性**相同（第 2 轮评审 R2-02）：任一会话字段读不出、损坏（含损坏清理失败）、会话隔离或已撤销（R2-03）都为 null。
+     */
+    fun persistedLoginEpoch(): String?
+
+    /**
+     * 交给凭据读取屏障（第 2 轮评审 R2-01 / R2-02）：之后每次 [persistedLoginEpoch] 都包在 [guard] 里（ApiClient 构造时接：屏障内现判凭据可读、
+     * 会话没隔离才读，否则按未知 null）。整份会话可用性要解密令牌，所以它也是令牌读取点。缺省不接（内存实现、单测）。
+     */
+    fun guardLoginEpochReads(guard: (read: () -> String?) -> String?) = Unit
+}
+
 /** 内存实现（测试、不落盘的场景）。 */
 class MemorySessionTokens(
     accessToken: String? = null,
     refreshToken: String? = null,
     scope: String? = null,
     userId: String? = null,
-) : SessionTokens {
+    /** 新的持久化登录世代（[PersistedLoginEpochs]）。 */
+    private val newLoginEpoch: () -> String = { UUID.randomUUID().toString() },
+) : SessionTokens,
+    PersistedLoginEpochs {
     private var current = SessionSnapshot(accessToken, refreshToken, scope, userId, 0L)
     private var epoch = 0L
+
+    /** 持久化登录世代（内存实现：随会话一起换）；构造时带了令牌的视为一次登录。 */
+    private var persisted: String? = if (accessToken != null || refreshToken != null) newLoginEpoch() else null
+
+    @Synchronized
+    override fun persistedLoginEpoch(): String? = persisted
 
     override val loginEpoch: Long
         @Synchronized get() = epoch
@@ -378,12 +416,14 @@ class MemorySessionTokens(
     ) {
         current = SessionSnapshot(accessToken, refreshToken, scope, userId, current.generation + 1)
         epoch += 1
+        persisted = newLoginEpoch()
     }
 
     @Synchronized
     override fun clear() {
         current = SessionSnapshot(null, null, null, null, current.generation + 1)
         epoch += 1
+        persisted = null
     }
 
     @Synchronized
@@ -424,10 +464,14 @@ class MemorySessionTokens(
  * 键名沿用 APP-02b 约定的 access_token、refresh_token（撤回同意的占位清理按键名删，切换环境时整个命名空间清）。
  * 世代只在内存里（在途的刷新也只在本进程）；写入失败时世代照样前进（落盘结果不可信，旧刷新结果一律作废）。
  */
+@Suppress("TooManyFunctions") // 会话读写四组 + 持久化登录世代与其屏障接线
 class KeystoreSessionTokens(
     private val storage: EncryptedPreferences,
+    /** 新的持久化登录世代（[PersistedLoginEpochs]；单测注入固定序列）。 */
+    private val newLoginEpoch: () -> String = { UUID.randomUUID().toString() },
 ) : SessionTokens,
-    SessionReader {
+    SessionReader,
+    PersistedLoginEpochs {
     private val lock = Any()
 
     @Volatile
@@ -435,6 +479,23 @@ class KeystoreSessionTokens(
 
     @Volatile
     private var epoch = 0L
+
+    /**
+     * 持久化登录世代暂不可用（F-AND-25，第 1 轮评审 R1-02）：与会话可用性共用状态——清除会话（含按世代清除）一开始就置上，删除提交失败
+     * （会话被隔离，EncryptedPreferences 里还是旧值）、刷新写入失败（ApiClient 随之隔离并清除）、会话内容损坏而删除失败（R2-02）时保持；只有成功
+     * 保存一份新会话（登录）才解除。置上期间 [persistedLoginEpoch] 一律为 null（订单缓存、钱包摘要缓存、订单页恢复记录、会员首页 LKG 不读不写）。
+     * 它只在本进程内；跨进程由落盘的撤销标记 [KEY_REVOKED] 承担（R2-03）。
+     */
+    @Volatile
+    private var epochWithheld = false
+
+    /** 凭据读取屏障（[guardLoginEpochReads]）；没接时直接读。 */
+    @Volatile
+    private var epochGuard: ((() -> String?) -> String?)? = null
+
+    override fun guardLoginEpochReads(guard: (read: () -> String?) -> String?) {
+        epochGuard = guard
+    }
 
     override val loginEpoch: Long get() = epoch
 
@@ -454,25 +515,72 @@ class KeystoreSessionTokens(
     /**
      * 同一把锁里读四项：任何一项读取失败 → [SessionRead.Unreadable]（不删除）；任何一项内容损坏 → 整组不能用，尽力删除四项后按
      * 没有会话（删不掉下次读还会再试）；否则读到的会话。
+     *
+     * 落盘的撤销标记 [KEY_REVOKED]（第 2 轮评审 R2-03）在先：存在（含损坏）= 这份会话已被清除、只是删除没落盘（可能是上一个进程），按没有会话
+     * 并重试删除（连同标记，成功即清干净）；标记读取失败按读不出。
      */
-    override fun readSession(): SessionRead =
-        synchronized(lock) {
-            val values = SESSION_KEYS.associateWith(storage::read)
-            when {
-                values.values.any { it == StoredValue.Failed } -> {
-                    SessionRead.Unreadable(counter)
-                }
+    override fun readSession(): SessionRead = synchronized(lock) { readLocked() }
 
-                values.values.any { it == StoredValue.Corrupt } -> {
-                    runCatching { storage.remove(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID) }
-                    SessionRead.Present(SessionSnapshot(null, null, null, null, counter))
-                }
-
-                else -> {
-                    fun text(key: String) = (values[key] as? StoredValue.Present)?.text
-                    SessionRead.Present(SessionSnapshot(text(KEY_ACCESS), text(KEY_REFRESH), text(KEY_SCOPE), text(KEY_USER_ID), counter))
-                }
+    @Suppress("ReturnCount") // 撤销标记、读取失败、损坏逐项
+    private fun readLocked(): SessionRead {
+        val empty = SessionRead.Present(SessionSnapshot(null, null, null, null, counter))
+        when (storage.read(KEY_REVOKED)) {
+            StoredValue.Absent -> {
+                Unit
             }
+
+            StoredValue.Failed -> {
+                return SessionRead.Unreadable(counter)
+            }
+
+            else -> {
+                epochWithheld = true
+                runCatching { storage.removeAll(ALL_KEYS) }
+                return empty
+            }
+        }
+        val values = SESSION_KEYS.associateWith(storage::read)
+        return when {
+            values.values.any { it == StoredValue.Failed } -> {
+                SessionRead.Unreadable(counter)
+            }
+
+            values.values.any { it == StoredValue.Corrupt } -> {
+                // 损坏：整组删除；删除提交失败时登录世代保持禁用（本进程），并尽力落一个撤销标记（重建后同样按已撤销，R2-02 / R2-03）
+                if (runCatching { storage.removeAll(ALL_KEYS) }.isFailure) {
+                    epochWithheld = true
+                    runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
+                }
+                empty
+            }
+
+            else -> {
+                fun text(key: String) = (values[key] as? StoredValue.Present)?.text
+                SessionRead.Present(SessionSnapshot(text(KEY_ACCESS), text(KEY_REFRESH), text(KEY_SCOPE), text(KEY_USER_ID), counter))
+            }
+        }
+    }
+
+    /**
+     * 持久化登录世代（F-AND-25）：读 [KEY_LOGIN_EPOCH]（与令牌同一次原子写入）。口径与整份会话可用性统一（第 2 轮评审 R2-02）：先在同一把锁里
+     * 完整读一次会话（[readLocked]）——任一字段读不出、损坏（删除失败同样保持禁用）、已撤销（落盘标记，R2-03）、没有令牌、本进程隔离中
+     * （[epochWithheld]）都为 null；会话可用时才读世代键，它不存在（升级前登录）、读不出、损坏也为 null。读不出不删除。
+     * 接了凭据读取屏障时整个读取在屏障里（[guardLoginEpochReads]）。
+     */
+    override fun persistedLoginEpoch(): String? {
+        val guard = epochGuard ?: return epochNow()
+        return guard(::epochNow)
+    }
+
+    @Suppress("ReturnCount") // 禁用、会话不可用、没有令牌逐项
+    private fun epochNow(): String? =
+        synchronized(lock) {
+            if (epochWithheld) return null
+            val read = runCatching { readLocked() }.getOrNull() as? SessionRead.Present ?: return null
+            if (epochWithheld) return null
+            val session = read.snapshot
+            if (session.accessToken == null && session.refreshToken == null) return null
+            (runCatching { storage.read(KEY_LOGIN_EPOCH) }.getOrNull() as? StoredValue.Present)?.text?.takeIf { it.isNotEmpty() }
         }
 
     override fun save(
@@ -482,9 +590,20 @@ class KeystoreSessionTokens(
         userId: String?,
     ) = synchronized(lock) {
         try {
+            // 登录：令牌整组与新的持久化登录世代同一次 commit（原子：要么都落盘、要么都恢复旧值，见 [EncryptedPreferences]）
+            // 同一次提交里删掉撤销标记（R2-03：新会话确认落盘才解除）
             storage.putAll(
-                mapOf(KEY_ACCESS to accessToken, KEY_REFRESH to refreshToken, KEY_SCOPE to scope, KEY_USER_ID to userId),
+                mapOf(
+                    KEY_ACCESS to accessToken,
+                    KEY_REFRESH to refreshToken,
+                    KEY_SCOPE to scope,
+                    KEY_USER_ID to userId,
+                    KEY_LOGIN_EPOCH to newLoginEpoch(),
+                    KEY_REVOKED to null,
+                ),
             )
+            // 新会话（连同新世代）确认落盘：解除暂不可用
+            epochWithheld = false
         } finally {
             counter += 1
             epoch += 1
@@ -493,8 +612,13 @@ class KeystoreSessionTokens(
 
     override fun clear() =
         synchronized(lock) {
+            // 清除一开始就让登录世代不可用（删除提交失败时旧值还在存储里，也不再交给缓存归属判断）
+            epochWithheld = true
             try {
-                storage.remove(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID)
+                // 跨进程撤销（第 2 轮评审 R2-03）：先单独提交一个落盘的撤销标记，再整组删除（连同标记）。删除提交失败、进程被杀后重建时，
+                // 标记仍在：会话按已撤销（不交出旧令牌、重试删除），登录世代为 null（四类缓存不读），直到一份新会话成功落盘
+                runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
+                storage.removeAll(ALL_KEYS)
             } finally {
                 counter += 1
                 epoch += 1
@@ -509,9 +633,17 @@ class KeystoreSessionTokens(
     ): Boolean =
         synchronized(lock) {
             if (counter != expectedGeneration) return false
+            var written = false
             try {
                 storage.putAll(mapOf(KEY_ACCESS to accessToken, KEY_REFRESH to refreshToken, KEY_SCOPE to scope))
+                written = true
             } finally {
+                // 刷新写入失败：ApiClient 隔离并清除这一代会话；登录世代同步不可用（R1-02），并尽力落撤销标记（R2-03：ApiClient 的清除重试可能
+                // 因凭据此刻不可读而不执行，重建后也不再用这份会话的缓存）
+                if (!written) {
+                    epochWithheld = true
+                    runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
+                }
                 counter += 1
             }
             true
@@ -542,7 +674,18 @@ class KeystoreSessionTokens(
         const val KEY_REFRESH = "refresh_token"
         const val KEY_SCOPE = "session_scope"
         const val KEY_USER_ID = "session_user_id"
+
+        /** 持久化登录世代（F-AND-25）：与令牌同一次原子写入；刷新不动它。 */
+        const val KEY_LOGIN_EPOCH = "session_login_epoch"
+
+        /**
+         * 落盘的会话撤销标记（第 2 轮评审 R2-03）：清除会话时先单独提交，整组删除成功时随之删掉；新会话保存时同一次提交删掉。存在 = 这份会话已被
+         * 清除（删除没落盘），读会话按没有、登录世代为 null。不是凭据。
+         */
+        const val KEY_REVOKED = "session_revoked"
+        private const val REVOKED = "1"
         private val SESSION_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID)
+        private val ALL_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID, KEY_LOGIN_EPOCH, KEY_REVOKED)
     }
 }
 

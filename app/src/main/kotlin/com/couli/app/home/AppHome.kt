@@ -216,7 +216,8 @@ class AppHome(
     private fun account(): String? {
         val epoch = tokens.loginEpoch
         if (epoch != accountEpoch) {
-            accountCache = client.activeUserId()
+            // 读不出不缓存（F-AND-28）：下次再读；读到之前按账号未知（LKG 分区 member-unknown）
+            accountCache = client.activeUserId() ?: return null
             accountEpoch = epoch
         }
         return accountCache

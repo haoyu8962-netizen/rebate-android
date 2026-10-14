@@ -97,6 +97,9 @@ class ConfigStore(
     /** 配置被确认或换内容时的监听（搜索页订阅，APP-06a）。 */
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /** 逐个快照的同步监听（[onEachSnapshot]，FU-AND-0714 第 2 轮评审 R2-05）。 */
+    private val snapshotListeners = CopyOnWriteArrayList<(ConfigSnapshot) -> Unit>()
+
     private val mutableSnapshots = MutableStateFlow(ConfigSnapshot(bundledObject, ConfigSourceRaw.BUNDLED))
 
     /** 当前生效的配置（每次换层或换内容时发出）。 */
@@ -151,6 +154,16 @@ class ConfigStore(
     fun subscribe(listener: () -> Unit): () -> Unit {
         listeners += listener
         return { listeners -= listener }
+    }
+
+    /**
+     * 逐个快照的同步监听（FU-AND-0714 第 2 轮评审 R2-05）：每发布一份生效快照，就在发布它的线程上、发布的同一把锁里按发布顺序回调一次，**不合并**
+     * （[snapshots] 是 StateFlow，界面线程来不及收时「关 → 开」会被合并成「开」）。只用于记下规则收紧这类不能丢的变化：回调必须很短、不阻塞、
+     * 不回调进本类（它在锁内执行），切线程由接收方自己做。返回取消订阅的函数。
+     */
+    fun onEachSnapshot(listener: (ConfigSnapshot) -> Unit): () -> Unit {
+        snapshotListeners += listener
+        return { snapshotListeners -= listener }
     }
 
     /**
@@ -313,8 +326,17 @@ class ConfigStore(
             else -> ConfigSourceRaw.BUNDLED
         }
 
+    @Suppress("TooGenericExceptionCaught", "SwallowedException") // 监听方出错不影响配置本身与其他监听方
     private fun publishLocked() {
-        mutableSnapshots.value = ConfigSnapshot(effective(), sourceLocked())
+        val snapshot = ConfigSnapshot(effective(), sourceLocked())
+        mutableSnapshots.value = snapshot
+        snapshotListeners.forEach { listener ->
+            try {
+                listener(snapshot)
+            } catch (error: Exception) {
+                // 忽略
+            }
+        }
     }
 
     private class Stored(

@@ -1,34 +1,38 @@
 package com.couli.app.login
 
 import android.content.Context
-import com.couli.app.fakeLoginServerSwitch
+import com.couli.app.DebugMockGate
 import com.couli.feature.login.InstalledAppProbe
 import com.couli.feature.login.OAuthProvider
 import com.couli.feature.login.ThirdPartyAuthAdapter
 import com.couli.feature.login.ThirdPartyAuthKind
 import com.couli.feature.login.ThirdPartyAuthResult
 import com.couli.feature.login.UnavailableWechatAdapter
-import java.io.File
 import kotlinx.coroutines.delay
 
 /**
  * Debug / Staging 专用的假微信适配器（APP-05b 设计稿比对、冒烟与测试；src/debugFeatures，Release 不编译，release-scan 查
- * [FAKE_WECHAT_ADAPTER_MARKER]）。只在本机假登录服务打开（开关文件存在）时可用：不调用任何 SDK、不连任何地址，[DELAY_MILLIS] 后带回
+ * [FAKE_WECHAT_ADAPTER_MARKER]）。只在统一闸门（开关文件在 + 当前环境允许 MOCK_DATA + 环境就绪，F-X-02）放行时可用：不调用任何 SDK、不连任何地址，[DELAY_MILLIS] 后带回
  * 演示用的授权码与 state = nonce（客户端自查通过）。假服务关闭时与 Release 一样不可用（按钮不显示）。
  */
 internal class DebugWechatAdapter(
-    private val switch: File,
+    /** 统一闸门（F-X-02，[com.couli.app.DebugMockGate]）：每次调用现判，不在构造时判一次。 */
+    private val gate: () -> Boolean,
     private val fallback: ThirdPartyAuthAdapter,
+    private val delayMillis: Long = DELAY_MILLIS,
 ) : ThirdPartyAuthAdapter {
     override val provider: String = OAuthProvider.WECHAT
 
-    override fun adapterAvailable(): Boolean = switch.exists()
+    override fun adapterAvailable(): Boolean = gate()
 
-    override fun installed(): Boolean? = if (switch.exists()) true else fallback.installed()
+    override fun installed(): Boolean? = if (gate()) true else fallback.installed()
 
+    @Suppress("ReturnCount") // 入口与交付前两次闸门
     override suspend fun authorize(nonce: String): ThirdPartyAuthResult {
-        if (!switch.exists()) return fallback.authorize(nonce)
-        delay(DELAY_MILLIS)
+        if (!gate()) return fallback.authorize(nonce)
+        delay(delayMillis)
+        // 交付前复核（等待期间切到 prod 的不交出假授权码，按 Release 的不可用适配器回答）
+        if (!gate()) return fallback.authorize(nonce)
         return ThirdPartyAuthResult(ThirdPartyAuthKind.CREDENTIAL, code = DEMO_CODE, state = nonce)
     }
 
@@ -48,5 +52,5 @@ internal fun variantWechatAdapter(
     probe: InstalledAppProbe,
 ): ThirdPartyAuthAdapter {
     check(FAKE_WECHAT_ADAPTER_MARKER.isNotEmpty())
-    return DebugWechatAdapter(fakeLoginServerSwitch(context), UnavailableWechatAdapter(probe))
+    return DebugWechatAdapter(DebugMockGate.of(context), UnavailableWechatAdapter(probe))
 }

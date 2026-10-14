@@ -3,6 +3,7 @@ package com.couli.core.orders
 import com.couli.core.clientcore.AtomicTextFile
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -31,7 +32,11 @@ data class OrderRestoreRecord(
  *   先把「待清理」落到记录目录之外（[flag]，commit 确认）并在目录内放标记，再删除全部记录、再列一次确认只剩标记，最后清标记；任何一步失败都抛
  *   [IOException]（清理器据此判失败、保留待清理并重试）。
  * - 待清理期间（本进程内存、目录外标记、目录内标记任一存在）：读一律为 null、写一律拒绝，每次读写前先重试清理；进程重建后同样生效
- *   （内存没了，两处落盘标记仍在）。
+ *   （内存没了，两处落盘标记仍在）。目录外标记读不出按已设置。
+ * - **归属世代**（F-AND-29，FU-AND-0714；鸿蒙 F-HM-25 / FU-HM-0711c R1-01 的做法）：接上持久化登录世代（[bindLoginEpoch]）之后，每份记录写入
+ *   「账号归属 + 令牌存储里的持久化登录世代」的哈希（`gen`），读取时按此刻的登录世代重算核对，不一致（同账号重新登录、换号）或读不出（抛错、null、
+ *   空串）一律不恢复。三处标记与删除同时失败（整体存储故障）、失败写入其实已落盘等残留，在重新登录之后也恢复不出来。登录世代在页面固定身份时取一次
+ *   （[loginEpochNow]），写入时此刻的世代已不是它（同账号重新登录、清理通知还没到）就不写。
  */
 @Suppress("TooManyFunctions") // 读、写、清理与编解码各一组
 class OrderRestoreStore internal constructor(
@@ -50,6 +55,42 @@ class OrderRestoreStore internal constructor(
     /** 本进程内的待清理状态（落盘的两处标记另行核验）。 */
     private var pendingClear = false
 
+    /** 持久化登录世代的来源（F-AND-29）；没接（单测、旧用法）时不写不核对 `gen`。 */
+    @Volatile
+    private var loginEpoch: (() -> String?)? = null
+
+    /** 接上令牌存储里的持久化登录世代（App 在每个取得实例的地方接；只能从未接变为接上）。 */
+    fun bindLoginEpoch(source: () -> String?) {
+        if (loginEpoch == null) loginEpoch = source
+    }
+
+    /** 此刻的持久化登录世代（观察用；页面固定身份用 [loginBindingNow]）；没接或读不出为 null。 */
+    fun loginEpochNow(): String? = (currentEpoch() as? LoginBinding.Known)?.value
+
+    /**
+     * 页面固定身份时取一次的登录世代绑定（第 2 轮评审 R2-04）：明确区分**没接来源**（[LoginBinding.Unbound]，旧口径）与**绑定时读取失败**
+     * （[LoginBinding.Unknown]）；写入时原样交回 [write]。
+     */
+    fun loginBindingNow(): LoginBinding = currentEpoch()
+
+    /** 登录世代的三种读法：没接来源（旧口径）、读不出（未知）、读到。 */
+    sealed interface LoginBinding {
+        /** 取的那一刻存储没接登录世代来源（单测、旧用法）。 */
+        data object Unbound : LoginBinding
+
+        /** 接了来源但读不出（会话不可用、隔离、撤销、读取失败）：之后的写入一律拒绝，即使世代后来读得出（不补绑）。 */
+        data object Unknown : LoginBinding
+
+        data class Known(
+            val value: String,
+        ) : LoginBinding
+    }
+
+    private fun currentEpoch(): LoginBinding {
+        val source = loginEpoch ?: return LoginBinding.Unbound
+        return runCatching(source).getOrNull()?.takeIf { it.isNotEmpty() }?.let(LoginBinding::Known) ?: LoginBinding.Unknown
+    }
+
     /** 清理代次：每次 [clearAll] 加 1；页面取得的代次与它不同就写不进来。 */
     @Volatile
     var epoch: Long = 0L
@@ -58,28 +99,70 @@ class OrderRestoreStore internal constructor(
     /** 新的记录引用（随机，不含个人数据；写进系统保存状态）。 */
     fun newRef(): String = UUID.randomUUID().toString()
 
-    /** 读 [ref] 的记录；没有、引用不合法、待清理没清掉、读不出或损坏都为 null（损坏的删掉）。 */
+    /**
+     * 读 [ref] 的记录；没有、引用不合法、待清理没清掉、读不出或损坏都为 null（损坏的删掉）。接上登录世代时：世代读不出不恢复；记录的 `gen` 与
+     * 「记录的账号归属 + 此刻的登录世代」不符（旧登录世代、别的账号、升级前没有 `gen` 的记录）不恢复并删掉。
+     */
     @Synchronized
-    @Suppress("ReturnCount") // 引用、清理、读取逐项
+    @Suppress("ReturnCount") // 引用、清理、世代、读取逐项
     fun read(ref: String?): OrderRestoreRecord? {
         if (ref == null || !REF_PATTERN.matches(ref) || !cleaned()) return null
+        val current = currentEpoch()
+        if (current == LoginBinding.Unknown) return null
         val file = File(root, ref + SUFFIX)
         val text = runCatching { AtomicTextFile(file).read() }.getOrNull() ?: return null
-        return decode(text) ?: run {
+        val record = decode(text)
+        if (record == null || (current is LoginBinding.Known && decodeGen(text) != bindingHash(record.owner, current.value))) {
             runCatching { deleter(file) }
-            null
+            return null
         }
+        return record
     }
 
-    /** 写 [ref] 的记录：[boundEpoch] 必须仍是当前清理代次、没有待清理；写不进返回 false（调用方当作没有恢复记录）。 */
-    @Synchronized
+    /**
+     * 写 [ref] 的记录（世代以字符串给出的简写）：[boundLoginEpoch] 为 null 按「调用方没有绑定」（[LoginBinding.Unbound]）——存储接了登录世代来源时
+     * 一律拒写，**不用此刻的世代补绑**（第 2 轮评审 R2-04）。页面用 [loginBindingNow] 取绑定、按 LoginBinding 版本写。
+     */
     fun write(
         ref: String,
         boundEpoch: Long,
         record: OrderRestoreRecord,
+        boundLoginEpoch: String? = null,
+    ): Boolean = write(ref, boundEpoch, record, boundLoginEpoch?.let(LoginBinding::Known) ?: LoginBinding.Unbound)
+
+    /**
+     * 写 [ref] 的记录：[boundEpoch] 必须仍是当前清理代次、没有待清理；登录世代（第 2 轮评审 R2-04）：
+     * - 存储没接来源：只有同样没接时取的绑定（[LoginBinding.Unbound]）能写（旧口径，不带 `gen`）；
+     * - 接了来源：绑定必须是**已知**的（[LoginBinding.Known]）且等于此刻读得出的世代——绑定时读不出（[LoginBinding.Unknown]）、取绑定时还没接来源、
+     *   此刻读不出、此刻已换代（同账号重新登录、清理通知还没到）都拒写。不用此刻的世代给未知的旧页面补绑。
+     * 写不进返回 false（调用方当作没有恢复记录）。
+     */
+    @Synchronized
+    @Suppress("ReturnCount")
+    fun write(
+        ref: String,
+        boundEpoch: Long,
+        record: OrderRestoreRecord,
+        binding: LoginBinding,
     ): Boolean {
         if (!REF_PATTERN.matches(ref) || !cleaned() || boundEpoch != epoch) return false
-        val ok = runCatching { writer(File(root, ref + SUFFIX), encode(record)) }.isSuccess
+        val gen =
+            when (val current = currentEpoch()) {
+                LoginBinding.Unbound -> {
+                    if (binding != LoginBinding.Unbound) return false
+                    null
+                }
+
+                LoginBinding.Unknown -> {
+                    return false
+                }
+
+                is LoginBinding.Known -> {
+                    if (binding !is LoginBinding.Known || binding.value != current.value) return false
+                    bindingHash(record.owner, current.value)
+                }
+            }
+        val ok = runCatching { writer(File(root, ref + SUFFIX), encode(record, gen)) }.isSuccess
         if (!ok) OrderLog.warn("orders: restore record not written")
         return ok
     }
@@ -127,14 +210,17 @@ class OrderRestoreStore internal constructor(
 
     private fun incomplete(reason: String): Nothing = throw IOException(reason)
 
-    /** 没有待清理，或重试清理成功（重试不改代次）。 */
+    /** 没有待清理，或重试清理成功（重试不改代次）。目录外标记读不出按已设置（未知）。 */
     private fun cleaned(): Boolean {
         val pending = pendingClear || marker.exists() || runCatching { flag.isSet() }.getOrDefault(true)
         if (!pending) return true
         return runCatching { clearFiles() }.isSuccess
     }
 
-    private fun encode(record: OrderRestoreRecord): String =
+    private fun encode(
+        record: OrderRestoreRecord,
+        gen: String?,
+    ): String =
         JsonObject(
             mapOf(
                 "owner" to str(record.owner),
@@ -143,8 +229,23 @@ class OrderRestoreStore internal constructor(
                 "q" to str(record.q),
                 "input" to JsonPrimitive(record.input),
                 "anchor_order_id" to str(record.anchorOrderId),
-            ),
+            ) + (gen?.let { mapOf("gen" to JsonPrimitive(it)) } ?: emptyMap()),
         ).toString()
+
+    private fun decodeGen(text: String): String? =
+        ((runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull())?.get("gen") as? JsonPrimitive)
+            ?.takeIf { it.isString }
+            ?.content
+
+    /** 归属世代哈希：账号归属 + 持久化登录世代（SHA-256 十六进制；不落明文）。 */
+    private fun bindingHash(
+        owner: String?,
+        loginEpoch: String,
+    ): String =
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest("${owner.orEmpty()}\u0000login_epoch:$loginEpoch".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     private fun decode(text: String): OrderRestoreRecord? {
         val o = runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return null

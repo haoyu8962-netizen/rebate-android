@@ -3,6 +3,7 @@ package com.couli.app
 import android.content.Context
 import com.couli.app.home.debugFakeHome
 import java.io.File
+import java.io.IOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -15,8 +16,9 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 
 /**
- * Debug 专用的本机假登录服务（APP-05a 设计稿比对与冒烟用；src/debugFeatures，Release 不编译，release-scan 查 [FAKE_LOGIN_SERVER_MARKER]）。
- * 只在应用私有目录里有开关文件 files/<[FAKE_LOGIN_SERVER_MARKER]> 时接管（`adb shell run-as com.couli.app touch files/<标记>`，或调试面板），
+ * Debug 专用的本机假登录服务（APP-05a 设计稿比对与冒烟用；src/debugFeatures，Release 不编译，release-scan 查开关文件名标记，见 [DebugMockGate]）。
+ * 只在统一闸门 [DebugMockGate] 放行时接管：应用私有目录里有开关文件 files/<标记>（`adb shell run-as com.couli.app touch files/<标记>`，或调试面板）、
+ * 当前环境允许 MOCK_DATA（prod 一律不允许）且环境闸门已就绪（F-X-02）；
  * 接管的请求全部在本机回答，不连任何地址；没有开关时原样交给网络（debug 默认环境本来就连不上）。
  *
  * 场景（按输入值选，号码与验证码都是演示用的假值）：
@@ -32,10 +34,25 @@ import okio.Buffer
  */
 @Suppress("TooManyFunctions") // 每类接口一个场景函数
 internal class DebugFakeLoginServer(
-    private val switch: File,
+    /** 假服务状态文件所在目录（files/）。 */
+    stateDir: File,
     /** 首页的 previewPage、listArticles(category=notice)（APP-11）：环境不允许假数据时交给真实网络（F-X-02）。 */
-    private val home: DebugFakeHome? = null,
+    private val home: DebugFakeHome?,
+    /**
+     * 统一闸门（F-X-02，[DebugMockGate]）：「开关文件在 + 当前环境允许 MOCK_DATA + 环境闸门已就绪」。实际传输入口（每个请求进来时）判一次，
+     * 关闭时整条交给真实网络（prod 走真实路径）；假回答交付之前再判一次，等待期间（订单、购买、搜索的模拟耗时）切到 prod 的不交假回答，
+     * 按断连结束（IOException），也不再改发到真实网络。
+     */
+    private val gate: () -> Boolean,
+    /** 现画商品图（单测替换：模拟现画期间切环境）。 */
+    private val imageDrawer: (String) -> ByteArray = DebugFakeTrade::image,
 ) : Interceptor {
+    /** 单测用：开关文件 + 首页替身自己的环境判定（[DebugFakeHome.mockAllowedNow]）组成闸门。 */
+    constructor(switch: File, home: DebugFakeHome) :
+        this(switch.absoluteFile.parentFile ?: switch, home, { switch.exists() && home.mockAllowedNow() })
+
+    private fun gateOpen(): Boolean = runCatching(gate).getOrDefault(false)
+
     private var serial = 0
 
     /**
@@ -46,30 +63,34 @@ internal class DebugFakeLoginServer(
     private var phoneBound = true
 
     /** 购买、外跳与授权（APP-06b，[DebugFakeTrade]）；状态开关文件与开关文件同目录。 */
-    private val trade = DebugFakeTrade(File(switch.parentFile, FAKE_TRADE_STATE_FILE))
+    private val trade = DebugFakeTrade(File(stateDir, FAKE_TRADE_STATE_FILE))
 
     /** 订单（APP-08，[DebugFakeOrders]）；状态开关文件与开关文件同目录。 */
-    private val orders = DebugFakeOrders(File(switch.parentFile, FAKE_ORDERS_STATE_FILE))
+    private val orders = DebugFakeOrders(File(stateDir, FAKE_ORDERS_STATE_FILE))
 
     /** 钱包、提现、收款账号、二次验证与作废（APP-09，[DebugFakeWallet]，进程内唯一）；状态开关文件与开关文件同目录。 */
-    private val wallet = DebugFakeWallet.of(File(switch.parentFile, FAKE_WALLET_STATE_FILE)).also { it.switchOn = { switch.exists() } }
+    private val wallet = DebugFakeWallet.of(File(stateDir, FAKE_WALLET_STATE_FILE)).also { it.switchOn = gate }
 
     /** 「我的」、申诉、配置与推送上报（APP-12，[DebugFakeMe]，进程内唯一）；状态开关文件与开关文件同目录。 */
-    private val me = DebugFakeMe.of(File(switch.parentFile, FAKE_ME_STATE_FILE)).also { it.switchOn = { switch.exists() } }
+    private val me = DebugFakeMe.of(File(stateDir, FAKE_ME_STATE_FILE)).also { it.switchOn = gate }
 
     @Suppress("ReturnCount", "CyclomaticComplexMethod") // 开关关着、商品图、其余三个出口；各假服务逐个应答
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        if (!switch.exists()) return chain.proceed(request)
+        // 实际传输入口（F-X-02）：闸门关着（开关不在、prod、环境未就绪）整条交给真实网络
+        if (!gateOpen()) return chain.proceed(request)
         // 商品图（APP-06a 共性第 22 条的冒烟）：img.example.test 的图片在本机现画
         if (request.url.host == DebugFakeTrade.IMAGE_HOST) {
+            val image = imageDrawer(request.url.encodedPath)
+            // 交付前复核（F-X-02，FU-AND-0714 R1-05）：现画期间切到 prod / 开始切换环境 / 关掉假服务的，不交出假图（按断连结束）
+            if (!gateOpen()) throw IOException(GATE_CLOSED)
             return Response
                 .Builder()
                 .request(request)
                 .protocol(Protocol.HTTP_1_1)
                 .code(HTTP_OK)
                 .message("OK")
-                .body(DebugFakeTrade.image(request.url.encodedPath).toResponseBody(PNG))
+                .body(image.toResponseBody(PNG))
                 .build()
         }
         val body =
@@ -103,6 +124,8 @@ internal class DebugFakeLoginServer(
                     trade.platformStatus(),
                 ) { chain.call().isCanceled() }
                 ?: answer(request.url.encodedPath, body)
+        // 交付前复核（F-X-02 等待期）：模拟耗时期间切到 prod / 开始切换环境的，不交出假回答
+        if (!gateOpen()) throw IOException(GATE_CLOSED)
         // 复核过的商品，详情按新报价回答（APP-06b 重取权威卡片的冒烟）
         val answered = if (code == 0) trade.requoted(request.url.encodedPath, data) else data
         val envelope = """{"code":$code,"msg":"","data":$answered,"trace_id":"fake-trace-${"%06d".format(++serial)}"}"""
@@ -247,6 +270,7 @@ internal class DebugFakeLoginServer(
     private fun JsonObject.text(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     private companion object {
+        const val GATE_CLOSED = "debug fake server gate closed"
         val JSON = "application/json".toMediaType()
         val PNG = "image/png".toMediaType()
         val INVITE = Regex("[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}")
@@ -271,12 +295,9 @@ internal class DebugFakeLoginServer(
     }
 }
 
-/** 假服务的开关文件名，也是 release-scan 查的唯一标记（Release 制品里不得出现）。 */
-internal const val FAKE_LOGIN_SERVER_MARKER = "COULI_FAKE_LOGIN_SERVER_APP05A_7f3a91c2"
-
-/** 假服务开关文件。 */
-internal fun fakeLoginServerSwitch(context: Context): File = File(context.applicationContext.filesDir, FAKE_LOGIN_SERVER_MARKER)
-
-/** debug / staging：带 Debug 专用假登录服务的 OkHttpClient（开关文件不存在时不接管）。 */
+/** debug / staging：带 Debug 专用假登录服务的 OkHttpClient（闸门关着时不接管，F-X-02）。 */
 internal fun variantHttpClient(context: Context): OkHttpClient =
-    OkHttpClient.Builder().addInterceptor(DebugFakeLoginServer(fakeLoginServerSwitch(context), debugFakeHome(context))).build()
+    OkHttpClient
+        .Builder()
+        .addInterceptor(DebugFakeLoginServer(DebugMockGate.stateDir(context), debugFakeHome(context), DebugMockGate.of(context)))
+        .build()

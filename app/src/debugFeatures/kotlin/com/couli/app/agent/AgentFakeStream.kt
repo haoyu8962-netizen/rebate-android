@@ -98,7 +98,7 @@ internal class AgentFakeStream(
         call: AgentCall,
         sink: AgentStreamSink,
     ): AgentStreamHandle {
-        val stream = FakeStream(call.identityKey)
+        val stream = FakeStream(call.identityKey, sink)
         if (!allowed(call)) {
             stream.later(0) { sink.onFailure() }
             return stream
@@ -253,17 +253,31 @@ internal class AgentFakeStream(
 
     private inner class FakeStream(
         val owner: Any,
+        private val sink: AgentStreamSink,
     ) : AgentStreamHandle {
         private val cancels = mutableListOf<() -> Unit>()
         var closed = false
             private set
 
+        /**
+         * 排一帧。每一帧交付前再过一次闸门（F-X-02 等待期）：流进行中切到 prod / 开始切换环境的，剩下的帧一律不交，流按传输失败结束
+         * （只报一次 onFailure）。
+         */
         fun later(
             ms: Long,
             run: () -> Unit,
         ) {
             if (closed) return
-            cancels += timer.after(ms) { if (!closed) run() }
+            cancels +=
+                timer.after(ms) {
+                    if (closed) return@after
+                    if (!enabled()) {
+                        cancel()
+                        sink.onFailure()
+                        return@after
+                    }
+                    run()
+                }
         }
 
         override fun cancel() {

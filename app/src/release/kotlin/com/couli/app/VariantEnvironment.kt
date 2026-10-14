@@ -18,3 +18,7 @@ internal fun currentApiBaseUrl(
     context: Context,
     cleaners: EnvironmentSwitchCleanerRegistry,
 ): String = ProdEndpoints.endpoints.apiBaseUrl
+
+/** Release 没有 Debug 替身，不需要接环境闸门。 */
+@Suppress("UnusedParameter")
+internal fun variantBindEnvironmentGate(ready: () -> Boolean) = Unit

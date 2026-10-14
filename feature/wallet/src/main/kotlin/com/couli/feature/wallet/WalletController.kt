@@ -3,6 +3,7 @@ package com.couli.feature.wallet
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.LocalRejectReason
 import com.couli.core.wallet.EarningsEntry
 import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.WalletError
@@ -103,6 +104,10 @@ class WalletController(
             update { WalletSnapshot(version = it.version + 1) }
             return
         }
+        if (identityMissing()) {
+            identityFailed()
+            return
+        }
         if (deps.gates.read.active) {
             gated()
             return
@@ -195,9 +200,32 @@ class WalletController(
         failed(WalletError(WalletError.RETRY_AFTER, "error.42901"), pageOwner.epoch)
     }
 
+    /**
+     * 页面身份没建立（F-AND-28，APP-09 共性第 65 条）：已登录，但构造（或会话换代重建）时账号读不出（凭据暂时不可读、会话读不出）。这是可恢复的
+     * 初始化失败：不以 expectedAccount = null 发请求、不读写缓存、不发布正常钱包数据，也不会因此永久拒收本会话的提现成功通知。
+     */
+    private fun identityMissing(): Boolean = pageOwner.account == null && deps.env.loggedIn()
+
+    /** 身份没建立：显示错误态与【重试】（不发请求）。 */
+    private fun identityFailed() {
+        val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
+        update { WalletSnapshot(WalletSnapshot.ERROR, error = Notice(error.textKey, ++ids, null, false), version = it.version + 1) }
+    }
+
+    /** 【重试】、回到本页时身份仍没建立：先清空（作废在途、清掉已显示的状态），再重新一次性取得页面身份（共性第 65 条：只在重建时取）。 */
+    private fun rebuildIdentity() {
+        seq += 1
+        cancelAll()
+        shownEpoch = Long.MIN_VALUE
+        lastSuccessAt = null
+        update { WalletSnapshot(version = it.version + 1) }
+        pageOwner = FormOwner.of(deps.env)
+    }
+
     /** 下拉刷新、【重试】与回到本页（禁用期内不发，但按限流结算显示）。 */
     fun refresh(): Boolean {
         if (left) return false
+        if (identityMissing()) rebuildIdentity()
         if (deps.gates.read.active) {
             if (deps.env.loggedIn()) gated()
             return false

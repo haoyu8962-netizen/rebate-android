@@ -121,6 +121,21 @@ object OrderStaleCache {
         @Volatile
         private var pendingClear = false
 
+        /**
+         * 持久化登录世代的来源（F-AND-25，[bindLoginEpoch]）：接上之后，缓存目录与归属记录按「账号 + 登录世代」的哈希分区；世代读不出（抛错、null、
+         * 空串）按未知：不读、不写、不按归属清理。没接（单测、core 自用）时按账号分区（原口径）。
+         */
+        @Volatile
+        private var loginEpoch: (() -> String?)? = null
+
+        /**
+         * 接上令牌存储里的持久化登录世代（App 在每个取得实例的地方接；只能从未接变为接上）。清理标记、目录内标记与删除三者同时失败、残留的旧缓存，
+         * 在同账号重新登录（新世代）之后也读不回、写不进，并在下一次归属核对时整体删除。
+         */
+        fun bindLoginEpoch(source: () -> String?) {
+            if (loginEpoch == null) loginEpoch = source
+        }
+
         /** 读 [scope] 的列表缓存；没有、坏了、待清理没清掉都为 null。 */
         @Synchronized
         @Suppress("ReturnCount") // 没有目录、没有文件、坏数据逐项
@@ -194,14 +209,17 @@ object OrderStaleCache {
             write(File(dir, DETAILS_FILE), JsonObject(kept))
         }
 
-        /** 当前会话的账号（null = 没有会话）与缓存的归属不一致（登出、换账号、会话失效）：全部删除。 */
+        /**
+         * 当前会话的账号（null = 没有会话）与缓存的归属不一致（登出、换账号、会话失效；接上登录世代后还有同账号重新登录）：全部删除。登录世代读不出
+         * 时不知道归属，不删也不读写（F-AND-25）。
+         */
         @Synchronized
         fun reconcileOwner(account: String?) {
             // 启动（connectSession）与会话变化时先核验缓存目录之外的待清理状态：上次没清完的先清完（R3-02），清不掉的读写路径同样拦住
             if (!cleaned()) return
+            val current = if (account == null) null else ownerKey(account) ?: return
             // 归属记录读不出（I/O 故障）不能当成「没有归属」：按归属不一致全部删除（共性第 20 条：清理路径的失败分支）
             val owner = runCatching { AtomicTextFile(File(root, OWNER_FILE)).read() }.getOrElse { UNREADABLE_OWNER }
-            val current = account?.let(::hash)
             if (owner != null && owner != current) runCatching { clearAll() }
         }
 
@@ -245,22 +263,30 @@ object OrderStaleCache {
         /** 清理没有完成：保留待清理状态并报失败（调用方保持待完成、之后重试）。 */
         private fun incomplete(reason: String): Nothing = throw IOException(reason)
 
-        /** 待清理期间先重试清理；清不掉返回 false（不读、不写）。 */
+        /** 待清理期间先重试清理；清不掉返回 false（不读、不写）。目录外标记读不出按已设置（未知，F-AND-25）。 */
         private fun cleaned(): Boolean {
-            if (!pendingClear && !marker.exists() && !flag.isSet()) return true
+            if (!pendingClear && !marker.exists() && !runCatching { flag.isSet() }.getOrDefault(true)) return true
             return runCatching { clearAll() }.isSuccess
+        }
+
+        /** 账号 → 分区键：没接登录世代按账号哈希；接上后按「账号 + 登录世代」哈希，世代未知为 null（不读不写）。 */
+        @Suppress("ReturnCount") // 没接、未知、读到三个出口
+        private fun ownerKey(account: String): String? {
+            val source = loginEpoch ?: return hash(account)
+            val epoch = runCatching(source).getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+            return hash(account + EPOCH_SEPARATOR + epoch)
         }
 
         private fun accountDir(account: String?): File? {
             if (account.isNullOrEmpty() || !cleaned()) return null
-            return File(root, hash(account))
+            return ownerKey(account)?.let { File(root, it) }
         }
 
-        /** 写入前确保归属：别的账号的缓存先全部删掉（删不掉就不写）。 */
+        /** 写入前确保归属：别的账号（或同账号的旧登录世代）的缓存先全部删掉（删不掉就不写）。 */
         private fun ownedDir(account: String?): File? {
             reconcileOwner(account)
             val dir = accountDir(account) ?: return null
-            val ok = runCatching { AtomicTextFile(File(root, OWNER_FILE)).write(hash(account!!)) }.isSuccess
+            val ok = runCatching { AtomicTextFile(File(root, OWNER_FILE)).write(dir.name) }.isSuccess
             return dir.takeIf { ok }
         }
 
@@ -304,6 +330,7 @@ object OrderStaleCache {
             private const val OWNER_FILE = "owner"
             private const val DETAILS_FILE = "details.json"
             private const val HASH_HEX = 16
+            private const val EPOCH_SEPARATOR = "\u0000login_epoch:"
 
             /** 账号 → 目录名（SHA-256 前 16 位十六进制；不落明文账号）。 */
             fun hash(account: String): String =

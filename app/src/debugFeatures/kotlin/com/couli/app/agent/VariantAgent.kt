@@ -1,12 +1,8 @@
 package com.couli.app.agent
 
 import android.content.Context
-import com.couli.app.buildDefaultEnvironment
-import com.couli.app.fakeLoginServerSwitch
+import com.couli.app.DebugMockGate
 import com.couli.core.agent.AgentContractPort
-import com.couli.core.config.DebugCapability
-import com.couli.core.config.EnvironmentSwitchCleanerRegistry
-import com.couli.core.config.EnvironmentSwitcher
 import java.io.File
 
 /**
@@ -33,15 +29,11 @@ internal fun agentFakeStream(context: Context): AgentFakeStream =
     synchronized(FakeAgents) {
         FakeAgents.instance ?: run {
             val app = context.applicationContext
-            val switch = fakeLoginServerSwitch(app)
-            val stateFile = File(switch.parentFile, FAKE_AGENT_STATE_FILE)
+            val stateFile = File(DebugMockGate.stateDir(app), FAKE_AGENT_STATE_FILE)
             AgentFakeStream(
-                switchOn = { switch.exists() },
-                mockAllowed = {
-                    EnvironmentSwitcher(app, buildDefaultEnvironment(), EnvironmentSwitchCleanerRegistry())
-                        .capabilities
-                        .isAvailable(DebugCapability.MOCK_DATA)
-                },
+                // 统一闸门（F-X-02，DebugMockGate）：开关 + MOCK_DATA + 环境就绪；第二道只核对环境（双重核对，结果相同）
+                switchOn = DebugMockGate.of(app),
+                mockAllowed = { DebugMockGate.mockDataAllowed(app) },
                 fixtures = { name ->
                     runCatching {
                         app.assets

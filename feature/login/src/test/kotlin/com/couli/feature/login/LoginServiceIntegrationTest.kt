@@ -8,6 +8,7 @@ import com.couli.core.network.MemorySessionTokens
 import com.couli.core.network.NetworkContext
 import com.couli.core.network.PendingKeyStore
 import com.couli.core.network.PrivacyRaw
+import com.couli.core.network.RetryPolicy
 import com.couli.core.network.SessionScopeRaw
 import com.couli.core.network.UpdateRaw
 import java.util.Collections
@@ -75,6 +76,10 @@ class LoginServiceIntegrationTest {
                 tokens = tokens,
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
+                // F-AND-27（FU-AND-0714）：本机 MockWebServer 的回答不受网络影响，用例验证的也不是超时；生产的 10 秒单次预算是墙钟时间，
+                // 负载 >130 时 JVM 调度把一次本机往返拖过 10 秒就成了 network_error。这里把预算放到 [LOCAL_BUDGET_MS]，等到回答为止；
+                // 要验证「不等」的用例（取消、作废）本来就不靠超时结束
+                retryPolicy = { RetryPolicy.forOperation(it).copy(timeoutMillis = LOCAL_BUDGET_MS) },
             )
         service = LoginService(api, tokens, host, LegalVersions(3, 2)) { now }
     }
@@ -432,5 +437,6 @@ class LoginServiceIntegrationTest {
         const val WAIT_S = 5L
         const val CANCEL_WITHIN_MS = 3_000L
         const val POLL_MS = 20L
+        const val LOCAL_BUDGET_MS = 120_000L
     }
 }

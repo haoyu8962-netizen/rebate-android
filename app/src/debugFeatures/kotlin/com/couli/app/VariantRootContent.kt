@@ -36,7 +36,10 @@ import com.couli.app.update.DebugUpdateSection
 import com.couli.app.web.BRIDGE_CONFORMANCE_MARKER
 import com.couli.app.web.CONFORMANCE_EXTRA
 import com.couli.app.web.CONFORMANCE_SOURCE
+import com.couli.app.web.ConformanceSource
 import com.couli.app.web.DebugConformancePage
+import com.couli.core.config.DebugCapabilities
+import com.couli.core.config.DebugCapability
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
@@ -67,19 +70,24 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
     val conformanceMode = remember(context) { context.findActivity()?.intent?.getStringExtra(CONFORMANCE_EXTRA) }
     // 本机测试源只在 debug（staging 为 null：不显示入口，extra 也不生效）
     val conformanceSource = CONFORMANCE_SOURCE
-    var conformance by rememberSaveable { mutableStateOf(conformanceMode != null && conformanceSource != null) }
+    // 启动参数在 prod 不生效（F-X-02 ③）：一致性页以「假定已登录」身份跑、注入示例规则，属于 BRIDGE_CONFORMANCE 调试能力，prod 关闭
+    var conformance by rememberSaveable {
+        mutableStateOf(conformanceLaunchAllowed(conformanceMode, conformanceSource, switcher.capabilities))
+    }
     if (conformance && conformanceSource != null) {
         DebugConformancePage(source = conformanceSource, mode = conformanceMode, onClose = { conformance = false })
         return
     }
 
     // 剪贴板样例（APP-07 设计稿截图）：adb 用 extra couli.clip 把样例文字写进系统剪贴板，模拟别的 App 复制（不经 App 的写入口、不记 hash）；
-    // 写一次后移除 extra
+    // 写一次后移除 extra。执行时过统一闸门（F-X-02 ③）：prod / 切换中丢弃，不写剪贴板
     LaunchedEffect(context) {
         val activity = context.findActivity() ?: return@LaunchedEffect
         val sample = activity.intent?.getStringExtra(DEBUG_CLIP_EXTRA) ?: return@LaunchedEffect
         activity.intent?.removeExtra(DEBUG_CLIP_EXTRA)
-        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("debug-sample", sample))
+        applyDebugClipSample(sample, DebugMockGate.of(context)) { text ->
+            context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("debug-sample", text))
+        }
     }
     Column(
         modifier =
@@ -147,18 +155,18 @@ internal fun VariantRootContent(trace: RoutingTrace? = null) {
                 Text(text = "Login: session expired")
             }
             // 本机假登录服务（APP-05a）：开关文件在应用私有目录，打开后发码、登录、登出都在本机回答
-            val fakeSwitch = remember(context) { fakeLoginServerSwitch(context) }
-            var fakeOn by remember { mutableStateOf(fakeSwitch.exists()) }
-            TextButton(onClick = {
-                if (fakeOn) fakeSwitch.delete() else fakeSwitch.createNewFile()
-                fakeOn = fakeSwitch.exists()
-            }) {
-                Text(text = "Fake login server: " + if (fakeOn) "on" else "off")
+            // 开关本身（显示与切换）是唯一直接读开关文件的地方；替身是否交假数据另看统一闸门（F-X-02：prod 下开关在也不生效）
+            var fakeOn by remember { mutableStateOf(panelSwitchShown(context)) }
+            TextButton(onClick = { fakeOn = panelToggleSwitch(context, !fakeOn) }) {
+                Text(
+                    text =
+                        "Fake login server: " + (if (fakeOn) "on" else "off") + if (DebugMockGate.of(context)()) "" else " (mock blocked)",
+                )
             }
             TextButton(onClick = { catalog = CatalogPage.INDEX }) {
                 Text(text = "Component catalog")
             }
-            conformanceSource?.let { source ->
+            conformanceSource?.takeIf { switcher.capabilities.isAvailable(DebugCapability.BRIDGE_CONFORMANCE) }?.let { source ->
                 TextButton(onClick = { conformance = true }, modifier = Modifier.testTag(BRIDGE_CONFORMANCE_MARKER)) {
                     Text(text = "Bridge conformance (${source.url})")
                 }
@@ -186,5 +194,34 @@ private tailrec fun Context.findActivity(): Activity? =
         else -> null
     }
 
+/** 调试面板的开关按钮：显示开关文件本身的状态（不代表替身生效，生效看统一闸门）。 */
+@OptIn(RawFakeServerSwitch::class)
+private fun panelSwitchShown(context: Context): Boolean = DebugMockGate.switchOn(context)
+
+/** 调试面板的开关按钮：打开 / 关闭开关文件。 */
+@OptIn(RawFakeServerSwitch::class)
+private fun panelToggleSwitch(
+    context: Context,
+    on: Boolean,
+): Boolean = DebugMockGate.setSwitch(context, on)
+
 /** 剪贴板样例的启动 extra（APP-07 截图，debug / staging）。 */
 internal const val DEBUG_CLIP_EXTRA = "couli.clip"
+
+/** 剪贴板样例启动参数（F-X-02 ③）：执行这一刻统一闸门放行才写，否则丢弃。返回是否写了。 */
+internal fun applyDebugClipSample(
+    sample: String,
+    gate: () -> Boolean,
+    write: (String) -> Unit,
+): Boolean {
+    if (!runCatching(gate).getOrDefault(false)) return false
+    write(sample)
+    return true
+}
+
+/** 一致性页启动参数（F-X-02 ③）：有本机源、带了 extra，且当前环境允许 BRIDGE_CONFORMANCE（prod 不允许）才直接打开。 */
+internal fun conformanceLaunchAllowed(
+    mode: String?,
+    source: ConformanceSource?,
+    capabilities: DebugCapabilities,
+): Boolean = mode != null && source != null && capabilities.isAvailable(DebugCapability.BRIDGE_CONFORMANCE)

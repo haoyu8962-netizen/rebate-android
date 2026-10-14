@@ -269,6 +269,8 @@ class AppAgent(
                 filingText = ::filingText,
                 // 还没交出的情境：只交给同一归属键的控制器（期间换号、撤回、切环境就丢弃，共性第 4 条）
                 context = handoff.take(identity.ownerKey),
+                // F-AND-28（FU-AND-0714 R1-04）：会员但账号读不出的控制器点【重试】——仍是当前控制器才同步作废（清空）并按此刻的身份重建
+                rebuildIdentity = { built?.let(::rebuildAfterIdentityFailure) },
             )
         val c = AgentController(deps)
         built = c
@@ -278,6 +280,16 @@ class AppAgent(
         c.start()
         log("agent controller level=${identity.level} phase=${c.currentPhase}")
         return c
+    }
+
+    /**
+     * 身份初始化失败后的重建（R1-04）：[failed] 仍是当前控制器时同步作废它（清空），Agent 页仍想要时按此刻的身份重建（账号读得出 → 正常加载；
+     * 仍读不出 → 新的可恢复失败）。
+     */
+    private fun rebuildAfterIdentityFailure(failed: AgentController) {
+        if (mutableController.value !== failed) return
+        invalidate()
+        if (wanted) build(identity())
     }
 
     /** 同步作废当前控制器（关连接、停计时、清消息与金额、释放订阅；不发 cancel，G06）。 */
@@ -538,6 +550,8 @@ class AppAgent(
                     "client_at" to JsonPrimitive(shanghaiIso(clock())),
                 ),
             )
+        // 页面身份没建立（F-AND-28：已登录却读不出账号）：不以 expectedAccount = null 记录同意，按没有发出结束
+        if (fixed.member && fixed.account == null) return AgentHttpResult.notSentResult()
         val stillFixed = { runCatching { identity().ownerKey == fixed.ownerKey }.getOrDefault(false) }
         val owner = CallOwnership(fixed.epochs, sendAllowed = stillFixed) { stillFixed() }
         val r = client.send(ApiCall(RECORD_CONSENT, body = body.toString(), ownership = owner, expectedAccount = fixed.account))

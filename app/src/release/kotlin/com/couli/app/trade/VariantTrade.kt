@@ -21,3 +21,7 @@ internal fun variantJumpPorts(
     context: Context,
     base: JumpPorts,
 ): JumpPorts = base
+
+/** 商品图缓存的来源：Release 没有替身、环境恒为 prod，来源恒定。 */
+@Suppress("UnusedParameter") // 与 debug / staging 源码集同一签名
+internal fun variantImageSource(context: Context): () -> String = { AppProductImages.RELEASE_SOURCE }

@@ -333,6 +333,20 @@ class PendingKeyStore(
         if (this.account != account) coldStart(account)
     }
 
+    /**
+     * [confirm] / [abandon] 的只读预判（F-X-03：环境未就绪窗口里给出与真正占用时相同的结论，但不写、不占用）：[account] 名下 [key] 的记录
+     * 是结果未知、且本进程没有在执行它。读取失败抛错（调用方按 pending_store_failed）。
+     */
+    @Synchronized
+    fun wouldStartUserAction(
+        key: String,
+        account: String,
+    ): Boolean {
+        useAccount(account)
+        val record = backend.read(account, key) ?: return false
+        return record.stateRaw == UNKNOWN && key !in active
+    }
+
     @Suppress("ReturnCount") // 没有记录、不是 unknown 都不接受
     private fun startUserAction(
         current: String,

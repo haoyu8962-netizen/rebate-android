@@ -93,6 +93,12 @@ object HomeLkgScope {
             HomeLevel.BASIC -> "$env:basic"
             else -> "$env:guest"
         }
+
+    /**
+     * [scope] 是会员作用域（[of] 的 member 两种写法：已知账号、账号未知）：LKG 存储按持久化登录世代再分区（F-AND-25，FU-AND-0714 R1-07）。
+     * 只识别，不改 [of] 的写法（三端共用向量不变）。
+     */
+    fun isMember(scope: String): Boolean = scope.contains(":user:") || scope.endsWith(":member-unknown")
 }
 
 /**

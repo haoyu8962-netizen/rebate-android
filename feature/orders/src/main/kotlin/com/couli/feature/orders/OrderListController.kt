@@ -260,6 +260,23 @@ class OrderListController(
         return true
     }
 
+    /**
+     * 页面身份没建立（F-AND-28）：本页固定归属的账号为空、却是已登录（构造时账号读不出），这时停在可恢复的错误态。
+     * 页面入口据此决定是否走 [rebuildIdentity]（第 1 轮评审 R1-03）。
+     */
+    val identityUnbound: Boolean get() = !left && owner.account == null && env.loggedIn()
+
+    /**
+     * 身份初始化失败后的重建（第 1 轮评审 R1-03；页面的【重试】、下拉刷新在渲染身份只差「账号此前读不出」时调用）：只在本页仍在、固定归属账号为空、
+     * 登录世代仍是本页固定的那一代（[ownerEpoch]）、此刻账号已读得出时执行——作废在途、清空结果与条件、通知页面换渲染身份（[onInvalidated]），
+     * 再按此刻的会话重取固定归属并取第一页（与 [invalidateStale] 同一出口）。账号仍读不出、登录世代已变（交给会话通知）都不做，返回 false。
+     */
+    fun rebuildIdentity(): Boolean {
+        if (!identityUnbound || env.sessionEpoch() != owner.epoch || env.account() == null) return false
+        invalidateStale()
+        return true
+    }
+
     /** 【重试】：整页失败重取第一页；翻页失败重试翻页；stale 状态下翻页的【重试】重取第一页。 */
     fun retry(): Boolean =
         when {
@@ -350,6 +367,14 @@ class OrderListController(
             // 订单页 auth=login：游客不发请求（Router 守卫负责去登录）；旧轮次照样作废
             begin()
             update { it.reset(conditions).copy(phase = OrderListPhase.IDLE, round = nextRound(it, newRound)) }
+            return
+        }
+        if (owner.account == null) {
+            // 页面身份没建立（F-AND-28，APP-09 共性第 65 条）：已登录却读不出账号——可恢复的初始化失败。不以 expectedAccount = null 发请求、不读写
+            // 缓存、不发布订单数据；【重试】等入口的身份检查（[invalidatedStale]）发现账号已读得出时先清空、再重新取得固定归属
+            begin()
+            val view = errorView(OrderErrorAction.LIST_FIRST, ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE), hasCache = false)
+            update { it.reset(conditions).copy(phase = OrderListPhase.ERROR, error = view, round = nextRound(it, newRound)) }
             return
         }
         if (gate.active) {

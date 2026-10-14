@@ -46,6 +46,10 @@ import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
 import java.security.SecureRandom
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -308,6 +312,8 @@ class AppClipboard(
         val candidates: List<ClipboardCandidate> = emptyList(),
         /** parse 的 scene：剪贴板 clipboard，系统分享 share_ext（K16）。 */
         val scene: String = ParseInputService.SCENE_CLIPBOARD,
+        /** 取定 [candidates] 之前的规则修订号（R2-05）：之后发布的每一份规则快照都要逐份复核它。 */
+        val rulesRev: Long = 0L,
     )
 
     /**
@@ -588,10 +594,10 @@ class AppClipboard(
      * 当前规则：包内默认（config.clipboard 键名未定，整体回落，G02 / K02）按 features.flags 的 clipboard.enabled.<电商平台>=false 收紧（K03，
      * F-CLIP-05「按平台一键关闭」，只收紧）。
      */
-    private fun rules(): ClipboardRules {
-        val data = configData()
-        return ClipboardRules.fromConfig(data["clipboard"] as? JsonElement).tightened(ClipboardLimits.fromConfigData(data))
-    }
+    private fun rules(): ClipboardRules = rulesOf(configData())
+
+    private fun rulesOf(data: JsonObject): ClipboardRules =
+        ClipboardRules.fromConfig(data["clipboard"] as? JsonElement).tightened(ClipboardLimits.fromConfigData(data))
 
     fun readState(): ClipboardReadState =
         ClipboardReadState(
@@ -632,6 +638,9 @@ class AppClipboard(
         round: Long,
     ) {
         val guest = routing.session.value == SessionState.GUEST
+        // 先应用还没处理的规则快照，再记下取定候选之前的修订号（R2-05）
+        applyRuleHistory()
+        val rulesRev = rulesRevision.get()
         // 加盐视图（FU-CLIP C3）：盐不可用 → 24 小时去重与自写排除都判断不了，这一次不自动出提示条（不回落到未加盐 hash）
         val view = records.view() ?: return
         val context =
@@ -652,7 +661,7 @@ class AppClipboard(
             ClipboardClassifier.KIND_PRODUCT -> {
                 // 只有候选非空才出条（分类已保证）；「」标题按上传同一套最小化后才留作 30132 预填（FU-CLIP 共性第 5、8 条）
                 val title = ClipboardTitlePolicy.minimize(ClipboardText.quotedTitle(text), rules, shareDomains())
-                show(round, stamp, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null, title, verdict.candidates)
+                show(round, stamp, ClipboardClassifier.KIND_PRODUCT, verdict.uploadText, null, title, verdict.candidates, rulesRev)
             }
 
             ClipboardClassifier.KIND_INVITE -> {
@@ -680,12 +689,27 @@ class AppClipboard(
         inviteCode: String?,
         title: String? = null,
         candidates: List<ClipboardCandidate> = emptyList(),
+        rulesRev: Long = rulesRevision.get(),
     ) {
         if (!homeRoot() || privacy() != PrivacyState.CONSENTED) return
         // 出了提示条就记录（点了或关了都算，G08）；只记加盐指纹（FU-CLIP C3）
         records.recordPromptedHash(stamp.fingerprint, stamp.hash)
         counter += 1
-        val next = Ticket(counter, round, homeGen, screenGen, sessionEpoch(), api.epochs(), kind, upload, inviteCode, title, candidates)
+        val next =
+            Ticket(
+                counter,
+                round,
+                homeGen,
+                screenGen,
+                sessionEpoch(),
+                api.epochs(),
+                kind,
+                upload,
+                inviteCode,
+                title,
+                candidates,
+                rulesRev = rulesRev,
+            )
         ticket = next
         mutablePrompt.value = ClipboardPrompt(next.id, kind, inviteCode, display = ClipboardPromptDisplay.describe(candidates))
         publish()
@@ -722,6 +746,8 @@ class AppClipboard(
      */
     @Suppress("ReturnCount") // 归属失效、限流、邀请、没有片段逐项短路
     fun onPromptAction(id: Long? = null) {
+        // 先逐份应用还没处理的规则快照（R2-05：期间曾收紧过的候选在这里作废，不看合并后的最新状态）
+        applyRuleHistory()
         val t = ticket ?: return
         if (id != null && id != t.id) return
         if (!valid(t)) {
@@ -950,14 +976,54 @@ class AppClipboard(
 
     // ---------------------------------------------------------------- 规则表变化（FU-CLIP §2.1 第 5 条）
 
-    /** 配置快照换了：已显示但未点击的提示条、暂存的分享，若候选已不被允许就同步作废（在途 parse 不追回）。 */
+    /**
+     * 配置快照换了：已显示但未点击的提示条、暂存的分享，若候选已不被允许就同步作废（在途 parse 不追回）。先逐份应用期间发布过的每一份规则快照
+     * （[applyRuleHistory]），再按此刻的规则复核。
+     */
     fun onRulesChanged() {
-        val rules = rules()
+        applyRuleHistory()
+        dropDisallowed(rules(), Long.MAX_VALUE)
+    }
 
+    /** 规则修订号（R2-05）：[watchRules] 每记下一份发布的配置快照加 1。提示条与暂存分享记下取定候选之前的修订号。 */
+    private val rulesRevision = AtomicLong()
+
+    /** 已发布、还没在主线程应用的规则快照（修订号, 当时的规则），按发布顺序；逐份应用，不合并（R2-05）。 */
+    private val ruleHistory = ConcurrentLinkedQueue<Pair<Long, ClipboardRules>>()
+
+    private val watchedStores: MutableSet<ConfigStore> = Collections.synchronizedSet(Collections.newSetFromMap(IdentityHashMap()))
+
+    /**
+     * 规则收紧的通知链（FU-AND-0714 第 2 轮评审 R2-05）：不依赖可合并的 [ConfigStore.snapshots]（界面线程来不及收时「关 → 开」只剩「开」）。
+     * 在 ConfigStore 发布每一份快照的同一处（[ConfigStore.onEachSnapshot]，发布线程、发布顺序）同步记下那一刻的规则与修订号，再切到主线程逐份应用；
+     * 主线程上任何按规则放行的入口（出分享提示条、处理暂存分享、点提示条、出剪贴板提示条）也先逐份应用——放宽之前，曾收紧时已不被允许的暂存
+     * 分享与提示条一定先作废。同一个 store 只接一次（[connectRules] 与 [connectPurchaseStatus] 都会调）。
+     */
+    internal fun watchRules(store: ConfigStore) {
+        if (!watchedStores.add(store)) return
+        store.onEachSnapshot { snapshot ->
+            ruleHistory.add(rulesRevision.incrementAndGet() to rulesOf(snapshot.data))
+            scope.launch { applyRuleHistory() }
+        }
+    }
+
+    /** 主线程：按发布顺序逐份应用还没处理的规则快照——每一份只作废它发布之前就已取定候选（修订号更小）且在它之下不被允许的提示条与暂存分享。 */
+    private fun applyRuleHistory() {
+        while (true) {
+            val (revision, rules) = ruleHistory.poll() ?: return
+            dropDisallowed(rules, revision)
+        }
+    }
+
+    /** 候选在 [rules] 下已不被允许、且是在修订号 [revision] 之前取定的提示条（无在途 parse）与暂存分享：同步作废。 */
+    private fun dropDisallowed(
+        rules: ClipboardRules,
+        revision: Long,
+    ) {
         fun stale(candidates: List<ClipboardCandidate>) = candidates.any { !it.stillAllowed(rules) }
-        if (ticket?.let { it.busyFree() && stale(it.candidates) } == true) clearPrompt()
-        if (pendingShare?.let { stale(it.decision.candidates) } == true) pendingShare = null
-        if (awaitingShare?.let { stale(it.decision.candidates) } == true) awaitingShare = null
+        if (ticket?.let { it.rulesRev < revision && it.busyFree() && stale(it.candidates) } == true) clearPrompt()
+        if (pendingShare?.let { it.rulesRev < revision && stale(it.decision.candidates) } == true) pendingShare = null
+        if (awaitingShare?.let { it.rulesRev < revision && stale(it.decision.candidates) } == true) awaitingShare = null
     }
 
     /** 提示条没有在途 parse（在途的不追回）。 */
@@ -982,6 +1048,8 @@ class AppClipboard(
          * 外壳还没就绪（冷启动、进程恢复）时为 null——此时还没有可确定的页面实例，恢复过程中的 Tab / 回退栈同步不算页面变化（R1-01）。
          */
         val page: Long?,
+        /** 取定 [decision] 的候选之前的规则修订号（R2-05）。 */
+        val rulesRev: Long,
     )
 
     private var shareSerial = 0L
@@ -1030,10 +1098,13 @@ class AppClipboard(
         shareSerial += 1
         pendingShare = null
         awaitingShare = null
+        applyRuleHistory()
+        val rulesRev = rulesRevision.get()
         val decision = ShareImportAction.decideWith(shareState(), ShareImportAction.payload(mime, text, rules(), shareDomains()))
         if (decision.actionRaw !in HANDLED_SHARES) return false
         val page = if (shellReady()) pageGen else null
-        pendingShare = PendingShare(shareSerial, decision, api.epochs(), sessionEpoch(), watcher.round, watcher.inForeground, page)
+        pendingShare =
+            PendingShare(shareSerial, decision, api.epochs(), sessionEpoch(), watcher.round, watcher.inForeground, page, rulesRev)
         processShare()
         return true
     }
@@ -1062,6 +1133,7 @@ class AppClipboard(
      */
     @Suppress("ReturnCount") // 未就绪、归属失效、闸门逐项短路
     private fun processShare() {
+        applyRuleHistory()
         val p = pendingShare ?: return
         if (!watcher.inForeground || !shellReady()) return
         pendingShare = null
@@ -1098,6 +1170,8 @@ class AppClipboard(
     /** 回到首页 Tab 根页之后出分享提示条或本地 30132（身份按此刻一次取定，之后只比较，共性第 7 条、APP-09 第 65 条）。 */
     @Suppress("ReturnCount") // 未到首页、归属失效、规则失效逐项短路
     private fun presentShare() {
+        // 发布前复核也要看到期间曾经的收紧（R2-05）：先逐份应用还没处理的规则快照，再按此刻的规则复核
+        applyRuleHistory()
         val p = awaitingShare ?: return
         if (!homeRoot() || !watcher.inForeground) return
         awaitingShare = null
@@ -1125,6 +1199,7 @@ class AppClipboard(
                         decision.prefill,
                         decision.candidates,
                         ShareImportAction.SCENE_SHARE,
+                        rulesRev = p.rulesRev,
                     )
                 ticket = next
                 mutablePrompt.value =
@@ -1369,10 +1444,13 @@ fun AppClipboard.connectPurchaseStatus(
     purchaseStatus = { platform -> trade?.platformStatus(platform) ?: AppTrade.platformStatusIn(store, platform) }
     trade?.subscribeStatus(::onPurchaseStatusChanged)
     if (store != null) {
+        // 规则表（features.flags 的电商平台开关）的收紧：逐份快照同步记下，不经可合并的状态流（R2-05，见 [AppClipboard.watchRules]）
+        watchRules(store)
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
             store.snapshots.drop(1).collect {
+                // 购买状态按此刻取值重新映射（只看最新，合并无妨）
                 onPurchaseStatusChanged()
-                // 规则表（features.flags 的电商平台开关）可能变了：已显示的提示条若候选不再被允许就作废（FU-CLIP §2.1 第 5 条）
+                // 已显示的提示条若候选不再被允许就作废（FU-CLIP §2.1 第 5 条）；期间每份快照已由 watchRules 逐份应用
                 onRulesChanged()
             }
         }
@@ -1397,8 +1475,12 @@ fun AppClipboard.connect(
     }
 }
 
-/** 规则表的接线（AppModule）：配置快照每换一次，复核已显示的提示条与暂存分享的候选（FU-CLIP §2.1 第 5 条）。 */
+/**
+ * 规则表的接线（AppModule）：配置快照每换一次，复核已显示的提示条与暂存分享的候选（FU-CLIP §2.1 第 5 条）。收紧不靠可合并的状态流：每份快照在
+ * 发布处同步记下、主线程逐份应用（[AppClipboard.watchRules]，FU-AND-0714 第 2 轮评审 R2-05）；状态流的收集只作为「按此刻规则复核」的补充。
+ */
 fun AppClipboard.connectRules(store: ConfigStore) {
+    watchRules(store)
     CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
         store.snapshots.drop(1).collect { onRulesChanged() }
     }

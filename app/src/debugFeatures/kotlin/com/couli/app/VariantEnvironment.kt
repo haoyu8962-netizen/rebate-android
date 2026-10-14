@@ -20,3 +20,8 @@ internal fun currentApiBaseUrl(
     context: Context,
     cleaners: EnvironmentSwitchCleanerRegistry,
 ): String = EnvironmentSwitcher(context, buildDefaultEnvironment(), cleaners).endpoints.apiBaseUrl
+
+/** 把环境闸门接到 Debug 替身的统一闸门（F-X-02：启动对账未成功、运行中切换时一律不交假数据）。Release 为空实现。 */
+internal fun variantBindEnvironmentGate(ready: () -> Boolean) {
+    DebugMockGate.environmentReady = ready
+}

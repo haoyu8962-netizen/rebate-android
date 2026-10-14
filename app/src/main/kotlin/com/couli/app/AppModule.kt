@@ -46,6 +46,7 @@ import com.couli.app.trade.AndroidJumpPorts
 import com.couli.app.trade.AppProductImages
 import com.couli.app.trade.AppTrade
 import com.couli.app.trade.variantBrowserNoticeMillis
+import com.couli.app.trade.variantImageSource
 import com.couli.app.trade.variantJumpPorts
 import com.couli.app.trade.variantWebCodeAuthorizer
 import com.couli.app.update.AndroidStoreAccess
@@ -79,6 +80,7 @@ import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.ApiConfigFetcher
 import com.couli.core.network.ApiUpdateChecker
 import com.couli.core.network.ClientIdentity
+import com.couli.core.network.CredentialReadBarrier
 import com.couli.core.network.DeviceRegistry
 import com.couli.core.network.EncryptedPreferences
 import com.couli.core.network.InFlightCalls
@@ -87,6 +89,7 @@ import com.couli.core.network.KeystoreSessionTokens
 import com.couli.core.network.NetworkContext
 import com.couli.core.network.NetworkHooks
 import com.couli.core.network.PendingKeyStore
+import com.couli.core.network.PersistedLoginEpochs
 import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.SecretCipher
 import com.couli.core.network.SecurePendingKeyBackend
@@ -157,6 +160,7 @@ object AppModule {
         environmentGate: Provider<EnvironmentGate>,
         privacyGate: Provider<PrivacyGate>,
         bridges: BridgeHostRegistry,
+        readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
     ): EnvironmentSwitchCleanerRegistry =
         EnvironmentSwitchCleanerRegistry().apply {
             // 运行中切换环境（调试面板，在主线程）：开始时同步关环境闸门，并在任何等待之前同步作废网络世代、取消全部在途请求
@@ -166,8 +170,13 @@ object AppModule {
             addSwitchListener(
                 object : EnvironmentSwitchListener {
                     override fun onSwitchStarting() {
-                        environmentGate.get().closeForSwitch()
-                        inFlight.onEnvironmentSwitching()
+                        // F-X-03（第 1 轮评审 R1-01）：屏障先关内部闸、等已准入的令牌 / 设备凭据读取结束，再作废网络世代、取消在途请求，
+                        // 最后才关环境闸门（switching 对外可见）；之后清理器第一项再作废一次（覆盖作废与发布之间新登记的请求）
+                        beginEnvironmentSwitchBehindBarrier(
+                            readBarrier,
+                            inFlight::onEnvironmentSwitching,
+                            environmentGate.get()::closeForSwitch,
+                        )
                     }
 
                     override fun onSwitchFinished(committed: Boolean) {
@@ -192,6 +201,8 @@ object AppModule {
             // 冷启动环境对账也走这里），再清内存里的队列
             register { _, _ -> trackerQueueFile(context).write(null) }
             register { _, _ -> tracker.get().clear() }
+            // 商品图内存缓存（F-X-02，FU-AND-0714 R1-05）：旧环境（含假服务现画的假图）的位图不留到新环境；在途结果另按来源核对后丢弃
+            register { _, _ -> productImagesInstance?.clearMemory() }
             // 订单缓存（APP-08，G10）：属于连接的那套服务器与账号，切换环境时删除（删不掉保留待清理、不读回）
             register { _, _ -> orderCacheStore(context).clearAll() }
             // 订单页恢复记录（FU-AND-0710 R2-02）：搜索词、筛选、锚点订单；删除确认，失败保留待清理（目录外 + 目录内标记）、不读回并报失败
@@ -213,6 +224,11 @@ object AppModule {
             register(SharedPreferencesNamespaceCleaner(context))
             register { _, _ -> cipher.destroyKey() }
         }
+
+    /** 凭据读取屏障（F-X-03）：ApiClient、设备注册的令牌与设备凭据读取都在它里面现判；撤回同意、切换环境用它竖屏障。 */
+    @Provides
+    @Singleton
+    fun credentialReadBarrier(): CredentialReadBarrier = CredentialReadBarrier()
 
     /** 在途请求登记（APP-03a）：网络核心与撤回同意、环境切换两处清理共用，清理时立即取消在途请求。 */
     @Provides
@@ -253,6 +269,7 @@ object AppModule {
         login: Provider<AppLogin>,
         orders: Provider<AppOrders>,
         wallet: Provider<AppWallet>,
+        readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -321,6 +338,7 @@ object AppModule {
             inFlight = inFlight,
             // debug / staging：Debug 专用的本机假登录服务（打开时整段在本机回答，不连任何地址）；release 是普通 OkHttpClient
             http = variantHttpClient(context),
+            readBarrier = readBarrier,
         ).also { client ->
             // 强更状态恢复为受支持时，受限会话屏障到期（R1-10、lessons 19）：状态源一变就通知，不只靠下一个请求观察
             update.onRouterUpdate { client.onUpdateStateChanged(it.toNetworkUpdate()) }
@@ -336,7 +354,11 @@ object AppModule {
     fun environmentGate(
         @ApplicationContext context: Context,
         cleaners: EnvironmentSwitchCleanerRegistry,
-    ): EnvironmentGate = EnvironmentGate { reconcileEnvironmentAtStartup(context, cleaners) }
+    ): EnvironmentGate =
+        EnvironmentGate { reconcileEnvironmentAtStartup(context, cleaners) }.also { gate ->
+            // F-X-02：Debug 替身的统一闸门要求环境已就绪（Release 为空实现）
+            variantBindEnvironmentGate { gate.isSettled }
+        }
 
     /**
      * 撤回同意时的本地清理入口（BR-ID-13）：令牌、device_id、install_secret。会话与设备注册实现前先注册占位清理项
@@ -396,12 +418,15 @@ object AppModule {
     /** 隐私闸门（APP-02b）：本机隐私决定存 couli_privacy（切换环境保留）；初始化步骤见 PrivacyGate.kt。 */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 各依赖逐项注入（F-X-03 加了凭据读取屏障）
     fun privacyGate(
         @ApplicationContext context: Context,
         credentialCleaners: CredentialCleanerRegistry,
         device: Provider<DeviceRegistry>,
         trade: Provider<AppTrade>,
         push: Provider<PushTokenSource>,
+        readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
+        inFlight: InFlightCalls = InFlightCalls(),
     ): PrivacyGate =
         PrivacyGate(
             store = SharedPreferencesPrivacyStore(context),
@@ -409,6 +434,8 @@ object AppModule {
             bundledPolicyVersion = BUNDLED_PRIVACY_POLICY_VERSION,
         ).apply {
             retryScheduler = MainThreadRetryScheduler()
+            // F-X-03（第 1 轮评审 R1-01）：撤回同意记下「待清理」（对外可见）之前，屏障先关内部闸、等已准入的读取结束、作废并取消在途请求
+            credentialBarrier = withdrawalBarrier(readBarrier, inFlight::onPrivacyRevoked)
             withdrawalCleanup = { credentialCleaners.cleanAll() }
             // 设备注册（APP-03b）在后台执行，失败按已有退避重试
             registerProductionInitSteps(
@@ -428,12 +455,15 @@ object AppModule {
      */
     @Provides
     @Singleton
+    @Suppress("LongParameterList") // 各依赖逐项注入（F-X-03 加了凭据读取屏障）
     fun deviceRegistry(
         @ApplicationContext context: Context,
         cipher: SecretCipher,
         inFlight: InFlightCalls,
         privacy: Provider<AppPrivacy>,
         client: Provider<ApiClient>,
+        environmentGate: EnvironmentGate,
+        readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
     ): DeviceRegistry =
         DeviceRegistry(
             platform = ClientPlatformRaw.ANDROID,
@@ -442,6 +472,9 @@ object AppModule {
             privacy = { privacy.get().let { clientPrivacyRaw(it.conclusion, it.credentialAccess.cleanupPending) } },
             client = { client.get() },
             epochs = inFlight::epochs,
+            // F-X-03 ③：设备凭据的每个读取入口（埋点、诊断、注册、签名）都现判环境已就绪与隐私口径
+            environmentSettled = { environmentGate.isSettled },
+            readBarrier = readBarrier,
         )
 
     /**
@@ -730,12 +763,12 @@ object AppModule {
             permissions = permissions,
             notificationsEnabled = { NotificationManagerCompat.from(context).areNotificationsEnabled() },
             forceUpdate = { update.get().onServerForced() },
-            cache = orderCacheStore(context),
+            cache = orderCacheStore(context, tokens),
             mask = mask,
             // 相对时间（今天 / 昨天）按服务端 Date 校准（BR-TEXT-11，APP-08 共性第 34 条）；禁用期计时仍用本机时钟
             displayClock = client::serverNow,
             // 订单页恢复记录（R1-03、R2-02）：个人数据存 noBackupFilesDir 下的原子文件，系统保存状态只存随机引用；两个清理器直接删除
-            restoreStore = orderRestoreStore(context),
+            restoreStore = orderRestoreStore(context, tokens),
         ).also { orders ->
             orders.connectSession()
             // 撤回同意、基本模式、切换环境：同步清空各显示位置的待跟单卡（APP-08 共性第 38、43 条）
@@ -832,7 +865,8 @@ object AppModule {
             routing = routing,
             privacy = privacy,
             port = variantHomePort(context),
-            lkg = homeLkgStore(context),
+            // 会员作用域按持久化登录世代再分区（F-AND-25，FU-AND-0714 R1-07）
+            lkg = homeLkgStore(context, tokens),
             prefs = homePrefsStore(context),
             images = images,
             envKey = { variantEnvironmentKey(context) },
@@ -952,7 +986,7 @@ object AppModule {
             account = { client.activeUserId() },
             writer = { text -> clipboard.writer.write(text) },
             forceUpdate = { update.get().onServerForced() },
-            cache = walletCacheStore(context),
+            cache = walletCacheStore(context, tokens),
             mask = mask,
             realname = variantRealNameBackend(context),
             labor = variantLaborBackend(context),
@@ -1003,7 +1037,8 @@ object AppModule {
     @Singleton
     fun productImages(
         @ApplicationContext context: Context,
-    ): AppProductImages = AppProductImages(variantHttpClient(context))
+    ): AppProductImages =
+        AppProductImages(variantHttpClient(context), source = variantImageSource(context)).also { productImagesInstance = it }
 
     /** 活着的 BridgeHost（APP-04）：撤回同意、切换环境时作废在途桥调用。 */
     @Provides
@@ -1090,6 +1125,10 @@ object AppModule {
     @Volatile
     private var homeInstance: AppHome? = null
 
+    /** 已构造的商品图加载器（环境切换时清内存缓存；它建好之前不取它，F-X-02 R1-05）。 */
+    @Volatile
+    private var productImagesInstance: AppProductImages? = null
+
     private const val BLOCKER_PRIVACY = "privacy_dialog"
     private const val BLOCKER_FORCE_UPDATE = "force_update"
     private const val BLOCKER_UPDATE_PROMPT = "update_prompt"
@@ -1139,12 +1178,24 @@ private object MeLocalStores {
     var instance: MeLocalStore? = null
 }
 
-/** 订单缓存（APP-08，G10）：noBackupFilesDir 下按账号分目录；订单页与两个清理入口共用同一个实例（同步、互斥）。 */
-internal fun orderCacheStore(context: Context): OrderStaleCache.Store {
+/**
+ * 令牌存储里的持久化登录世代（F-AND-25 / F-AND-29）：订单缓存、钱包摘要缓存、订单页恢复记录按「账号 + 它」绑定归属。令牌存储没实现
+ * [PersistedLoginEpochs] 时按未知（不读缓存、不恢复）。
+ */
+internal fun persistedLoginEpochOf(tokens: SessionTokens): () -> String? = { (tokens as? PersistedLoginEpochs)?.persistedLoginEpoch() }
+
+/**
+ * 订单缓存（APP-08，G10）：noBackupFilesDir 下按账号分目录；订单页与两个清理入口共用同一个实例（同步、互斥）。订单页的取实例处给 [tokens]：
+ * 缓存按「账号 + 持久化登录世代」分区（F-AND-25；实例先由清理入口建出来的，这时接上）；清理入口与单测不给（清理不看分区）。
+ */
+internal fun orderCacheStore(
+    context: Context,
+    tokens: SessionTokens? = null,
+): OrderStaleCache.Store {
     val root = AppOrders.cacheRoot(context)
     return synchronized(OrderCacheStores) {
         OrderCacheStores.instances.getOrPut(root.absolutePath) { OrderStaleCache.Store(root, orderCachePendingFlag(context)) }
-    }
+    }.also { store -> tokens?.let { store.bindLoginEpoch(persistedLoginEpochOf(it)) } }
 }
 
 /**
@@ -1167,11 +1218,14 @@ private const val ORDER_CACHE_PENDING_KEY = "pending_clear"
 /**
  * 订单页恢复记录（FU-AND-0710 R1-03、R2-02）：noBackupFilesDir 下每份记录一个原子文件；订单页与两个清理入口共用同一个实例（同步、互斥）。
  */
-internal fun orderRestoreStore(context: Context): OrderRestoreStore {
+internal fun orderRestoreStore(
+    context: Context,
+    tokens: SessionTokens? = null,
+): OrderRestoreStore {
     val root = AppOrders.restoreRoot(context)
     return synchronized(OrderRestoreStores) {
         OrderRestoreStores.instances.getOrPut(root.absolutePath) { OrderRestoreStore(root, orderRestorePendingFlag(context)) }
-    }
+    }.also { store -> tokens?.let { store.bindLoginEpoch(persistedLoginEpochOf(it)) } }
 }
 
 /**
@@ -1197,11 +1251,14 @@ private object OrderRestoreStores {
 }
 
 /** 钱包摘要缓存（APP-09，G22）：noBackupFilesDir 下按账号分目录；钱包页与两个清理入口共用同一个实例。 */
-internal fun walletCacheStore(context: Context): WalletStaleCache.Store {
+internal fun walletCacheStore(
+    context: Context,
+    tokens: SessionTokens? = null,
+): WalletStaleCache.Store {
     val root = AppWallet.cacheRoot(context)
     return synchronized(WalletCacheStores) {
         WalletCacheStores.instances.getOrPut(root.absolutePath) { WalletStaleCache.Store(root, walletCachePendingFlag(context)) }
-    }
+    }.also { store -> tokens?.let { store.bindLoginEpoch(persistedLoginEpochOf(it)) } }
 }
 
 /** 钱包缓存的「待清理」状态：缓存目录之外的 SharedPreferences，commit 确认写入（APP-08 共性第 28 条）。 */

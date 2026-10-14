@@ -143,6 +143,13 @@ class PrivacyGate(
     /** 设备注册失败后的退避重试调度。 */
     var retryScheduler: RetryScheduler = MainThreadRetryScheduler()
 
+    /**
+     * 凭据读取屏障（F-X-03，FU-AND-0714）：撤回同意记下「待清理」（凭据从此不可读、对外可见）这一步经它执行。生产接 AppModule 的
+     * withdrawalBarrier（第 1 轮评审 R1-01）：先关屏障内部闸、等已准入的令牌 / 设备凭据读取结束、作废并取消在途请求，**最后**才执行这一步——
+     * 标记发布之后不再有凭据读取。缺省直接执行（单测）。
+     */
+    var credentialBarrier: (() -> Unit) -> Unit = { it() }
+
     private var stage: PromptStage = store.recoverInterruptedWithdrawal().coldStartStage(bundledVersionNumber)
 
     /** 撤回清理的「待清理」记录与凭据读取闸（R1-01）：会话层读凭据前调 [CredentialAccessGuard.readable]。 */
@@ -226,7 +233,8 @@ class PrivacyGate(
      */
     @Suppress("UnusedParameter")
     fun withdraw(now: Long = clock()) {
-        credentialAccess.beginWithdrawal()
+        // 第一步、任何对外可见状态之前：竖凭据屏障（屏障先禁读、等已准入读取结束、作废在途，最后才记下待清理标记）；同一同步区里接着跑清理（首项再作废一次）
+        credentialBarrier { credentialAccess.beginWithdrawal() }
         stage = PromptStage.NONE
         // 新的同意周期：撤回后再同意时重新注册设备（device_id 已清除）；旧周期的重试作废。
         consentGeneration += 1
@@ -341,7 +349,8 @@ class CredentialAccessGuard internal constructor(
     private val store: PrivacyStore,
     private val cleanup: () -> Unit,
 ) {
-    /** 本进程内的标记：存储不落盘（测试替身）时同一进程照样重试。 */
+    /** 本进程内的标记：存储不落盘（测试替身）时同一进程照样重试。网络线程读它（凭据可读判定），所以是 volatile（F-X-03）。 */
+    @Volatile
     private var pendingInMemory = false
 
     /** 撤回同意的本地清理还没完成。 */

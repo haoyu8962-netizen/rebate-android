@@ -164,6 +164,10 @@ class DeviceRegistry(
     /** 共享重新注册任务的线程（与 [executor] 分开：调用方各自等待，任务不占用任何调用方的线程）。 */
     private val reRegisterExecutor: Executor =
         Executors.newCachedThreadPool { Thread(it, "couli-device-reregister").apply { isDaemon = true } },
+    /** 环境已就绪（EnvironmentGate.isSettled：启动对账成功且不在运行中切换，F-X-03 ③）。缺省按就绪（单测）。 */
+    private val environmentSettled: () -> Boolean = { true },
+    /** 凭据读取屏障（F-X-03；App 里与 ApiClient、撤回同意、环境切换共用一份）。 */
+    private val readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
 ) : DeviceCredentials {
     /** 凭据丢失（10402 后重新注册失败）：App 接到 PrivacyGate 重新开始退避注册。 */
     @Volatile
@@ -218,8 +222,21 @@ class DeviceRegistry(
 
     override val installSecret: String? get() = current()?.installSecret
 
-    /** 是否已有可用的凭据（读不出按没有）。 */
+    /** 是否已有可用的凭据（读不出、此刻不可读都按没有）。 */
     val registered: Boolean get() = current() != null
+
+    /**
+     * 设备凭据此刻可读（F-X-03 ③，对照鸿蒙 FU-HM-0711b R2-01）：本对象的隐私口径为 consented（已同意且撤回清理已完成）且环境已就绪。
+     * 不成立时缓存与存储都不碰：[deviceId] / [installSecret] 为 null、[registered] 为 false（埋点不接受事件、诊断省略 device_id）；注册、
+     * 重新注册不读、不删、不发（交给退避）。所有读取入口都经 [current] / [storedNow] 在读取屏障里现判。
+     */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
+    fun credentialsReadable(): Boolean =
+        try {
+            privacy() == PrivacyStateRaw.CONSENTED && environmentSettled()
+        } catch (error: Exception) {
+            false
+        }
 
     /** 一次注册的归属：被调用时的隐私 / 环境世代与清理世代。 */
     private class Ticket(
@@ -235,7 +252,10 @@ class DeviceRegistry(
 
     private fun owns(ticket: Ticket): Boolean = synchronized(stateLock) { ownsLocked(ticket) }
 
-    private fun current(): StoredDevice.Present? =
+    /** 当前可用的凭据：在读取屏障里现判可读（[credentialsReadable]）才访问缓存与存储；不可读为 null（不读）。 */
+    private fun current(): StoredDevice.Present? = readBarrier.read(::credentialsReadable, { null }) { currentLocked() }
+
+    private fun currentLocked(): StoredDevice.Present? =
         synchronized(stateLock) {
             if (!loaded) {
                 when (val stored = store.read()) {
@@ -368,6 +388,8 @@ class DeviceRegistry(
         ticket: Ticket,
     ): Boolean {
         if (privacy() != PrivacyStateRaw.CONSENTED || !owns(ticket)) return false
+        // 凭据此刻不可读（环境未就绪，F-X-03 ③）：不读、不删旧凭据、不注册
+        if (!credentialsReadable()) return false
         val now = current()?.deviceId
         if (now != null && now != usedDeviceId) return true
         // 单飞：同一个被拒 device_id 的重新注册已经结束 → 复用那次的完整结果（含失败），不再注册第 2 次
@@ -411,7 +433,8 @@ class DeviceRegistry(
     ): Boolean {
         val needed =
             synchronized(stateLock) {
-                ownsLocked(ticket) && current() == null && (usedDeviceId == null || revokedDeviceId == usedDeviceId)
+                ownsLocked(ticket) && credentialsReadable() && current() == null &&
+                    (usedDeviceId == null || revokedDeviceId == usedDeviceId)
             }
         if (needed) notifyLostOnce(usedDeviceId, ticket)
         return false
@@ -438,7 +461,8 @@ class DeviceRegistry(
         val ticket = ticket()
         val needed =
             synchronized(stateLock) {
-                ownsLocked(ticket) && current() == null && (usedDeviceId == null || revokedDeviceId == usedDeviceId)
+                ownsLocked(ticket) && credentialsReadable() && current() == null &&
+                    (usedDeviceId == null || revokedDeviceId == usedDeviceId)
             }
         if (needed && claimRecovery(usedDeviceId, ticket)) onCredentialsLost()
     }
@@ -484,10 +508,12 @@ class DeviceRegistry(
         }
     }
 
+    /** 存储里的凭据：此刻不可读（F-X-03 ③）按读不出（不注册，免得多注册一个设备）。 */
     private fun storedNow(): StoredDevice =
-        synchronized(stateLock) {
-            current()?.let { return it }
-            if (loaded) StoredDevice.None else StoredDevice.Unreadable
+        readBarrier.read(::credentialsReadable, { StoredDevice.Unreadable }) {
+            synchronized(stateLock) {
+                currentLocked() ?: if (loaded) StoredDevice.None else StoredDevice.Unreadable
+            }
         }
 
     /** 删旧凭据（10402）：归属已失效的不删。删不掉抛错。 */

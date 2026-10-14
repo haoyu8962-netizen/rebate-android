@@ -251,8 +251,9 @@ class AppMe(
     private fun account(): String? {
         val epoch = tokens.loginEpoch
         if (epoch != accountEpoch) {
+            // 读不出（凭据暂时不可读、环境未就绪、会话读不出）不缓存：下次再读，读到之前身份按账号未建立（F-AND-28：member 为 false，不发布个人数据）
+            accountCache = client.activeUserId() ?: return null
             accountEpoch = epoch
-            accountCache = client.activeUserId()
         }
         return accountCache
     }

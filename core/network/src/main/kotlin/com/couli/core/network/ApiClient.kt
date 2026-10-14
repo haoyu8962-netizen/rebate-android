@@ -70,8 +70,17 @@ class ApiClient(
     private val retryPolicy: (ApiOperation) -> RetryDecision = RetryPolicy::forOperation,
     /** 在途调用登记（App 里与撤回同意、环境切换清理共用一份）。 */
     val inFlight: InFlightCalls = InFlightCalls(),
+    /** 凭据读取屏障（F-X-03；App 里与设备注册、撤回同意、环境切换共用一份）：令牌的每次读取都在它里面现判可读。 */
+    private val readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
 ) {
     private val transport = HttpTransport(http, inFlight)
+
+    init {
+        // 持久化登录世代的读取也是令牌读取点（整份会话可用性要解密令牌，FU-AND-0714 第 2 轮评审 R2-01 / R2-02）：交给本屏障，
+        // 凭据此刻不可读一律按未知（不读、四类缓存不读）。会话隔离由令牌存储自己的禁用状态与撤销标记表达（清除失败时置上，新会话落盘才解除）
+        (tokens as? PersistedLoginEpochs)?.guardLoginEpochReads { read -> readBarrier.read(::credentialsAllowedNow, { null }, read) }
+    }
+
     private val refreshExecutor: ExecutorService =
         Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "couli-token-refresh").apply { isDaemon = true } }
     private val waiters = ConcurrentHashMap<String, CompletableFuture<WaitSignal>>()
@@ -115,6 +124,23 @@ class ApiClient(
     /** 清会话写盘失败：在清除成功之前一律按没有会话处理（不读不带令牌，R1-08）。 */
     @Volatile
     private var sessionQuarantined = false
+
+    /**
+     * 已绑定的会话归属（F-X-03 ④⑤；对照鸿蒙 FU-HM-0711b R2-02、FU-HM-0711c F-HM-28）：凭据可读时最近一次读到的会话——账号（游客为 null）、
+     * 是否读不出——及其会话世代。只在凭据可读的读取点顺手记下，从不为它另读凭据。
+     *
+     * 用途：环境未就绪（冷启动对账前、运行中切换）而隐私与撤回状态本身允许时，令牌一律不读；确认 / 放弃上一笔、点击时固定账号的请求按它
+     * 给出与读得到时**同一顺序、同一分类**的本地拒绝。令牌被清除、隔离、保存、刷新之后（会话世代 [SessionTokens.generation] 同步加 1，
+     * 或进入隔离）不再沿用，按游客。
+     */
+    private class BoundOwner(
+        val generation: Long,
+        val account: String?,
+        val unreadable: Boolean,
+    )
+
+    @Volatile
+    private var bound: BoundOwner? = null
 
     /**
      * 被隔离（删除失败、内存里已作废）的会话：以隔离时存储里的 access / refresh 识别（F-AND-10，与 iOS 的 RevokedSession 同一做法）。
@@ -386,7 +412,8 @@ class ApiClient(
                         SessionEnd.CLEARED
                     }
 
-                    sessionQuarantined || tokens.accessToken == null -> {
+                    // 世代已变、凭据此刻不可读（撤回清理、切环境，F-X-03 ②）：不读令牌，按已被别处清除（清理器会清掉它）
+                    sessionQuarantined || !credentialsAllowedNow() || storedAccessAbsent() -> {
                         SessionEnd.ALREADY_ENDED
                     }
 
@@ -425,6 +452,8 @@ class ApiClient(
      * 没有可读的会话账号返回 false。
      */
     fun restorePending(): Boolean {
+        // 环境未就绪（F-X-03）：不读令牌，按已绑定的会话归属恢复（只读未决存储）
+        if (unsettledOnly(context())) return boundNow().account?.let { pendingKeys.coldStart(it) } != null
         val account = session(context())?.userId ?: return false
         pendingKeys.coldStart(account)
         return true
@@ -462,6 +491,12 @@ class ApiClient(
      * （lessons 38、APP-03b session_unreadable）。
      */
     fun pendingFor(operationId: String): PendingKeyRecord? {
+        if (unsettledOnly(context())) {
+            // 环境未就绪（F-X-03）：不读令牌，按已绑定的会话归属（同一顺序：读不出抛错、游客为 null）
+            val owner = boundNow()
+            if (owner.unreadable) throw UnreadableRecordException("会话读不出，无法确认未决状态")
+            return owner.account?.let { pendingKeys.pendingFor(operationId, it) }
+        }
         val read = rawRead(context())
         if (read is RawRead.Unreadable) throw UnreadableRecordException("会话读不出，无法确认未决状态")
         val account = live(read)?.userId ?: return null
@@ -490,6 +525,8 @@ class ApiClient(
         target: PendingTarget? = null,
     ): ApiResult {
         val ticket = navigationTicket()
+        // 环境未就绪（F-X-03 ④）：零凭据读取、不占用、不发送，按已绑定的会话归属给出与 HEAD 相同的拒绝分类
+        if (unsettledOnly(context())) return ApiResult.LocalReject(unsettledPendingReject(operationId, target, abandon = false))
         val record =
             when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
@@ -531,6 +568,8 @@ class ApiClient(
         target: PendingTarget? = null,
     ): ApiResult {
         val ticket = navigationTicket()
+        // 环境未就绪（F-X-03 ④）：同 [confirmPending]
+        if (unsettledOnly(context())) return ApiResult.LocalReject(unsettledPendingReject(operationId, target, abandon = true))
         val record =
             when (val owned = ownedPending(operationId, target)) {
                 is Owned.Record -> owned.record
@@ -606,6 +645,62 @@ class ApiClient(
         return record?.let(Owned::Record) ?: Owned.Rejected(LocalRejectReason.PENDING_KEY_UNRESOLVED)
     }
 
+    /**
+     * 环境未就绪、而隐私与撤回状态允许时的确认 / 放弃（F-X-03 ④，对照鸿蒙 FU-HM-0711b R2-02）：令牌与设备凭据零读取、不置在途、不发送。
+     * 按已绑定的会话归属（[boundNow]：令牌已清 / 隔离 / 换代即游客）走与可读时**同一顺序**的本地核对，结论与 HEAD 逐项相同：点击归属已失效
+     * → call_cancelled；读不出 → session_unreadable；游客 → pending_key_unresolved；记录属于别的账号 → account_mismatch；存储读不出
+     * → pending_store_failed；没有记录 / 键已换 / 不是结果未知 / 操作不认识 → pending_key_unresolved；本来会发出去的有效记录 →
+     * environment_unsettled（记录保持待确认）。
+     */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount", "CyclomaticComplexMethod")
+    private fun unsettledPendingReject(
+        operationId: String,
+        target: PendingTarget?,
+        abandon: Boolean,
+    ): String {
+        targetReject(target)?.let { return it }
+        val owner = boundNow()
+        if (owner.unreadable) return LocalRejectReason.SESSION_UNREADABLE
+        val account = owner.account ?: return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        if (target != null && target.account != account) return LocalRejectReason.ACCOUNT_MISMATCH
+        val record =
+            try {
+                pendingKeys.pendingFor(operationId, account)
+            } catch (error: Exception) {
+                return LocalRejectReason.PENDING_STORE_FAILED
+            } ?: return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        if (target != null && record.key != target.key) return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        val operation = ApiOperations.byId(operationId) ?: return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        if (abandon && (operation.stepUp == null || ApiOperations.byId(ABANDON) == null)) return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        targetReject(target)?.let { return it }
+        val startable =
+            try {
+                pendingKeys.wouldStartUserAction(record.key, record.account)
+            } catch (error: Exception) {
+                return LocalRejectReason.PENDING_STORE_FAILED
+            }
+        return if (startable) LocalRejectReason.ENVIRONMENT_UNSETTLED else LocalRejectReason.PENDING_KEY_UNRESOLVED
+    }
+
+    /**
+     * 环境未就绪时的普通请求（F-X-03 ①④）：零凭据读取，按已绑定的会话归属给出与读得到时相同的分类——读不出且接口需要会话 →
+     * session_unreadable；点击时固定的账号不是绑定的账号 → account_mismatch；其余 environment_unsettled。
+     */
+    private fun unsettledReject(
+        operation: ApiOperation,
+        options: RunOptions,
+    ): String {
+        val owner = boundNow()
+        if (owner.unreadable && operation.auth != AUTH_NONE) return LocalRejectReason.SESSION_UNREADABLE
+        if (options.pendingAccount != null && (owner.unreadable || owner.account != options.pendingAccount)) {
+            return LocalRejectReason.ACCOUNT_MISMATCH
+        }
+        return LocalRejectReason.ENVIRONMENT_UNSETTLED
+    }
+
+    /** 存储里此刻没有 access_token（在读取屏障里现判可读才读；不可读按没有）。 */
+    private fun storedAccessAbsent(): Boolean = readBarrier.read(::credentialsAllowedNow, { true }) { tokens.accessToken == null }
+
     /** 点击时的归属与发送前闸门（APP-09 共性第 14、15 条）：会话世代已变或禁用期内 → call_cancelled，不读、不占用、不发。 */
     private fun targetReject(target: PendingTarget?): String? {
         val ownership = target?.ownership ?: return null
@@ -644,6 +739,8 @@ class ApiClient(
         while (true) {
             passSessionBarrier(operation, logical.owner)?.let { return it }
             val state = context()
+            // 环境未就绪（F-X-03 ①④）：不读凭据，按已绑定的会话归属给出与读得到时相同的分类，其余一律 environment_unsettled
+            if (unsettledOnly(state)) return ApiResult.LocalReject(unsettledReject(operation, options))
             val read = rawRead(state)
             unreadableReject(operation, read)?.let { return ApiResult.LocalReject(it) }
             val session = live(read)
@@ -996,8 +1093,8 @@ class ApiClient(
         if (inFlight.epochs() != owner.epochs) return LocalRejectReason.CALL_CANCELLED
         // 调用方自带的归属（设备注册的清理世代、隐私状态，R2-02）已失效：结束，不再写出
         if (owner.disowned()) return LocalRejectReason.CALL_CANCELLED
-        // 凭据此刻不可读：这次发送不读不带任何凭据（放行判定只放匿名白名单），不会替别的账号发出
-        if (!readable(state)) return null
+        // 凭据此刻不可读（含环境未就绪，F-X-03）：这次发送不读不带任何凭据（放行判定只放匿名白名单 / 按环境未就绪拒绝），不会替别的账号发出
+        if (!credentialsAllowed(state)) return null
         val read = rawRead(state)
         // 会话此刻读不出：开始时有会话的调用不能确认归属，结束（session_unreadable）；开始时没有会话的由放行判定按接口处理
         if (read is RawRead.Unreadable) return if (owner.session == null) null else LocalRejectReason.SESSION_UNREADABLE
@@ -1176,7 +1273,7 @@ class ApiClient(
         state: NetworkContext,
         session: SessionSnapshot?,
     ): HeaderDecision {
-        val deviceId = if (readable(state)) device.deviceId else null
+        val deviceId = if (credentialsAllowed(state)) device.deviceId else null
         val bodyJson = call.body?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
         return RequestHeaderPolicy.decide(
             NetworkRequestState(
@@ -1248,14 +1345,64 @@ class ApiClient(
 
     private fun readable(state: NetworkContext): Boolean = state.privacy == PrivacyRaw.FULL && state.credentialsReadable
 
-    /** 一次会话读取（同一把锁下读出完整四项与世代）：凭据不可读、隔离中、读到、读取失败四种。 */
-    private fun rawRead(state: NetworkContext): RawRead {
-        if (!readable(state)) return RawRead.NotReadable
-        if (sessionQuarantined && !retryQuarantineClear()) return RawRead.Quarantined(tokens.generation)
-        return when (val read = tokens.readSessionOf()) {
-            is SessionRead.Present -> RawRead.Present(read.snapshot)
-            is SessionRead.Unreadable -> RawRead.Unreadable(read.generation)
+    /**
+     * 统一的凭据可读判定（F-X-03 ①，对照鸿蒙 credentialsAllowed）：隐私为 full、撤回清理已完成，**且环境已就绪**（冷启动对账成功、不在运行中
+     * 切换）。令牌的每一个读取点都先过它（[rawRead]、[clearSessionIf]、[quarantine]、[decide] 的设备标识）；不成立时一次都不读。
+     */
+    private fun credentialsAllowed(state: NetworkContext): Boolean = readable(state) && state.environmentSettled
+
+    /** 环境未就绪、而隐私与撤回状态本身允许读：按已绑定的会话归属给出原有的拒绝分类（[BoundOwner]）。 */
+    private fun unsettledOnly(state: NetworkContext): Boolean = readable(state) && !state.environmentSettled
+
+    /** 此刻（现取状态）凭据可读；状态取不到按不可读。 */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
+    private fun credentialsAllowedNow(): Boolean =
+        try {
+            credentialsAllowed(context())
+        } catch (error: Exception) {
+            false
         }
+
+    /**
+     * 一次会话读取（同一把锁下读出完整四项与世代）：凭据不可读、隔离中、读到、读取失败四种。先按调用方的状态判一次，再在读取屏障里
+     * 现判一次（F-X-03：撤回、切环境竖起屏障之后不会再有按旧状态进行的读取）。
+     */
+    private fun rawRead(state: NetworkContext): RawRead {
+        if (!credentialsAllowed(state)) return RawRead.NotReadable
+        return readBarrier.read(allowed = ::credentialsAllowedNow, denied = { RawRead.NotReadable }) {
+            val read =
+                if (sessionQuarantined && !retryQuarantineClear()) {
+                    RawRead.Quarantined(tokens.generation)
+                } else {
+                    when (val stored = tokens.readSessionOf()) {
+                        is SessionRead.Present -> RawRead.Present(stored.snapshot)
+                        is SessionRead.Unreadable -> RawRead.Unreadable(stored.generation)
+                    }
+                }
+            bind(read)
+            read
+        }
+    }
+
+    /** 记下这次读到的会话归属（[BoundOwner]）。 */
+    private fun bind(read: RawRead) {
+        bound =
+            when (read) {
+                RawRead.NotReadable -> return
+                is RawRead.Quarantined -> BoundOwner(read.generation, null, unreadable = false)
+                is RawRead.Present -> BoundOwner(read.snapshot.generation, live(read)?.userId, unreadable = false)
+                is RawRead.Unreadable -> BoundOwner(read.generation, null, unreadable = true)
+            }
+    }
+
+    /**
+     * 环境未就绪窗口里的会话归属（不读凭据）：会话世代未变、没有进入隔离时沿用 [bound]；否则（令牌已清除 / 隔离 / 换代，或从没读到过）按游客
+     * （F-X-03 ⑤：令牌清除或隔离时同步改为游客）。
+     */
+    private fun boundNow(): BoundOwner {
+        val known = bound
+        val generation = tokens.generation
+        return known?.takeIf { it.generation == generation && !sessionQuarantined } ?: BoundOwner(generation, null, unreadable = false)
     }
 
     /** 会话存储（含世代）；凭据不可读、隔离中、读取失败时为 null。 */
@@ -1631,9 +1778,10 @@ class ApiClient(
     @Suppress("TooGenericExceptionCaught", "SwallowedException") // 读不出按身份未知隔离
     private fun quarantine() {
         if (sessionQuarantined && revokedSession != null) return
+        // 凭据此刻不可读（F-X-03）：不读，身份未知（存储里的任何会话都按被隔离的处理，之后可读时再重试删除）
         val read =
             try {
-                tokens.readSessionOf()
+                readBarrier.read(::credentialsAllowedNow, { SessionRead.Unreadable(tokens.generation) }) { tokens.readSessionOf() }
             } catch (error: Exception) {
                 SessionRead.Unreadable(tokens.generation)
             }
@@ -1662,6 +1810,9 @@ class ApiClient(
      * - 存储里是另一份会话（已被成功保存的新会话替换）→ 不动它，解除隔离；
      * - 仍是被隔离的那份（含保存失败、世代前进但旧会话还在），或读不出 → 按读到的世代 CAS 删除：删掉才解除；删除失败、或读后世代又变了
      *   （下次重新读、重新判断）都保持隔离，继续阻断旧令牌。
+     *
+     * 这次读取同样包在凭据读取屏障里现判（FU-AND-0714 第 2 轮评审 R2-01）：它有锁外的直接入口（刷新写入失败后的 [refreshTokens]），不能只靠
+     * [rawRead] 外层的判定。凭据此刻不可读（撤回清理中、切换环境、环境未就绪）→ 一次都不读、不删，保持隔离（清理器会清掉整个会话）。
      */
     @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount")
     private fun retryQuarantineClear(): Boolean {
@@ -1670,11 +1821,13 @@ class ApiClient(
             if (!sessionQuarantined) return true
             val revoked = revokedSession
             val read =
-                try {
-                    tokens.readSessionOf()
-                } catch (error: Exception) {
-                    SessionRead.Unreadable(tokens.generation)
-                }
+                readBarrier.read(::credentialsAllowedNow, { null }) {
+                    try {
+                        tokens.readSessionOf()
+                    } catch (error: Exception) {
+                        SessionRead.Unreadable(tokens.generation)
+                    }
+                } ?: return false
             val generation =
                 when (read) {
                     is SessionRead.Present -> {

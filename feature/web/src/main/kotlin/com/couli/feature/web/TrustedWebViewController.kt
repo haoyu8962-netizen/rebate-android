@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
@@ -66,8 +67,10 @@ class TrustedWebViewController(
     private val config: TrustedWebConfig,
     host: BridgeHost?,
     private val callbacks: TrustedWebCallbacks,
+    /** 手势时钟的单调时钟（生产 uptimeMillis；仪器测试注入固定时刻，F-AND-31：1 秒手势窗口不随调度延迟漂移）。 */
+    gestureNow: () -> Long = SystemClock::uptimeMillis,
 ) {
-    private val gesture = GestureClock()
+    private val gesture = GestureClock(gestureNow)
     private val main = Handler(Looper.getMainLooper())
     private val transport: BridgeTransport? = host?.let { BridgeTransport(webView, it, gesture) }
 

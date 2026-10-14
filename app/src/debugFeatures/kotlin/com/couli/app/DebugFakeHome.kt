@@ -42,8 +42,11 @@ internal class DebugFakeHome(
 
     private var serial = 0
 
-    /** 假服务此刻可用：开关文件在 + 当前环境允许 MOCK_DATA。 */
-    fun enabled(): Boolean = switchOn() && mockAllowed()
+    /** 假服务此刻可用：开关文件在 + 当前环境允许 MOCK_DATA（读取出错按不可用）。 */
+    fun enabled(): Boolean = runCatching { switchOn() && mockAllowed() }.getOrDefault(false)
+
+    /** 当前环境允许 MOCK_DATA（不看开关文件；单测拦截器的闸门用）。 */
+    fun mockAllowedNow(): Boolean = runCatching(mockAllowed).getOrDefault(false)
 
     fun state(): Map<String, String> =
         runCatching {
@@ -64,6 +67,8 @@ internal class DebugFakeHome(
         val scene = state()["home"] ?: "main"
         if (scene == "slow") delay(SLOW_MS)
         if (!call.stillOwned()) return ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED)
+        // 交付前复核（F-X-02 等待期）：模拟耗时期间切到 prod / 开始切换环境的，按断网，不交假页面
+        if (!enabled()) return OFFLINE
         return when (scene) {
             "fail" -> failure(50001)
             "limited" -> failure(42901)
@@ -93,6 +98,7 @@ internal class DebugFakeHome(
                 else -> listOf("kitchen", "rice") to null
             }
         val items = ids.map { card(sectionId, it) }
+        if (!enabled()) return OFFLINE
         return ok(JsonObject(mapOf("items" to JsonArray(items), "next_cursor" to (next?.let(::JsonPrimitive) ?: JsonNull))))
     }
 

@@ -173,9 +173,21 @@ class WebContainersInstrumentedTest {
     fun trustedPageCallsFromTheMainFrameButSubframeAndMissingGestureAreRejected() {
         assumeTrue("system WebView supports the transport", BridgeTransport.isSupported())
         val webView = newWebView()
+        // F-AND-31（FU-AND-0714）：注入手势时钟。点击到桥消息到达之间的调度延迟（负载约 60 时可超过 1 秒）不属于被测逻辑；点击与这次调用
+        // 定格在同一时刻（frozen），验证的仍是「系统派发的真实触摸之后同一调用放行」。没定格时与生产相同（uptimeMillis）
+        val frozen =
+            java.util.concurrent.atomic
+                .AtomicLong(-1L)
+        val gestureNow = { frozen.get().takeIf { it >= 0 } ?: SystemClock.uptimeMillis() }
         val controller =
             onMain {
-                TrustedWebViewController(webView, TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"), trustedHost(), NoTrustedCallbacks)
+                TrustedWebViewController(
+                    webView,
+                    TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"),
+                    trustedHost(),
+                    NoTrustedCallbacks,
+                    gestureNow,
+                )
             }
         assertTrue(controller.bridgeInstalled)
         val server =
@@ -211,10 +223,12 @@ class WebContainersInstrumentedTest {
         )
         assertSubframesRejected(results)
 
-        // 真实触摸（系统派发的 MotionEvent）之后 1 秒内，同一调用放行
+        // 真实触摸（系统派发的 MotionEvent）之后 1 秒内，同一调用放行（点击与调用定格在同一时刻，见上）
+        frozen.set(SystemClock.uptimeMillis())
         tap(webView)
         onMain { webView.evaluateJavascript("callForTest('clipboard.write', {text: 'x'}, 'withGesture')", null) }
         val after = waitFor(webView) { it.containsKey("withGesture") }
+        frozen.set(-1L)
         assertEquals(
             0,
             after

@@ -8,6 +8,7 @@ import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderQuery
 import com.couli.core.orders.OrderRateGate
 import com.couli.core.orders.OrderRestoreRecord
+import com.couli.core.orders.OrderRestoreStore
 import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.PendingTrackService
 import kotlinx.coroutines.Job
@@ -106,6 +107,12 @@ class OrderListViewModel(
 
     /** 本页取得的清理代次（清理之后要先清空内存状态再取新的，旧代次写不进）。 */
     private var boundEpoch: Long = 0L
+
+    /**
+     * 本页固定归属时的持久化登录世代绑定（F-AND-29：与 [boundEpoch] 同时取；写入时此刻的世代已不是它就不写）。第 2 轮评审 R2-04：区分「没接来源」与
+     * 「绑定时读不出」；读不出的页面之后一律写不进（世代恢复了也不补绑，要等下一次固定身份重新取）。
+     */
+    private var boundLoginEpoch: OrderRestoreStore.LoginBinding = OrderRestoreStore.LoginBinding.Unbound
 
     /** 最近一次确认写入的记录（内容没变不重写）。 */
     private var lastWritten: OrderRestoreRecord? = null
@@ -217,6 +224,7 @@ class OrderListViewModel(
         ref = if (found != null) candidate else store?.newRef()
         store?.retainOnly(ref)
         boundEpoch = store?.epoch ?: 0L
+        boundLoginEpoch = store?.loginBindingNow() ?: OrderRestoreStore.LoginBinding.Unbound
         lastWritten = found
         return found
     }
@@ -232,7 +240,7 @@ class OrderListViewModel(
         val id = ref ?: return
         val next = OrderRestoreRecord(owner(), conditions.platform, conditions.month, conditions.q, mutableInput.value, anchor.orderId)
         if (next == lastWritten && saved.contains(K_REF)) return
-        if (target.write(id, boundEpoch, next)) {
+        if (target.write(id, boundEpoch, next, boundLoginEpoch)) {
             lastWritten = next
             saved[K_REF] = id
         } else {
@@ -262,6 +270,7 @@ class OrderListViewModel(
             saved[K_ANCHOR_INDEX] = 0
             saved[K_ANCHOR_OFFSET] = 0
             boundEpoch = store?.epoch ?: 0L
+            boundLoginEpoch = store?.loginBindingNow() ?: OrderRestoreStore.LoginBinding.Unbound
             persistRecord()
         }
     }
@@ -293,6 +302,20 @@ class OrderListViewModel(
      */
     fun live(t: OrderPageTicket): Boolean =
         !gone && t == mutableTicket.value && t.epoch == config.env.sessionEpoch() && t.account == config.env.account()
+
+    /**
+     * 身份初始化失败后的重建入口（F-AND-28，第 1 轮评审 R1-03）：渲染身份 [t] 仍是本页当前这份、页面实例还在、登录世代仍是它固定的那一代，只差
+     * 「固定时账号读不出（null）、此刻已读得出」——[live] 的旧账号拒绝规则在这里不适用（null != 当前账号不是换号）。别的账号的旧回调（t.account 非空）、
+     * 登录世代已变（重新登录：交给会话通知）一律不算。只比较，不赋值。
+     */
+    private fun rebuildable(t: OrderPageTicket): Boolean =
+        !gone && t == mutableTicket.value && t.account == null && t.epoch == config.env.sessionEpoch() &&
+            config.env.account() != null && controller.identityUnbound
+
+    /**
+     * 重建页面身份：执行器先作废在途、清空结果与条件，经 onInvalidated 同步清掉页面状态并换新的渲染身份（旧回调从此失效），再按新固定归属取第一页。
+     */
+    private fun rebuildIdentity(): Boolean = controller.rebuildIdentity().also { if (it) afterUserAction() }
 
     // ---------------------------------------------------------------- 页面入口（都带渲染身份）
 
@@ -375,7 +398,11 @@ class OrderListViewModel(
 
     /** 下拉手势（页面入口）：渲染身份有效才刷新。 */
     fun pullRefresh(t: OrderPageTicket) {
-        if (live(t)) refresh()
+        if (live(t)) {
+            refresh()
+        } else if (rebuildable(t)) {
+            rebuildIdentity()
+        }
     }
 
     /** 下拉刷新：列表与待跟单卡一起刷新（App 入口与页面手势共用）。 */
@@ -388,7 +415,12 @@ class OrderListViewModel(
     }
 
     /** 整页失败 / 翻页失败的【重试】。 */
-    fun retry(t: OrderPageTicket): Boolean = live(t) && controller.retry()
+    fun retry(t: OrderPageTicket): Boolean =
+        when {
+            live(t) -> controller.retry()
+            rebuildable(t) -> rebuildIdentity()
+            else -> false
+        }
 
     /** 上拉加载更多（滚动触发、恢复补页）。 */
     fun loadMore(t: OrderPageTicket): Boolean = live(t) && controller.loadMore()

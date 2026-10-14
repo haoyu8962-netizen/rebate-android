@@ -157,8 +157,23 @@ class OrderDetailController(
     }
 
     /** 发送前拦截（没有登录会话、42901 禁用期内）：不发请求，按情况显示；拦下了返回 true。 */
-    @Suppress("ReturnCount") // 游客、限流两个拦截出口
+    @Suppress("ReturnCount", "LongMethod") // 游客、身份没建立、限流三个拦截出口
     private fun heldBeforeSend(owner: OrderDetailOwner): Boolean {
+        if (env.loggedIn() && owner.account == null) {
+            // 页面身份没建立（F-AND-28，APP-09 共性第 65 条）：已登录却读不出账号——可恢复的初始化失败。不发请求、不读写缓存、不发布订单数据；
+            // 【重试】时清空并重新取得固定身份（[retry]）
+            update {
+                it.copy(
+                    phase = OrderDetailPhase.ERROR,
+                    detail = null,
+                    version = it.version + 1,
+                    error = OrderErrorAction.of(OrderErrorAction.DETAIL, null, true, 0L, null, false, false),
+                    staleAt = null,
+                    owner = owner,
+                )
+            }
+            return true
+        }
         if (!env.loggedIn()) {
             // 订单详情 auth=login：没有登录会话时不发请求、不显示任何订单数据（重新登录后会话换代再取）
             update {
@@ -313,6 +328,11 @@ class OrderDetailController(
     ): Boolean {
         val stale = version != null && version != s.version
         if (left || gate.active || stale) return false
+        if (env.loggedIn() && bound.account == null && (owner ?: s.owner)?.account == null) {
+            // 身份没建立（F-AND-28）：清空后重新一次性取得固定身份（与会话换代出口同一做法），再按新身份请求
+            onSessionChanged()
+            return true
+        }
         val fixed = owner ?: s.owner ?: return false
         if (fixed != s.owner || !isCurrent(fixed)) return false
         fetch(fixed)

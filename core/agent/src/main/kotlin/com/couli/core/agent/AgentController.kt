@@ -61,6 +61,11 @@ class AgentDeps(
     /** 情境入口（G27）：in_app 入口交来的一次性 context，附在第一条消息上。 */
     val context: JsonObject? = null,
     val platformName: (String) -> String = { OrderDraftTexts.platformName(it).ifEmpty { it } },
+    /**
+     * 身份初始化失败后的【重试】（F-AND-28，FU-AND-0714 第 1 轮评审 R1-04）：会员但账号读不出的控制器停在可恢复的加载失败；用户点【重试】时
+     * 控制器核对页面票据与登录世代后调它，App 同步作废这个控制器（清空）并按此刻的身份重建。缺省不做（单测）。
+     */
+    val rebuildIdentity: () -> Unit = {},
 )
 
 /** 控制器内部的一轮对话。 */
@@ -108,6 +113,12 @@ class AgentController(
 ) {
     val serial: Long = SERIALS.incrementAndGet()
     private val identity: AgentIdentity = deps.identity
+
+    /**
+     * 会员但账号未知（F-AND-28，R1-04：已登录却读不出账号）：可恢复的初始化失败——不取会话、不建会话、不发消息流（canSend = false），
+     * 实际发包出口同样拒绝；【重试】经 [AgentDeps.rebuildIdentity] 清空并按新身份重建。
+     */
+    private val identityUnknown: Boolean = identity.member && identity.account == null
     private var disposed = false
     private var started = false
     private var phase: String = AgentPhase.IDLE
@@ -147,8 +158,10 @@ class AgentController(
             when {
                 deps.contract == null -> AgentPhase.UNAVAILABLE
                 identity.basic -> AgentPhase.BLOCKED
+                identityUnknown -> AgentPhase.LOAD_FAILED
                 else -> AgentPhase.IDLE
             }
+        if (identityUnknown) loadErrorText = errorText(AgentErrorCodes.GENERIC, "")
         // 共享订阅（限流闸门、金额隐藏偏好）：作废时释放（APP-12 第 1 条：旧对话含收益金额不再可达）
         subscriptions +=
             deps.scope.launch {
@@ -189,7 +202,7 @@ class AgentController(
     fun start() {
         if (started || !alive() || !visible) return
         started = true
-        if (phase == AgentPhase.UNAVAILABLE || phase == AgentPhase.BLOCKED) {
+        if (phase == AgentPhase.UNAVAILABLE || phase == AgentPhase.BLOCKED || identityUnknown) {
             publish()
             return
         }
@@ -197,6 +210,7 @@ class AgentController(
     }
 
     private fun load() {
+        if (identityUnknown) return
         val contract = deps.contract ?: return
         phase = AgentPhase.LOADING
         loadErrorText = ""
@@ -384,13 +398,25 @@ class AgentController(
 
     /** 加载失败的【重试】（受 42901 闸门控制）。 */
     fun retryLoad(t: AgentPageTicket) {
+        if (identityUnknown) {
+            // 身份初始化失败（R1-04）：此刻的身份与构造时只差账号（同一页面实例、登录世代、隐私 / 环境世代、AI 同意世代）才交给 App 重建；
+            // 账号此刻读得出时 [alive] 已为 false，所以不经 [pageOk]，改为逐项核对页面票据
+            if (!disposed && ownTicket(t) && sameButAccount()) deps.rebuildIdentity()
+            return
+        }
         if (!pageOk(t) || phase != AgentPhase.LOAD_FAILED || deps.gate.active) return
         load()
     }
 
+    /** 此刻的身份与构造时的只差账号（构造时为 null）。 */
+    private fun sameButAccount(): Boolean = runCatching { deps.currentIdentity()?.copy(account = null) == identity }.getOrDefault(false)
+
     // ---------------------------------------------------------------- 票据比较
 
-    private fun pageOk(t: AgentPageTicket): Boolean = alive() && t.controller == serial && t.conversation == conversation
+    /** 页面票据有效：会员账号已知（R1-04：账号未知时一切正常入口都不受理）、控制器有效、票据是本控制器当前对话的。 */
+    private fun pageOk(t: AgentPageTicket): Boolean = !identityUnknown && alive() && ownTicket(t)
+
+    private fun ownTicket(t: AgentPageTicket): Boolean = t.controller == serial && t.conversation == conversation
 
     private fun runOk(t: AgentRunTicket): Boolean {
         val a = active ?: return false
@@ -423,8 +449,8 @@ class AgentController(
                 } else {
                     val ok =
                         runCatching {
-                            alive() && entry == this.entry && conversation == this.conversation && visible && !deps.gate.active &&
-                                consentGate == AgentConsentGate.CLEAR && op()
+                            !identityUnknown && alive() && entry == this.entry && conversation == this.conversation && visible &&
+                                !deps.gate.active && consentGate == AgentConsentGate.CLEAR && op()
                         }.getOrDefault(false)
                     if (!ok) revoked = true
                     ok
@@ -439,8 +465,8 @@ class AgentController(
     /** 输入框是否可发：就绪、不在发送中、不在禁用期、额度没用完、AI 同意已记录、页面可见。 */
     val canSend: Boolean
         get() =
-            alive() && visible && phase == AgentPhase.READY && active == null && !deps.gate.active && !quotaExhausted &&
-                consentGate == AgentConsentGate.CLEAR
+            !identityUnknown && alive() && visible && phase == AgentPhase.READY && active == null && !deps.gate.active &&
+                !quotaExhausted && consentGate == AgentConsentGate.CLEAR
 
     /** 发送一条消息（文本 1–500 字，按 Unicode 码点；超出不让发送）。返回是否已受理。 */
     @Suppress("ReturnCount") // 票据、空、过长、限流、不可发依次返回

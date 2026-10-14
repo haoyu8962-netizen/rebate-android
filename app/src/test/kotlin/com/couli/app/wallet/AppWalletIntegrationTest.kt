@@ -896,7 +896,7 @@ class AppWalletIntegrationTest {
                 { req -> if (req.method == "PUT") envelope("""{"fields":["card_no"]}""", code = 20001) else payoutAnswer() }
         }
         click(WalletTags.PAYOUT_SAVE)
-        passStepUpIfShown()
+        passStepUpWhenShown { texts("填写内容有误，请检查") > 0 }
         idleUntil { texts("填写内容有误，请检查") > 0 }
         assertEquals("保留输入", "6222 0000 0000 0009", fieldText(WalletTags.PAYOUT_CARD))
         val put = body(last("PUT", PAYOUT_PATH))
@@ -906,7 +906,7 @@ class AppWalletIntegrationTest {
         assertNull(header(all("PUT", PAYOUT_PATH).first(), "X-Step-Up-Token"))
         synchronized(answers) { answers.remove(PAYOUT_PATH) }
         click(WalletTags.PAYOUT_SAVE)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.PAYOUT_BOUND) }
         idleUntil { has(WalletTags.PAYOUT_BOUND) }
         assertTrue("只显示服务端的脱敏串", texts("尾号 0009") > 0)
         assertEquals("完整卡号不再显示", 0, texts("6222 0000 0000 0009"))
@@ -1679,6 +1679,15 @@ class AppWalletIntegrationTest {
     }
 
     // ---------------------------------------------------------------- 工具
+
+    /**
+     * F-AND-31（FU-AND-0714）：显式等待「二次验证面板出现，或已经到达 [done] 的终态」，面板出现就通过它。[passStepUpIfShown] 只停 5 轮主线程空转就判断
+     * 「面板有没有出现」，高负载下 10003 的响应晚于这几轮到达时会漏过面板，之后一直等不到终态（等页面超时）。
+     */
+    private fun passStepUpWhenShown(done: () -> Boolean) {
+        idleUntil { has(WalletTags.STEP_UP_CODE) || done() }
+        if (has(WalletTags.STEP_UP_CODE)) passStepUp()
+    }
 
     private fun passStepUpIfShown() {
         settle()
