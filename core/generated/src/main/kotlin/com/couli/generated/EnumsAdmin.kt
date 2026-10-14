@@ -33,11 +33,13 @@ enum class AdminPermission(
     CONTENT_POSTER("content.poster"),
     CONTENT_APP_VERSION("content.app_version"),
     CONTENT_FUND_TERMS("content.fund_terms"),
+    CONTENT_PLATFORM_ICON("content.platform_icon"),
     CONFIG_GENERAL("config.general"),
     CONFIG_RISK("config.risk"),
     CONFIG_BUSINESS("config.business"),
     SWITCH_ALL("switch.all"),
     SWITCH_PAYOUT("switch.payout"),
+    SWITCH_PAY("switch.pay"),
     RISK_FREEZE("risk.freeze"),
     RISK_BAN("risk.ban"),
     RISK_BLOCKLIST("risk.blocklist"),
@@ -58,6 +60,9 @@ enum class AdminPermission(
     ORDER_RESTORE("order.restore"),
     WITHDRAW_REVIEW("withdraw.review"),
     PAYOUT_EXECUTE("payout.execute"),
+    PAY_VIEW("pay.view"),
+    PAY_REFUND("pay.refund"),
+    PAY_RESOLVE("pay.resolve"),
     PAYOUT_MANUAL_ENTRY("payout.manual_entry"),
     SETTLE_BILL("settle.bill"),
     SETTLE_STATEMENT_UPLOAD("settle.statement_upload"),
@@ -89,11 +94,13 @@ enum class AdminPermission(
                 CONTENT_POSTER,
                 CONTENT_APP_VERSION,
                 CONTENT_FUND_TERMS,
+                CONTENT_PLATFORM_ICON,
                 CONFIG_GENERAL,
                 CONFIG_RISK,
                 CONFIG_BUSINESS,
                 SWITCH_ALL,
                 SWITCH_PAYOUT,
+                SWITCH_PAY,
                 RISK_FREEZE,
                 RISK_BAN,
                 RISK_BLOCKLIST,
@@ -114,6 +121,9 @@ enum class AdminPermission(
                 ORDER_RESTORE,
                 WITHDRAW_REVIEW,
                 PAYOUT_EXECUTE,
+                PAY_VIEW,
+                PAY_REFUND,
+                PAY_RESOLVE,
                 PAYOUT_MANUAL_ENTRY,
                 SETTLE_BILL,
                 SETTLE_STATEMENT_UPLOAD,
@@ -143,6 +153,190 @@ object AdminPermissionSerializer : KSerializer<AdminPermission> {
     override fun serialize(
         encoder: Encoder,
         value: AdminPermission,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_step_up_tier`（contracts/enums/admin.yaml）。
+ * 后台 step-up 的档位；step_up_token 记档位，动态码档的 token 不能用于短信档操作；10003 的 data.tier 取本枚举
+ *
+ * 未知取值解码为 [AdminStepUpTier.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminStepUpTierSerializer::class)
+enum class AdminStepUpTier(
+    val raw: kotlin.String,
+) {
+    TOTP("totp"),
+    SMS("sms"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminStepUpTier> =
+            listOf(
+                TOTP,
+                SMS,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminStepUpTier> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminStepUpTier = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminStepUpTier] 的序列化器：未知字符串得 [AdminStepUpTier.UNKNOWN]；序列化写 raw。 */
+object AdminStepUpTierSerializer : KSerializer<AdminStepUpTier> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminStepUpTier", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminStepUpTier = AdminStepUpTier.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminStepUpTier,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_login_step`（contracts/enums/admin.yaml）。
+ * 后台登录第一步通过后的下一步，凭中间凭证 login_ticket 完成；两步都完成才签发 admin_token
+ *
+ * 未知取值解码为 [AdminLoginStep.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminLoginStepSerializer::class)
+enum class AdminLoginStep(
+    val raw: kotlin.String,
+) {
+    TOTP("totp"),
+    CHANGE_PASSWORD("change_password"),
+    BIND_TOTP("bind_totp"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminLoginStep> =
+            listOf(
+                TOTP,
+                CHANGE_PASSWORD,
+                BIND_TOTP,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminLoginStep> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminLoginStep = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminLoginStep] 的序列化器：未知字符串得 [AdminLoginStep.UNKNOWN]；序列化写 raw。 */
+object AdminLoginStepSerializer : KSerializer<AdminLoginStep> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminLoginStep", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminLoginStep = AdminLoginStep.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminLoginStep,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_account_status`（contracts/enums/admin.yaml）。
+ * 后台账号状态；停用的账号名仍占用，不再分配给新账号
+ *
+ * 未知取值解码为 [AdminAccountStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAccountStatusSerializer::class)
+enum class AdminAccountStatus(
+    val raw: kotlin.String,
+) {
+    ACTIVE("active"),
+    DISABLED("disabled"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAccountStatus> =
+            listOf(
+                ACTIVE,
+                DISABLED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAccountStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAccountStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAccountStatus] 的序列化器：未知字符串得 [AdminAccountStatus.UNKNOWN]；序列化写 raw。 */
+object AdminAccountStatusSerializer : KSerializer<AdminAccountStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAccountStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAccountStatus = AdminAccountStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAccountStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_auth_level`（contracts/enums/admin.yaml）。
+ * /admin/v1 接口的鉴权级别；中间凭证 login_ticket 放请求体，不是鉴权级别
+ *
+ * 未知取值解码为 [AdminAuthLevel.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAuthLevelSerializer::class)
+enum class AdminAuthLevel(
+    val raw: kotlin.String,
+) {
+    NONE("none"),
+    ADMIN("admin"),
+    SUPER("super"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAuthLevel> =
+            listOf(
+                NONE,
+                ADMIN,
+                SUPER,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAuthLevel> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAuthLevel = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAuthLevel] 的序列化器：未知字符串得 [AdminAuthLevel.UNKNOWN]；序列化写 raw。 */
+object AdminAuthLevelSerializer : KSerializer<AdminAuthLevel> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAuthLevel", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAuthLevel = AdminAuthLevel.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAuthLevel,
     ) {
         encoder.encodeString(value.raw)
     }

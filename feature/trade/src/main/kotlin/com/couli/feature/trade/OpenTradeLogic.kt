@@ -196,13 +196,18 @@ object OpenErrorAction {
                 OpenErrorOutcome(OpenErrorActions.LOGIN, key, false)
             }
 
-            30101, 30102 -> {
-                val action = if (reason == AUTH_UNAVAILABLE) OpenErrorActions.NOTICE else OpenErrorActions.AUTH_SHEET
+            30101, 30102, 30111 -> {
+                // 30101 / 30102 的 auth_unavailable 只提示（BR-ID-24）；生成表按 reason 规定不能补办后重试的（sharer_auth_invalid=never，
+                // CT-LOCK-01）同样只提示：不弹授权、不登记待办、不重放、不给无返利购买（契约数据驱动，与鸿蒙同口径；
+                // link_landing.invalid 专门展示归 APP-13b）。表里没有的 reason 与无 reason 走原授权动作
+                val promptOnly = (code != 30111 && reason == AUTH_UNAVAILABLE) || ErrorActionMapper.promptOnlyReason(code, reason)
+                val action =
+                    when {
+                        promptOnly -> OpenErrorActions.NOTICE
+                        code == 30111 -> OpenErrorActions.AUTH_JUMP
+                        else -> OpenErrorActions.AUTH_SHEET
+                    }
                 OpenErrorOutcome(action, key, false)
-            }
-
-            30111 -> {
-                OpenErrorOutcome(OpenErrorActions.AUTH_JUMP, key, false)
             }
 
             30103, 30151, 30153 -> {

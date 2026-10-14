@@ -6,6 +6,7 @@ package com.couli.core.network
 import com.couli.core.generated.ApiOperation
 import com.couli.generated.DefaultTexts
 import com.couli.generated.ErrorCodes
+import com.couli.generated.RetryKind
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -139,7 +140,7 @@ data class ErrorEffect(
  * - 10405 进强更不重放；本机版本不低于 data.min_supported_version（或它为空）而会话是 deletion_only 时只刷新令牌；
  *   reason=no_account 提示先更新、回强更。42901 按 Retry-After（缺省 5 秒）禁用按钮。
  * - 带 data.reason 的取 error.<code>.<reason>，字典没有回落 error.<code>；表外码与废弃码：5xxxx 通用错误态附 trace6，
- *   其余用服务端 msg（[ErrorEffectKind.FALLBACK_MESSAGE]）。
+ *   其余用服务端 msg（[ErrorEffectKind.FALLBACK_MESSAGE]）；表内无专门分支、字典也没有文案键的 1xxxx（10008 / 10009）同样回落 msg。
  */
 @Suppress("TooManyFunctions") // 每类码一个小判定函数，便于逐条对照 03 §4.2
 object ErrorActionMapper {
@@ -157,6 +158,8 @@ object ErrorActionMapper {
     private const val MILLIS_PER_SECOND = 1_000L
     private const val SERVER_ERROR_MIN = 50_000
     private const val SERVER_ERROR_MAX = 59_999
+    private const val AUTH_MIN = 10_000
+    private const val AUTH_MAX = 19_999
     private const val BUSINESS_MIN = 30_000
     private const val BUSINESS_MAX = 39_999
     private const val AUTH_UNAVAILABLE = "auth_unavailable"
@@ -345,7 +348,7 @@ object ErrorActionMapper {
             }
 
             in AUTHORIZE_CODES -> {
-                context.authorize(stepUpOperation, reason)
+                context.authorize(stepUpOperation, reason, promptOnlyReason(code, reason))
             }
 
             in GUIDE_CODES -> {
@@ -370,11 +373,28 @@ object ErrorActionMapper {
                         .effect(
                             ErrorEffectKind.GENERIC_ERROR,
                         ).copy(includeTrace6 = true)
+                } else if (code in AUTH_MIN..AUTH_MAX && context.textKey == null) {
+                    // CT-LOCK-01：表内但用户侧字典没有文案键的 1xxxx（目前只有只出现在 /admin/v1 的 10008 / 10009）与表外 1xxxx
+                    // 同一回落：用服务端 msg，不写专门分流（与鸿蒙同口径）
+                    context.effect(ErrorEffectKind.FALLBACK_MESSAGE, key = null)
                 } else {
                     context.effect(ErrorEffectKind.TOAST)
                 }
             }
         }
+    }
+
+    /**
+     * 生成错误码表按 [reason] 规定的重试类别（retry_kind_by_reason）存在且不是 after_action：这个 reason 不能靠补办前置动作后重试，
+     * 授权类码只提示（30102 / 30111 的 sharer_auth_invalid=never；30101 / 30102 的 auth_unavailable=later 原本就只提示）。
+     * 没有 reason 或表里没有这个 reason 时为 false（走码本身的动作）。
+     */
+    fun promptOnlyReason(
+        code: Int,
+        reason: String?,
+    ): Boolean {
+        val kind = reason?.let { ErrorCodes.info(code)?.retryKindByReason?.get(it) } ?: return false
+        return kind != RetryKind.AFTER_ACTION
     }
 
     /** 文案键：error.<code>.<reason> → error.<code> → null（BR-TEXT-14）。 */
@@ -429,13 +449,18 @@ object ErrorActionMapper {
     private fun Context.deletionInProgress(stage: String?): ErrorEffect =
         if (stage == "processing") effect(ErrorEffectKind.TOAST) else effect(ErrorEffectKind.NAVIGATE, route = "DeleteAccount")
 
-    /** 30101 / 30102 / 30111：AuthSheet 后用新键；auth_unavailable 只提示；step-up 操作只引导。 */
+    /**
+     * 30101 / 30102 / 30111：AuthSheet 后用新键；auth_unavailable 只提示；step-up 操作只引导。
+     * [promptOnly]：生成表按 data.reason 给的重试类别不是 after_action（如 sharer_auth_invalid=never，CT-LOCK-01）→ 只提示，
+     * 不弹授权、不登记待办、不重放（契约数据驱动，与鸿蒙同口径）。
+     */
     private fun Context.authorize(
         stepUpOperation: Boolean,
         reason: String?,
+        promptOnly: Boolean,
     ): ErrorEffect =
         when {
-            reason == AUTH_UNAVAILABLE -> effect(ErrorEffectKind.TOAST)
+            reason == AUTH_UNAVAILABLE || promptOnly -> effect(ErrorEffectKind.TOAST)
             stepUpOperation -> effect(ErrorEffectKind.GUIDE_ONLY, route = AUTH_SHEET)
             else -> effect(ErrorEffectKind.AUTHORIZE, replay = ReplayMode.NEW_KEY, pending = true, route = AUTH_SHEET)
         }

@@ -14,7 +14,7 @@ class ClientEvent internal constructor(
     val fields: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonPrimitive>,
 )
 
-/** specs/events.yaml 的事件构造函数（events.yaml version 1）。事件族（families）随各自任务补。 */
+/** specs/events.yaml 的事件构造函数（events.yaml version 2）。事件族（families）随各自任务补。 */
 object ClientEvents {
     /** 全部事件名（契约顺序）。 */
     val names: kotlin.collections.List<kotlin.String> =
@@ -29,6 +29,8 @@ object ClientEvents {
         result: LinkJumpResult,
         attemptId: kotlin.String? = null,
         linkId: kotlin.String? = null,
+        sdkOpenBy: LinkJumpSdkOpenBy? = null,
+        sdkErrorCode: kotlin.String? = null,
         durationMs: kotlin.Long? = null,
         installed: LinkJumpInstalled? = null,
         spm: kotlin.String? = null,
@@ -46,6 +48,8 @@ object ClientEvents {
                 put("union_platform", kotlinx.serialization.json.JsonPrimitive(unionPlatform.raw))
                 put("step", kotlinx.serialization.json.JsonPrimitive(step.raw))
                 put("result", kotlinx.serialization.json.JsonPrimitive(result.raw))
+                sdkOpenBy?.raw?.let { put("sdk_open_by", kotlinx.serialization.json.JsonPrimitive(it)) }
+                sdkErrorCode?.let { put("sdk_error_code", kotlinx.serialization.json.JsonPrimitive(it)) }
                 durationMs?.let { put("duration_ms", kotlinx.serialization.json.JsonPrimitive(it)) }
                 installed?.raw?.let { put("installed", kotlinx.serialization.json.JsonPrimitive(it)) }
             }
@@ -301,6 +305,14 @@ enum class LinkJumpResult(
     FAILED("failed"),
     SDK_INIT_FAILED("sdk_init_failed"),
     COPIED("copied"),
+}
+
+/** events.yaml link_jump.sdk_open_by：step=sdk 且为淘宝百川打开指令时必带，取 open 响应 JumpStep.sdk.open_by 的原值（url 走我方推广链接，code 走商品 ID 由 SDK 转链）；其他步骤不带 */
+enum class LinkJumpSdkOpenBy(
+    val raw: kotlin.String,
+) {
+    URL("url"),
+    CODE("code"),
 }
 
 /** events.yaml link_jump.installed：请求体里 installed 的同一取值（contracts/enums/trade.yaml installed_state） */

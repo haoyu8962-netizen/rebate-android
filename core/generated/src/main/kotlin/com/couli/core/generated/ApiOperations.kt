@@ -112,7 +112,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 20002, 20003, 44001, 10405),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.EXEMPT,
-                    planned = true,
+                    planned = false,
                 ),
             "createOauthAttempt" to
                 ApiOperation(
@@ -126,7 +126,7 @@ object ApiOperations {
                     errorCodes = listOf(10001, 20001, 50001, 10405),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.CONDITIONAL,
-                    planned = true,
+                    planned = false,
                 ),
             "loginByWechat" to
                 ApiOperation(
@@ -182,7 +182,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 20002, 20003, 20004, 50305, 10405),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.CONDITIONAL,
-                    planned = true,
+                    planned = false,
                 ),
             "refreshToken" to
                 ApiOperation(
@@ -196,7 +196,7 @@ object ApiOperations {
                     errorCodes = listOf(10404),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.EXEMPT,
-                    planned = true,
+                    planned = false,
                 ),
             "logout" to
                 ApiOperation(
@@ -210,7 +210,7 @@ object ApiOperations {
                     errorCodes = listOf(),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.EXEMPT,
-                    planned = true,
+                    planned = false,
                 ),
             "recordConsent" to
                 ApiOperation(
@@ -224,7 +224,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 10405),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.CONDITIONAL,
-                    planned = true,
+                    planned = false,
                 ),
             "issueH5Token" to
                 ApiOperation(
@@ -238,7 +238,7 @@ object ApiOperations {
                     errorCodes = listOf(10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "listUnionBindings" to
                 ApiOperation(
@@ -252,7 +252,7 @@ object ApiOperations {
                     errorCodes = listOf(),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "getUnionAuthUrl" to
                 ApiOperation(
@@ -263,10 +263,10 @@ object ApiOperations {
                     signed = false,
                     idempotent = false,
                     stepUp = null,
-                    errorCodes = listOf(30101, 30102, 30153),
+                    errorCodes = listOf(30101, 30102, 30153, 50301),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "bindUnion" to
                 ApiOperation(
@@ -280,7 +280,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 30101, 30102, 30104, 30151, 30153, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "listOrders" to
                 ApiOperation(
@@ -658,7 +658,7 @@ object ApiOperations {
                     errorCodes = listOf(),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "submitAppeal" to
                 ApiOperation(
@@ -672,7 +672,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 30701, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "abandonIdempotencyKey" to
                 ApiOperation(
@@ -686,7 +686,7 @@ object ApiOperations {
                     errorCodes = listOf(20001, 40901, 10405),
                     sessionScopes = listOf("full", "deletion_only"),
                     minVersionGate = ApiMinVersionGate.CONDITIONAL,
-                    planned = true,
+                    planned = false,
                 ),
             "getConfig" to
                 ApiOperation(
@@ -714,7 +714,7 @@ object ApiOperations {
                     errorCodes = listOf(50304),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "getProduct" to
                 ApiOperation(
@@ -728,7 +728,7 @@ object ApiOperations {
                     errorCodes = listOf(30141, 30143),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "parseInput" to
                 ApiOperation(
@@ -742,7 +742,7 @@ object ApiOperations {
                     errorCodes = listOf(30131, 30132, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "openLink" to
                 ApiOperation(
@@ -756,7 +756,7 @@ object ApiOperations {
                     errorCodes = listOf(10001, 30101, 30102, 30103, 30111, 30121, 30141, 30143, 30144, 30151, 30153, 50301, 50303, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "convertLink" to
                 ApiOperation(
@@ -770,7 +770,7 @@ object ApiOperations {
                     errorCodes = listOf(30101, 30102, 30103, 30111, 30121, 30131, 30141, 30143, 30151, 30153, 50301, 50303, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "getLink" to
                 ApiOperation(
@@ -784,7 +784,7 @@ object ApiOperations {
                     errorCodes = listOf(30144),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "getSharePage" to
                 ApiOperation(
@@ -795,7 +795,7 @@ object ApiOperations {
                     signed = false,
                     idempotent = false,
                     stepUp = null,
-                    errorCodes = listOf(30144),
+                    errorCodes = listOf(30102, 30111, 30144),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
                     planned = true,
@@ -812,6 +812,104 @@ object ApiOperations {
                     errorCodes = listOf(20001, 42901),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.EXEMPT,
+                    planned = true,
+                ),
+            "createAgentSession" to
+                ApiOperation(
+                    operationId = "createAgentSession",
+                    method = "POST",
+                    pathTemplate = "/v1/agent/sessions",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
+                ),
+            "getCurrentAgentSession" to
+                ApiOperation(
+                    operationId = "getCurrentAgentSession",
+                    method = "GET",
+                    pathTemplate = "/v1/agent/sessions/current",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.UNSPECIFIED,
+                    planned = true,
+                ),
+            "listAgentSessionMessages" to
+                ApiOperation(
+                    operationId = "listAgentSessionMessages",
+                    method = "GET",
+                    pathTemplate = "/v1/agent/sessions/{id}/messages",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 30504),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.UNSPECIFIED,
+                    planned = true,
+                ),
+            "sendAgentMessage" to
+                ApiOperation(
+                    operationId = "sendAgentMessage",
+                    method = "POST",
+                    pathTemplate = "/v1/agent/sessions/{id}/messages",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 30504, 20001, 30506, 30502, 50302, 10405, 42901, 50001, 50401),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
+                ),
+            "cancelAgentRun" to
+                ApiOperation(
+                    operationId = "cancelAgentRun",
+                    method = "POST",
+                    pathTemplate = "/v1/agent/runs/{run_id}/cancel",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 30505, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
+                ),
+            "setAgentMessageFeedback" to
+                ApiOperation(
+                    operationId = "setAgentMessageFeedback",
+                    method = "POST",
+                    pathTemplate = "/v1/agent/messages/{message_id}/feedback",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 30504, 20001, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
+                ),
+            "reportAgentMessage" to
+                ApiOperation(
+                    operationId = "reportAgentMessage",
+                    method = "POST",
+                    pathTemplate = "/v1/agent/messages/{message_id}/report",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(30501, 10001, 10005, 10004, 30504, 20001, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
                     planned = true,
                 ),
         )

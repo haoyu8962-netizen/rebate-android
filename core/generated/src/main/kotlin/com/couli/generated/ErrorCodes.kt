@@ -91,6 +91,24 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            10008 to
+                ErrorCodeInfo(
+                    code = 10008,
+                    http = 401,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            10009 to
+                ErrorCodeInfo(
+                    code = 10009,
+                    http = 403,
+                    retryKind = RetryKind.LATER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             10401 to
                 ErrorCodeInfo(
                     code = 10401,
@@ -213,7 +231,7 @@ object ErrorCodes {
                     code = 30102,
                     http = 422,
                     retryKind = RetryKind.AFTER_ACTION,
-                    retryKindByReason = mapOf("auth_unavailable" to RetryKind.LATER),
+                    retryKindByReason = mapOf("auth_unavailable" to RetryKind.LATER, "sharer_auth_invalid" to RetryKind.NEVER),
                     isDeprecated = false,
                     isP1 = false,
                 ),
@@ -240,7 +258,7 @@ object ErrorCodes {
                     code = 30111,
                     http = 422,
                     retryKind = RetryKind.AFTER_ACTION,
-                    retryKindByReason = emptyMap(),
+                    retryKindByReason = mapOf("sharer_auth_invalid" to RetryKind.NEVER),
                     isDeprecated = false,
                     isP1 = false,
                 ),

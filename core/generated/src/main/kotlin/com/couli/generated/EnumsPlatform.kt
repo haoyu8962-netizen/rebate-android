@@ -359,3 +359,60 @@ object AuthLevelSerializer : KSerializer<AuthLevel> {
         encoder.encodeString(value.raw)
     }
 }
+
+/**
+ * 契约枚举 `platform_icon_key`（contracts/enums/platform.yaml）。
+ * 平台标识键，/v1/config.platform_icons 的键与后台「平台标识」接口的 {key} 同一份；新增平台按 BR-TEXT-24 同样规则补值
+ *
+ * 未知取值解码为 [PlatformIconKey.UNKNOWN]，不抛错。
+ */
+@Serializable(with = PlatformIconKeySerializer::class)
+enum class PlatformIconKey(
+    val raw: kotlin.String,
+) {
+    TAOBAO("taobao"),
+    TMALL("tmall"),
+    JD("jd"),
+    PDD("pdd"),
+    WECHAT("wechat"),
+    WECHAT_PAY("wechat_pay"),
+    ALIPAY("alipay"),
+    WECOM("wecom"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<PlatformIconKey> =
+            listOf(
+                TAOBAO,
+                TMALL,
+                JD,
+                PDD,
+                WECHAT,
+                WECHAT_PAY,
+                ALIPAY,
+                WECOM,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, PlatformIconKey> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): PlatformIconKey = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [PlatformIconKey] 的序列化器：未知字符串得 [PlatformIconKey.UNKNOWN]；序列化写 raw。 */
+object PlatformIconKeySerializer : KSerializer<PlatformIconKey> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.PlatformIconKey", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): PlatformIconKey = PlatformIconKey.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: PlatformIconKey,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}

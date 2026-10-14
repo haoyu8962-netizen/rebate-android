@@ -687,7 +687,7 @@ class OpenPurchaseController(
 
             OpenErrorActions.NOTICE -> {
                 when {
-                    failure.code == 30101 || failure.code == 30102 -> {
+                    (failure.code == 30101 || failure.code == 30102) && failure.data.text("reason") == AUTH_UNAVAILABLE -> {
                         showDialog(PurchaseDialog.AuthUnavailable(outcome.textKey))
                     }
 

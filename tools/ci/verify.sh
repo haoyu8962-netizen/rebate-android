@@ -6,7 +6,8 @@
 #   tools/ci/verify.sh --fast   只跑到生成物检查与一次 assembleDebug
 #
 # 步骤：
-#   1. 快照与 contract.lock 的哈希一致
+#   1. 快照与 contract.lock 一致：按锁定提交重建逐字节比较 + lock files 哈希（tools/contracts/sync.sh --check；
+#      取不到 rebate-platform / couli 即失败，CT-LOCK-01）
 #   2. python3 tools/codegen/gen.py --check（生成物无漂移）
 #   3. ./gradlew ktlintCheck detekt lint（含自定义规则 couliRules；0 问题）
 #   4. 源码规则扫描器单测（./gradlew -p build-logic :convention:test：字符串模板嵌套、原始字符串、字符字面量、注释）；
@@ -110,32 +111,59 @@ expect_failure() {
   fi
 }
 
-check_lock() {
-  python3 - "$ROOT" <<'PY'
-import hashlib, json, os, sys
-root = sys.argv[1]
-lock = json.load(open(os.path.join(root, "contract.lock"), encoding="utf-8"))
-snapshot = os.path.join(root, "contracts", "snapshot")
-actual = {}
-for directory, _, names in os.walk(snapshot):
-    for name in names:
-        full = os.path.join(directory, name)
-        rel = os.path.relpath(full, snapshot).replace(os.sep, "/")
-        actual[rel] = hashlib.sha256(open(full, "rb").read()).hexdigest()
-expected = lock.get("files", {})
-bad = sorted(k for k in set(actual) | set(expected) if actual.get(k) != expected.get(k))
-for commit_key in ("rebate_platform", "design_tokens"):
-    if len(lock[commit_key]["commit"]) != 40:
-        print(f"contract.lock 的 {commit_key}.commit 不是 40 位", file=sys.stderr)
-        sys.exit(1)
-if bad:
-    print("快照与 contract.lock 不一致：" + ", ".join(bad), file=sys.stderr)
-    sys.exit(1)
-print(f"快照 {len(actual)} 个文件与 contract.lock 一致")
-PY
+# CT-LOCK-01：contract.lock 与快照一致——必须按锁定提交重建、逐字节比较，并核对 lock files 哈希（tools/contracts/sync.sh --check）。
+# 取不到上游仓库或其中没有锁定提交就失败，不退化成只比哈希（只比哈希用 tools/contracts/sync.sh --check-hashes-only 单独跑，
+# 不算本步通过；与鸿蒙 CT-LOCK-01 R1-02 同口径）。上游仓库按顺序推导：
+#   1. 环境变量 REBATE_PLATFORM_DIR / COULI_DIR（设了就只用它，不对则失败）；
+#   2. lock 里的相对路径，相对本仓库根；
+#   3. 同一相对路径，相对主检出（git worktree 的公共 .git 所在目录；worktree 下 2 不成立时用它）；
+#   4. 本机固定位置 /Users/zhixing/我的项目/rebate-platform、/Users/zhixing/我的项目/couli。
+lock_field() {
+  python3 -c 'import json,sys
+n=json.load(open(sys.argv[1],encoding="utf-8"))
+for p in sys.argv[2].split("."): n=n[p]
+print(n)' "$ROOT/contract.lock" "$1"
 }
 
-step "快照与 contract.lock 一致" check_lock
+is_git_repo() {
+  [ -n "$1" ] && [ -d "$1" ] && git -C "$1" rev-parse --git-dir >/dev/null 2>&1
+}
+
+# $1 环境变量值 $2 lock 相对路径 $3 本机固定位置；输出仓库绝对路径，取不到输出空串
+resolve_upstream() {
+  local override="$1" rel="$2" fixed="$3" main_root="" cand=""
+  if [ -n "$override" ]; then
+    if is_git_repo "$override"; then (cd "$override" && pwd); fi
+    return 0
+  fi
+  main_root="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  main_root="${main_root%/.git}"
+  for cand in "$ROOT/$rel" "${main_root:+$main_root/$rel}" "$fixed"; do
+    if is_git_repo "$cand"; then
+      (cd "$cand" && pwd)
+      return 0
+    fi
+  done
+  return 0
+}
+
+check_lock() {
+  local rp_dir dt_dir
+  rp_dir="$(resolve_upstream "${REBATE_PLATFORM_DIR:-}" "$(lock_field rebate_platform.repo)" "/Users/zhixing/我的项目/rebate-platform")"
+  dt_dir="$(resolve_upstream "${COULI_DIR:-}" "$(lock_field design_tokens.repo)" "/Users/zhixing/我的项目/couli")"
+  if [ -z "$rp_dir" ] || [ -z "$dt_dir" ]; then
+    echo "取不到上游仓库（rebate-platform：${rp_dir:-未找到}；couli：${dt_dir:-未找到}），无法按锁定提交核对快照。" >&2
+    echo "请设置 REBATE_PLATFORM_DIR=/path/to/rebate-platform COULI_DIR=/path/to/couli 后重跑；" >&2
+    echo "只想核对 lock files 哈希可单独运行 tools/contracts/sync.sh --check-hashes-only（不算完整一致性检查）。" >&2
+    return 1
+  fi
+  echo "rebate-platform：$rp_dir"
+  echo "couli：$dt_dir"
+  REBATE_PLATFORM_DIR="$rp_dir" COULI_DIR="$dt_dir" "$ROOT/tools/contracts/sync.sh" --check | grep -v '^  ' || return 1
+  echo "锁定提交 $(lock_field rebate_platform.commit | cut -c1-12) 重建逐字节相同、files 哈希相同"
+}
+
+step "快照与 contract.lock 一致（按锁定提交重建核对）" check_lock
 step "生成物无漂移（gen.py --check）" python3 tools/codegen/gen.py --check
 
 if [ "$FAST" -eq 1 ]; then

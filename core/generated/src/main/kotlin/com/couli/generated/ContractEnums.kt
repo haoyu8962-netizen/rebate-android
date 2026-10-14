@@ -6,6 +6,10 @@ object ContractEnums {
     val all: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>> =
         linkedMapOf(
             "admin_permission" to AdminPermission.known.map { it.raw },
+            "admin_step_up_tier" to AdminStepUpTier.known.map { it.raw },
+            "admin_login_step" to AdminLoginStep.known.map { it.raw },
+            "admin_account_status" to AdminAccountStatus.known.map { it.raw },
+            "admin_auth_level" to AdminAuthLevel.known.map { it.raw },
             "ledger_type" to LedgerType.known.map { it.raw },
             "referral_credit_sub_type" to ReferralCreditSubType.known.map { it.raw },
             "clawback_sub_type" to ClawbackSubType.known.map { it.raw },
@@ -91,6 +95,7 @@ object ContractEnums {
             "platform_search_status" to PlatformSearchStatus.known.map { it.raw },
             "install_channel" to InstallChannel.known.map { it.raw },
             "auth_level" to AuthLevel.known.map { it.raw },
+            "platform_icon_key" to PlatformIconKey.known.map { it.raw },
             "scene" to Scene.known.map { it.raw },
             "pid_scene" to PidScene.known.map { it.raw },
             "buy_type" to BuyType.known.map { it.raw },
