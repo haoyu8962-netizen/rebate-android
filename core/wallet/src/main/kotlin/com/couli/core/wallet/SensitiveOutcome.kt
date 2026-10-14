@@ -421,17 +421,29 @@ object SensitiveOutcome {
 }
 
 /**
- * 二次验证 token 的复用（G17）：只放内存，按会话、账号与 action 隔离，不落盘。本机时钟早于 expire_at 才带上；成功提交（服务端核销）后立即丢弃；
- * 会话换代、登出、换账号、撤回同意时清空；得到 10003 就丢弃并重新弹面板。[take] 只读，不核销服务端 token。
+ * 二次验证 token 的复用（G17；APP-13a §2 第 7 项）：只放内存，按账号与 action 隔离（APP-13a 起另按会话世代与作用域隔离，[put] / [take] 的带世代重载），
+ * 不落盘。本机时钟早于 expire_at 才带上；成功提交（服务端核销）后立即丢弃；会话换代、登出、换账号、撤回同意、作用域变化时清空；换手机号成功清全部
+ * action（[clearAll]，APP-13a 共性第 9 条）；得到 10003 就丢弃并重新弹面板。[take] 只读，不核销服务端 token。
  */
 class StepUpTokenCache {
     private data class Entry(
         val account: String,
         val token: String,
         val expireAtMs: Long,
+        /** 取得时的登录世代与会话作用域（APP-13a）；APP-09 旧入口写入时为 null。 */
+        val epoch: Long? = null,
+        val scope: String? = null,
     )
 
     private val entries = mutableMapOf<String, Entry>()
+
+    /**
+     * 失效世代（APP-13a R3-01、共性第 43 条）：整体清空（会话换代、换手机号成功清全部 action、作用域变化）时加 1。二次验证在验证请求发起时记下它，
+     * 回包写缓存、交付 token 之前复核，变了就丢弃迟到的 token（不让已作废的 token 重新进缓存或被沿用）。
+     */
+    @Volatile
+    var generation: Long = 0L
+        private set
 
     @Synchronized
     fun put(
@@ -443,12 +455,40 @@ class StepUpTokenCache {
         entries[action] = Entry(account, token, expireAtMs)
     }
 
+    /** 带会话世代与作用域写入（APP-13a）：之后按同一账号、世代、作用域、action 才复用。 */
+    @Suppress("LongParameterList") // 隔离维度逐项给
+    @Synchronized
+    fun put(
+        action: String,
+        account: String,
+        token: String,
+        expireAtMs: Long,
+        epoch: Long,
+        scope: String,
+    ) {
+        entries[action] = Entry(account, token, expireAtMs, epoch, scope)
+    }
+
+    /** APP-09 旧入口：按 action、账号与 expire_at。 */
     @Synchronized
     fun take(
         action: String,
         account: String,
         nowMs: Long,
     ): String? = entries[action]?.takeIf { it.account == account && nowMs < it.expireAtMs }?.token
+
+    /** 按账号、会话世代、作用域、action 与 expire_at（APP-13a StepUpTokenPolicy 同口径）：任一不符都不复用。 */
+    @Synchronized
+    fun take(
+        action: String,
+        account: String,
+        nowMs: Long,
+        epoch: Long,
+        scope: String,
+    ): String? =
+        entries[action]
+            ?.takeIf { it.account == account && it.epoch == epoch && it.scope == scope && nowMs < it.expireAtMs }
+            ?.token
 
     @Synchronized
     fun onSuccess(action: String) {
@@ -458,6 +498,21 @@ class StepUpTokenCache {
     @Synchronized
     fun onSessionChanged() {
         entries.clear()
+        generation += 1
+    }
+
+    /** 换手机号成功（G04）：丢弃全部 action 的 token。 */
+    @Synchronized
+    fun clearAll() {
+        entries.clear()
+        generation += 1
+    }
+
+    /** 会话作用域变化（deletion_only ↔ full）：清空，不跨作用域复用。 */
+    @Synchronized
+    fun onScopeChanged() {
+        entries.clear()
+        generation += 1
     }
 
     @Synchronized

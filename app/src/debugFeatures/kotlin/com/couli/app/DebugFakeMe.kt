@@ -278,6 +278,11 @@ internal class DebugFakeMe(
                 "/v1/auth/logout",
                 "/v1/auth/refresh",
                 "/v1/consents",
+                // BR-ID-31：注销三接口、作废、二次验证与发码（account_deletion）也在 10006 白名单（APP-13a AC-S2-62 ㉓ 冒烟）
+                "/v1/me/deletion",
+                "/v1/idempotency-keys/abandon",
+                "/v1/auth/step-up",
+                "/v1/auth/sms-codes",
             )
 
         private val instances = mutableMapOf<String, DebugFakeMe>()

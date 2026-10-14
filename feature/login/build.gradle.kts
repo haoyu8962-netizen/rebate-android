@@ -13,6 +13,8 @@ android {
 dependencies {
     // ApiClient、ErrorActionMapper、SessionTokens；ApiOperations、DefaultTexts 与 kotlinx-serialization-json 经它传递
     api(project(":core:network"))
+    // APP-13a：BindPhone 待确认（BindPhonePendingPolicy、PhoneChangeOutcomePolicy、AccountShared、AccountDraftTexts，G07；Feature → Core）
+    implementation(project(":core:me"))
     implementation(project(":core:designsystem"))
     implementation(libs.androidx.lifecycle.runtime.compose)
     // 页面状态：ViewModel + StateFlow，跟随登录页的回退栈条目（03 §3.3）

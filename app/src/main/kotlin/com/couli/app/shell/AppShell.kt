@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,6 +17,7 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
@@ -157,7 +159,7 @@ fun AppShell(
                         web?.let { ExternalPageRoute(page, it) { navController.popBackStack() } } ?: PlaceholderRoutePage(page)
                     },
                     ShellTab.HOME.route to { _ -> homeContent() },
-                    RouteNames.FORCE_UPDATE to { _ -> update?.let { ForceUpdateRoute(it, routing) } },
+                    RouteNames.FORCE_UPDATE to { _ -> update?.let { ForceUpdateRoute(it, routing, me?.account) } },
                     // 强更状态下能到登录页只有一条路：从强更页进入（受限登录，BR-ID-01「受限会话」）
                     RouteNames.LOGIN to { page ->
                         val restricted = routing.update.value == UpdateCheck.BELOW_MIN
@@ -377,6 +379,8 @@ fun AppShell(
     if (clipboard != null && !showPrompt) ClipboardResultHost(clipboard)
     // 统一客服出口的半屏、撤回同意落盘失败的提示（APP-12）
     if (me != null && !showPrompt) MeOverlayHost(me)
+    // APP-13a G01 ③：10007 cooling 想打开不可用的 DeleteAccount → 只提示 error.10007（不进升级页、不导航）
+    if (!showPrompt) DeletionPromptHost(routing)
     if (showPrompt) {
         PrivacyPromptDialog(
             stage = privacyState.promptStage,
@@ -619,3 +623,40 @@ private fun h5RoutePages(
                 web?.let { H5RoutePage(page, spec, it, routing, onClose) } ?: PlaceholderRoutePage(page)
             }
         }
+
+/** 10007 冷静期提示（G01 ③）：路由层拦下不可用的 DeleteAccount 后，在当前界面轻提示一次 error.10007。 */
+@Composable
+internal fun DeletionPromptHost(routing: AppRouting) {
+    val id by routing.deletionPrompt.collectAsStateWithLifecycle()
+    var shown by androidx.compose.runtime.saveable
+        .rememberSaveable { androidx.compose.runtime.mutableLongStateOf(0L) }
+    if (id == 0L || id == shown) return
+    androidx.compose.runtime.LaunchedEffect(id) {
+        kotlinx.coroutines.delay(DELETION_PROMPT_MS)
+        shown = id
+    }
+    androidx.compose.foundation.layout.Box(
+        modifier =
+            androidx.compose.ui.Modifier
+                .fillMaxSize(),
+        contentAlignment = androidx.compose.ui.Alignment.TopCenter,
+    ) {
+        com.couli.core.designsystem.CouliToast(
+            message =
+                com.couli.generated.DefaultTexts
+                    .text("error.10007")
+                    .orEmpty(),
+            icon = null,
+            announcementId = id,
+            modifier =
+                androidx.compose.ui.Modifier
+                    .padding(top = com.couli.core.designsystem.CouliSpacing.space12)
+                    .testTag(DELETION_PROMPT_TAG),
+        )
+    }
+}
+
+/** 10007 提示的测试标记。 */
+const val DELETION_PROMPT_TAG = "deletion_prompt_10007"
+
+private const val DELETION_PROMPT_MS = 2_000L

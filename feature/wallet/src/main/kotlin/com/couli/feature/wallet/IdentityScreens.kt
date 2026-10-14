@@ -38,6 +38,7 @@ import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.wallet.WalletTexts
+import com.couli.core.wallet.stepup.LockedSheet
 
 class RealNameViewModel(
     config: WalletPageConfig,

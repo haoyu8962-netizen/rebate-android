@@ -9,6 +9,8 @@
 // 收款账号与实名状态以后也给「我的」、设置页用：feature 之间不能互相依赖，所以放在 Core。
 plugins {
     alias(libs.plugins.couli.android.library)
+    // 二次验证面板（StepUpSheet，APP-13a 从 feature:wallet 挪来，钱包与「我的」共用）
+    alias(libs.plugins.couli.android.compose)
 }
 
 android {

@@ -31,7 +31,6 @@ import com.couli.core.push.PushReportState
 import com.couli.core.push.PushSessionTracker
 import com.couli.core.push.PushTokenReporter
 import com.couli.core.push.PushTokenSource
-import com.couli.core.router.AppVersion
 import com.couli.core.router.GuardState
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteNames
@@ -46,7 +45,6 @@ import com.couli.feature.me.MeGates
 import com.couli.feature.me.MeIdentity
 import com.couli.feature.me.NicknameBackend
 import com.couli.feature.me.NotifyBackend
-import com.couli.generated.Routes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -159,6 +157,9 @@ class AppMe(
      * 没接首页（只测「我的」的单测）时保留 APP-12 的旧取值。
      */
     var homeVersion: (() -> String?)? = null
+
+    /** 注销与换号（APP-13a，AppModule 接线后设置；只测「我的」的单测为 null）。 */
+    var account: com.couli.app.account.AppAccount? = null
 
     /** 退出登录进行中（同一时刻一次）。 */
     private var loggingOut = false
@@ -292,6 +293,7 @@ class AppMe(
             mutableIdentity.value = next
         }
         pushTracker.sync()
+        account?.sync()
     }
 
     /** 会话换代（会话失效、登出、换账号）：只能登录访问的页面移出导航栈（共性第 13 条的「移出导航栈」做法）。 */
@@ -319,11 +321,13 @@ class AppMe(
     fun attach(controller: NavController) {
         navController = controller
         tickets.attach(controller)
+        account?.attach(controller)
     }
 
     fun detach(controller: NavController) {
         if (navController === controller) navController = null
         tickets.detach(controller)
+        account?.detach(controller)
     }
 
     /**
@@ -341,6 +345,7 @@ class AppMe(
         if (pages.lastOrNull()?.destination?.hasRoute(HomeDestination::class) == false) deps.tab.leave()
         val ids = pages.map { it.id }.toSet()
         leaves.keys.filter { it !in ids }.forEach { id -> leaves.remove(id)?.invoke() }
+        account?.followBackStack(pages)
     }
 
     /** 页面登记出栈出口。 */
@@ -381,6 +386,9 @@ class AppMe(
         if (ticket == null || ticket != tickets.ticket() || !runCatching(stillValid).getOrDefault(false)) return
         val forced = updateCheck() == UpdateCheck.BELOW_MIN || topRoute() == RouteNames.FORCE_UPDATE
         if (Route10006.decide(topRoute().orEmpty(), forced) != Route10006.REPLACE) return
+        // APP-13a（G73 Android 追加）：注销页在 BR-ID-31 白名单里（封禁用户可申请注销、作废结果未知的键），页上表外读取（钱包摘要）得到的 10006
+        // 不把它换成 RiskNotice，页面按读取失败处理；TODO(N-37) 白名单是否补 getWalletSummary 待契约 / 规划
+        if (topRoute() == DELETE_ACCOUNT) return
         val owner = computeIdentity()
         if (!owner.member) return
         entered10006 = owner
@@ -455,6 +463,7 @@ class AppMe(
         gates.reset()
         deps.repo.reset()
         deps.tabScroll.reset()
+        account?.reset()
     }
 
     /** 切换环境（清理名单的一项）：会话级数据清空（设备级偏好不清，G29）。 */
@@ -466,6 +475,7 @@ class AppMe(
         gates.reset()
         deps.repo.reset()
         deps.tabScroll.reset()
+        account?.reset()
     }
 
     /**
@@ -527,11 +537,8 @@ class AppMe(
 
         override fun configData(): JsonObject? = store?.snapshots?.value?.data
 
-        override fun availableRoutes(): Set<String> =
-            Routes.all.values
-                .filter { spec -> spec.sinceAndroid?.let { AppVersion.atLeast(appVersion(), it) } == true }
-                .map { it.name }
-                .toSet()
+        // 路由可用性（APP-13a G01）：since 满足或 Debug 覆盖（Release 恒为空集），与守卫同一判定
+        override fun availableRoutes(): Set<String> = routing.availableRoutes()
 
         override fun earningsFlag(): Boolean? {
             val flags = (configData()?.get(FEATURES) as? JsonObject)?.get(FLAGS) as? JsonObject
@@ -643,6 +650,7 @@ class AppMe(
         const val HELP = "Help"
         const val AGREEMENT = "Agreement"
         const val RISK_NOTICE = "RiskNotice"
+        const val DELETE_ACCOUNT = "DeleteAccount"
         const val APPEAL = "Appeal"
         const val RECORD_CONSENT = "recordConsent"
         const val ME_SESSION_CLEANER = "me_session"

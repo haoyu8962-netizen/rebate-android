@@ -312,7 +312,7 @@ class RiskNoticeConfig(
 /**
  * 封禁 / 冻结说明（设计稿 RiskNoticeBanned、RiskNoticeBannedAppealing、RiskNoticeBannedUpheld、RiskNoticeFrozen、
  * RiskNoticeFrozenAppealing；WalletRiskFrozen 的落点）。
- * banned 版式没有返回（系统返回被吞），底部「联系客服 | 退出登录」（注销按 G30 不显示）；frozen 有返回。
+ * banned 版式没有返回（系统返回被吞），底部「联系客服 | 退出登录」（注销按 G30 不显示；APP-13a：按路由可用性显示，G01）；frozen 有返回。
  */
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 @Composable
@@ -411,6 +411,7 @@ private fun RiskFooter(
         LinkText(texts.text("risk.contact_cs"), MeTags.RISK_CS, controller::contactCs)
         Text(text = "|", style = CouliTypography.footnote, color = CouliColors.borderControl)
         LinkText(texts.text("risk.logout"), MeTags.RISK_LOGOUT, controller::askLogout)
+        DeleteAccountLink(AccountTags.RISK_DELETE)
     }
 }
 

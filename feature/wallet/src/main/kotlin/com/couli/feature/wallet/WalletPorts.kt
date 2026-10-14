@@ -12,6 +12,9 @@ import com.couli.core.wallet.WalletGates
 import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.core.wallet.WalletTexts
+import com.couli.core.wallet.stepup.SmsSlotKey
+import com.couli.core.wallet.stepup.StepUpDeps
+import com.couli.core.wallet.stepup.StepUpEnv
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -95,13 +98,8 @@ interface LaborBackend {
  * 隔离。
  */
 @Suppress("TooManyFunctions") // 每项能力一个入口
-interface WalletEnv {
+interface WalletEnv : StepUpEnv {
     fun loggedIn(): Boolean
-
-    fun sessionEpoch(): Long
-
-    /** 当前有效会话的账号（会话读不出为 null）。 */
-    fun account(): String?
 
     /** /v1/config 的 data（生效配置：当前 → LKG → 包内）。 */
     fun configData(): JsonObject?
@@ -131,14 +129,8 @@ interface WalletEnv {
     /** 经 App 写剪贴板的唯一入口（APP-07 ClipboardWriter：先记自写 hash 并确认落盘，记不下就不写）；返回是否写入。 */
     fun copy(text: String): Boolean
 
-    /** 10405：强制进入已有的强更分流（服务端已判定）。 */
-    fun forceUpdate()
-
     /** 【联系客服】/【联系客服申诉】：统一客服出口（APP-12 brief §2.9；App 接 AppMe）。没接时经 Router 打开帮助中心。 */
     fun contactService(fromRoute: String) = open(WalletRoutes.HELP, JsonObject(emptyMap()))
-
-    /** 二次验证发码用的手机号（G31）：本机有当前账号、并且绑定了账号归属的号码才给；没有为 null（不编造，不让用户另填）。 */
-    fun stepUpPhone(account: String): String?
 
     /**
      * 钱包摘要需要刷新（提交成功、放弃得到 completed 成功，G19）。[account]、[epoch] 是共享结算已核对过的点击时会话（APP-09 共性第 61 条，Android
@@ -157,9 +149,6 @@ interface WalletEnv {
      * （共性第 50 条）：只出栈它本身，且它必须是栈顶。
      */
     fun payoutSaved(entryId: String?): Boolean = false
-
-    /** 二次验证、单独同意等敏感浮层出现 / 关闭（剪贴板等迟到结果只丢弃，APP-07 第 4 条）。 */
-    fun sensitiveOverlay(showing: Boolean) = Unit
 }
 
 /** App 建一份、各页共用的依赖。 */
@@ -191,28 +180,15 @@ class WalletDeps(
      * （禁用期、发码倒计时、step-up token、钱包刷新标记、未决记录通知）不随页面 / ViewModel 的作用域取消而丢失；页面只按自己是否仍有效更新界面。
      */
     val service: kotlinx.coroutines.CoroutineScope,
-)
-
-/**
- * 表单与渲染快照所属的账号与登录世代（APP-09 共性第 52 条，Android R3-01）：页面建立表单（进入、会话换代后重建）时绑定，渲染时随快照交给按钮回调；
- * 提交、保存、确认、放弃、实名提交、劳务签署在生成键、读取 step-up token 之前核对它仍是当前会话，并把同一身份交给 [SensitiveFlow] 与网络层
- * （ApiCall.expectedAccount、PendingTarget）。不取「点击执行时的当前会话」，也不依赖稍后才执行的会话清空通知。
- */
-data class FormOwner(
-    val account: String?,
-    val epoch: Long,
 ) {
-    /** 表单所属的会话仍是当前会话（账号可读且一致、世代相同；同一账号重新登录也算换代）。 */
-    fun current(env: WalletEnv): Boolean = account != null && env.sessionEpoch() == epoch && env.account() == account
-
-    companion object {
-        /**
-         * 构造（或会话换代通知里重建）表单、页面执行器时**一次性**取得固定身份（APP-09 共性第 65 条，Android RC-06）：只允许在这两个时刻调用；
-         * 恢复的数据（金额、输入）要与这份身份成对使用，之后对当前会话的读取只用于和它比较（[current]），不再读取当前会话来赋值或绑定。
-         */
-        fun of(env: WalletEnv): FormOwner = FormOwner(env.account(), env.sessionEpoch())
+    /** 二次验证面板的依赖（同一份发码截止时间、token 缓存与发码 / 验证闸门；APP-13a 挪到 core:wallet 共用）。 */
+    val stepUpDeps: StepUpDeps by lazy {
+        StepUpDeps(api, env, gates.sms, gates.verify, sms, tokens, clock, service, texts)
     }
 }
+
+/** 表单与渲染快照所属的账号与登录世代（APP-09 共性第 52、65 条；挪到 core:wallet 与「我的」共用）。 */
+typealias FormOwner = com.couli.core.wallet.stepup.FormOwner
 
 /**
  * 钱包摘要的失效通知（APP-09 共性第 53 条，Android R3-02，BR-WDR-04、G19）：提现成功（含放弃得到 completed 成功）的共享结算按点击时的会话归属发一次
@@ -254,76 +230,14 @@ class PendingSignals {
     }
 }
 
-/**
- * 二次验证发码的截止时间与在途占用（APP-09 共性第 6、17 条，APP-05a 第 5、20、21 条）：按账号、规范化号码与 action 隔离；重开面板恢复倒计时，
- * 每次实际发送前检查同一截止时间；同一槽位同时只允许一个发码请求在途（防连点与跨面板交错）。只在内存（进程内），会话换代时清空。
- */
-class SmsDeadlines {
-    /** 一个发码槽位：账号、号码（只取数字）、action。 */
+/** 二次验证发码的截止时间、限流与在途占用（按账号 + 号码 + action；挪到 core:wallet 与「我的」共用）。保留 APP-09 的名字与 [Slot]。 */
+class SmsDeadlines : com.couli.core.wallet.stepup.SmsDeadlines() {
+    /** 一个发码槽位：账号、号码（只取数字）、action（与核心的槽位同值即同一槽位）。 */
     data class Slot(
-        val account: String,
-        val phone: String,
-        val action: String,
-    ) {
-        internal val id: String get() = "$account|${phone.filter(Char::isDigit)}|$action"
-    }
-
-    private val until = mutableMapOf<String, Long>()
-
-    /** 在途占用：槽位 → 占用它的那次请求（[acquire] 的票据）；释放只认同一张票据（共性第 40 条）。 */
-    private val sending = mutableMapOf<String, Long>()
-    private var tickets = 0L
-    private val version = kotlinx.coroutines.flow.MutableStateFlow(0L)
-
-    /** 截止时间或在途占用变化（等别的面板发完）。 */
-    val changes: kotlinx.coroutines.flow.StateFlow<Long> = version
-
-    @Synchronized
-    fun remaining(
-        slot: Slot,
-        now: Long,
-    ): Long = ((until[slot.id] ?: 0L) - now).coerceAtLeast(0L)
-
-    @Synchronized
-    fun start(
-        slot: Slot,
-        deadline: Long,
-    ) {
-        until[slot.id] = deadline
-        version.value += 1
-    }
-
-    /** 占用槽位：返回这次请求的票据；已有在途发码返回 null。 */
-    @Synchronized
-    fun acquire(slot: Slot): Long? {
-        if (slot.id in sending) return null
-        val ticket = ++tickets
-        sending[slot.id] = ticket
-        version.value += 1
-        return ticket
-    }
-
-    /** 释放本次请求的占用：槽位已被清空（会话换代）或换成别的请求占用的，不动它。 */
-    @Synchronized
-    fun release(
-        slot: Slot,
-        ticket: Long,
-    ) {
-        if (sending[slot.id] == ticket) {
-            sending.remove(slot.id)
-            version.value += 1
-        }
-    }
-
-    @Synchronized
-    fun busy(slot: Slot): Boolean = slot.id in sending
-
-    @Synchronized
-    fun clear() {
-        until.clear()
-        sending.clear()
-        version.value += 1
-    }
+        override val account: String,
+        override val phone: String,
+        override val action: String,
+    ) : SmsSlotKey
 }
 
 /** 页面与 App 之间的接线（每个页面实例一份）：出栈的同步出口、会话换代、回到前台。 */

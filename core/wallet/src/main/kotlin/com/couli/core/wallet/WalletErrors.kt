@@ -66,8 +66,14 @@ object WalletErrors {
                         WalletError(WalletError.RETRY_AFTER, "error.42901", disableMillis = ResultSignals.disableMillis(result))
                     }
 
-                    result.effect.kind == ErrorEffectKind.FORCE_UPDATE || code == 10405 -> {
+                    // 10405 只消费网络层已确定的 Effect（APP-13a R2-02，共性第 12、37 条）：FORCE_UPDATE 才进强更；
+                    // REFRESH_ONLY（遗留受限令牌已刷新）与刷新失败清会话沿用网络层结论，按可重试的读取失败显示，不按码重判强更
+                    result.effect.kind == ErrorEffectKind.FORCE_UPDATE -> {
                         WalletError(WalletError.FORCE_UPDATE, "error.10405")
+                    }
+
+                    code == 10405 -> {
+                        WalletError(WalletError.OTHER, NETWORK_KEY)
                     }
 
                     code == NOT_FOUND -> {

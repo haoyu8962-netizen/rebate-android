@@ -2,7 +2,14 @@ package com.couli.core.wallet
 
 import com.couli.core.clientcore.AtomicTextFile
 import com.couli.core.router.AppVersion
+import com.couli.core.router.EntryGuard
+import com.couli.core.router.GuardState
+import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteParams
+import com.couli.core.router.RouteRequest
+import com.couli.core.router.RouteSource
+import com.couli.core.router.SessionState
+import com.couli.core.router.UpdateState
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -40,20 +47,47 @@ object FundRouteParams {
         route: String,
         params: JsonObject,
     ): Filtered =
-        if (route in RouteParams.dropAllParamsRoutes) {
-            Filtered(JsonObject(emptyMap()), params.size, EVENT.takeIf { params.isNotEmpty() })
-        } else {
-            Filtered(params, 0, null)
+        when (route) {
+            in RouteParams.dropAllParamsRoutes -> Filtered(JsonObject(emptyMap()), params.size, EVENT.takeIf { params.isNotEmpty() })
+
+            // DeleteAccount（APP-13a G21）：参数全部丢弃、照常打开，不记 route_params_dropped（events.json 的 route 枚举里没有它）
+            in RouteParams.silentDropRoutes -> Filtered(JsonObject(emptyMap()), params.size, null)
+
+            else -> Filtered(params, 0, null)
         }
 
-    /** 向量接线。 */
+    /**
+     * 向量接线。[opened]、openedParams、dropped 取自真实 Router 守卫（[EntryGuard.decide]，App 内来源、已同意、版本正常、已绑手机并实名；
+     * since=null 的路由按 Debug 路由可用性覆盖放行，G43）的结论；事件只按 [filtered]。
+     */
     fun filter(
         route: String,
         params: JsonObject,
     ): JsonObject {
         val view = filtered(route, params)
-        return jsonObj("openedParams" to view.openedParams, "dropped" to JsonPrimitive(view.dropped), "event" to view.event.json())
+        val decision = EntryGuard.decide(RouteRequest(route, params, RouteSource.IN_APP), probeState(route))
+        val opened = decision.opensPage
+        return jsonObj(
+            "opened" to JsonPrimitive(opened),
+            "openedParams" to (if (opened) decision.params else view.openedParams),
+            "dropped" to JsonPrimitive(if (opened) decision.paramsDropped else view.dropped),
+            "event" to view.event.json(),
+        )
     }
+
+    private fun probeState(route: String): GuardState =
+        GuardState(
+            PrivacyState.CONSENTED,
+            UpdateState.OK,
+            SessionState.PHONE_BOUND,
+            environmentSettled = true,
+            appVersion = PROBE_VERSION,
+            isDebugBuild = false,
+            realnameVerified = true,
+            availabilityOverrides = setOf(route),
+        )
+
+    private const val PROBE_VERSION = "1.0.0"
 }
 
 /** 一份缓存的钱包摘要与它的成功获取时刻。 */

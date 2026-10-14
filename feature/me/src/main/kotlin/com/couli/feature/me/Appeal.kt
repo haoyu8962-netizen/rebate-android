@@ -663,6 +663,7 @@ private fun AppealResultBody(
                 if (!frozen) {
                     Text(text = "|", style = CouliTypography.footnote, color = CouliColors.borderControl)
                     LinkText(texts.text("risk.logout"), MeTags.APPEAL_LOGOUT, controller::askLogout)
+                    DeleteAccountLink(AccountTags.APPEAL_DELETE)
                 }
             }
         }

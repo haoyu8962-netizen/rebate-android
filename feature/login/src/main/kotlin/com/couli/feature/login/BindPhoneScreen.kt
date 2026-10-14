@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,7 @@ import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.couliCard
 import com.couli.core.network.ResultSignals
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -103,6 +105,8 @@ class BindPhonePageActions(
     val onCustomerService: () -> Unit = {},
     /** 经 Router 打开页面（10007 stage=cooling → DeleteAccount，APP-05b 共性第 10 条）。 */
     val onOpenRoute: (route: String) -> Unit = {},
+    /** 绑定成功、原页面许可仍有效（APP-13a R1-05）：App 只出栈这一个绑手机页，再完成前置、恢复待办。 */
+    val onBound: () -> Unit = {},
 )
 
 /**
@@ -126,8 +130,22 @@ enum class BindPhoneDialog {
     RISK,
 }
 
-/** 绑手机页的界面状态。手机号与验证码写进 SavedStateHandle（进程被回收后恢复草稿，APP-06a 共性第 20 条）。 */
+/**
+ * 绑手机页的一个表单实例（APP-13a R1-01、R1-02、R2-01，共性第 6、16、36 条）：页面实例号 + 构造时一次取得的完整固定身份（账号、登录世代、作用域、
+ * 隐私 / 环境世代）。渲染时作为普通值被回调捕获，执行时只与 ViewModel 当前的实例比较；会话换代换新实例（表单子树按实例号重建），旧回调一律不受理。
+ */
+class BindPhoneBinding internal constructor(
+    val instance: Long,
+    val owner: BindPhoneOwner,
+)
+
+/**
+ * 绑手机页的界面状态。手机号与验证码只在绑定固定身份的内存里（[binding] 的这一份状态），不进 SavedStateHandle 等系统保存状态（APP-13a R1-01、共性第 29 条）：
+ * 换代或进程恢复后清空，恢复页面只展示未决记录里的脱敏摘要（未决原体只在 SecurePendingKeyBackend）。
+ */
 data class BindPhoneUiState(
+    /** 这份状态所属的表单实例（渲染时取出、回调捕获）。 */
+    val binding: BindPhoneBinding,
     val phone: String = "",
     val code: String = "",
     val phoneError: String? = null,
@@ -135,7 +153,7 @@ data class BindPhoneUiState(
     /** 字段错误的序号：每次新的字段错误加 1（读屏即时播报一次、焦点移到错误提示，APP-05b 共性第 6 条）。 */
     val errorSeq: Int = 0,
     val sending: Boolean = false,
-    val binding: Boolean = false,
+    val submitting: Boolean = false,
     val resendSec: Int = 0,
     val sendLimitedSec: Int = 0,
     val bindLimitedSec: Int = 0,
@@ -146,67 +164,372 @@ data class BindPhoneUiState(
     /** 读屏播报（发码成功播报一次脱敏的发送对象；倒计时结束、可重发时播报一次；APP-05b 共性第 11 条）。 */
     val announce: String? = null,
     val announceId: Int = 0,
+    /** APP-13a G07：结果未知的上一次提交（待确认卡）；null = 没有。 */
+    val pendingKey: String? = null,
+    val pendingMasked: String = "",
+    val pendingCreatedAt: Long = 0L,
+    val pendingBusy: Boolean = false,
+    val pendingNotice: String? = null,
+    /**
+     * 待确认的确认 / 放弃返回前置码（10001 / 10004 / 10005）而原页面许可已失效时保留的补办入口（R2-07，共性第 41 条）：属于这个表单实例，点击经 Router 打开；
+     * 补办回来记录仍是待确认，不自动提交。
+     */
+    val pendingGuide: String? = null,
+    /** 共享 phoneGate（bindPhone 的提交、确认、放弃共用的 42901 截止时间）未到期：【绑定】与待确认的确认、放弃、二次确认都置灰（R1-06、共性第 8 条）。 */
+    val pendingLimited: Boolean = false,
+    /** 放弃二次确认框的一次性编号（0 = 没有）。 */
+    val abandonDialog: Int = 0,
+    /** 未决记录读不出（安全存储故障）：【绑定】置灰（lessons 38）。 */
+    val pendingUnreadable: Boolean = false,
 )
 
 /** 绑手机页的状态机（BindPhone / BindPhoneMerge；APP-05b）。网络与会话都经 [BindPhoneService]。 */
 @Suppress("TooManyFunctions")
 class BindPhoneViewModel(
     initial: BindPhonePageConfig,
-    private val saved: SavedStateHandle,
+    saved: SavedStateHandle,
 ) : ViewModel() {
     private var config = initial
+
+    /** 此刻（待确认卡「提交时间」按 BR-TEXT-11 相对现在格式化）。 */
+    internal fun now(): Long = config.clock()
+
     private val service: BindPhoneService get() = config.service
     private val texts: LoginTexts get() = config.texts
     private val bindLimit = LoginRateLimits()
 
-    private val mutableState =
-        MutableStateFlow(BindPhoneUiState(phone = saved[KEY_PHONE] ?: "", code = saved[KEY_CODE] ?: ""))
+    private var instances = 0L
+
+    /** 当前表单实例：构造时一次取得固定身份；会话换代后换新实例、清空输入与倒计时（共性第 6、16 条）。 */
+    private var binding = BindPhoneBinding(++instances, initial.service.owner())
+
+    private val mutableState = MutableStateFlow(BindPhoneUiState(binding = binding))
     val state: StateFlow<BindPhoneUiState> = mutableState.asStateFlow()
 
+    private var dialogIds = 0
+    private var pendingBusyLocal = false
+
+    /** 页面可见性与可见世代（页面许可，共性第 11、23 条）：异步结果导航前核对仍可见、且发起后没有被覆盖或进后台。 */
+    private var visible = false
+    private var viewGen = 0L
+    private var cleared = false
+
+    /** 按固定身份订阅的共享未决通知（R1-04）；换代时换订阅，页面清除时随 viewModelScope 取消。 */
+    private var pendingWatch: Job? = null
+
+    /** 会话同步出口的订阅（R2-01）：真实会话、作用域、隐私、环境切换时在同一条主线程消息里换代；页面清除时取消。 */
+    private val sessionWatch: () -> Unit = initial.service.addSessionListener { syncOwner() }
+
     init {
+        // R1-01：手机号、验证码不进系统保存状态；清掉旧版本可能留下的原文
+        saved.remove<String>(KEY_PHONE)
+        saved.remove<String>(KEY_CODE)
         viewModelScope.launch {
             while (isActive) {
+                syncOwner()
                 tick()
                 delay(TICK_MILLIS)
             }
         }
+        // R1-06：订阅共享 phoneGate，限流期间待确认按钮与【绑定】置灰，截止时间到期自动恢复
+        service.shared?.phoneGate?.let { gate ->
+            viewModelScope.launch { gate.blocked.collect { blocked -> mutableState.update { it.copy(pendingLimited = blocked) } } }
+        }
+        watchPending(binding)
+    }
+
+    override fun onCleared() {
+        cleared = true
+        pendingWatch = null
+        sessionWatch()
     }
 
     fun bind(latest: BindPhonePageConfig) {
         config = latest
     }
 
-    /** 手机号输入：原样保存（不先删字符，APP-05a 共性第 15 条）；换号作废在途请求与并号凭据。 */
-    fun onPhoneChange(raw: String) {
+    /** 渲染时捕获的实例仍是本页当前实例、页面没被清除、固定身份仍是当前会话（只比较，不赋值）。 */
+    private fun live(b: BindPhoneBinding): Boolean = !cleared && b === binding && service.owns(b.owner)
+
+    /** 页面许可（导航、打开别的页面）：[live] 且页面可见、发起后没有被覆盖或进后台（[permit] 是发起时的可见世代）。 */
+    private fun navigable(
+        b: BindPhoneBinding,
+        permit: Long,
+    ): Boolean = live(b) && visible && viewGen == permit
+
+    /** 手机号输入：原样保存（不先删字符，APP-05a 共性第 15 条）；换号作废在途请求的页面结果与并号凭据。 */
+    fun onPhoneChange(
+        raw: String,
+        b: BindPhoneBinding = binding,
+    ) {
+        if (!live(b)) return
         if (PhoneNumber.normalize(raw).normalized != PhoneNumber.normalize(mutableState.value.phone).normalized) service.invalidate()
-        saved[KEY_PHONE] = raw
         mutableState.update { it.copy(phone = raw, phoneError = null) }
         // 共性第 11、17 条：换号、清空只按新号码重算倒计时，不触发结束播报；切回仍在倒计时的原号码时重新跟踪它真实的截止时间
         tick(announceEnd = false)
     }
 
-    fun onClearPhone() = onPhoneChange("")
+    fun onClearPhone(b: BindPhoneBinding = binding) = onPhoneChange("", b)
 
-    fun onCodeChange(raw: String) {
+    fun onCodeChange(
+        raw: String,
+        b: BindPhoneBinding = binding,
+    ) {
+        if (!live(b)) return
         val code = CodeInput.sanitize(raw)
-        saved[KEY_CODE] = code
         mutableState.update { it.copy(code = code, codeError = null) }
     }
 
-    fun onPageVisible() = tick()
+    fun onPageVisible() {
+        if (!visible) viewGen += 1
+        visible = true
+        syncOwner()
+        tick()
+        refreshPending()
+    }
 
-    fun onGetCode() {
-        if (service.busy) return
-        val phone = mutableState.value.phone
-        mutableState.update { it.copy(sending = true) }
-        viewModelScope.launch {
-            val outcome = service.sendCode(phone)
-            mutableState.update { it.copy(sending = false) }
-            onSent(outcome)
+    /** 页面被覆盖、进后台：可见世代推进，之前发起的请求的结果不再导航（共性第 23 条）。 */
+    fun onPageHidden() {
+        if (visible) viewGen += 1
+        visible = false
+    }
+
+    /**
+     * 会话换代（另一账号登录、退出后重新登录、同账号刷新改变作用域、撤回同意、切换环境）：作废在途结果的页面落地、清空输入、倒计时与待确认卡，换新的表单实例（按新身份
+     * 重建，共性第 6、36 条）。旧回调捕获的旧实例之后一律不受理。由会话同步出口同步调用（R2-01）；回到前台与计时检查只作兜底。
+     */
+    private fun syncOwner() {
+        val now = service.owner()
+        if (now == binding.owner || cleared) return
+        service.invalidate()
+        binding = BindPhoneBinding(++instances, now)
+        pendingBusyLocal = false
+        watched = null
+        val previous = mutableState.value
+        mutableState.value =
+            BindPhoneUiState(
+                binding = binding,
+                toastId = previous.toastId,
+                announceId = previous.announceId,
+                errorSeq = previous.errorSeq,
+                pendingLimited = service.shared?.phoneGate?.active == true,
+            )
+        watchPending(binding)
+    }
+
+    /** R1-04：按固定身份订阅共享未决通知；同账号的 bindPhone 结算（别处提交超时变 unknown、确认、放弃）后从存储刷新待确认卡。 */
+    private fun watchPending(b: BindPhoneBinding) {
+        pendingWatch?.cancel()
+        val shared = service.shared ?: return
+        val account = b.owner.account ?: return
+        pendingWatch =
+            viewModelScope.launch {
+                shared.pendingSignals.collect { settlement ->
+                    if (settlement.operationId == BindPhoneAction.BIND_OPERATION && settlement.account == account &&
+                        live(b)
+                    ) {
+                        refreshPending()
+                    }
+                }
+            }
+    }
+
+    /** 按本账号 bindPhone 的未决记录恢复待确认卡（进入、回前台、登录成功、共享通知；G07）。 */
+    @Suppress("ReturnCount") // 没有账号、不是本会话、读不出三个出口
+    fun refreshPending() {
+        val b = binding
+        val account = b.owner.account ?: return
+        if (!live(b)) return
+        val record =
+            try {
+                service.pendingCard(account)
+            } catch (
+                @Suppress("TooGenericExceptionCaught", "SwallowedException") error: Exception,
+            ) {
+                mutableState.update { it.copy(pendingUnreadable = true) }
+                return
+            }
+        mutableState.update {
+            if (record == null) {
+                it.copy(
+                    pendingKey = null,
+                    pendingNotice = null,
+                    pendingGuide = null,
+                    abandonDialog = 0,
+                    pendingUnreadable = false,
+                    pendingBusy = false,
+                )
+            } else {
+                it.copy(
+                    pendingKey = record.key,
+                    pendingMasked = record.summary,
+                    pendingCreatedAt = record.createdAtMillis,
+                    pendingBusy = record.stateRaw == com.couli.core.network.PendingKeyStore.IN_FLIGHT || pendingBusyLocal,
+                    pendingUnreadable = false,
+                )
+            }
         }
     }
 
-    private fun onSent(outcome: SendCodeOutcome) {
+    private fun gateActive(): Boolean = service.shared?.phoneGate?.active == true
+
+    /** 【确认上一次提交】（渲染时的键与表单实例）。 */
+    fun onConfirmPending(
+        key: String,
+        b: BindPhoneBinding,
+    ) = resolve(key, b, abandon = false)
+
+    /** 【放弃上一次提交】：先弹二次确认（一次性编号）；限流期间不弹（R1-06）。 */
+    fun onAskAbandon(
+        key: String,
+        b: BindPhoneBinding,
+    ) {
+        val current = mutableState.value
+        if (!live(b) || current.pendingKey != key || current.pendingBusy) return
+        if (gateActive()) {
+            mutableState.update { it.copy(pendingNotice = accountText(RETRY_LATER_KEY)) }
+            return
+        }
+        mutableState.update { it.copy(abandonDialog = ++dialogIds) }
+    }
+
+    fun onCancelAbandon(dialog: Int) {
+        if (mutableState.value.abandonDialog == dialog) mutableState.update { it.copy(abandonDialog = 0) }
+    }
+
+    /** 【确定放弃】：作废接口（action=phone_change）。 */
+    fun onAbandon(
+        dialog: Int,
+        b: BindPhoneBinding,
+    ) {
+        val current = mutableState.value
+        if (current.abandonDialog != dialog) return
+        mutableState.update { it.copy(abandonDialog = 0) }
+        current.pendingKey?.let { resolve(it, b, abandon = true) }
+    }
+
+    private fun resolve(
+        key: String,
+        b: BindPhoneBinding,
+        abandon: Boolean,
+    ) {
+        val current = mutableState.value
+        if (!live(b) || current.pendingKey != key || current.pendingBusy) return
+        if (gateActive()) {
+            mutableState.update { it.copy(pendingNotice = accountText(RETRY_LATER_KEY)) }
+            return
+        }
+        val permit = viewGen
+        pendingBusyLocal = true
+        mutableState.update { it.copy(pendingBusy = true, pendingNotice = null, pendingGuide = null) }
+        // 结果与共享结算在会话级任务里（离页不截断，R1-03、共性第 21 条）；页面只在原实例仍有效时落地，导航另核对页面许可（共性第 23 条）
+        viewModelScope.launch {
+            val outcome = service.resolvePending(key, b.owner, abandon)
+            if (!live(b)) return@launch
+            pendingBusyLocal = false
+            mutableState.update { it.copy(pendingBusy = false) }
+            onResolved(outcome, b, permit)
+        }
+    }
+
+    private fun onResolved(
+        outcome: com.couli.core.me.account.PhoneChangeOutcome?,
+        b: BindPhoneBinding,
+        permit: Long,
+    ) {
+        refreshPending()
+        if (outcome == null) {
+            mutableState.update { it.copy(pendingNotice = accountText(RETRY_LATER_KEY)) }
+            return
+        }
+        when (outcome.nextStateRaw) {
+            com.couli.core.me.account.PhoneChangeOutcome.DONE -> {
+                if (outcome.alreadyDone) toast(accountText(com.couli.core.me.account.AccountRaw.ALREADY_DONE_KEY))
+                // R1-05：出栈与恢复待办只在原页面许可仍有效时做（只出栈这一个页面，不按路由名找）
+                if (navigable(b, permit)) config.actions.onBound()
+            }
+
+            com.couli.core.me.account.PhoneChangeOutcome.STEP1 -> {
+                // 已放弃 / 20903：清空验证码，可以重新绑定
+                mutableState.update { it.copy(code = "") }
+                toast(accountText(outcome.textKey ?: com.couli.core.me.account.AccountRaw.ABANDONED_KEY))
+            }
+
+            com.couli.core.me.account.PhoneChangeOutcome.STEP2 -> {
+                // 键结束的业务错误（30411 等）：mergeable 沿用 APP-05b 并号确认，其余提示原错误
+                if (outcome.reason == "mergeable") {
+                    mutableState.update { it.copy(dialog = BindPhoneDialog.MERGE) }
+                } else {
+                    toast(accountText(outcome.errorKey ?: outcome.textKey ?: LoginService.GENERIC_KEY))
+                }
+            }
+
+            else -> {
+                // R2-08：待确认提示用统一错误格式化（正文 + 独立附加的 trace6），不只读 textKey
+                mutableState.update { it.copy(pendingNotice = outcome.textKey?.let { key -> pendingMessage(key, outcome.trace6) }) }
+                outcome.guideRoute?.let { route -> guidePending(route, b, permit) }
+            }
+        }
+    }
+
+    /**
+     * R2-07：待确认的确认 / 放弃得到前置码（10001 → Login、10004 → 协议等）的补办引导：原页面许可有效经 Router 打开；否则保留绑定本实例的手动入口。
+     * 补办回来记录仍是待确认，不自动提交。
+     */
+    private fun guidePending(
+        route: String,
+        b: BindPhoneBinding,
+        permit: Long,
+    ) {
+        if (navigable(b, permit)) {
+            config.actions.onOpenRoute(route)
+        } else {
+            mutableState.update { it.copy(pendingGuide = route) }
+        }
+    }
+
+    /** 待确认卡的补办入口（R2-07；渲染时的表单实例）：经 Router 打开，记录保持待确认。 */
+    fun onPendingGuide(b: BindPhoneBinding) {
+        if (!live(b)) return
+        val route = mutableState.value.pendingGuide ?: return
+        mutableState.update { it.copy(pendingGuide = null) }
+        config.actions.onOpenRoute(route)
+    }
+
+    /** 待确认提示的统一格式化（R2-08，与轻提示同一函数）：文案（{trace6} 占位符填上）+ 独立附加的 trace_id 末 6 位；没有 trace 原样。 */
+    private fun pendingMessage(
+        key: String,
+        trace6: String?,
+    ): String {
+        val trace = trace6.orEmpty()
+        val drafts = com.couli.core.me.account.AccountDraftTexts
+        val text = if (drafts.has(key)) drafts.format(key, mapOf("trace6" to trace)) else texts.format(key, mapOf("trace6" to trace))
+        return ResultSignals.withTrace6(text, trace)
+    }
+
+    private fun accountText(key: String): String =
+        com.couli.core.me.account.AccountDraftTexts
+            .text(key)
+            .ifEmpty { texts.text(key) }
+
+    fun onGetCode(b: BindPhoneBinding = binding) {
+        if (!live(b) || service.busy) return
+        val phone = mutableState.value.phone
+        val permit = viewGen
+        mutableState.update { it.copy(sending = true) }
+        viewModelScope.launch {
+            val outcome = service.sendCode(phone)
+            if (!live(b)) return@launch
+            mutableState.update { it.copy(sending = false) }
+            onSent(outcome, b, permit)
+        }
+    }
+
+    private fun onSent(
+        outcome: SendCodeOutcome,
+        b: BindPhoneBinding,
+        permit: Long,
+    ) {
         tick()
         when (outcome.stateRaw) {
             SmsCountdown.STATE_SENT -> {
@@ -218,9 +541,9 @@ class BindPhoneViewModel(
                 Unit
             }
 
-            // 共性第 10、16 条：发码收到 10007 stage=cooling → 经 Router 打开注销进度页（不弹提示）
+            // 共性第 10、16 条：发码收到 10007 stage=cooling → 经 Router 打开注销进度页（不弹提示）；只在页面许可仍有效时
             BindOutcome.OPEN_ROUTE -> {
-                outcome.route?.let(config.actions.onOpenRoute)
+                if (navigable(b, permit)) outcome.route?.let(config.actions.onOpenRoute)
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {
@@ -238,26 +561,44 @@ class BindPhoneViewModel(
         }
     }
 
-    fun onSubmit() {
+    fun onSubmit(b: BindPhoneBinding = binding) {
         val current = mutableState.value
-        if (service.busy || bindLimit.loginBlocked(config.clock())) return
-        mutableState.update { it.copy(binding = true, codeError = null, phoneError = null) }
+        if (!live(b) || current.pendingKey != null || current.pendingUnreadable) return
+        if (service.busy || bindLimit.loginBlocked(config.clock()) || gateActive()) return
+        val permit = viewGen
+        mutableState.update { it.copy(submitting = true, codeError = null, phoneError = null) }
         viewModelScope.launch {
-            val outcome = service.bind(current.phone, current.code)
-            mutableState.update { it.copy(binding = false) }
-            onBound(outcome)
+            // 只用渲染时实例的固定身份发出（R1-02）；发送与共享结算在会话级任务里（R1-03）
+            val outcome = service.bind(current.phone, current.code, b.owner)
+            if (!live(b)) return@launch
+            mutableState.update { it.copy(submitting = false) }
+            onBound(outcome, b, permit)
         }
     }
 
     @Suppress("CyclomaticComplexMethod")
-    private fun onBound(outcome: BindOutcome) {
+    private fun onBound(
+        outcome: BindOutcome,
+        b: BindPhoneBinding,
+        permit: Long,
+    ) {
         when (outcome.actionRaw) {
-            BindPhoneAction.DONE, BindOutcome.STALE, BindOutcome.BUSY, BindOutcome.CODE_INCOMPLETE -> {
+            // R1-05：绑定成功的出栈与恢复待办只在原页面许可仍有效时做
+            BindPhoneAction.DONE -> {
+                if (navigable(b, permit)) config.actions.onBound()
+            }
+
+            BindOutcome.STALE, BindOutcome.BUSY, BindOutcome.CODE_INCOMPLETE -> {
                 Unit
             }
 
+            // G07：结果未知 → 待确认卡（不换键、不自动重发）
+            BindOutcome.PENDING -> {
+                refreshPending()
+            }
+
             BindOutcome.OPEN_ROUTE -> {
-                outcome.route?.let(config.actions.onOpenRoute)
+                if (navigable(b, permit)) outcome.route?.let(config.actions.onOpenRoute)
             }
 
             BindPhoneAction.MERGE_CONFIRM -> {
@@ -382,6 +723,7 @@ class BindPhoneViewModel(
     ): String = ResultSignals.withTrace6(texts.format(key ?: LoginService.GENERIC_KEY, mapOf("trace6" to trace6)), trace6)
 
     private companion object {
+        const val RETRY_LATER_KEY = "pending_confirm.retry_later"
         const val KEY_PHONE = "bind_phone.phone"
         const val KEY_CODE = "bind_phone.code"
         const val TICK_MILLIS = 1000L
@@ -407,8 +749,26 @@ fun BindPhoneScreen(
     BackHandler { model.onBack() }
     LifecycleResumeEffect(model) {
         model.onPageVisible()
-        onPauseOrDispose { }
+        onPauseOrDispose { model.onPageHidden() }
     }
+    // 渲染时取出的表单实例（普通值，回调捕获它）；会话换代换新实例，整个表单子树按实例号重建（APP-13a R1-02）
+    val binding = state.binding
+    key(binding.instance) { BindPhoneBody(model, state, binding, texts, modifier) }
+    val view = LocalView.current
+    LaunchedEffect(state.announceId) {
+        @Suppress("DEPRECATION") // 与 CouliToast 同：需要立即读出
+        state.announce?.let(view::announceForAccessibility)
+    }
+}
+
+@Composable
+private fun BindPhoneBody(
+    model: BindPhoneViewModel,
+    state: BindPhoneUiState,
+    binding: BindPhoneBinding,
+    texts: LoginTexts,
+    modifier: Modifier,
+) {
     Box(
         modifier =
             modifier
@@ -437,6 +797,7 @@ fun BindPhoneScreen(
                         .padding(top = CouliSpacing.space2, bottom = CouliSpacing.space4),
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
+                if (state.pendingKey != null) BindPendingCard(model, state, binding)
                 InfoStrip(texts.text("invite.bind_phone_guide.body"))
                 Column(
                     modifier =
@@ -446,15 +807,17 @@ fun BindPhoneScreen(
                             .padding(CouliSpacing.space4),
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
                 ) {
-                    BindPhoneField(model, state, texts)
-                    BindCodeField(model, state, texts)
+                    BindPhoneField(model, state, binding, texts)
+                    BindCodeField(model, state, binding, texts)
                 }
             }
             CouliButton(
                 text = texts.text("bind_phone.submit"),
-                onClick = model::onSubmit,
-                enabled = PhoneNumber.normalize(state.phone).valid && CodeInput.accept(state.code).complete && state.bindLimitedSec == 0,
-                loading = state.binding,
+                onClick = { model.onSubmit(binding) },
+                enabled =
+                    PhoneNumber.normalize(state.phone).valid && CodeInput.accept(state.code).complete && state.bindLimitedSec == 0 &&
+                        state.pendingKey == null && !state.pendingUnreadable && !state.pendingLimited,
+                loading = state.submitting,
                 modifier =
                     Modifier
                         .fillMaxWidth()
@@ -480,11 +843,7 @@ fun BindPhoneScreen(
         }
     }
     BindPhoneDialogs(model, state, texts)
-    val view = LocalView.current
-    LaunchedEffect(state.announceId) {
-        @Suppress("DEPRECATION") // 与 CouliToast 同：需要立即读出
-        state.announce?.let(view::announceForAccessibility)
-    }
+    BindAbandonDialog(model, state, binding)
 }
 
 @Composable
@@ -541,6 +900,7 @@ private fun InfoStrip(text: String) {
 private fun BindPhoneField(
     model: BindPhoneViewModel,
     state: BindPhoneUiState,
+    binding: BindPhoneBinding,
     texts: LoginTexts,
 ) {
     val label = texts.text("login.phone.label")
@@ -567,7 +927,7 @@ private fun BindPhoneField(
                 }
                 BasicTextField(
                     value = state.phone,
-                    onValueChange = model::onPhoneChange,
+                    onValueChange = { model.onPhoneChange(it, binding) },
                     singleLine = true,
                     textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
                     cursorBrush = SolidColor(CouliColors.textPrimary),
@@ -588,7 +948,7 @@ private fun BindPhoneField(
                 CouliIconButton(
                     icon = CouliIcons.close,
                     label = texts.text("login.phone.clear"),
-                    onClick = model::onClearPhone,
+                    onClick = { model.onClearPhone(binding) },
                     tint = CouliColors.textSecondary,
                     iconSize = CouliSizes.iconSmall,
                     modifier = Modifier.testTag(BindPhoneTags.PHONE_CLEAR),
@@ -603,6 +963,7 @@ private fun BindPhoneField(
 private fun BindCodeField(
     model: BindPhoneViewModel,
     state: BindPhoneUiState,
+    binding: BindPhoneBinding,
     texts: LoginTexts,
 ) {
     val label = texts.text("login.code.label")
@@ -642,7 +1003,7 @@ private fun BindCodeField(
                 }
                 BasicTextField(
                     value = state.code,
-                    onValueChange = model::onCodeChange,
+                    onValueChange = { model.onCodeChange(it, binding) },
                     singleLine = true,
                     textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
                     cursorBrush = SolidColor(CouliColors.textPrimary),
@@ -675,7 +1036,7 @@ private fun BindCodeField(
                                 indication = null,
                                 enabled = enabled,
                                 role = Role.Button,
-                                onClick = model::onGetCode,
+                                onClick = { model.onGetCode(binding) },
                             ).padding(horizontal = CouliSpacing.space3)
                             .testTag(BindPhoneTags.GET_CODE),
                     contentAlignment = Alignment.Center,
@@ -844,3 +1205,151 @@ private const val INPUT_MIN_HEIGHT = 52
 private const val CODE_MIN_WIDTH = 96
 private const val CONTENT_MAX_WIDTH = 480
 private const val ERROR_FOCUS_DELAY_MILLIS = 600L
+
+/** 测试标记（APP-13a BindPhone 待确认，G07）。 */
+object BindPhonePendingTags {
+    const val CARD = "bind_phone_pending_card"
+    const val SUBMITTED_AT = "bind_phone_pending_submitted_at"
+    const val CONFIRM = "bind_phone_pending_confirm"
+    const val ABANDON = "bind_phone_pending_abandon"
+    const val NOTICE = "bind_phone_pending_notice"
+    const val ABANDON_OK = "bind_phone_abandon_ok"
+    const val ABANDON_CANCEL = "bind_phone_abandon_cancel"
+    const val GUIDE = "bind_phone_pending_guide"
+}
+
+/** 补办入口的按钮文案（与注销页手动入口同一口径：Login → 去登录、BindPhone → 去绑定，其余 → 重试）。 */
+private fun pendingGuideLabel(route: String): String =
+    when (route) {
+        "Login" -> "settings.go_login"
+        "BindPhone" -> "deletion.bind_phone"
+        else -> "me.retry"
+    }
+
+/**
+ * BindPhone 首次绑定的待确认卡（G07：版式照 PhoneChangePendingConfirm，文案共用 pending_confirm.phone_change.*，{phone} 为本机脱敏的提交号码）：alert 角色；
+ * 【放弃上一次提交】【确认上一次提交】在途或共享 phoneGate 限流时都置灰（R1-06）。回调捕获渲染时的键与表单实例。
+ */
+@Composable
+private fun BindPendingCard(
+    model: BindPhoneViewModel,
+    state: BindPhoneUiState,
+    binding: BindPhoneBinding,
+) {
+    val key = state.pendingKey ?: return
+    val texts = com.couli.core.me.account.AccountDraftTexts
+    val usable = !state.pendingBusy && !state.pendingLimited
+    val desc =
+        if (state.pendingMasked.isNotEmpty()) {
+            texts.format("pending_confirm.phone_change.desc", mapOf("phone" to state.pendingMasked))
+        } else {
+            texts.text("pending_confirm.phone_change.desc")
+        }
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    CouliColors.statusWarningBackground,
+                    androidx.compose.foundation.shape
+                        .RoundedCornerShape(com.couli.core.designsystem.CouliRadius.card),
+                ).padding(CouliSpacing.space4)
+                .testTag(BindPhonePendingTags.CARD),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    ) {
+        Column(
+            modifier =
+                Modifier.semantics(mergeDescendants = true) {
+                    liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Assertive
+                },
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+        ) {
+            Text(text = texts.text("pending_confirm.title"), style = CouliTypography.body, color = CouliColors.textPrimary)
+            Text(text = desc, style = CouliTypography.footnote, color = CouliColors.textPrimary)
+        }
+        // 摘要（G24，与换号卡一致）：提交的新手机号（本机脱敏）+ 提交时间（记录创建时刻，BR-TEXT-11）
+        if (state.pendingMasked.isNotEmpty()) {
+            PendingSummaryRow(texts.text("pending_confirm.summary.new_phone"), state.pendingMasked)
+        }
+        if (state.pendingCreatedAt > 0L) {
+            PendingSummaryRow(
+                texts.text("pending_confirm.summary.submitted_at"),
+                com.couli.core.me.account.DeletionSummary
+                    .submittedAt(state.pendingCreatedAt, model.now()),
+                Modifier.testTag(BindPhonePendingTags.SUBMITTED_AT),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+            CouliButton(
+                text = texts.text("pending_confirm.abandon"),
+                onClick = { model.onAskAbandon(key, binding) },
+                enabled = usable,
+                variant = com.couli.core.designsystem.CouliButtonVariant.SECONDARY,
+                modifier = Modifier.weight(1f).testTag(BindPhonePendingTags.ABANDON),
+            )
+            CouliButton(
+                text = texts.text("pending_confirm.phone_change.action"),
+                onClick = { model.onConfirmPending(key, binding) },
+                enabled = usable,
+                modifier = Modifier.weight(1f).testTag(BindPhonePendingTags.CONFIRM),
+            )
+        }
+        state.pendingNotice?.let {
+            Text(
+                text = it,
+                style = CouliTypography.footnote,
+                color = CouliColors.textPrimary,
+                modifier = Modifier.testTag(BindPhonePendingTags.NOTICE),
+            )
+        }
+        // R2-07：原页面许可失效时保留的补办入口（绑定本表单实例；点击经 Router 打开，记录保持待确认）
+        state.pendingGuide?.let { route ->
+            CouliButton(
+                text = texts.text(pendingGuideLabel(route)),
+                onClick = { model.onPendingGuide(binding) },
+                variant = com.couli.core.designsystem.CouliButtonVariant.SECONDARY,
+                modifier = Modifier.fillMaxWidth().testTag(BindPhonePendingTags.GUIDE),
+            )
+        }
+        Text(text = texts.text("bind_phone.pending_hint"), style = CouliTypography.caption, color = CouliColors.textSecondary)
+    }
+}
+
+/** 待确认摘要的一行：标签在左（次要色）、值在右侧剩余宽度（可换行，200% 字号不截断）。 */
+@Composable
+private fun PendingSummaryRow(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+        Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
+    }
+}
+
+/** 放弃上一次提交的二次确认（点遮罩不关闭，系统返回 = 【再想想】）。 */
+@Composable
+private fun BindAbandonDialog(
+    model: BindPhoneViewModel,
+    state: BindPhoneUiState,
+    binding: BindPhoneBinding,
+) {
+    val dialog = state.abandonDialog
+    if (dialog == 0) return
+    val texts = com.couli.core.me.account.AccountDraftTexts
+    com.couli.core.designsystem.CouliDialog(
+        title = texts.text("pending_confirm.abandon"),
+        message = texts.text("pending_confirm.abandon.confirm") + "\n" + texts.text("pending_confirm.abandon.note.phone_change"),
+        confirmText = texts.text("pending_confirm.abandon.ok"),
+        onConfirm = { model.onAbandon(dialog, binding) },
+        // R1-06：二次确认的【确定放弃】同样随共享 phoneGate 置灰，到期恢复
+        confirmEnabled = !state.pendingLimited && !state.pendingBusy,
+        dismissText = texts.text("pending_confirm.abandon.cancel"),
+        onDismiss = { model.onCancelAbandon(dialog) },
+        onDismissRequest = { model.onCancelAbandon(dialog) },
+        dismissOnClickOutside = false,
+        confirmTag = BindPhonePendingTags.ABANDON_OK,
+        dismissTag = BindPhonePendingTags.ABANDON_CANCEL,
+    )
+}

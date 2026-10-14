@@ -80,9 +80,15 @@ internal fun UpdatePromptHost(
 internal fun ForceUpdateRoute(
     update: AppUpdate,
     routing: AppRouting,
+    account: com.couli.app.account.AppAccount? = null,
 ) {
     val ui by update.ui.collectAsStateWithLifecycle()
+    // APP-13a G28：已登录（含 deletion_only）时按 getDeletion 决定标签；DeleteAccount 不可用时不显示（G01 ②）。没接账号模块（更早任务的单测）时沿用「注销账号」
+    val noAccount = androidx.compose.runtime.remember { kotlinx.coroutines.flow.MutableStateFlow<String?>("app_update.delete_account") }
+    val label by (account?.forceUpdateLabel ?: noAccount).collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(account) { account?.refreshForceUpdateLabel() }
     ForceUpdatePage(
+        deleteLabelKey = label,
         ui = ui,
         actions =
             ForceUpdateActions(
@@ -90,7 +96,10 @@ internal fun ForceUpdateRoute(
                 onRetry = { update.recheck(thenPickStore = true) },
                 // 03 §4.1：强更页「隐私政策」进 PrivacyCenter（承载协议、两份清单与撤回同意；本轮占位页，APP-12 实现，R1-05）
                 onPrivacyPolicy = { openFromForceUpdatePage(routing, inAppRequest(PRIVACY_CENTER_ROUTE)) },
-                onDeleteAccount = { openFromForceUpdatePage(routing, deleteAccountRequest(routing)) },
+                onDeleteAccount = {
+                    // 一律经 Router 打开 DeleteAccount（游客由守卫先进受限登录，登录后打开一次；APP-13a §2 第 8 项）
+                    account?.onForceUpdateDeletion() ?: openFromForceUpdatePage(routing, deleteAccountRequest(routing))
+                },
             ),
     )
 }
@@ -101,9 +110,8 @@ private fun openFromForceUpdatePage(
 ) = routing.router.open(request, routing.guardState().copy(fromForceUpdatePage = true))
 
 /**
- * 强更页【注销账号】：注销要登录（受限会话，BR-ID-01）。游客先进登录页（受限登录）；已登录进 DeleteAccount。
- * TODO(APP-12): DeleteAccount 在 Android 上 since=null（尚未上线），Router 按未知路由给升级提示（APP-02a rule-gaps G02），
- *  注销任务接入后改为一律打开 DeleteAccount，由守卫按登录要求先进登录页。
+ * 没接账号模块（只测外壳与更早任务的单测）时强更页【注销账号】的旧写法：游客先进登录页；已登录进 DeleteAccount。接了 [com.couli.app.account.AppAccount] 时
+ * 一律经 Router 打开 DeleteAccount（APP-13a）。
  */
 private fun deleteAccountRequest(routing: AppRouting): RouteRequest {
     val route = if (routing.guardState().sessionState == SessionState.GUEST) RouteNames.LOGIN else DELETE_ACCOUNT_ROUTE

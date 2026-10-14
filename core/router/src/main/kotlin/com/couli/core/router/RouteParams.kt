@@ -16,6 +16,12 @@ object RouteParams {
     /** 资金与实名四页：传入参数一律丢弃后照常打开（03 §4.4「资金与实名页面」）。 */
     val dropAllParamsRoutes: Set<String> = setOf("Withdraw", "PayoutAccount", "LaborAgreement", "RealName")
 
+    /**
+     * 参数一律丢弃、照常打开，但**不记** route_params_dropped 的路由（APP-13a G21：DeleteAccount 的 params 是空对象，events.json 的 route 枚举里没有它，
+     * 不新增值）。页面不读任何参数。
+     */
+    val silentDropRoutes: Set<String> = setOf("DeleteAccount")
+
     fun isValid(
         spec: RouteSpec,
         params: JsonObject,

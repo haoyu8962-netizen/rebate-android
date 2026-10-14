@@ -107,6 +107,11 @@ data class GuardState(
     val externalHosts: List<String> = emptyList(),
     /** WebPage 的目标来源白名单（bridge_origins，`https://host[:port]`）；缺省空 = 全拒。 */
     val bridgeOrigins: List<String> = emptyList(),
+    /**
+     * Debug / Staging 的「路由可用性覆盖」（APP-13a G01，编排者补充 1）：这里列出的路由即使 since 为 null 也按已上线处理（冒烟、截图、集成测试）。
+     * Release 恒为空（由 App 的 variant 源码集给值，release-scan 不得命中开关）。
+     */
+    val availabilityOverrides: Set<String> = emptySet(),
 ) {
     constructor(
         privacy: PrivacyState,
@@ -119,6 +124,7 @@ data class GuardState(
         realnameVerified: Boolean = false,
         externalHosts: List<String> = emptyList(),
         bridgeOrigins: List<String> = emptyList(),
+        availabilityOverrides: Set<String> = emptySet(),
     ) : this(
         privacy.raw,
         update.raw,
@@ -130,6 +136,7 @@ data class GuardState(
         realnameVerified,
         externalHosts,
         bridgeOrigins,
+        availabilityOverrides,
     )
 
     val privacyState: PrivacyState get() = PrivacyState.fromRaw(privacy)

@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
+import com.couli.app.account.AppAccount
 import com.couli.app.agent.AppAgent
 import com.couli.app.agent.connectAgentScreenReader
 import com.couli.app.agent.variantAgentConsentRecorded
@@ -407,6 +408,8 @@ object AppModule {
             register(MeLocalStore.CLEANER) { meLocalStore(context).clearAll() }
             // 「我的」的会话级数据（G18、G29：推送上报的在途与待报、Me 快照、客服半屏；草稿随页面执行器按新身份重建作废）
             register(AppMe.ME_SESSION_CLEANER) { meInstance?.clearForConsentRevoked() }
+            // Debug 假账号服务按账号保存的状态（APP-13a §2 第 11 项；Release 为空实现）
+            register(FAKE_ACCOUNT_CLEANER) { variantResetFakeAccount(context) }
             // 首页（APP-11，G16 ②、G11）：LKG 全部作用域（含临时文件）与设备级的公告关闭记录、弹窗计数；直接登记在这里，启动时 PrivacyGate 的补清理同样执行，
             // 删除要确认，失败保留待清理（LKG 的标记在目录外）并抛错
             register(AppHome.HOME_LKG_CLEANER) { homeLkgStore(context).clearAll() }
@@ -668,6 +671,8 @@ object AppModule {
             update.onRouterUpdate { routing.update.value = it }
             // 切换环境：作废进行中的推送回查、清 pending_action（R1-03）
             cleaners.register { _, _ -> routing.onEnvironmentSwitched() }
+            // Debug 假账号服务的状态随环境切换清掉（APP-13a §2 第 11 项；Release 为空实现）
+            cleaners.register { _, _ -> variantResetFakeAccount(context) }
             // 隐私结论每次变化：Router.onPrivacyChanged、重排 pending_action 恢复、drain（AppRouting.privacy 的订阅）
             privacy.onConclusionChanged { routing.privacy.value = it }
             // 主动同意 = 完成一个前置步骤；明确仍不同意 = 丢弃本次待办（APP-02b R1-03、R1-04）
@@ -833,6 +838,19 @@ object AppModule {
             trade.customerService = me.cs::open
             wallet.customerService = me.cs::open
             orders.customerService = me.cs::open
+            // 注销与换号（APP-13a）：共享状态交给 BindPhone 与「我的」；二次验证共用钱包的发码截止时间与 token 缓存
+            me.account =
+                AppAccount(
+                    client = client,
+                    tokens = tokens,
+                    routing = routing,
+                    me = me,
+                    wallet = wallet,
+                    login = login,
+                    stepUpPhone = variantStepUpPhone(context),
+                    updateCheck = { update.routerUpdate },
+                    serverForced = { update.onServerForced() },
+                ).also { it.sync() }
             meInstance = me
         }
 
@@ -1153,6 +1171,7 @@ object AppModule {
     private const val IN_FLIGHT_CALLS_CLEANER = "in_flight_calls"
     private const val BRIDGE_CALLS_CLEANER = "bridge_calls"
     private const val CLIPBOARD_HASHES_CLEANER = "clipboard_hashes"
+    private const val FAKE_ACCOUNT_CLEANER = "fake_account"
 }
 
 /**

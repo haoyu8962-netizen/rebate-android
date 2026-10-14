@@ -1,6 +1,7 @@
 package com.couli.app.me
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -12,6 +13,9 @@ import com.couli.feature.me.AboutScreen
 import com.couli.feature.me.AppealConfig
 import com.couli.feature.me.AppealScreen
 import com.couli.feature.me.CsSheetHost
+import com.couli.feature.me.DeleteAccountConfig
+import com.couli.feature.me.DeleteAccountScreen
+import com.couli.feature.me.LocalAccountDeps
 import com.couli.feature.me.MeTabScreen
 import com.couli.feature.me.PrivacyCenterConfig
 import com.couli.feature.me.PrivacyCenterScreen
@@ -21,7 +25,7 @@ import com.couli.feature.me.SettingsConfig
 import com.couli.feature.me.SettingsScreen
 
 /** 本模块接管的路由名（Me 是 Tab 根，在 TabRoot 里渲染）。 */
-val ME_ROUTES: Set<String> = setOf("Settings", "PrivacyCenter", "About", "RiskNotice", "Appeal")
+val ME_ROUTES: Set<String> = setOf("Settings", "PrivacyCenter", "About", "RiskNotice", "Appeal", "DeleteAccount")
 
 /**
  * 「我的」类路由的页面（AppShell 注册）：设置、隐私中心、关于、封禁说明、申诉。每页登记出栈的同步出口（[AppMe.followBackStack]）。没有接线（只测外壳的单测）时是占位页。
@@ -40,12 +44,36 @@ fun meRoutePages(
             } else {
                 val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
                 val bind: (() -> Unit) -> Unit = { leave -> me.bindLeave(entryId, leave) }
-                when (page.name) {
-                    "Settings" -> SettingsScreen(SettingsConfig(me.deps, entryId, onBack, clipboardRow, bind, agentRow))
-                    "PrivacyCenter" -> PrivacyCenterScreen(PrivacyCenterConfig(me.deps, onBack, bind))
-                    "About" -> AboutScreen(me.deps, onBack, bind)
-                    "RiskNotice" -> RiskNoticeScreen(RiskNoticeConfig(me.deps, onBack, bind))
-                    else -> AppealScreen(AppealConfig(me.deps, onBack, bind))
+                val account = me.account?.deps
+                // 注销与换号（APP-13a）：封禁说明、申诉维持结果的「注销账号」与设置页的手机号行、注销行都经它；没接时沿用 APP-12
+                CompositionLocalProvider(LocalAccountDeps provides account) {
+                    when (page.name) {
+                        "Settings" -> {
+                            SettingsScreen(SettingsConfig(me.deps, entryId, onBack, clipboardRow, bind, agentRow, account))
+                        }
+
+                        "PrivacyCenter" -> {
+                            PrivacyCenterScreen(PrivacyCenterConfig(me.deps, onBack, bind))
+                        }
+
+                        "About" -> {
+                            AboutScreen(me.deps, onBack, bind)
+                        }
+
+                        "RiskNotice" -> {
+                            RiskNoticeScreen(RiskNoticeConfig(me.deps, onBack, bind))
+                        }
+
+                        // DeleteAccount 正式页（APP-13a）：页面不读路由参数（G21，Router 已丢弃）；没接账号模块时是占位页
+                        "DeleteAccount" -> {
+                            account?.let { DeleteAccountScreen(DeleteAccountConfig(it, entryId, onBack, bind)) }
+                                ?: PlaceholderRoutePage(page)
+                        }
+
+                        else -> {
+                            AppealScreen(AppealConfig(me.deps, onBack, bind))
+                        }
+                    }
                 }
             }
         }

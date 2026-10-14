@@ -271,6 +271,8 @@ object MeDraftTexts : MeTexts {
             SettingsItems.ID_CLIPBOARD to "settings.clipboard_auto",
             SettingsItems.ID_NICKNAME to "settings.nickname",
             SettingsItems.ID_PHONE to "settings.phone",
+            // APP-13a：注销账号行（文案在 AccountDraftTexts，G29）
+            SettingsItems.ID_DELETE to "settings.delete_account",
             SettingsItems.ID_AUTH to "me.grid.auth",
             SettingsItems.ID_NOTIFY to "settings.notify",
             SettingsItems.ID_RESET_TIP to "settings.reset_tip",

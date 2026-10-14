@@ -59,7 +59,9 @@ fun LoginRoute(
 /** BindPhone 路由：绑手机页（APP-05b；BindPhone / BindPhoneMerge）。 */
 @Composable
 fun BindPhoneRoute(login: AppLogin) {
-    val config = remember { login.bindPageConfig() }
+    // 这一个绑手机页的回退栈条目：完成后只出栈它（APP-13a R1-05）
+    val entryId = (androidx.lifecycle.compose.LocalLifecycleOwner.current as? androidx.navigation.NavBackStackEntry)?.id
+    val config = remember(entryId) { login.bindPageConfig(entryId) }
     BindPhoneScreen(config)
 }
 

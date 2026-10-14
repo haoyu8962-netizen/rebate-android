@@ -74,7 +74,18 @@ internal class DebugFakeLoginServer(
     /** 「我的」、申诉、配置与推送上报（APP-12，[DebugFakeMe]，进程内唯一）；状态开关文件与开关文件同目录。 */
     private val me = DebugFakeMe.of(File(stateDir, FAKE_ME_STATE_FILE)).also { it.switchOn = gate }
 
-    @Suppress("ReturnCount", "CyclomaticComplexMethod") // 开关关着、商品图、其余三个出口；各假服务逐个应答
+    /** 注销、换号、BindPhone 待确认（APP-13a，[DebugFakeAccount]，进程内唯一）；排在钱包之前应答。 */
+    private val account = DebugFakeAccount.of(File(stateDir, FAKE_ACCOUNT_STATE_FILE)).also { it.switchOn = gate }
+
+    /** 本服务按会话记下的账号（短信登录 fake-user-0001，第三方新号 fake-user-0002）：假账号服务的状态按它保存。 */
+    @Volatile
+    private var currentUser = "fake-user-0001"
+
+    init {
+        account.onBound = { phoneBound = true }
+    }
+
+    @Suppress("ReturnCount", "CyclomaticComplexMethod", "LongMethod") // 开关关着、商品图、其余三个出口；各假服务逐个应答
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         // 实际传输入口（F-X-02）：闸门关着（开关不在、prod、环境未就绪）整条交给真实网络
@@ -108,7 +119,15 @@ internal class DebugFakeLoginServer(
         val (code, data, headers) =
             homeAnswer
                 ?: (if (me.blocks(path)) Triple(BANNED, "null", emptyMap()) else null)
-                ?: me.answer(request.method, path, body, wallet.realnameStatus(), phoneBound)
+                ?: me.answer(request.method, path, body, wallet.realnameStatus(), account.phoneBoundOverride() ?: phoneBound)
+                ?: account.answer(
+                    request.method,
+                    path,
+                    body,
+                    request.headers.toMap(),
+                    currentUser,
+                    account.phoneBoundOverride() ?: phoneBound,
+                )
                 ?: wallet.answer(request.method, request.url.encodedPath, request.url.encodedQuery, body, request.headers.toMap())
                 ?: orders.answer(request.method, request.url.encodedPath, request.url.encodedQuery) { chain.call().isCanceled() }
                 ?: trade.answer(
@@ -159,7 +178,7 @@ internal class DebugFakeLoginServer(
 
             "/v1/auth/login/sms" -> login(body.text("code"), body.text("invite_code"))
 
-            "/v1/auth/refresh" -> ok("""{${tokens("full")}}""")
+            "/v1/auth/refresh" -> ok("""{${tokens(account.refreshScope())}}""")
 
             "/v1/auth/oauth-attempts" -> ok(attempt())
 
@@ -188,6 +207,7 @@ internal class DebugFakeLoginServer(
     ): Triple<Int, String, Map<String, String>> {
         // 短信登录的账号就是已绑手机（APP-09 冒烟：冷启动后 getMe 回 phone_bound=true，资金页的守卫不再引去绑手机）
         if (code == "123456" || code == "222222") phoneBound = true
+        currentUser = "fake-user-0001"
         return when (code) {
             "123456" -> ok(loggedIn("full", isNew = true, invite = invite))
             "222222" -> ok(loggedIn("full", isNew = false, invite = invite))
@@ -208,6 +228,7 @@ internal class DebugFakeLoginServer(
 
     private fun wechatLogin(): Triple<Int, String, Map<String, String>> {
         phoneBound = false
+        currentUser = "fake-user-0002"
         return ok("""{"user_id":"fake-user-0002","is_new_user":true,"tokens":{${tokens("full")}}}""")
     }
 

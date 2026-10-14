@@ -144,3 +144,10 @@ ktlint_standard_function-signature = disabled
 ktlint_standard_multiline-expression-wrapping = disabled
 ktlint_standard_no-wildcard-imports = disabled
 ktlint_standard_when-entry-bracing = disabled
+
+# APP-13a 的账号向量测试同样由 Codex 先写、本仓库不改（brief §4）；它的格式与下面四条规则不一致，只对这一个文件关掉。
+[core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt]
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_when-entry-bracing = disabled

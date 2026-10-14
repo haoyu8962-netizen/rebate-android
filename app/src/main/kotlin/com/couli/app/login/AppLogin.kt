@@ -124,7 +124,8 @@ class AppLogin(
         OAuthLoginService(client, tokens, service, adapters, phoneBinding, legal, followUpScope = sessionScope, meRead = meReadLimit())
 
     /** 绑手机执行器（APP-05b）。 */
-    val bindPhone: BindPhoneService = BindPhoneService(client, tokens, service, phoneBinding, this, meRead = meReadLimit())
+    val bindPhone: BindPhoneService =
+        BindPhoneService(client, tokens, service, phoneBinding, this, meRead = meReadLimit(), sessionScope = sessionScope)
 
     /** 登录侧看到的 Me 读取禁用期（与「我的」同一个 [meReadGate]）。 */
     private fun meReadLimit(): MeReadLimit =
@@ -220,6 +221,8 @@ class AppLogin(
     fun syncSession() {
         val state = sessionState()
         if (state != routing.session.value) publish(state, resumePending = false)
+        // APP-13a R2-01：绑手机页的同步换代出口（撤回同意、强更状态变化后的会话同步）
+        bindPhone.syncSession()
         verifyPhoneBinding()
     }
 
@@ -240,6 +243,8 @@ class AppLogin(
                 epoch == restrictedEpoch &&
                 !service.ownsSession(epoch)
         if (state != previous || upgraded) publish(state, resumePending = upgraded)
+        // APP-13a R2-01：会话保存、刷新（作用域变化）、清理的同步出口——打开着的绑手机页在这条消息里按完整固定身份换代、清空敏感状态
+        bindPhone.syncSession()
         verifyPhoneBinding()
     }
 
@@ -284,7 +289,9 @@ class AppLogin(
         val binding = entries.any { isRoute(it, RouteNames.BIND_PHONE) }
         // 进绑手机页时 phone_bound 还不知道（待查、冷启动后直接打开手机号级页面）：再查一次，查清已绑就关页并恢复待办（不算完成前置、
         // 不重置计时）
-        if (!bindInStack && binding && phoneBinding.get(tokens.loginEpoch) == null) recheckOnBindPage()
+        if (!bindInStack && binding && phoneBinding.get(tokens.loginEpoch) == null) {
+            recheckOnBindPage(entries.lastOrNull { isRoute(it, RouteNames.BIND_PHONE) }?.id)
+        }
         if (bindInStack && !binding) {
             bindPhone.invalidate()
             if (phoneBinding.get(tokens.loginEpoch) != true) bindPhone.leftUnbound()
@@ -294,12 +301,25 @@ class AppLogin(
 
     private var bindInStack = false
 
-    private fun recheckOnBindPage() {
+    /**
+     * 进绑手机页时 phone_bound 未知的补查（APP-13a R2-03，共性第 25、38 条）：发起时捕获刚出现的这一个绑手机页条目 [entryId] 与导航票据（导航次数、栈顶、Tab、
+     * 进后台次数，即页面可见性与导航世代）。查清已绑：绑定状态共享结算（守卫重算、释放暂缓）照常；只有原条目仍是栈顶且票据没变（发起后没有被覆盖、没有进后台、
+     * 没有再导航）才出栈这一个页面并恢复待办，不按路由名关页（不会连带关掉覆盖页或后来打开的同名页）。
+     */
+    private fun recheckOnBindPage(entryId: String?) {
         val epoch = tokens.loginEpoch
+        val ticket = routing.navTickets.ticket()
         sessionScope.launch {
             if (oauth.refreshMe(epoch) && tokens.loginEpoch == epoch && phoneBinding.get(epoch) == true) {
+                val controller = navController
+                val here = entryId != null && controller?.currentBackStackEntry?.id == entryId && routing.navTickets.ticket() == ticket
+                if (controller == null || !here) {
+                    publish(sessionState(), resumePending = false)
+                    routing.router.releaseHeldPending()
+                    return@launch
+                }
                 bindInStack = false
-                closeRoute(RouteNames.BIND_PHONE)
+                controller.popBackStack()
                 publish(sessionState(), resumePending = false)
                 routing.router.releaseHeldPending()
                 routing.router.resumePending(enterPrerequisite = false)
@@ -383,8 +403,8 @@ class AppLogin(
         )
     }
 
-    /** 绑手机页配置（APP-05b）。 */
-    fun bindPageConfig(): BindPhonePageConfig =
+    /** 绑手机页配置（APP-05b）。[entryId]：这一个绑手机页的回退栈条目（完成后只出栈它，APP-13a R1-05）。 */
+    fun bindPageConfig(entryId: String? = null): BindPhonePageConfig =
         BindPhonePageConfig(
             service = bindPhone,
             texts = LoginDraftTexts,
@@ -396,6 +416,8 @@ class AppLogin(
                     onCustomerService = { customerService(RouteNames.BIND_PHONE) },
                     // 10007 stage=cooling：经 Router 打开可撤回的注销进度页（APP-05b 共性第 10 条）
                     onOpenRoute = ::open,
+                    // 绑定成功且页面许可仍有效（APP-13a R1-05）：只出栈发起的这一个绑手机页，再完成前置、恢复待办
+                    onBound = { bindPageCompleted(entryId) },
                 ),
         )
 
@@ -519,13 +541,24 @@ class AppLogin(
 
     // ---- BindPhoneHost
 
-    /** 绑定成功、getMe 已刷新：守卫变为已绑手机，关闭绑手机页，绑定这一前置步骤完成（重置计时）并经守卫恢复待办。 */
+    /**
+     * 绑定成功、getMe 已刷新（会话侧共享结算，APP-13a R1-05、G66）：守卫变为已绑手机、释放暂缓。不按路由名关页、不恢复待办——那两件只由持有原页面
+     * 许可的绑手机页经 [bindPageCompleted] 做；原页面已离开或被覆盖时不导航，之后的入口由守卫按已绑手机判定。
+     */
     override fun phoneBound() {
-        bindInStack = false
-        closeRoute(RouteNames.BIND_PHONE)
         publish(sessionState(), resumePending = false)
-        mutableNotice.value = LoginNotice.Message(LoginDraftTexts.text("bind_phone.done"))
         routing.router.releaseHeldPending()
+    }
+
+    /**
+     * 绑手机页完成（页面持有原页面许可时调用，APP-13a R1-05，共性第 25 条）：只出栈发起的这一个绑手机页（它必须是栈顶，不按路由名找同名页），提示绑定成功，
+     * 绑定这一前置步骤完成（重置计时）并经守卫恢复待办。
+     */
+    fun bindPageCompleted(entryId: String?) {
+        val controller = navController ?: return
+        if (entryId == null || controller.currentBackStackEntry?.id != entryId) return
+        controller.popBackStack()
+        mutableNotice.value = LoginNotice.Message(LoginDraftTexts.text("bind_phone.done"))
         routing.router.onPrerequisiteCompleted()
     }
 

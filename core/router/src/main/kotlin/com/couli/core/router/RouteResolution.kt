@@ -13,12 +13,15 @@ internal object RouteResolution {
             ?: paramsAndAuth(context, spec)
     }
 
+    @Suppress("ReturnCount") // 覆盖、since 缺失、版本逐项
     private fun versionCheck(
         context: GuardContext,
         spec: RouteSpec,
     ): GuardDecision? {
         // TODO(N-14): since=null（本端尚未上线，如 DeleteAccount、LinkLanding）没有规定各来源的结论；
         //  按未知路由处理（升级提示），强更页进 DeleteAccount 的冲突见 rule-gaps G02。
+        // TODO(N-37): APP-13a G01——Debug / Staging 的路由可用性覆盖（[GuardState.availabilityOverrides]）按已上线放行；Release 恒为空
+        if (spec.name in context.state.availabilityOverrides) return null
         val since = spec.sinceAndroid ?: return decision(GuardKind.UPGRADE, null, GuardReason.UNKNOWN_ROUTE)
         return if (AppVersion.atLeast(context.state.appVersion, since)) {
             null
@@ -64,7 +67,8 @@ internal object RouteResolution {
         context: GuardContext,
         spec: RouteSpec,
     ): GuardDecision {
-        val dropAll = spec.name in RouteParams.dropAllParamsRoutes
+        // 资金与实名四页、DeleteAccount（APP-13a G21，静默丢弃、不记 route_params_dropped）：丢弃全部参数后照常打开
+        val dropAll = spec.name in RouteParams.dropAllParamsRoutes || spec.name in RouteParams.silentDropRoutes
         val params = if (dropAll) JsonObject(emptyMap()) else context.request.params
         val dropped = if (dropAll) context.request.params.size else 0
         return when {

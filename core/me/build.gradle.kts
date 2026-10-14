@@ -19,6 +19,8 @@ dependencies {
     api(project(":core:network"))
     // 冻结恢复时间（CouliFormat.timeListFuture，BR-TEXT-11）；MeVectorTest 直接比对同一函数
     api(project(":core:designsystem"))
+    // APP-13a：二次验证（stepup）、敏感结局与未决分类、WalletJson（StepUpData / AbandonData）、FundRouteParams、WalletRateGate
+    api(project(":core:wallet"))
 
     // MeVectorTest 读 specs/me-vectors.json（JUnit4 由 convention 插件给；kotlinx-serialization-json 经 core:network 传递）；本机偏好测试用 Robolectric
     testImplementation(libs.kotlinx.coroutines.test)

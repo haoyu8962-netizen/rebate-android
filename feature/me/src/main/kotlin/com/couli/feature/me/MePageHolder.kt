@@ -11,13 +11,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * 敏感内容。执行器在构造时固定身份（APP-09 第 65 条），这里只按身份比较、不重新绑定。
  */
 internal class MePageHolder : ViewModel() {
-    private var identity: MeIdentity? = null
+    private var identity: Any? = null
     private var controller: Any? = null
     private var leave: () -> Unit = {}
 
     @Suppress("UNCHECKED_CAST")
     fun <T : Any> controller(
-        identity: MeIdentity,
+        identity: Any,
         create: () -> T,
         leave: (T) -> Unit,
     ): T {
@@ -45,7 +45,7 @@ internal class MePageHolder : ViewModel() {
 @Composable
 internal fun <T : Any> rememberPageController(
     key: String,
-    identity: MeIdentity,
+    identity: Any,
     create: () -> T,
     leave: (T) -> Unit,
 ): T {

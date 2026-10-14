@@ -26,6 +26,8 @@ import com.couli.core.me.MePlatform
 import com.couli.core.me.SettingsItems
 import com.couli.core.me.SettingsModel
 import com.couli.core.me.SettingsRow
+import com.couli.core.me.account.AccountEntries
+import com.couli.core.me.account.AccountEntryPolicy
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
@@ -55,6 +57,9 @@ data class SettingsState(
         const val NOTIFY = "notify"
         const val CLEAR = "clear"
         const val LOGOUT = "logout"
+
+        /** 换手机号子页（APP-13a G22：页内子页，不注册路由）。 */
+        const val PHONE = "phone"
     }
 }
 
@@ -70,6 +75,10 @@ class SettingsController(
     private val deps: MeDeps,
     val identity: MeIdentity,
     private val entryId: String?,
+    /** 注销与换号（APP-13a）；没接（只测「我的」的单测）时为 null：手机号行与注销行沿用 APP-12 写法。 */
+    private val account: AccountDeps? = null,
+    /** 构造时一次取得的账号身份（含作用域，S0）；[account] 为 null 时不用。 */
+    private val accountIdentity: AccountIdentity? = null,
 ) : MeReader {
     private var left = false
     private var ids = 0L
@@ -88,6 +97,10 @@ class SettingsController(
     var notify: NotifySettingsController? = null
         private set
 
+    /** 换号子页执行器（只在已登录、full 会话、本机知道号码时建，G02、G22）。 */
+    var phoneChange: PhoneChangeController? = null
+        private set
+
     fun alive(): Boolean = !left && identity.current(deps.env)
 
     /** 本页发起的 Me 读取仍有效（R1-03）：出栈、换代即停。 */
@@ -96,13 +109,74 @@ class SettingsController(
     /** 渲染时的条目（只按本执行器固定的身份档）。 */
     fun model(): SettingsModel {
         val me = deps.repo.meOf(identity)
-        return SettingsItems.model(
-            levelRaw = identity.level,
-            platformRaw = MePlatform.ANDROID,
-            phoneBound = me?.phoneBound,
-            nicknameEditable = deps.nickname != null && me != null,
-            serviceSwitchAvailable = deps.notify != null,
-            deleteAccountAvailable = DELETE_ACCOUNT in deps.env.availableRoutes(),
+        val base =
+            SettingsItems.model(
+                levelRaw = identity.level,
+                platformRaw = MePlatform.ANDROID,
+                phoneBound = me?.phoneBound,
+                nicknameEditable = deps.nickname != null && me != null,
+                serviceSwitchAvailable = deps.notify != null,
+                deleteAccountAvailable = DELETE_ACCOUNT in deps.env.availableRoutes(),
+            )
+        return account?.let { accountModel(base, it, me?.phoneBound) } ?: base
+    }
+
+    /** APP-13a 入口裁剪（AccountEntryPolicy，G01、G02、G34、G48）：手机号行按「本机是否知道号码」；deletion_only 不显示账号与安全组。 */
+    private fun accountModel(
+        base: SettingsModel,
+        account: AccountDeps,
+        phoneBound: Boolean?,
+    ): SettingsModel {
+        if (accountIdentity?.restricted == true) return base.copy(groups = base.groups.filter { it.name != SettingsItems.GROUP_ACCOUNT })
+        val entries = accountEntries(account, phoneBound)
+        val groups =
+            base.groups.map { group ->
+                group.copy(
+                    rows =
+                        group.rows.mapNotNull { row ->
+                            when (row.id) {
+                                SettingsItems.ID_PHONE -> {
+                                    when (entries.phoneRowRaw) {
+                                        AccountEntries.HIDDEN -> null
+                                        AccountEntries.BIND_PHONE -> row.copy(route = BIND_PHONE, clickable = true)
+                                        AccountEntries.PHONE_CHANGE -> row.copy(route = null, clickable = true)
+                                        else -> row.copy(route = null, clickable = false)
+                                    }
+                                }
+
+                                SettingsItems.ID_DELETE -> {
+                                    row.takeIf { entries.deletionRowShown }
+                                }
+
+                                else -> {
+                                    row
+                                }
+                            }
+                        },
+                )
+            }
+        return base.copy(groups = groups)
+    }
+
+    private fun accountEntries(
+        account: AccountDeps,
+        phoneBound: Boolean?,
+    ): AccountEntries {
+        val session =
+            when {
+                identity.level == com.couli.core.me.MeLevel.BASIC -> AccountEntryPolicy.BASIC
+                !identity.member -> AccountEntryPolicy.GUEST
+                accountIdentity?.restricted == true -> AccountEntryPolicy.DELETION_ONLY
+                else -> AccountEntryPolicy.MEMBER
+            }
+        val known = identity.account?.let(account.env::stepUpPhone) != null
+        return AccountEntryPolicy.entries(
+            session,
+            deps.env.forceUpdateContext(),
+            phoneBound,
+            DELETE_ACCOUNT in account.env.availableRoutes(),
+            null,
+            known,
         )
     }
 
@@ -138,6 +212,19 @@ class SettingsController(
                 val current = deps.repo.meOf(identity)?.nickname ?: return
                 nickname = NicknameController(deps, identity, current, host = this)
                 update { it.copy(sub = SettingsState.NICKNAME, version = it.version + 1) }
+            }
+
+            row.id == SettingsItems.ID_PHONE && route == null -> {
+                val accountDeps = account ?: return
+                val owner = accountIdentity ?: return
+                if (!row.clickable || !identity.member) return
+                // 进入子页即作废设置页的导航许可（版本加 1，APP-10 第 24 条、F-HM-27）
+                phoneChange = PhoneChangeController(accountDeps, owner) { sub -> closePhone(sub) }
+                update { it.copy(sub = SettingsState.PHONE, version = it.version + 1) }
+            }
+
+            row.id == SettingsItems.ID_DELETE && account != null -> {
+                if (row.clickable) account.env.openDeletion(com.couli.core.me.account.AccountRaw.SETTINGS)
             }
 
             row.id == SettingsItems.ID_NOTIFY -> {
@@ -201,9 +288,22 @@ class SettingsController(
         if (sub != null && sub !== nickname) return
         nickname?.leave()
         notify?.leave()
+        phoneChange?.leave()
         nickname = null
         notify = null
+        phoneChange = null
         update { it.copy(sub = SettingsState.NONE, version = it.version + 1) }
+    }
+
+    /** 关掉换号子页（只关发起的这一个，APP-09 第 50 条）。 */
+    fun closePhone(sub: PhoneChangeController?) {
+        if (sub == null || sub !== phoneChange) return
+        closeSub(nickname)
+    }
+
+    /** 撤回注销成功回到设置页的轻提示（SettingsDeletionWithdrawn，G18）。 */
+    fun showToast(key: String) {
+        if (alive()) toast(MeNotice(key, ++ids, assertive = false))
     }
 
     fun closeNotify(sub: NotifySettingsController?) {
@@ -333,8 +433,10 @@ class SettingsController(
         deps.repo.release(this)
         nickname?.leave()
         notify?.leave()
+        phoneChange?.leave()
         nickname = null
         notify = null
+        phoneChange = null
     }
 
     private inline fun update(change: (SettingsState) -> SettingsState) {
@@ -345,6 +447,7 @@ class SettingsController(
         const val ROUTE = "Settings"
         const val LOGIN = "Login"
         const val DELETE_ACCOUNT = "DeleteAccount"
+        const val BIND_PHONE = "BindPhone"
         const val RESET_TIP = "resetTip"
         const val JUMP_TIP = "jump_tip"
         const val RATE_KEY = "error.42901"
@@ -355,6 +458,7 @@ class SettingsController(
 }
 
 /** 设置页配置（App 给）。[clipboardRow]：Android「打开 App 自动识别剪贴板」一行（APP-07 原样挪进「通用」组；只在已同意时组合，基本模式不显示）。 */
+@Suppress("LongParameterList") // 页面配置逐项给
 class SettingsConfig(
     val deps: MeDeps,
     val entryId: String?,
@@ -366,20 +470,38 @@ class SettingsConfig(
      * 不改条目表：分组卡之后单独一张卡一行。
      */
     val agentRow: (@Composable () -> Unit)? = null,
+    /** 注销与换号（APP-13a）：App 接了账号模块时给。 */
+    val account: AccountDeps? = null,
 )
 
 /**
  * 设置（设计稿 Settings、SettingsGuest、SettingsAgreementSheet、SettingsClearCache、SettingsCacheCleared、SettingsLogoutConfirm、SettingsNickname*、
  * NotifySettings*）：分组小标题 + 白卡片行；基本模式五项 +【开启完整功能】；游客底部「登录后可以管理账号、授权和通知」+【去登录】；已登录底部【退出登录】。
  */
-@Suppress("LongMethod", "CyclomaticComplexMethod")
+@Suppress("LongMethod", "CyclomaticComplexMethod", "ReturnCount")
 @Composable
 fun SettingsScreen(config: SettingsConfig) {
     val deps = config.deps
     val identity by deps.env.identityFlow.collectAsStateWithLifecycle()
-    // 执行器保存在回退栈条目的 ViewModel（R1-08）：配置重建（折叠、窗口变化）不清子页与昵称草稿；真正出栈、换身份才作废
+    val accountDeps = config.account
+    val accountIdentity =
+        accountDeps
+            ?.env
+            ?.accountIdentityFlow
+            ?.collectAsStateWithLifecycle()
+            ?.value
+    // 执行器保存在回退栈条目的 ViewModel（R1-08）：配置重建（折叠、窗口变化）不清子页与昵称草稿；真正出栈、换身份（含作用域，APP-13a）才作废
     val controller =
-        rememberPageController(SettingsController.ROUTE, identity, { SettingsController(deps, identity, config.entryId) }) { it.leave() }
+        rememberPageController(SettingsController.ROUTE, identity to accountIdentity?.scope, {
+            SettingsController(deps, identity, config.entryId, accountDeps, accountIdentity)
+        }) { it.leave() }
+    if (accountDeps != null) {
+        androidx.compose.runtime.LaunchedEffect(controller) {
+            accountDeps.notices.settings.collect { pending ->
+                if (pending != null) accountDeps.notices.take(accountIdentity)?.let(controller::showToast)
+            }
+        }
+    }
     DisposableEffect(controller) {
         config.bindLeave(controller::leave)
         onDispose { }
@@ -402,6 +524,14 @@ fun SettingsScreen(config: SettingsConfig) {
         SettingsState.NOTIFY -> {
             controller.notify?.let { sub ->
                 NotifySettingsPage(deps, sub) { controller.closeNotify(sub) }
+                return
+            }
+        }
+
+        SettingsState.PHONE -> {
+            val sub = controller.phoneChange
+            if (sub != null && accountDeps != null) {
+                PhoneChangePage(accountDeps, sub)
                 return
             }
         }

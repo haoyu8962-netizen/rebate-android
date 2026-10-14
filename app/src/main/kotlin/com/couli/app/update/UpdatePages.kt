@@ -62,6 +62,7 @@ internal object UpdateTexts {
     const val UNAVAILABLE = "app_update.unavailable"
     const val PRIVACY_POLICY = "app_update.privacy_policy"
     const val DELETE_ACCOUNT = "app_update.delete_account"
+    const val CANCEL_DELETION = "app_update.cancel_deletion"
 
     /** 设计稿副标题「当前版本过低，请更新后继续使用」= 10405 的文案。 */
     const val TOO_OLD = "error.10405"
@@ -78,14 +79,15 @@ class ForceUpdateActions(
 /**
  * ForceUpdate 全屏拦截页（设计稿 ForceUpdate / ForceUpdateUnavailable；03 §4.1）。
  * - 主按钮【去更新】→ 选店；没有可去的商店时显示 app_update.unavailable 提示条，主按钮换成【重试】（重新检查再选），不给下载地址；
- * - 次要入口「隐私政策」「注销账号」。冷静期内应为「撤销注销」（app_update.cancel_deletion），但注销进度此时不可知：
- *   先只显示「注销账号」，TODO(APP-12)；
+ * - 次要入口「隐私政策」与「注销账号 / 撤销注销」（APP-13a G28：[deleteLabelKey] 由 App 按已登录时取的 getDeletion 决定；null = 不显示——
+ *   DeleteAccount 不可用（since=null 且没有 Debug 覆盖，G01 ②）、基本模式（G48）。TODO(N-37) 契约给 since 后自动显示）；
  * - 返回键吞掉（不能离开强更页）；内容区可滚动（200% 字号），底部按钮固定。
  */
 @Composable
 fun ForceUpdatePage(
     ui: UpdateUi,
     actions: ForceUpdateActions,
+    deleteLabelKey: String? = null,
 ) {
     BackHandler(enabled = true) {}
     Column(
@@ -130,14 +132,16 @@ fun ForceUpdatePage(
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
                 SecondaryLink(UpdateTexts.text(UpdateTexts.PRIVACY_POLICY), FORCE_UPDATE_PRIVACY_TAG, actions.onPrivacyPolicy)
-                Text(
-                    text = "|",
-                    style = CouliTypography.footnote,
-                    color = CouliColors.borderSubtle,
-                    modifier = Modifier.clearAndSetSemantics {},
-                )
-                // TODO(APP-12): 注销冷静期内显示「撤销注销」（app_update.cancel_deletion）；注销进度要等注销任务接入后才知道
-                SecondaryLink(UpdateTexts.text(UpdateTexts.DELETE_ACCOUNT), FORCE_UPDATE_DELETE_TAG, actions.onDeleteAccount)
+                if (deleteLabelKey != null) {
+                    Text(
+                        text = "|",
+                        style = CouliTypography.footnote,
+                        color = CouliColors.borderSubtle,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                    // 冷静期且可撤回为「撤销注销」（app_update.cancel_deletion），其余「注销账号」（G28）
+                    SecondaryLink(UpdateTexts.text(deleteLabelKey), FORCE_UPDATE_DELETE_TAG, actions.onDeleteAccount)
+                }
             }
         }
     }

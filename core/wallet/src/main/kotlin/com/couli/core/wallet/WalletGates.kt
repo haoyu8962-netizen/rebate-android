@@ -63,16 +63,18 @@ class WalletRateGate(
  * [allowed] 在网络线程调用，[gated] 在主线程读。
  */
 class SendProbe internal constructor(
-    private val gate: WalletRateGate,
+    private val limitedNow: () -> Boolean,
     private val extra: () -> Boolean = { true },
 ) {
+    internal constructor(gate: WalletRateGate, extra: () -> Boolean = { true }) : this({ gate.active }, extra)
+
     @Volatile
     var rejected: Boolean = false
         private set
 
     /** 发送前闸门：禁用期内拒绝并记下；[extra] 是调用方另外的发送条件（不算限流）。 */
     fun allowed(): Boolean {
-        if (gate.active) {
+        if (limitedNow()) {
             rejected = true
             return false
         }
@@ -91,6 +93,12 @@ class SendProbe internal constructor(
             gate: WalletRateGate,
             extra: () -> Boolean,
         ): SendProbe = SendProbe(gate, extra)
+
+        /** 限流判定由调用方给（二次验证发码按「账号 + 号码 + action」的槽位限流，APP-13a 共性第 15 条）。 */
+        fun limitedBy(
+            limited: () -> Boolean,
+            extra: () -> Boolean,
+        ): SendProbe = SendProbe(limited, extra)
     }
 }
 

@@ -15,8 +15,10 @@ import com.couli.core.router.PendingActionStore
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.PushLanding
 import com.couli.core.router.PushLookupResult
+import com.couli.core.router.RouteAvailability
 import com.couli.core.router.RouteNavigator
 import com.couli.core.router.RouteRequest
+import com.couli.core.router.RouteSource
 import com.couli.core.router.Router
 import com.couli.core.router.SessionState
 import com.couli.core.router.SharedPreferencesPendingBackend
@@ -118,6 +120,22 @@ class AppRouting
 
         /** 导航票据（APP-12 G09：10006 统一落点核对发起之后有没有再导航）。 */
         val navTickets = NavTickets()
+
+        /**
+         * 路由可用性覆盖（APP-13a G01）：since=null 的路由（DeleteAccount）在 Debug / Staging 由状态文件打开，只给冒烟、截图与集成测试；Release 恒为空集
+         * （变体源码集，release-scan 不得命中开关标记）。守卫与页面入口都按 [availableRoutes] 判定，不写死。
+         */
+        var availabilityOverrides: () -> Set<String> = variantRouteOverrides(context)
+
+        /** 本端可用的路由（since 满足或被 Debug 覆盖）：设置、封禁、申诉、强更页的注销入口与 10007 落点的唯一判定（G01）。 */
+        fun availableRoutes(): Set<String> = RouteAvailability.all(BuildConfig.VERSION_NAME, availabilityOverrides())
+
+        /**
+         * 10007 cooling 想打开 DeleteAccount、而它在本端不可用（since=null 且没有覆盖，G01 ③）：不进升级提示、不导航，只提示 error.10007；值为提示的编号
+         * （外壳显示轻提示）。
+         */
+        private val mutableDeletionPrompt = MutableStateFlow(0L)
+        val deletionPrompt: StateFlow<Long> = mutableDeletionPrompt.asStateFlow()
 
         /** 守卫的实名状态来源（APP-09 AppWallet 接上；没接时按未实名）。 */
         var realnameSource: () -> Boolean = { false }
@@ -249,6 +267,7 @@ class AppRouting
                 realnameVerified = realnameSource(),
                 externalHosts = webTargets().externalHosts,
                 bridgeOrigins = webTargets().bridgeOrigins,
+                availabilityOverrides = availabilityOverrides(),
             )
 
         /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */
@@ -350,6 +369,11 @@ class AppRouting
 
             override fun showUpgradePrompt(request: RouteRequest) {
                 trace()
+                // G01 ③：App 内（10007 cooling 的落点）打开不可用的 DeleteAccount → 只提示 error.10007，不进升级页、不导航
+                if (request.route == DELETE_ACCOUNT && request.sourceKind == RouteSource.IN_APP) {
+                    mutableDeletionPrompt.value += 1
+                    return
+                }
                 navTickets.onNavigate()
                 navigator?.showUpgradePrompt(request)
             }
@@ -378,5 +402,9 @@ class AppRouting
                         )
                 }
             }
+        }
+
+        private companion object {
+            const val DELETE_ACCOUNT = "DeleteAccount"
         }
     }

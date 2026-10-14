@@ -4,6 +4,7 @@ import com.couli.app.clipboard.ClipboardDraftTexts
 import com.couli.app.login.LoginDraftTexts
 import com.couli.core.me.MeDraftTexts
 import com.couli.core.me.MeTexts
+import com.couli.core.me.account.AccountDraftTexts
 import com.couli.generated.DefaultTexts
 
 /**
@@ -14,6 +15,10 @@ internal object AppMeTexts : MeTexts {
     override fun text(key: String): String =
         when {
             MeDraftTexts.textOrNull(key) != null -> MeDraftTexts.text(key)
+
+            // APP-13a 草稿（设置页「注销账号」行等，G29）
+            AccountDraftTexts.DRAFTS.containsKey(key) -> AccountDraftTexts.text(key)
+
             else -> LoginDraftTexts.text(key).ifEmpty { ClipboardDraftTexts.text(key) }
         }
 
@@ -23,6 +28,9 @@ internal object AppMeTexts : MeTexts {
     ): String =
         if (DefaultTexts.text(key) != null || MeDraftTexts.textOrNull(key) != null) {
             MeDraftTexts.format(key, vars)
+        } else if (AccountDraftTexts.DRAFTS.containsKey(key)) {
+            // APP-13a 草稿（撤回注销后设置页的轻提示等，G29）：之前只接了 text，format 落到登录草稿表取不到，轻提示退成「操作未完成」
+            AccountDraftTexts.format(key, vars)
         } else {
             LoginDraftTexts.format(key, vars)
         }

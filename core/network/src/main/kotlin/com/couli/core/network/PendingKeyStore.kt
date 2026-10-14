@@ -81,6 +81,10 @@ data class PendingKeyState(
  * - [coldStart]：冷启动、登录成功、切回前台时调用，只恢复该账号的记录；上个进程遗留的 in_flight 变 unknown。本进程（本个
  *   Store）仍在执行的请求与用户操作（[active]）保持 in_flight，不因同进程回前台被改成 unknown（R1-15）。记录不按时间过期。
  * - [release]：本次操作在发出之前就结束了（本地拒绝、发送前异常）：在途的键退回 unknown（从未结果未知的删除），R1-13。
+ * - APP-13a 的两个操作（[strictOperation]：requestDeletion、bindPhone）口径更严（brief §0 第 1 条，APP-13a 共性第 7 条、G58）：从未结果未知的键
+ *   只在 42901、明确的 40901、20001 / 20002 / 20003、44001 与前置补办（10001、10004、10005）后不再使用；其余非终结响应（10007、5xxxx、10405、
+ *   10003 用尽、表外 1xxxx / 2xxxx / 4xxxx）保留原记录为 [HELD]：不进待确认，下一次用户提交只放行同一个键（原键原体，[beforeSend] 拒绝别的键）；
+ *   这次没有发出或没有结果（[release]）时回到 held，不删除。held 不能确认、不能作废（只对 unknown）。
  *
  * 线程安全（方法加锁）。
  */
@@ -101,6 +105,9 @@ class PendingKeyStore(
      * 响应结算按发起时的账号找记录（lessons 15）：在途期间切换了账号，结果仍记到原账号的记录上，不落到新账号、也不留在 in_flight。
      */
     private val active = mutableMapOf<String, Hold>()
+
+    /** 本进程里由 held 转为在途的键（APP-13a 共性第 7 条）：这次没有业务结果（[release]）时回到 held，不删除。 */
+    private val heldKeys = mutableSetOf<String>()
 
     private data class Hold(
         val account: String,
@@ -176,8 +183,9 @@ class PendingKeyStore(
         val existing = backend.read(account, key) ?: return beforeSend(operationId, key, body, account, summary, holder)
         val held = active[key]
         if (held != null && held.holder != holder) return false
-        if (held == null && existing.stateRaw != UNKNOWN) return false
-        if (existing.stateRaw == UNKNOWN) backend.write(existing.copy(stateRaw = IN_FLIGHT))
+        if (held == null && existing.stateRaw != UNKNOWN && existing.stateRaw != HELD) return false
+        if (existing.stateRaw == UNKNOWN || existing.stateRaw == HELD) backend.write(existing.copy(stateRaw = IN_FLIGHT))
+        if (existing.stateRaw == HELD) heldKeys += key
         active[key] = Hold(account, holder)
         return true
     }
@@ -210,15 +218,19 @@ class PendingKeyStore(
                 }
 
                 Outcome.NON_TERMINAL -> {
-                    if (record.everUnknown) {
-                        backend.write(record.copy(stateRaw = UNKNOWN))
-                    } else {
-                        backend.delete(current, key)
+                    when {
+                        record.everUnknown -> backend.write(record.copy(stateRaw = UNKNOWN))
+
+                        // APP-13a 两个操作的非终结响应保留原记录（共性第 7 条）：下一次用户提交沿用原键原体
+                        holdsKey(record.operationId, kind) -> backend.write(record.copy(stateRaw = HELD))
+
+                        else -> backend.delete(current, key)
                     }
                 }
             }
         } finally {
             active.remove(key)
+            heldKeys.remove(key)
         }
     }
 
@@ -277,9 +289,17 @@ class PendingKeyStore(
             val current = held.account
             val record = backend.read(current, key) ?: return
             if (record.stateRaw != IN_FLIGHT) return
-            if (record.everUnknown) backend.write(record.copy(stateRaw = UNKNOWN)) else backend.delete(current, key)
+            when {
+                record.everUnknown -> backend.write(record.copy(stateRaw = UNKNOWN))
+
+                // held 键这次没有发出或没有业务结果：回到 held，不删除（共性第 7 条）
+                key in heldKeys -> backend.write(record.copy(stateRaw = HELD))
+
+                else -> backend.delete(current, key)
+            }
         } finally {
             active.remove(key)
+            heldKeys.remove(key)
         }
     }
 
@@ -379,6 +399,26 @@ class PendingKeyStore(
         const val IN_FLIGHT = "in_flight"
         const val UNKNOWN = "unknown"
         const val DONE = "done"
+
+        /** APP-13a 严格操作从未结果未知的键收到非终结响应后保留（不进待确认，下次用户提交沿用原键原体）。 */
+        const val HELD = "held"
+
+        /** APP-13a 口径更严的操作（brief §0 第 1 条）：申请注销、绑定 / 更换手机号。 */
+        fun strictOperation(operationId: String): Boolean = operationId == "requestDeletion" || operationId == "bindPhone"
+
+        /** 从未结果未知后键不再使用的码（严格操作）：42901、明确 40901、20001–20003、44001、前置补办 10001 / 10004 / 10005。 */
+        private val ENDING_CODES = setOf(42901, 40901, 20001, 20002, 20003, 44001, 10001, 10004, 10005)
+
+        /** 从未结果未知的键收到非终结 [kind] 后是否保留为 held（只对 [strictOperation]）。 */
+        @Suppress("ReturnCount") // 非严格操作、不是带外壳的码逐项
+        fun holdsKey(
+            operationId: String,
+            kind: String,
+        ): Boolean {
+            if (!strictOperation(operationId) || !kind.startsWith(ENVELOPE_PREFIX)) return false
+            val code = kind.removePrefix(ENVELOPE_PREFIX).toIntOrNull() ?: return false
+            return code !in ENDING_CODES
+        }
 
         const val NO_ENVELOPE = "no_envelope"
         const val ENVELOPE_SUCCESS = "envelope_success"
