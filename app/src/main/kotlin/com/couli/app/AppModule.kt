@@ -5,6 +5,10 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
+import com.couli.app.agent.AppAgent
+import com.couli.app.agent.connectAgentScreenReader
+import com.couli.app.agent.variantAgentConsentRecorded
+import com.couli.app.agent.variantAgentPort
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
@@ -172,6 +176,8 @@ object AppModule {
                         config.get().onEnvironmentSwitched()
                         // 首页（APP-11）：按新环境重建控制器（新环境作用域的 LKG → 包内默认）
                         homeInstance?.sync()
+                        // Agent 页（APP-10）：按新环境重建控制器（从空对话开始）
+                        agentInstance?.sync()
                     }
                 },
             )
@@ -197,6 +203,9 @@ object AppModule {
             // 首页（APP-11，G16 ②、G11）：先作废控制器与在途请求；LKG（含临时文件）、公告关闭记录与弹窗计数全清（删除确认，失败保留待清理并抛错）。
             // 直接按 context 取存储：Application 启动时的环境对账就能执行，不依赖 AppHome 是否已创建
             register { _, _ -> homeInstance?.onEnvironmentSwitching() }
+            // Agent 页（APP-10 G06）：同步作废控制器（关连接、停计时、清消息与金额，不发 cancel）与还没交出的情境；对话只在内存，没有要删的本机数据。
+            // 第一步的在途请求作废已经让旧环境的请求不再发出（假服务的每次发包另核对环境）
+            register { _, _ -> agentInstance?.onEnvironmentSwitching() }
             register { _, _ -> homeLkgStore(context).clearAll() }
             register { _, _ -> homePrefsStore(context).clearAll() }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
@@ -301,6 +310,8 @@ object AppModule {
                             meInstance?.syncIdentity()
                             // 首页（APP-11）：会话换代即作废旧控制器、按新身份重建（旧账号作用域的 LKG 清掉）
                             homeInstance?.sync()
+                            // Agent 页（APP-10）：会话换代即作废旧控制器（不发 cancel），按新身份重建（从空对话开始）
+                            agentInstance?.sync()
                         }
                     },
                     // 10006 的统一落点（APP-12 G09）：入口时的导航票据（AppRouting 建好之前没有，落点一律不放行）与切到主线程后的一处判断
@@ -345,6 +356,8 @@ object AppModule {
         CredentialCleanerRegistry().apply {
             // 第一步：作废并取消全部在途请求（含还在等连接、TLS 的），已捕获凭据的请求不再写出（APP-03a A-R2-01）
             register(IN_FLIGHT_CALLS_CLEANER) { inFlight.onPrivacyRevoked() }
+            // Agent 页（APP-10 G06、APP-12 第 2 条）：确认撤回的同步入口立即停流、作废票据与控制器（对话、卡片、收益金额只在内存，作废即清空）
+            register(AppAgent.AGENT_CONTROLLER_CLEANER) { agentInstance?.onConsentWithdrawing() }
             // APP-04：作废全部容器里在途的桥调用（撤回之后晚到的结果不交回页面）
             register(BRIDGE_CALLS_CLEANER) { bridges.invalidateAll() }
             // 首页（APP-11 R1-01）：在任何存储清理之前先作废首页控制器与预览实例（已排程的写入不再发起；存储层的世代票据挡住已在等锁的写入）
@@ -852,6 +865,57 @@ object AppModule {
             homeInstance = home
         }
 
+    /**
+     * Agent 页（APP-10）：控制器按身份建立与作废（会话、隐私、环境、AI 同意世代、页面实例）；待定 operation 的本机假服务（debug / staging，假服务开关在 + 环境允许
+     * MOCK_DATA 才给端口；Release 恒为 null → 「未开放」、不发请求）；购买复用 AppTrade 的 OpenPurchaseController（场景 agent）；金额隐藏与钱包、订单页共用同一个
+     * AmountMaskStore；route_entry_blocked 进 Tracker 本地队列；10405 进已有强更分流；「粘贴查返利」经剪贴板唯一读取入口；同意弹窗的阻挡层与首页同一套来源。
+     */
+    @Provides
+    @Singleton
+    @Suppress("LongParameterList") // 各能力的来源逐项注入
+    fun appAgent(
+        @ApplicationContext context: Context,
+        client: ApiClient,
+        tokens: SessionTokens,
+        routing: AppRouting,
+        privacy: AppPrivacy,
+        config: AppConfig,
+        tracker: Provider<TrackerQueue>,
+        update: AppUpdate,
+        trade: AppTrade,
+        clipboard: AppClipboard,
+        mask: AmountMaskStore,
+        me: AppMe,
+        home: AppHome,
+        search: AppSearch,
+        orders: AppOrders,
+    ): AppAgent =
+        AppAgent(
+            client = client,
+            tokens = tokens,
+            routing = routing,
+            privacy = privacy,
+            port = { variantAgentPort(context) },
+            envKey = { variantEnvironmentKey(context) },
+            configData = { config.store.snapshots.value.data },
+            mask = mask.hidden,
+            track = { event -> tracker.get().track(event) },
+            serverForced = { update.onServerForced() },
+            trade = trade,
+            paste = clipboard::pasteForAgent,
+            consentRecorded = { accepted -> variantAgentConsentRecorded(context, accepted) },
+        ).also { agent ->
+            agent.connect()
+            agent.customerService = { me.cs.open(AppAgent.AGENT_ROUTE) }
+            // 同意弹窗的阻挡层（共性第 5 条）：与首页弹窗同一套来源（隐私弹窗、强更、更新提示、半屏 / 对话框）
+            agent.connectBlockers({ home.blockers().isNotEmpty() }, home.blockerChanges)
+            connectAgentScreenReader(context, agent)
+            // 情境入口（G27）：商品详情、订单详情的【问问 AI】
+            search.agent = agent
+            orders.agent = agent
+            agentInstance = agent
+        }
+
     /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
     @Provides
     @Singleton
@@ -1017,6 +1081,10 @@ object AppModule {
     /** 已构造的 AppMe（网络层的会话通知、10006 落点、清理入口在它建好之前不取它，避免 Dagger 循环依赖）。 */
     @Volatile
     private var meInstance: AppMe? = null
+
+    /** 已构造的 AppAgent（会话通知、撤回与环境切换的清理在它建好之前不取它）。 */
+    @Volatile
+    private var agentInstance: AppAgent? = null
 
     /** 已构造的 AppHome（环境切换的清理与结束通知在它建好之前不取它）。 */
     @Volatile

@@ -361,6 +361,11 @@ class SettingsConfig(
     val onBack: () -> Unit,
     val clipboardRow: (@Composable () -> Unit)? = null,
     val bindLeave: (() -> Unit) -> Unit = {},
+    /**
+     * APP-10 G18（鸿蒙 H07）：【撤回 AI 服务同意】一行（App 给；只在 Agent 可用的构建与环境、已同意时显示，Release 为 null）。设置条目表受 me-vectors 锁定，
+     * 不改条目表：分组卡之后单独一张卡一行。
+     */
+    val agentRow: (@Composable () -> Unit)? = null,
 )
 
 /**
@@ -432,6 +437,7 @@ fun SettingsScreen(config: SettingsConfig) {
                 },
             )
         }
+        if (identityAllowsAgentRow(controller.identity.level)) config.agentRow?.let { row -> RowCard(listOf(row)) }
         when (model.footer) {
             SettingsItems.FOOTER_LOGOUT -> {
                 CouliButton(
@@ -630,3 +636,6 @@ private fun AgreementSheet(
 internal fun BackAsCancel(onCancel: () -> Unit) {
     BackHandler(onBack = onCancel)
 }
+
+/** 【撤回 AI 服务同意】只在已同意隐私政策时显示（基本模式不显示，鸿蒙 H07）。 */
+private fun identityAllowsAgentRow(level: String): Boolean = level != MeLevel.BASIC

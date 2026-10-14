@@ -163,6 +163,16 @@ object WalletDraftTexts : WalletTexts {
             "withdrawal_status.REJECTED.title" to "未通过",
             "withdrawal_status.FAILED.title" to "打款未成功",
             "withdrawal_status.UNKNOWN.title" to "处理中",
+            // APP-10 G11（TODO(N-32 / N-36)）：Agent 收益卡的 latest_withdrawal.title_key 按 BR-TEXT-12 命名 withdrawal_status.<CODE>.label；
+            // 只对上面已有的 CODE 补 .label（与同表 .title 同一文字，不新造标题），收益卡只做精确键查找，查不到整行不显示
+            "withdrawal_status.PENDING_REVIEW.label" to "审核中",
+            "withdrawal_status.APPROVED.label" to "审核中",
+            "withdrawal_status.PAYING.label" to "打款中",
+            "withdrawal_status.PAID_API.label" to "已到账",
+            "withdrawal_status.PAID_MANUAL.label" to "已到账",
+            "withdrawal_status.REJECTED.label" to "未通过",
+            "withdrawal_status.FAILED.label" to "打款未成功",
+            "withdrawal_status.UNKNOWN.label" to "处理中",
             // G08 副文案草稿（金额由 CouliFormat 渲染，模板不加 ¥）
             "withdrawal.draft.frozen" to "{amount} 已冻结",
             "withdrawal.draft.processing" to "处理中，结果会通知你",

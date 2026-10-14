@@ -142,7 +142,7 @@ class OrderDetailViewModel(
  * 订单详情（OrderDetail 路由；设计稿 OrderDetailEstimated / Presale / Settled / PartClawed / ClawedBack / NoRebate / PriceCompareNoRebate /
  * PriceCompareRisk / Reviewing / RightsPending / Blacklist / AppealPending / Share；AdaptLargeTextOrderDetail）：状态与金额卡（眼睛按钮）、原因区
  * 「为什么没返利？」（直接显示，不进 AI）、「申诉中」块、平台 +「查看商品」、商品卡（订单号 + 复制）、时间线、底部按钮（最多 2 个）。30701 显示
- * 空态不重试；「问问 AI」本任务不显示（G18，TODO(APP-10)）。大屏内容限宽 600 居中。
+ * 空态不重试；「问问 AI」只在 Agent 可用的构建与环境里显示（APP-10 G27，带 {order_id}，不自动发送）。大屏内容限宽 600 居中。
  */
 @Composable
 fun OrderDetailScreen(config: OrderDetailConfig) {
@@ -244,6 +244,16 @@ private fun DetailContent(
         }
         if (actions.appealPendingBlock) AppealBlock(texts) { controller.openAppeal(version) }
         ProductCard(texts, detail, onViewProduct = { controller.viewProduct(version) }, onCopy = { controller.copy(version) })
+        // 【问问 AI】（APP-10 G27，鸿蒙 H06：设计稿 OrderDetail* 没有位置，代拟放在商品卡下方一行文字按钮；待设计补位置）
+        config.askAi?.let { ask ->
+            CouliButton(
+                text = texts.text("order_detail.ask_ai"),
+                onClick = ask,
+                variant = CouliButtonVariant.TEXT,
+                size = CouliButtonSize.COMPACT,
+                modifier = Modifier.testTag(OrderTags.ASK_AI),
+            )
+        }
         TimelineCard(texts, detail, config.clock())
     }
     if (actions.buttons.isNotEmpty()) {

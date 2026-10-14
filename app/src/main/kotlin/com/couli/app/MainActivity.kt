@@ -9,6 +9,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.couli.app.agent.AppAgent
 import com.couli.app.clientcore.ActivityPermissionHost
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.PermissionPromptHost
@@ -93,6 +94,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var home: AppHome
 
+    @Inject
+    lateinit var agent: AppAgent
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -131,6 +135,7 @@ class MainActivity : ComponentActivity() {
                                 wallet = wallet,
                                 me = me,
                                 home = home,
+                                agent = agent,
                                 // 首页 SDUI（APP-11）：debug / staging 在列表底部多一个开发入口（调试首屏）
                                 homeContent = { VariantHomeContent(home, trace) },
                             )
@@ -147,6 +152,8 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         // 首页（APP-11）：App 在前台（弹窗、轮播的可见性）
         home.onForeground(true)
+        // Agent 页（APP-10）：App 在前台（可见性：进后台时关连接、停计时）
+        agent.onForeground(true)
         // 剪贴板（APP-07）：冷启动进入前台、或真正经过后台之后回到前台，才算一次回前台（配置变更重建不算）；之后第一次获得窗口焦点时读 1 次
         if (!clipboardRebuilt) clipboard.onForeground(cold = clipboardColdStart, hasFocus = hasWindowFocus())
         clipboardColdStart = false
@@ -164,6 +171,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (permissionSystem.host === permissionHost) permissionSystem.host = null
+        // Agent 页实例真正销毁（配置重建除外，brief §3 Android：配置重建只在内存保留对话）：page_destroyed，清空消息，不发 cancel
+        if (!isChangingConfigurations) agent.onPageDestroyed()
         super.onDestroy()
     }
 
@@ -176,6 +185,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // 首页（APP-11）：进后台（含配置变更重建的短暂停留）时轮播暂停、弹窗等待
         home.onForeground(false)
+        agent.onForeground(false)
         // 进后台（配置变更重建除外）：作废未点击的提示条、在途读取与 parse
         if (isChangingConfigurations) clipboardRebuilt = true else clipboard.onBackground()
         if (!isChangingConfigurations) search.trade?.onAppBackground()

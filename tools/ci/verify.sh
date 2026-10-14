@@ -13,7 +13,8 @@
 #      lint 违反样例必须报错（tools/ci/lint-fixtures/ 每条规则至少一个；含插值里的中文、插值里的 SDK 初始化）
 #   5. ./gradlew assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
 #   6. ./gradlew testDebugUnitTest（含 Robolectric、ContractConformanceTest 与 DS-01 格式向量 FormatVectorTest）；
-#      ./gradlew :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug（DS-01 组件快照、APP-11 首页 golden 页与入库基准图 src/test/snapshots 比对）
+#      ./gradlew :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug（DS-01 组件快照、APP-11 首页 golden 页、
+#      APP-10 Agent 页 15 个流 fixture 与构造样例，与入库基准图 src/test/snapshots 比对）
 #   6b. tools/ci/ui-tests.sh：feature:web 真实 WebView 仪器测试（installDebugAndroidTest + am instrument，以「OK (N tests)」为准），
 #      含一致性页 ConformancePageTest（逐项断言 window.__RESULT__）；需要一台在线的设备或模拟器，没有即失败
 #   7. python3 tools/codegen/test_gen.py（生成器命名规则；含用 Gradle 缓存里的 Kotlin 编译器真编译探针生成物，
@@ -160,7 +161,7 @@ expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feat
 step "构建 debug / staging / release 与 androidTest" \
   $GRADLE assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
 step "单元测试（testDebugUnitTest，含 Robolectric 与格式向量）" $GRADLE testDebugUnitTest
-step "组件快照测试（Roborazzi verifyRoborazziDebug；含首页 golden 页，APP-11 G29）" $GRADLE :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug
+step "组件快照测试（Roborazzi verifyRoborazziDebug；含首页 golden 页 APP-11 G29、Agent 页流 fixture 快照 APP-10 G32）" $GRADLE :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug
 # APP-04（Android 第 2 轮评审 R2-05、共性第 44、55 条）：真实系统 WebView 仪器测试，含加载锁定 H5 一致性页、逐项断言
 # window.__RESULT__ 的 ConformancePageTest。以 am instrument 输出的「OK (N tests)」为唯一成功判据；任何失败、没有在线的设备
 # 或模拟器都让本步失败（不跳过）

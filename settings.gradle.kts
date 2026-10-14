@@ -45,6 +45,7 @@ listOf(
     "wallet",
     "me",
     "home",
+    "agent",
 ).forEach { include(":core:$it") }
 
 listOf(

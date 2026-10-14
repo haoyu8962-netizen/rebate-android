@@ -31,6 +31,7 @@ fun meRoutePages(
     me: AppMe?,
     onBack: () -> Unit,
     clipboardRow: (@Composable () -> Unit)?,
+    agentRow: (@Composable () -> Unit)? = null,
 ): Map<String, @Composable (RouteDestination) -> Unit> =
     ME_ROUTES.associateWith { _ ->
         { page: RouteDestination ->
@@ -40,7 +41,7 @@ fun meRoutePages(
                 val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
                 val bind: (() -> Unit) -> Unit = { leave -> me.bindLeave(entryId, leave) }
                 when (page.name) {
-                    "Settings" -> SettingsScreen(SettingsConfig(me.deps, entryId, onBack, clipboardRow, bind))
+                    "Settings" -> SettingsScreen(SettingsConfig(me.deps, entryId, onBack, clipboardRow, bind, agentRow))
                     "PrivacyCenter" -> PrivacyCenterScreen(PrivacyCenterConfig(me.deps, onBack, bind))
                     "About" -> AboutScreen(me.deps, onBack, bind)
                     "RiskNotice" -> RiskNoticeScreen(RiskNoticeConfig(me.deps, onBack, bind))

@@ -31,6 +31,8 @@ complexity:
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
       # APP-11 的首页 SDUI 向量测试同样由 Codex 先写、本仓库不改
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
+      # APP-10 的 Agent 向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
   CyclomaticComplexMethod:
     excludes:
       - '**/core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt'
@@ -41,11 +43,13 @@ complexity:
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardCandidatesVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
   NestedBlockDepth:
     excludes:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 
@@ -55,6 +59,10 @@ naming:
     ignoreAnnotated: ['Composable']
 
 style:
+  # APP-10 的 Agent 向量测试由 Codex 先写、本仓库不改（任务书 §4）：只对这一个文件放宽它触发的这一条
+  WildcardImport:
+    excludes:
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
   # APP-07 的剪贴板向量测试由 Codex 先写、本仓库不改：只对这一个文件放宽它触发的这一条
   ReturnCount:
     excludes:

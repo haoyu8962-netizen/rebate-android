@@ -81,6 +81,8 @@ object OrderDraftTexts : OrderTexts {
             "order_reason.OTHER.desc" to "可联系客服查询",
             "order_reason.clawed_back_extra" to "已从余额扣除",
             // ---- 金额格标签（G14：设计稿 Orders / OrderDetail* 原文）
+            // 代拟（APP-10 G27，鸿蒙 H06）：订单详情【问问 AI】，TODO(N-36)
+            "order_detail.ask_ai" to "问问 AI",
             "order_amount.paid" to "实付金额",
             "order_amount.est_rebate" to "预估返",
             "order_amount.actual" to "实返",

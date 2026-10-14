@@ -84,6 +84,21 @@ specs/app-stores.yaml
 specs/request-sign.vectors.json
 specs/device-hash.vectors.json"
 
+# APP-10 加入 contracts/fixtures/agent-streams/*.ndjson（三端 StreamReducer 单测与快照测试用）：
+# 先单独取列表并检查退出码，空列表即失败；逐字节原样拷贝（ndjson 是逐行 JSON，整文件不是合法 JSON；
+# 原样拷贝让快照哈希与 rebate-platform 锁定提交里的文件哈希直接可比）。
+AGENT_FIXTURES="$(git -C "$RP_DIR" ls-tree --name-only "$RP_COMMIT" contracts/fixtures/agent-streams/)" || {
+  echo "sync.sh: 取不到 contracts/fixtures/agent-streams/ 列表" >&2
+  exit 1
+}
+AGENT_FIXTURES="$(printf '%s\n' "$AGENT_FIXTURES" | grep -E '\.ndjson$' | sort || true)"
+if [ -z "$AGENT_FIXTURES" ]; then
+  echo "sync.sh: contracts/fixtures/agent-streams/ 下没有 ndjson" >&2
+  exit 1
+fi
+FILES="$FILES
+$AGENT_FIXTURES"
+
 normalize_json() {
   # $1 输入 JSON 文件，$2 输出文件
   python3 - "$1" "$2" <<'PY'
@@ -133,6 +148,11 @@ echo "$FILES" | while IFS= read -r path; do
       dest="$OUT/$path"
       mkdir -p "$(dirname "$dest")"
       normalize_json "$raw" "$dest"
+      ;;
+    contracts/fixtures/agent-streams/*.ndjson)
+      dest="$OUT/$path"
+      mkdir -p "$(dirname "$dest")"
+      cp "$raw" "$dest"
       ;;
     *)
       echo "sync.sh: 不支持的文件类型 $path" >&2

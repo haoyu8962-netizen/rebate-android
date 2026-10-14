@@ -189,6 +189,10 @@ class AppSearch(
     /** 回退栈条目 id → 该页的作废入口。 */
     private val leaves = mutableMapOf<String, () -> Unit>()
 
+    /** Agent 页（APP-10 G27）：商品详情【问问 AI】的来源票据（回退栈条目 → 页面构造时固定的归属）；AppModule 在建好 AppAgent 后接上，没接时只打开 AgentChat。 */
+    var agent: com.couli.app.agent.AppAgent? = null
+    private val askSources = mutableMapOf<String, com.couli.core.agent.AgentContextSource>()
+
     private val mutableNotice = MutableStateFlow<String?>(null)
 
     /** 购买意图的提示（只在 debug / staging 有文字，release 为 null）。 */
@@ -235,6 +239,7 @@ class AppSearch(
         if (ids.isEmpty() || leaves.isEmpty()) return
         val gone = leaves.keys.filter { it.removePrefix(LEAVE_PURCHASE_PREFIX) !in ids }
         gone.forEach { id -> leaves.remove(id)?.invoke() }
+        askSources.keys.retainAll(ids)
     }
 
     fun searchConfig(
@@ -362,7 +367,10 @@ class AppSearch(
                     // 用回调传入的当前商品构造参数：首次进入详情、没点过购买也带 q 与 platform（A-R1-15）
                     onSimilar = { product -> purchase?.controller?.similar(product) ?: openSimilar(product) },
                     onResearch = { open(SEARCH_ROUTE, JsonObject(emptyMap())) },
-                    onAskAi = { open(AGENT_ROUTE, JsonObject(emptyMap())) },
+                    // G27：带 {product_key}，不自动发送（附在用户发的第一条上）；Agent 不可用时照旧只打开 AgentChat（Release 为「未开放」）
+                    onAskAi =
+                        agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf("product_key" to JsonPrimitive(key))))
+                            ?: { open(AGENT_ROUTE, JsonObject(emptyMap())) },
                 ),
             bindLeave = { leave -> bind(entryId, leave) },
             creditEnabled = ::creditEnabled,

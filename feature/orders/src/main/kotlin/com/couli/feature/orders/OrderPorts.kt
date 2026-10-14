@@ -93,6 +93,11 @@ class OrderDetailConfig(
     val rateGate: OrderRateGate? = null,
     /** 会话换代的入口交给 App（App 在会话通知里同步调用：清掉已显示的详情并按新会话重取，APP-08 共性第 1 条）。 */
     val bindSession: (onSessionChanged: () -> Unit) -> Unit = {},
+    /**
+     * APP-10 G27：【问问 AI】（App 给；只在 Agent 可用的构建与环境里有，Release 为 null 不显示）。App 在来源页构造时固定归属与页面票据、渲染时固定 order_id，
+     * 点击只把 {order_id} 交给 Agent 页（不自动发送，附在用户发的第一条上）。「为什么没返利」仍直接显示、不进 AI（BR-AI-09）。
+     */
+    val askAi: (() -> Unit)? = null,
 )
 
 /** 页面上的路由名（routes.json；跨功能跳转只经 Router）。 */
@@ -105,6 +110,7 @@ object OrderRoutes {
 
 /** 测试与冒烟用的标记。 */
 object OrderTags {
+    const val ASK_AI = "order_detail_ask_ai"
     const val LIST_PAGE = "orders_page"
     const val DETAIL_PAGE = "order_detail_page"
     const val FIND_ENTRY = "orders_find_entry"

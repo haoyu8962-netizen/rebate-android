@@ -23,6 +23,14 @@ android {
         buildConfig = true
     }
 
+    // APP-10：debug / staging 的本机假 Agent 流（src/debugFeatures 的 AgentFakeStream）回放锁定契约的 15 个流 fixture（contracts/snapshot，逐字节原样）；
+    // 只加进这两个构建类型的 assets，Release 制品里没有
+    sourceSets {
+        listOf("debug", "staging").forEach { type ->
+            getByName(type).assets.srcDir(rootProject.file("contracts/snapshot/contracts/fixtures"))
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "BUILD_KIND", "\"debug\"")

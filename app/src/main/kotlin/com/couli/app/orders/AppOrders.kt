@@ -108,6 +108,10 @@ class AppOrders(
     /** 回退栈条目 id → 该页的作废入口（详情页）。 */
     private val leaves = mutableMapOf<String, () -> Unit>()
 
+    /** Agent 页（APP-10 G27）：订单详情【问问 AI】的来源票据（回退栈条目 → 页面构造时固定的归属）；AppModule 在建好 AppAgent 后接上，没接时不显示。 */
+    var agent: com.couli.app.agent.AppAgent? = null
+    private val askSources = mutableMapOf<String, com.couli.core.agent.AgentContextSource>()
+
     /** 回退栈条目 id → 详情页的会话换代入口（清掉已显示的详情并按新会话重取）。 */
     private val detailSessions = mutableMapOf<String, () -> Unit>()
 
@@ -243,6 +247,7 @@ class AppOrders(
             restoreGate = ::awaitUpdateCheck,
             rateGate = rateGate,
             bindSession = { handler -> if (entryId != null) detailSessions[entryId] = handler },
+            askAi = agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf(ORDER_ID to JsonPrimitive(orderId)))),
         )
     }
 
@@ -268,6 +273,7 @@ class AppOrders(
 
     internal fun followBackStackIds(ids: Set<String>) {
         leaves.keys.filter { it !in ids }.forEach { id -> leaves.remove(id)?.invoke() }
+        askSources.keys.retainAll(ids)
         detailSessions.keys.retainAll(ids)
         pages.keys.filter { it !in ids }.forEach { id -> pages.remove(id)?.release() }
     }

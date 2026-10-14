@@ -25,6 +25,9 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.couli.app.agent.AgentRoute
+import com.couli.app.agent.AgentWithdrawSettingsRow
+import com.couli.app.agent.AppAgent
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardSettingsRow
@@ -114,6 +117,7 @@ import kotlinx.serialization.json.jsonObject
  * @param orders 订单（APP-08）：订单 Tab 根（OrderList）与 OrderDetail；为 null 时是占位页（只测外壳的单测）。
  * @param me 「我的」、设置、隐私中心、关于、封禁说明、申诉与统一客服出口（APP-12）。为 null 时（只测外壳与更早任务的单测）保留更早任务的占位：
  *   「我的」入口行、设置页的退出登录与剪贴板开关、隐私中心占位页。
+ * @param agent Agent 页（APP-10）：AgentChat Tab 根与设置页【撤回 AI 服务同意】一行；为 null 时（只测外壳与更早任务的单测）AgentChat 是占位页。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 外壳按可选接线（强更、桥、登录）逐项组合
@@ -131,6 +135,7 @@ fun AppShell(
     wallet: AppWallet? = null,
     me: AppMe? = null,
     home: AppHome? = null,
+    agent: AppAgent? = null,
 ) {
     val privacyState by privacy.state.collectAsStateWithLifecycle()
     val conclusion = privacyState.toRouterPrivacy()
@@ -141,7 +146,7 @@ fun AppShell(
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
     val registry =
-        remember(homeContent, update, web, login, search, clipboard, orders, wallet, me, home) {
+        remember(homeContent, update, web, login, search, clipboard, orders, wallet, me, home, agent) {
             RoutePageRegistry(
                 mapOf<String, @Composable (RouteDestination) -> Unit>(
                     // 两类 WebView 容器（APP-04）；没有接线（只测外壳的单测）时是占位页
@@ -204,6 +209,8 @@ fun AppShell(
                                 clipboard?.let { board ->
                                     { ClipboardSettingsSlot(board, privacy) }
                                 },
+                                // 【撤回 AI 服务同意】（APP-10 G18）：只在 Agent 可用的构建与环境、已同意时显示
+                                agent?.let { a -> { AgentWithdrawSettingsRow(a) } },
                             )
                         } else {
                             emptyMap()
@@ -216,7 +223,7 @@ fun AppShell(
             )
         }
     val hooks =
-        remember(privacy, login, search, clipboard, orders, wallet, me, home) {
+        remember(privacy, login, search, clipboard, orders, wallet, me, home, agent) {
             ShellHooks(
                 tabRoutes = ShellTab.routes,
                 onOpenTab = { route, readonly ->
@@ -229,6 +236,8 @@ fun AppShell(
                         me?.onTab(it.route)
                         // 首页（APP-11，共性第 22、28 条）：同一同步出口先写目标 Tab（轮播暂停、弹窗等待），再改选中项
                         home?.onTab(it.route)
+                        // Agent 页（APP-10，共性第 2 条）：同一同步出口先写目标 Tab（离开即撤销本次进入世代、关连接、停计时），再改选中项
+                        agent?.onTab(it.route)
                         selection = TabSelection(it, readonly)
                     }
                 },
@@ -248,6 +257,8 @@ fun AppShell(
                     me?.followBackStack(entries)
                     // 首页（APP-11）：首页之上有没有别的页面（可见性）；HomePreview 实例出栈的同步出口
                     home?.followBackStack(entries)
+                    // Agent 页（APP-10）：Tab 外壳之上有没有别的页面（被盖住即不可见：关连接、停计时）
+                    agent?.followBackStack(entries)
                     // 剪贴板（APP-07）：离开首页根页即作废未点击的提示条与首页发起的 parse；出栈的网页容器的抑制随之失效
                     clipboard?.let { followClipboard(it, entries) }
                 },
@@ -296,6 +307,8 @@ fun AppShell(
         }
     }
     SideEffect { routing.navTickets.onTab(selection.tab.route) }
+    // Agent 页：恢复保存的选中项（Activity 重建、进程恢复）等不经 onOpenTab 的情形兜底同步（用户点 Tab 已在同步出口告知）
+    if (agent != null) SideEffect { agent.onTab(selection.tab.route) }
 
     // 钱包（APP-09）：提交成功替换栈顶、收款账号保存后出栈都经这个 NavController
     if (wallet != null) {
@@ -340,6 +353,7 @@ fun AppShell(
                             wallet = wallet,
                             me = me,
                             home = home,
+                            agent = agent,
                         )
                     },
                 )
@@ -458,6 +472,7 @@ private fun TabRoot(
     wallet: AppWallet?,
     me: AppMe?,
     home: AppHome?,
+    agent: AppAgent?,
 ) {
     val destination = RouteDestination(tab.route, EMPTY_PARAMS, readonly = readonly)
     // 全局置灰只作用于首页根视图（含固定区与 SDUI 区，03 §6.2 第 8 步，G27）；配置变化即时应用或移除
@@ -481,6 +496,9 @@ private fun TabRoot(
                 onAskAi = home?.let { { routing.router.open(inAppRequest(ShellTab.AGENT.route)) } },
             ) { registry.Render(destination) }
         }
+    } else if (tab == ShellTab.AGENT && agent != null) {
+        // Agent 页（APP-10）：控制器在 AppAgent 里按身份建立与作废，切 Tab 不销毁对话（只撤销本次进入世代）
+        AgentRoute(agent, readonly)
     } else if (tab == ShellTab.ME && me != null) {
         // 「我的」页正文（APP-12）：身份卡、余额卡、宫格（授权管理、设置、钱包都在宫格里）
         MeTabRoute(me)

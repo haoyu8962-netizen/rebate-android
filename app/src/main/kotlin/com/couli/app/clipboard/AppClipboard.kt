@@ -924,6 +924,15 @@ class AppClipboard(
         return ManualPasteAction.decide(ManualPasteAction.ENTRY_LOGIN_INVITE, text, rules()).code
     }
 
+    /**
+     * Agent 页「粘贴查返利」（APP-10 G29，BR-ID-16：用户点击才读）：已同意隐私政策、不在 42901 禁用期、没有 parse 在途、没有授权类敏感浮层时读一次主剪贴板文字，
+     * 原样交给发起它的那一个输入框（不 parse、不记 hash、不改写剪贴板、不进日志）；读不到为 null。由用户点发送，不自动发送剪贴板内容。
+     */
+    fun pasteForAgent(): String? {
+        if (!pasteAllowed()) return null
+        return (system.read() as? ClipRead.Text)?.value?.takeIf(String::isNotBlank)
+    }
+
     // ---------------------------------------------------------------- 桥 clipboard.read（FU-CLIP C4）
 
     /**
