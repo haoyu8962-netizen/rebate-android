@@ -174,6 +174,9 @@ class FollowupAnd0714LoginEpochTest {
         cipher.failing = false
         prefs.memory[KeystoreSessionTokens.KEY_LOGIN_EPOCH] = "%%%not-base64%%%"
         assertNull("损坏：未知", store.persistedLoginEpoch())
+        // FU-AND-0715（F-AND-32 补充，鸿蒙 R1-01）：世代键损坏是会话字段损坏，整组隔离（不再只让世代未知）；升级前登录另起一份会话
+        assertNull("世代键损坏：整组会话不加载", store.accessToken)
+        store.save("access-1", "refresh-1", SessionScopeRaw.FULL, "user-a")
         prefs.memory.remove(KeystoreSessionTokens.KEY_LOGIN_EPOCH)
         assertEquals("升级前登录的会话（没有世代）令牌照常可用", "access-1", store.accessToken)
         assertNull("但登录世代未知（缓存、恢复记录要等下次登录）", store.persistedLoginEpoch())

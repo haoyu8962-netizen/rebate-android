@@ -162,6 +162,8 @@ object MeResultInput {
                         "msg" to JsonPrimitive(result.msg),
                     )
                 result.traceId?.let { map["traceId"] = JsonPrimitive(it) }
+                // 10405 而网络层没有判定强更（F-X-09）：交给结局表按统一错误文案处理，不进强更
+                if (ResultSignals.nonForcedUpdate(result)) map["forced"] = JsonPrimitive(false)
                 val disable = ResultSignals.disableMillis(result)
                 if (disable > 0) map["headers"] = JsonObject(mapOf("Retry-After" to JsonPrimitive((disable / MILLIS).toString())))
                 JsonObject(map)

@@ -130,6 +130,13 @@ class OrderListController(
     /** 进程恢复等待期间已按保存的条件（或默认条件）备好查询（[prepare]）；[preparedRestored] 为备好的是保存的条件。 */
     private var prepared = false
     private var preparedRestored = false
+
+    /**
+     * 恢复等待结束时处在换号窗口（会话存储已换、通知还没到，F-AND-30）：本页不打开、零请求，记下路由参数；会话通知 / 清理到达（[resetForSession]
+     * 重取归属）时按新会话默认条件打开。null = 没有推迟。
+     */
+    private var openDeferred: String? = null
+    private var openDeferredSet = false
     private val owners = mutableListOf<CallOwnership>()
     private val gate = rateGate ?: OrderRateGate(scope, clock)
     private var nextCursor: String? = null
@@ -189,6 +196,22 @@ class OrderListController(
 
     /** 已开始取数（页面打开过，或恢复等待期间用户已发起新查询）。 */
     val isOpen: Boolean get() = opened
+
+    /** 当前会话已不是本页的固定归属、而会话通知 / 清理还没到（换号窗口）。只比较，不赋值。 */
+    fun ownerUnnoticed(): Boolean = env.sessionEpoch() != owner.epoch || env.account() != owner.account
+
+    /**
+     * 换号窗口里的恢复等待结束（F-AND-30，FU-AND-0715）：不打开、不发请求；丢掉保存的旧条件（含搜索词），条件回默认；会话通知 / 清理到达时
+     * 按 [routeScope] 打开（[resetForSession] 的 !opened 分支）。
+     */
+    fun openOnSessionNotice(routeScope: String?) {
+        if (opened || left) return
+        openDeferred = routeScope
+        openDeferredSet = true
+        preparedRestored = false
+        query = OrderQuery.initial(routeScope)
+        update { it.reset(query.conditions()) }
+    }
 
     /** 用户发起了新一轮查询：恢复等待期间也算本页已打开（等待结束后不再按保存的条件重来）。 */
     private fun takeOver() {
@@ -536,7 +559,16 @@ class OrderListController(
     ): OrderErrorView =
         when (result) {
             is ApiResult.Failure -> {
-                OrderErrorAction.of(target, result.code, false, ResultSignals.disableMillis(result), result.traceId, hasCache, filtered)
+                OrderErrorAction.of(
+                    target,
+                    result.code,
+                    false,
+                    ResultSignals.disableMillis(result),
+                    result.traceId,
+                    hasCache,
+                    filtered,
+                    forced = ResultSignals.forcesUpdate(result),
+                )
             }
 
             is ApiResult.TransportFailure -> {
@@ -666,6 +698,11 @@ class OrderListController(
                 preparedRestored = false
                 query = OrderQuery.initial(s.scope)
                 update { it.reset(query.conditions()) }
+            }
+            // 换号窗口里推迟的打开（F-AND-30）：通知已到、归属已按新会话重取，此刻才按新会话默认条件取第一页（游客不发）
+            if (openDeferredSet) {
+                openDeferredSet = false
+                open(openDeferred)
             }
             return
         }

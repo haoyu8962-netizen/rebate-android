@@ -67,13 +67,14 @@ object WalletErrors {
                     }
 
                     // 10405 只消费网络层已确定的 Effect（APP-13a R2-02，共性第 12、37 条）：FORCE_UPDATE 才进强更；
-                    // REFRESH_ONLY（遗留受限令牌已刷新）与刷新失败清会话沿用网络层结论，按可重试的读取失败显示，不按码重判强更
+                    // REFRESH_ONLY（遗留受限令牌已刷新）与刷新失败清会话沿用网络层结论，按可重试的读取失败显示，不按码重判强更。
+                    // 文案三端统一（F-X-09，FU-AND-0715）：统一错误文案（error.50001 + trace6）+【重试】，不再说成断网
                     result.effect.kind == ErrorEffectKind.FORCE_UPDATE -> {
                         WalletError(WalletError.FORCE_UPDATE, "error.10405")
                     }
 
-                    code == 10405 -> {
-                        WalletError(WalletError.OTHER, NETWORK_KEY)
+                    code == ResultSignals.UPDATE_REQUIRED -> {
+                        WalletError(WalletError.SERVER, "error.$GENERIC_SERVER", result.traceId, showTrace6 = true)
                     }
 
                     code == NOT_FOUND -> {

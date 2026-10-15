@@ -7,7 +7,10 @@ import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
 import com.couli.core.network.PageApi
+import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -72,9 +75,14 @@ class PushTokenReporter(
     private val state: PushReportState,
     private val api: PageApi,
     private val scope: CoroutineScope,
+    /** 42901 禁用期的计时（单测注入可控的等待）。 */
+    private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
     private var policy = PushReportPolicy()
     private val owners = mutableListOf<CallOwnership>()
+
+    /** 42901 禁用期到期后的补发（F-X-08 ②）；会话换代、退出、撤回时取消。 */
+    private var limitJob: Job? = null
 
     /**
      * 会话级停报（鸿蒙 R1-02，共性第 2 条，G18 ④）：撤回同意、退出登录在确认生效的同步入口调用 [halt] 记下当时的会话标识；这个会话里不再发送、不再结算
@@ -108,6 +116,9 @@ class PushTokenReporter(
 
     val inFlight: Boolean get() = policy.inFlight
     val pending: Boolean get() = policy.pending
+
+    /** 42901 禁用期中（F-X-08 ②；诊断与测试用）。 */
+    val rateLimited: Boolean get() = policy.rateLimited
 
     /** 处于停报中：撤回同意进行中（不论会话），或当前会话已停报（退出登录进行中）。 */
     val halted: Boolean get() = withdrawing || haltedSession?.let { it == safeKey() } == true
@@ -187,6 +198,7 @@ class PushTokenReporter(
     fun sessionChanged() {
         coldStartHeld = false
         cancelAll()
+        cancelLimit()
         policy.on(PushEvent.SESSION_CHANGED, snapshot())
     }
 
@@ -211,8 +223,39 @@ class PushTokenReporter(
 
     private fun terminate() {
         cancelAll()
+        cancelLimit()
         policy.on(PushEvent.LOGOUT, JsonObject(emptyMap()))
         policy = PushReportPolicy()
+    }
+
+    private fun cancelLimit() {
+        limitJob?.cancel()
+        limitJob = null
+    }
+
+    /**
+     * 42901 禁用期（F-X-08 ②）：按 Retry-After（缺省 / 非法 5 秒）计时，到期时仍是同一个策略实例、同一个会话、同一轮禁用期、没有停报，就按当时的会话与令牌值
+     * 结算（有待报才补发一次）。
+     *
+     * R2-01：只由 [run] 在「策略实际接纳了这条 42901」（结算没 drop、仍是当前策略实例与当前会话、禁用期刚由它开始）时调用；计时绑定 [session] 与策略给的
+     * 轮次 [round]——旧会话 / 旧轮次的迟到响应不会走到这里，不会取消或缩短新禁用期；万一旧计时到期，轮次或会话对不上也不解除。
+     */
+    private fun startLimit(
+        sending: PushReportPolicy,
+        session: String,
+        round: Long,
+        millis: Long,
+    ) {
+        cancelLimit()
+        limitJob =
+            scope.launch {
+                sleep(millis)
+                if (sending !== policy || sending.limitRound != round || safeKey() != session) return@launch
+                limitJob = null
+                // 禁用期解除（策略再核对轮次）；停报中（run 自己核对）不发
+                val expired = JsonObject(snapshot() + ("limitRound" to JsonPrimitive(round)))
+                run(sending.on(PushEvent.RATE_LIMIT_EXPIRED, expired))
+            }
     }
 
     private fun cancelAll() {
@@ -232,12 +275,18 @@ class PushTokenReporter(
         if ((action["actionRaw"] as? JsonPrimitive)?.content != PushAction.SEND || halted) return
         val token = (action["sendToken"] as? JsonPrimitive)?.content ?: return
         val session = (action["sendSession"] as? JsonPrimitive)?.content ?: return
-        val account = state.account() ?: return settle(policy, PushEvent.RESPONSE_ERROR, session)
+        val account = state.account()
+        if (account == null) {
+            settle(policy, PushEvent.RESPONSE_ERROR, session)
+            return
+        }
         val sending = policy
         // 发送前与收到响应后都核对：会话已换代就作废（不改绑到新会话）
+        // 发送前闸门（每次实际写出前核对）：撤回进行中、42901 禁用期中都不写出
         val owner =
-            CallOwnership(api.epochs(), sendAllowed = { !withdrawing }) { policy === sending && !halted && safeKey() == session }
-                .also { owners += it }
+            CallOwnership(api.epochs(), sendAllowed = { !withdrawing && !sending.rateLimited }) {
+                policy === sending && !halted && safeKey() == session
+            }.also { owners += it }
         val body = JsonObject(mapOf("provider" to JsonPrimitive(PROVIDER), "token" to JsonPrimitive(token))).toString()
         sent += 1
         scope.launch {
@@ -250,35 +299,62 @@ class PushTokenReporter(
                         PushEvent.RESPONSE_OK
                     }
 
-                    result is ApiResult.Failure && result.code == FORCE_UPDATE_CODE -> {
+                    // 只有网络层判定强更才交强更分流（F-X-09；非强更的 10405 按普通失败，不重发）
+                    result is ApiResult.Failure && result.code == FORCE_UPDATE_CODE && ResultSignals.forcesUpdate(result) -> {
                         PushEvent.RESPONSE_10405
+                    }
+
+                    result is ApiResult.Failure && result.code == ResultSignals.RATE_LIMITED -> {
+                        PushEvent.RESPONSE_42901
                     }
 
                     else -> {
                         PushEvent.RESPONSE_ERROR
                     }
                 }
-            settle(sending, event, session)
+            val roundBefore = sending.limitRound
+            val accepted = settle(sending, event, session)
+            // R2-01：只有当前会话、当前策略实际接纳（没 drop、禁用期由这条开始）的 42901 才开始计时；旧会话的迟到 42901 不碰计时器
+            if (event == PushEvent.RESPONSE_42901 && accepted && limitStartedBy(sending, session, roundBefore)) {
+                startLimit(sending, session, sending.limitRound, ResultSignals.disableMillis(result))
+            }
         }
     }
 
+    /** 这条 42901 结算后是否由它开始了当前会话、当前策略实例的一轮新禁用期（R2-01）。 */
+    private fun limitStartedBy(
+        sending: PushReportPolicy,
+        session: String,
+        roundBefore: Long,
+    ): Boolean = sending === policy && safeKey() == session && sending.rateLimited && sending.limitRound != roundBefore
+
+    /** 结算响应；返回策略是否接纳了这条响应（drop = 不是在途那条，例如旧会话的迟到响应）。 */
     @Suppress("TooGenericExceptionCaught", "SwallowedException")
     private fun settle(
         sending: PushReportPolicy,
         event: String,
         session: String,
-    ) {
+    ): Boolean {
         val next = sending.on(event, JsonObject(mapOf("session" to JsonPrimitive(session))))
-        if ((next["actionRaw"] as? JsonPrimitive)?.content == PushAction.FORCE_UPDATE) {
-            // 10405 在后台得到：交已有分流（网络层已进强更时重复调用无害），不另弹提示
-            try {
-                state.onForceUpdate()
-            } catch (error: Exception) {
-                // 分流出错不影响上报管线
+        when ((next["actionRaw"] as? JsonPrimitive)?.content) {
+            PushAction.DROP -> {
+                return false
             }
-            return
+
+            PushAction.FORCE_UPDATE -> {
+                // 10405 在后台得到：交已有分流（网络层已进强更时重复调用无害），不另弹提示
+                try {
+                    state.onForceUpdate()
+                } catch (error: Exception) {
+                    // 分流出错不影响上报管线
+                }
+            }
+
+            else -> {
+                if (sending === policy && !halted) run(next)
+            }
         }
-        if (sending === policy && !halted) run(next)
+        return true
     }
 
     /** 测试与进程结束：退订令牌来源。 */

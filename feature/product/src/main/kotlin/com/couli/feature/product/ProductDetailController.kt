@@ -215,10 +215,18 @@ class ProductDetailController(
 
                 is ApiResult.Failure -> {
                     val reason = (result.data["reason"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    // 10405 按网络层 Effect 判（F-X-09，第 1 轮评审 R1-03）：不是强更（REFRESH_ONLY、刷新失败）→ 统一错误文案 + 【重试】（错误码不在
+                    // 30141 / 30143 之列，页面给重试），不显示「版本过低」；强更照旧 error.10405（强更页由网络层打开）
+                    val key =
+                        if (ResultSignals.nonForcedUpdate(result)) {
+                            GENERIC_ERROR_KEY
+                        } else {
+                            ErrorActionMapper.resolveTextKey(result.code, reason) { DefaultTexts.text(it) != null }
+                        }
                     ProductSnapshot(
                         phase = ProductPhase.ERROR,
                         errorCode = result.code,
-                        errorTextKey = ErrorActionMapper.resolveTextKey(result.code, reason) { DefaultTexts.text(it) != null },
+                        errorTextKey = key,
                         traceId = result.traceId,
                         shownSeq = seq,
                     )
@@ -257,5 +265,8 @@ class ProductDetailController(
 
         /** 30143 商品信息已失效：引导重新搜索（error-codes：跳搜索）。 */
         const val REF_EXPIRED = 30143
+
+        /** 统一错误文案（非强更 10405，F-X-09）。 */
+        const val GENERIC_ERROR_KEY = "error.50001"
     }
 }

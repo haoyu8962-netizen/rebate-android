@@ -296,6 +296,7 @@ class OrderDetailController(
                     result.traceId,
                     false,
                     false,
+                    forced = ResultSignals.forcesUpdate(result),
                 )
             }
 

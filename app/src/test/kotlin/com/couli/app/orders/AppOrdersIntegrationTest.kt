@@ -119,6 +119,7 @@ import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -1921,6 +1922,70 @@ class AppOrdersIntegrationTest {
     }
 
     /**
+     * FU-AND-0715 第 5 项（F-AND-30）：A 会话的订单列表进程恢复停在恢复等待 → 会话存储换成 B、会话通知还没执行（换号窗口）→ 等待结束：零订单请求、
+     * 待跟单也不拉（不按新会话默认条件先请求一次），A 保存的搜索词已清；通知到达后按 B 的默认条件只请求一次。
+     */
+    @Test
+    fun fand30_restoreWaitEndingInsideTheSwitchWindowSendsNoOrderRequest() {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val seed =
+            restoreSeed().apply {
+                putString("orders.q", A_ORDER_NO)
+                putString("orders.input", A_ORDER_NO)
+            }
+        launchRestored(RestoredOwner(seed), restoreGate = { gate.await() })
+        settle()
+        assertEquals(A_ORDER_NO, searchText())
+        assertTrue("等待期间不发请求", listRequests().isEmpty())
+        val pendingBefore = count(PENDING_PATH)
+        // 会话存储换成 B，通知还没执行；随后恢复等待结束
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule.runOnUiThread { gate.complete(Unit) }
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertTrue("换号窗口内恢复：0 个订单请求 ${listRequests()}", listRequests().isEmpty())
+        assertEquals("待跟单也不拉", pendingBefore, count(PENDING_PATH))
+        assertEquals("A 保存的搜索词已清", "", searchText())
+        // 通知到达：按 B 的默认条件只请求一次
+        composeRule.runOnUiThread {
+            login.syncSession()
+            orders.onSessionChanged()
+        }
+        idleUntil { listRequests().isNotEmpty() }
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals(listOf(mapOf("scope" to "self")), listRequests())
+        assertEquals("", searchText())
+    }
+
+    /**
+     * FU-AND-0715 第 5 项（F-AND-30）：待跟单 refresh 由调用方传入固定世代——发起页外跳时捕获的世代、列表的固定归属世代已不是当前会话（会话存储已换号、
+     * 通知还没到）时一律不发。
+     */
+    @Test
+    fun fand30_pendingRefreshWithAStaleCallerEpochSendsNothing() {
+        launch()
+        synchronized(answers) { answers[PENDING_PATH] = { envelope(pendingTwo()) } }
+        openOrders()
+        idleUntil { count(PENDING_PATH) > 0 }
+        settle()
+        val page = orders.listHandle()?.pending
+        assertNotNull(page)
+        val stale = page!!.currentTicket().epoch
+        val before = count(PENDING_PATH)
+        composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
+        composeRule.runOnUiThread { page.refresh(stale) }
+        settle()
+        Thread.sleep(LATE_MS)
+        settle()
+        assertEquals("调用方的固定世代已不是当前会话：零请求", before, count(PENDING_PATH))
+        composeRule.runOnUiThread { page.refresh(page.currentTicket().epoch) }
+        idleUntil { count(PENDING_PATH) == before + 1 }
+    }
+
+    /**
      * R2-02（共性第 12、18、22 条）：H5 入口从真实按钮点击出发，落到可信容器，按配置的 h5_base_url + routes.json 的 h5_path（参数走查询串）
      * 加载；占位页不算成功落点。
      */
@@ -2235,7 +2300,7 @@ class AppOrdersIntegrationTest {
             login.syncSession()
         }
         settle()
-        composeRule.runOnUiThread { page.service.refresh("taobao") }
+        composeRule.runOnUiThread { page.service.refresh(page.service.currentTicket().epoch, "taobao") }
         idleUntil {
             page.service.state.value.cards
                 .isNotEmpty()

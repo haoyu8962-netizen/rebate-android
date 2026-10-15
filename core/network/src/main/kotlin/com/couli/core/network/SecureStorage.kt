@@ -8,6 +8,7 @@ import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.couli.core.config.CouliPreferenceNamespaces
+import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.InvalidKeyException
 import java.security.KeyStore
@@ -158,10 +159,13 @@ class EncryptedPreferences(
     private val preferences: SharedPreferences =
         backing ?: context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE)
 
-    /** 写盘失败后被隔离的键 → 最后成功提交的原始值（null = 不存在）。 */
-    private val committed = mutableMapOf<String, String?>()
+    /**
+     * 写盘失败后被隔离的键 → 最后成功提交的原始值（null = 不存在）。值保留底层的原始类型（第 1 轮评审 R1-01：类型不对的撤销标记也是「存在」，
+     * 不能记成不存在）；不是字符串的读取时同样按类型错（[ClassCastException]）。
+     */
+    private val committed = mutableMapOf<String, Any?>()
 
-    private fun raw(key: String): String? = if (key in committed) committed[key] else preferences.getString(key, null)
+    private fun raw(key: String): String? = if (key in committed) committed[key] as String? else preferences.getString(key, null)
 
     /** 宽松读取：内容损坏的删除后按不存在；读取失败（[StoredValue.Failed]）按不存在返回但不删除。需要区分时用 [read]。 */
     @Synchronized
@@ -185,7 +189,12 @@ class EncryptedPreferences(
     @Synchronized
     @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount") // 解密失败一律归入损坏，读取失败单独返回
     fun read(key: String): StoredValue {
-        val stored = raw(key) ?: return StoredValue.Absent
+        val stored =
+            try {
+                raw(key)
+            } catch (error: ClassCastException) {
+                return StoredValue.Corrupt
+            } ?: return StoredValue.Absent
         val bytes = runCatching { Base64.decode(stored, Base64.NO_WRAP) }.getOrNull() ?: return StoredValue.Corrupt
         return try {
             StoredValue.Present(cipher.decrypt(bytes).toString(Charsets.UTF_8))
@@ -199,7 +208,7 @@ class EncryptedPreferences(
     /** 读出明文；不存在为 null；解不开抛 [UnreadableRecordException]（不删除，lessons 38）。 */
     @Synchronized
     fun getStrict(key: String): String? {
-        val stored = raw(key) ?: return null
+        val stored = runCatching { raw(key) }.getOrElse { throw UnreadableRecordException("加密存储的值类型不对") } ?: return null
         val plain =
             runCatching { cipher.decrypt(Base64.decode(stored, Base64.NO_WRAP)) }.getOrNull()
                 ?: throw UnreadableRecordException("加密存储的值解不开")
@@ -236,7 +245,9 @@ class EncryptedPreferences(
     /** 按原始（已加密）值整组写入；写盘失败恢复内存值并隔离这些键（R3-05）。 */
     @SuppressLint("ApplySharedPref") // 凭据与未决记录必须同步落盘
     private fun write(changes: Map<String, String?>) {
-        val previous = changes.keys.associateWith(::raw)
+        // 旧值按底层原始类型记下（第 1 轮评审 R1-01）：类型不对的值（如整数的撤销标记）回滚时原样写回，不当成「不存在」删掉
+        val stored = preferences.all
+        val previous = changes.keys.associateWith { if (it in committed) committed[it] else stored[it] }
         if (preferences.edit().put(changes).commit()) {
             committed.keys.removeAll(changes.keys)
             return
@@ -247,8 +258,22 @@ class EncryptedPreferences(
         error("写入加密存储失败")
     }
 
-    private fun SharedPreferences.Editor.put(values: Map<String, String?>): SharedPreferences.Editor =
-        apply { values.forEach { (key, value) -> if (value == null) remove(key) else putString(key, value) } }
+    /** 按原始类型写入；认不出的类型抛错（回滚按失败处理，旧值留在 [committed] 里，不会被当成不存在）。 */
+    private fun SharedPreferences.Editor.put(values: Map<String, Any?>): SharedPreferences.Editor =
+        apply {
+            values.forEach { (key, value) ->
+                when (value) {
+                    null -> remove(key)
+                    is String -> putString(key, value)
+                    is Int -> putInt(key, value)
+                    is Long -> putLong(key, value)
+                    is Float -> putFloat(key, value)
+                    is Boolean -> putBoolean(key, value)
+                    is Set<*> -> putStringSet(key, value.map { it as String }.toSet())
+                    else -> error("加密存储里有认不出类型的值：$key")
+                }
+            }
+        }
 }
 
 /** 一次读出的会话（同一把锁下读，[generation] 与各字段一致）。 */
@@ -463,15 +488,25 @@ class MemorySessionTokens(
  * 令牌的安全存储：Android Keystore 的 AES 密钥加密后存 couli.session（[EncryptedPreferences]）。
  * 键名沿用 APP-02b 约定的 access_token、refresh_token（撤回同意的占位清理按键名删，切换环境时整个命名空间清）。
  * 世代只在内存里（在途的刷新也只在本进程）；写入失败时世代照样前进（落盘结果不可信，旧刷新结果一律作废）。
+ *
+ * FU-AND-0715（F-AND-32 + 补充，对照鸿蒙 FU-HM-0715 R1-01..04）：
+ * - 持久化会话完整校验（[invalid]）：令牌非空、作用域属合法枚举、字段类型正确、整组齐全；任一不满足整组按内容损坏隔离（不加载、世代 null）。
+ * - 撤销标记在删除令牌之前落盘：同文件标记 [KEY_REVOKED] 提交失败时，先把独立介质 [marks] 的标记落盘再删令牌；独立介质的标记带完整性校验
+ *   （[SessionRevocation]：空、截断、摘要不符一律按撤销），冷启动读到令牌后核对。
+ * - 清会话路径不读令牌：撤销的是哪份会话取自装载 / 保存时记下的世代（[knownEpoch]），没有就写「任何会话」标记。
+ * - 自己发现会话不能用并丢弃时推进会话世代并同步通知（[SessionSelfDiscards]，F-AND-33）。
  */
-@Suppress("TooManyFunctions") // 会话读写四组 + 持久化登录世代与其屏障接线
+@Suppress("TooManyFunctions", "LargeClass") // 会话读写四组 + 持久化登录世代与其屏障接线 + 独立介质撤销标记
 class KeystoreSessionTokens(
     private val storage: EncryptedPreferences,
+    /** 令牌文件之外的撤销标记介质（F-AND-32；App 里是 noBackupFilesDir 下的文件）；null = 只用同文件标记（单测、旧用法）。 */
+    private val marks: RevocationMarks? = null,
     /** 新的持久化登录世代（[PersistedLoginEpochs]；单测注入固定序列）。 */
     private val newLoginEpoch: () -> String = { UUID.randomUUID().toString() },
 ) : SessionTokens,
     SessionReader,
-    PersistedLoginEpochs {
+    PersistedLoginEpochs,
+    SessionSelfDiscards {
     private val lock = Any()
 
     @Volatile
@@ -484,17 +519,37 @@ class KeystoreSessionTokens(
      * 持久化登录世代暂不可用（F-AND-25，第 1 轮评审 R1-02）：与会话可用性共用状态——清除会话（含按世代清除）一开始就置上，删除提交失败
      * （会话被隔离，EncryptedPreferences 里还是旧值）、刷新写入失败（ApiClient 随之隔离并清除）、会话内容损坏而删除失败（R2-02）时保持；只有成功
      * 保存一份新会话（登录）才解除。置上期间 [persistedLoginEpoch] 一律为 null（订单缓存、钱包摘要缓存、订单页恢复记录、会员首页 LKG 不读不写）。
-     * 它只在本进程内；跨进程由落盘的撤销标记 [KEY_REVOKED] 承担（R2-03）。
+     * 它只在本进程内；跨进程由落盘的撤销标记 [KEY_REVOKED] 与独立介质 [marks] 承担（R2-03、F-AND-32）。
      */
     @Volatile
     private var epochWithheld = false
+
+    /** 本进程已经结束了当前这份会话（清除、刷新写入失败、自己丢弃）：之后再读到撤销 / 损坏不重复推进世代。只有保存新会话解除。只在 [lock] 下读写。 */
+    private var ended = false
+
+    /**
+     * 令牌项里此刻是哪一次登录（F-AND-32 补充，对照鸿蒙 R1-04 storedFingerprint）：装载读到完整会话、保存成功、确认删除时记下；读不出、损坏、
+     * 保存抛错时为未知（[epochKnown] = false）。清除时据此写独立介质的标记，不为它再读令牌。只在 [lock] 下读写。
+     */
+    private var epochKnown = false
+    private var knownEpoch: String? = null
+
+    /** 独立介质里可能还有标记（未核对过、写过、删不掉）。false = 已确认没有。只在 [lock] 下读写。 */
+    private var marksMaybePresent = true
 
     /** 凭据读取屏障（[guardLoginEpochReads]）；没接时直接读。 */
     @Volatile
     private var epochGuard: ((() -> String?) -> String?)? = null
 
+    @Volatile
+    private var discardListener: (() -> Unit)? = null
+
     override fun guardLoginEpochReads(guard: (read: () -> String?) -> String?) {
         epochGuard = guard
+    }
+
+    override fun onSelfDiscarded(listener: () -> Unit) {
+        discardListener = listener
     }
 
     override val loginEpoch: Long get() = epoch
@@ -513,58 +568,147 @@ class KeystoreSessionTokens(
         }
 
     /**
-     * 同一把锁里读四项：任何一项读取失败 → [SessionRead.Unreadable]（不删除）；任何一项内容损坏 → 整组不能用，尽力删除四项后按
-     * 没有会话（删不掉下次读还会再试）；否则读到的会话。
+     * 同一把锁里读会话各项：任何一项读取失败 → [SessionRead.Unreadable]（不删除）；任何一项内容损坏或校验不通过（[invalid]）→ 整组不能用，尽力删除
+     * 后按没有会话（删不掉下次读还会再试，本进程登录世代保持禁用并落撤销标记）；否则读到的会话。
      *
-     * 落盘的撤销标记 [KEY_REVOKED]（第 2 轮评审 R2-03）在先：存在（含损坏）= 这份会话已被清除、只是删除没落盘（可能是上一个进程），按没有会话
-     * 并重试删除（连同标记，成功即清干净）；标记读取失败按读不出。
+     * 落盘的撤销标记在先：同文件标记 [KEY_REVOKED] 存在（含损坏、空值）= 这份会话已被清除、只是删除没落盘（可能是上一个进程），按没有会话
+     * 并重试删除（连同标记，成功即清干净）；读到令牌后再核对独立介质 [marks]（F-AND-32：令牌文件整体写不进时的撤销）。任一标记读取失败按读不出。
      */
-    override fun readSession(): SessionRead = synchronized(lock) { readLocked() }
+    override fun readSession(): SessionRead = synchronized(lock) { readLocked().read }
 
-    @Suppress("ReturnCount") // 撤销标记、读取失败、损坏逐项
-    private fun readLocked(): SessionRead {
-        val empty = SessionRead.Present(SessionSnapshot(null, null, null, null, counter))
+    /** 一次完整读取：[read] 给调用方；[epoch] 是会话可用时它的持久化登录世代（升级前登录为 null）。 */
+    private class Loaded(
+        val read: SessionRead,
+        val epoch: String? = null,
+    )
+
+    @Suppress("ReturnCount", "CyclomaticComplexMethod", "SwallowedException") // 撤销标记、读取失败、损坏、独立介质标记逐项；标记读不出按会话读不出
+    private fun readLocked(): Loaded {
         when (storage.read(KEY_REVOKED)) {
             StoredValue.Absent -> {
                 Unit
             }
 
             StoredValue.Failed -> {
-                return SessionRead.Unreadable(counter)
+                return Loaded(SessionRead.Unreadable(counter))
             }
 
             else -> {
-                epochWithheld = true
-                runCatching { storage.removeAll(ALL_KEYS) }
-                return empty
+                return Loaded(discardLocked(revokedAlready = true, byLocalMark = true))
             }
         }
-        val values = SESSION_KEYS.associateWith(storage::read)
-        return when {
-            values.values.any { it == StoredValue.Failed } -> {
-                SessionRead.Unreadable(counter)
-            }
+        val values = STORED_KEYS.associateWith(storage::read)
+        if (values.values.any { it == StoredValue.Failed }) return Loaded(SessionRead.Unreadable(counter))
 
-            values.values.any { it == StoredValue.Corrupt } -> {
-                // 损坏：整组删除；删除提交失败时登录世代保持禁用（本进程），并尽力落一个撤销标记（重建后同样按已撤销，R2-02 / R2-03）
-                if (runCatching { storage.removeAll(ALL_KEYS) }.isFailure) {
-                    epochWithheld = true
-                    runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
+        fun text(key: String) = (values[key] as? StoredValue.Present)?.text
+        if (values.values.any { it == StoredValue.Corrupt } || invalid(values)) {
+            // 损坏 / 校验不通过：整组隔离（不加载）。删除提交失败时登录世代保持禁用（本进程），并在删除之前落撤销标记（重建后同样按已撤销）
+            epochKnown = false
+            return Loaded(discardLocked(revokedAlready = false))
+        }
+        val access = text(KEY_ACCESS)
+        val loginEpoch = text(KEY_LOGIN_EPOCH)
+        if (access != null) {
+            // 读到令牌：核对独立介质的撤销标记（F-AND-32）；读不出 → 会话读不出（不交出旧令牌）
+            val blocked =
+                try {
+                    marksBlock(loginEpoch)
+                } catch (error: IOException) {
+                    return Loaded(SessionRead.Unreadable(counter))
                 }
-                empty
-            }
-
-            else -> {
-                fun text(key: String) = (values[key] as? StoredValue.Present)?.text
-                SessionRead.Present(SessionSnapshot(text(KEY_ACCESS), text(KEY_REFRESH), text(KEY_SCOPE), text(KEY_USER_ID), counter))
-            }
+            if (blocked) return Loaded(discardLocked(revokedAlready = true))
         }
+        epochKnown = true
+        knownEpoch = loginEpoch.takeIf { access != null }
+        val snapshot = SessionSnapshot(access, text(KEY_REFRESH), text(KEY_SCOPE), text(KEY_USER_ID), counter)
+        return Loaded(SessionRead.Present(snapshot), knownEpoch)
     }
 
     /**
-     * 持久化登录世代（F-AND-25）：读 [KEY_LOGIN_EPOCH]（与令牌同一次原子写入）。口径与整份会话可用性统一（第 2 轮评审 R2-02）：先在同一把锁里
-     * 完整读一次会话（[readLocked]）——任一字段读不出、损坏（删除失败同样保持禁用）、已撤销（落盘标记，R2-03）、没有令牌、本进程隔离中
-     * （[epochWithheld]）都为 null；会话可用时才读世代键，它不存在（升级前登录）、读不出、损坏也为 null。读不出不删除。
+     * 持久化会话的完整校验（F-AND-32 补充，鸿蒙 R1-01）：access / refresh / session_scope 要么都不在（没有会话；此时账号与世代也不能残留），要么都在；
+     * 令牌非空，作用域只能是 full / deletion_only，账号与世代在时非空。类型不对（不是字符串）在 [EncryptedPreferences.read] 已按损坏。
+     */
+    private fun invalid(values: Map<String, StoredValue>): Boolean {
+        fun text(key: String) = (values[key] as? StoredValue.Present)?.text
+        val core = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE).map(::text)
+        if (core.all { it == null }) return text(KEY_USER_ID) != null || text(KEY_LOGIN_EPOCH) != null
+        return core.any { it.isNullOrEmpty() } ||
+            text(KEY_SCOPE) !in VALID_SCOPES ||
+            text(KEY_USER_ID)?.isEmpty() == true ||
+            text(KEY_LOGIN_EPOCH)?.isEmpty() == true
+    }
+
+    /** 独立介质里有没有阻断这份会话（世代 [sessionEpoch]）的标记；读不出抛 [IOException]。确认没有时记下，之后不再读文件。 */
+    @Suppress("ReturnCount") // 没接介质、已确认没有、读到空三个出口
+    private fun marksBlock(sessionEpoch: String?): Boolean {
+        val source = marks ?: return false
+        if (!marksMaybePresent) return false
+        val texts = source.read()
+        if (texts.isEmpty()) {
+            marksMaybePresent = false
+            return false
+        }
+        return texts.any { SessionRevocation.blocks(it, sessionEpoch) }
+    }
+
+    /**
+     * 自己丢弃这份会话（被撤销标记阻断、内容损坏或校验不通过）：登录世代禁用，第一次丢弃时推进会话世代与登录世代并同步通知（F-AND-33）；
+     * 尽力整组删除——删除失败且不是已经有撤销标记的，先落撤销标记（删除之前已经失败了一次，标记兜住重建）。返回「没有会话」。
+     */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
+    private fun discardLocked(
+        revokedAlready: Boolean,
+        byLocalMark: Boolean = false,
+    ): SessionRead {
+        epochWithheld = true
+        if (!ended) {
+            ended = true
+            counter += 1
+            epoch += 1
+            runCatching { discardListener?.invoke() }
+        }
+        // 阻断这份会话的是同文件标记（任何内容、任何类型）：下面的整组删除会连它一起删，删除失败的回滚若没能原样写回它，令牌就失去撤销记录
+        // （第 1 轮评审 R1-01）。所以在删除之前先在独立介质落一份「任何会话」标记（不读令牌）；删除确认成功后随之删掉
+        if (byLocalMark) writeMarkLocked(SessionRevocation.ANY)
+        val deleted = runCatching { storage.removeAll(ALL_KEYS) }.isSuccess
+        if (deleted) {
+            confirmDeletedLocked()
+        } else if (!revokedAlready) {
+            markRevokedLocked(SessionRevocation.ANY)
+        }
+        return SessionRead.Present(SessionSnapshot(null, null, null, null, counter))
+    }
+
+    /** 令牌项确认已删：记下「没有会话」，尽力删独立介质的标记（已不需要保护任何旧会话）。 */
+    private fun confirmDeletedLocked() {
+        epochKnown = true
+        knownEpoch = null
+        val source = marks ?: return
+        if (runCatching { source.delete() }.isSuccess) marksMaybePresent = false
+    }
+
+    /**
+     * 在删除令牌之前落撤销标记（鸿蒙 R1-02）：先提交同文件标记；它提交失败（令牌文件整体写不进）时先把独立介质的标记落盘。返回同文件标记是否落盘。
+     */
+    private fun markRevokedLocked(target: String): Boolean {
+        val local = runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }.isSuccess
+        if (!local) writeMarkLocked(target)
+        return local
+    }
+
+    private fun writeMarkLocked(target: String) {
+        val source = marks ?: return
+        marksMaybePresent = true
+        runCatching { source.write(SessionRevocation.encode(target)) }
+    }
+
+    /** 清除时撤销的是哪份会话：取自记下的世代（不读令牌，鸿蒙 R1-04）；不知道就是「任何会话」。 */
+    private fun revocationTargetLocked(): String = if (epochKnown) SessionRevocation.revoking(knownEpoch) else SessionRevocation.ANY
+
+    /**
+     * 持久化登录世代（F-AND-25）：读 [KEY_LOGIN_EPOCH]（与令牌同一次原子写入）。口径与整份会话可用性统一（第 2 轮评审 R2-02）：在同一把锁里
+     * 完整读一次会话（[readLocked]）——任一字段读不出、损坏或校验不通过（删除失败同样保持禁用）、已撤销（落盘标记，R2-03 / F-AND-32）、没有令牌、
+     * 本进程隔离中（[epochWithheld]）都为 null；会话可用时才给出世代，它不存在（升级前登录）也为 null。读不出不删除。
      * 接了凭据读取屏障时整个读取在屏障里（[guardLoginEpochReads]）。
      */
     override fun persistedLoginEpoch(): String? {
@@ -576,11 +720,12 @@ class KeystoreSessionTokens(
     private fun epochNow(): String? =
         synchronized(lock) {
             if (epochWithheld) return null
-            val read = runCatching { readLocked() }.getOrNull() as? SessionRead.Present ?: return null
+            val loaded = runCatching { readLocked() }.getOrNull() ?: return null
+            val read = loaded.read as? SessionRead.Present ?: return null
             if (epochWithheld) return null
             val session = read.snapshot
             if (session.accessToken == null && session.refreshToken == null) return null
-            (runCatching { storage.read(KEY_LOGIN_EPOCH) }.getOrNull() as? StoredValue.Present)?.text?.takeIf { it.isNotEmpty() }
+            loaded.epoch?.takeIf { it.isNotEmpty() }
         }
 
     override fun save(
@@ -589,6 +734,9 @@ class KeystoreSessionTokens(
         scope: String,
         userId: String?,
     ) = synchronized(lock) {
+        val renewed = newLoginEpoch()
+        // 保存没确认落盘之前，令牌项里是哪份会话未知（失败时 EncryptedPreferences 恢复旧值，但不再据此写精确标记）
+        epochKnown = false
         try {
             // 登录：令牌整组与新的持久化登录世代同一次 commit（原子：要么都落盘、要么都恢复旧值，见 [EncryptedPreferences]）
             // 同一次提交里删掉撤销标记（R2-03：新会话确认落盘才解除）
@@ -598,15 +746,37 @@ class KeystoreSessionTokens(
                     KEY_REFRESH to refreshToken,
                     KEY_SCOPE to scope,
                     KEY_USER_ID to userId,
-                    KEY_LOGIN_EPOCH to newLoginEpoch(),
+                    KEY_LOGIN_EPOCH to renewed,
                     KEY_REVOKED to null,
                 ),
             )
             // 新会话（连同新世代）确认落盘：解除暂不可用
             epochWithheld = false
+            ended = false
+            epochKnown = true
+            knownEpoch = renewed
+            settleMarksAfterLoginLocked(renewed)
         } finally {
             counter += 1
             epoch += 1
+        }
+    }
+
+    /**
+     * 新登录落盘之后的独立介质标记（F-AND-32；鸿蒙 FU-HM-0717 第 3 项）：先尽力删掉；删不掉时，会阻断新登录的（`*`、不完整、`s:` 别的世代）改写成
+     * 「除了这次登录一律撤销」（`s:<新世代>`），对不上新登录的精确旧标记不动；改写也失败就保持原样（偏保守：重建后需要重新登录）。
+     */
+    @Suppress("ReturnCount") // 没接介质、已确认没有、删掉了、读不出逐项
+    private fun settleMarksAfterLoginLocked(renewed: String) {
+        val source = marks ?: return
+        if (!marksMaybePresent) return
+        if (runCatching { source.delete() }.isSuccess) {
+            marksMaybePresent = false
+            return
+        }
+        val texts = runCatching { source.read() }.getOrNull() ?: return
+        if (texts.any { SessionRevocation.blocks(it, renewed) }) {
+            runCatching { source.write(SessionRevocation.encode(SessionRevocation.supersededBy(renewed))) }
         }
     }
 
@@ -614,11 +784,18 @@ class KeystoreSessionTokens(
         synchronized(lock) {
             // 清除一开始就让登录世代不可用（删除提交失败时旧值还在存储里，也不再交给缓存归属判断）
             epochWithheld = true
+            ended = true
             try {
-                // 跨进程撤销（第 2 轮评审 R2-03）：先单独提交一个落盘的撤销标记，再整组删除（连同标记）。删除提交失败、进程被杀后重建时，
-                // 标记仍在：会话按已撤销（不交出旧令牌、重试删除），登录世代为 null（四类缓存不读），直到一份新会话成功落盘
-                runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
-                storage.removeAll(ALL_KEYS)
+                // 跨进程撤销（第 2 轮评审 R2-03、F-AND-32）：删除令牌之前先落盘撤销标记——同文件标记提交失败（令牌文件整体写不进）时先落独立介质的标记；
+                // 撤销的是哪份会话取自记下的世代，不为它读令牌。再整组删除（连同同文件标记）
+                val target = revocationTargetLocked()
+                val local = markRevokedLocked(target)
+                runCatching { storage.removeAll(ALL_KEYS) }.exceptionOrNull()?.let { error ->
+                    // 删除失败：同文件标记已落盘时独立介质也补一份（同文件标记之后可能被别的写入路径冲掉）
+                    if (local) writeMarkLocked(target)
+                    throw error
+                }
+                confirmDeletedLocked()
             } finally {
                 counter += 1
                 epoch += 1
@@ -642,7 +819,8 @@ class KeystoreSessionTokens(
                 // 因凭据此刻不可读而不执行，重建后也不再用这份会话的缓存）
                 if (!written) {
                     epochWithheld = true
-                    runCatching { storage.putAll(mapOf(KEY_REVOKED to REVOKED)) }
+                    ended = true
+                    markRevokedLocked(revocationTargetLocked())
                 }
                 counter += 1
             }
@@ -679,12 +857,16 @@ class KeystoreSessionTokens(
         const val KEY_LOGIN_EPOCH = "session_login_epoch"
 
         /**
-         * 落盘的会话撤销标记（第 2 轮评审 R2-03）：清除会话时先单独提交，整组删除成功时随之删掉；新会话保存时同一次提交删掉。存在 = 这份会话已被
-         * 清除（删除没落盘），读会话按没有、登录世代为 null。不是凭据。
+         * 落盘的会话撤销标记（第 2 轮评审 R2-03）：清除会话时先单独提交，整组删除成功时随之删掉；新会话保存时同一次提交删掉。存在（不论内容，
+         * 含空值、损坏）= 这份会话已被清除（删除没落盘），读会话按没有、登录世代为 null。不是凭据。
          */
         const val KEY_REVOKED = "session_revoked"
+
+        /** 独立介质撤销标记的文件名（F-AND-32；App 放在 noBackupFilesDir）。 */
+        const val REVOCATION_FILE = "couli_session.revoked"
         private const val REVOKED = "1"
-        private val SESSION_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID)
+        private val VALID_SCOPES = setOf(SessionScopeRaw.FULL, SessionScopeRaw.DELETION_ONLY)
+        private val STORED_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID, KEY_LOGIN_EPOCH)
         private val ALL_KEYS = listOf(KEY_ACCESS, KEY_REFRESH, KEY_SCOPE, KEY_USER_ID, KEY_LOGIN_EPOCH, KEY_REVOKED)
     }
 }

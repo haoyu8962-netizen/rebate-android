@@ -905,6 +905,7 @@ class SensitiveFlow(
                     data = result.data,
                     retryAfterMillis = if (result.code == ResultSignals.RATE_LIMITED) ResultSignals.disableMillis(result) else null,
                     hasTrace = result.traceId != null,
+                    forced = ResultSignals.forcesUpdate(result),
                 )
             }
 

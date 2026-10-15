@@ -84,6 +84,7 @@ import com.couli.core.network.ClientIdentity
 import com.couli.core.network.CredentialReadBarrier
 import com.couli.core.network.DeviceRegistry
 import com.couli.core.network.EncryptedPreferences
+import com.couli.core.network.FileRevocationMarks
 import com.couli.core.network.InFlightCalls
 import com.couli.core.network.KeystoreDeviceCredentialStore
 import com.couli.core.network.KeystoreSessionTokens
@@ -247,7 +248,12 @@ object AppModule {
     fun sessionTokens(
         @ApplicationContext context: Context,
         cipher: SecretCipher,
-    ): SessionTokens = KeystoreSessionTokens(EncryptedPreferences(context, cipher))
+    ): SessionTokens =
+        KeystoreSessionTokens(
+            EncryptedPreferences(context, cipher),
+            // 令牌文件整体写不进时的独立撤销标记（F-AND-32，FU-AND-0715）：不在 couli.session 里，App 私有、不备份
+            marks = FileRevocationMarks(File(context.noBackupFilesDir, KeystoreSessionTokens.REVOCATION_FILE)),
+        )
 
     /**
      * 网络核心（APP-03a）：环境闸门未通过时不发请求；隐私结论与撤回清理状态决定带不带凭据；强更结论给 ErrorActionMapper，

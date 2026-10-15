@@ -21,6 +21,18 @@ object ResultSignals {
     fun trace6(traceId: String?): String = traceId?.takeLast(TRACE_TAIL).orEmpty()
 
     /**
+     * 网络层确实判定要强更（Effect 为 FORCE_UPDATE）。页面只按它进强更，不按错误码 10405（F-X-09，FU-AND-0715）：非强更的 10405（受限会话
+     * 刷新 REFRESH_ONLY、刷新失败清会话）一律「统一错误文案 + 可重试」，不进强更。
+     */
+    fun forcesUpdate(result: ApiResult): Boolean = (result as? ApiResult.Failure)?.effect?.kind == ErrorEffectKind.FORCE_UPDATE
+
+    /** 错误码 10405 而网络层没有判定强更（F-X-09）。 */
+    fun nonForcedUpdate(result: ApiResult): Boolean = (result as? ApiResult.Failure)?.code == UPDATE_REQUIRED && !forcesUpdate(result)
+
+    /** 10405（error-codes：版本过低）。 */
+    const val UPDATE_REQUIRED = 10405
+
+    /**
      * 错误正文 + 追踪编号统一生成（APP-06a 共性第 6、9、12 条，03 §4.2）：不依赖文案键里恰好有 {trace6} 占位符。有 trace_id 时正文末尾
      * 带「（末六位）」，正文已经含这 6 位（字典自带占位符已填上）就不重复；确实没有 trace_id 时原样返回。
      */

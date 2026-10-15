@@ -7,6 +7,7 @@ import com.couli.core.network.ApiStreamHandle
 import com.couli.core.network.ApiStreamRequest
 import com.couli.core.network.ApiStreamSink
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.ResultSignals
 import java.net.URLEncoder
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -272,7 +273,11 @@ class ApiAgentContractPort(
     }
 }
 
-/** ApiClient 的结果 → Agent 端口的结果（保留错误码、trace_id、data、Retry-After、本地拒绝）。 */
+/**
+ * ApiClient 的结果 → Agent 端口的结果（保留错误码、trace_id、data、Retry-After、本地拒绝）。
+ * 10405 只在网络层判定强更（Effect 为 FORCE_UPDATE）时原样交出；非强更的 10405（受限会话刷新 REFRESH_ONLY、刷新失败清会话，F-X-09，FU-AND-0715）
+ * 按通用错误 50001 交出（trace_id 不变）：Agent 各入口的结局表只看码，这样一律「统一错误文案 + 可重试」，不进强更。
+ */
 fun ApiResult.toAgentResult(): AgentHttpResult =
     when (this) {
         is ApiResult.Success -> {
@@ -282,7 +287,8 @@ fun ApiResult.toAgentResult(): AgentHttpResult =
         is ApiResult.Failure -> {
             val ms = effect.disableMillis
             val retryAfter = if (code == AgentErrorCodes.RATE_LIMITED && ms != null && ms > 0) ((ms + MS - 1) / MS).toString() else null
-            AgentHttpResult(false, 0, code, msg, data, traceId.orEmpty(), retryAfter)
+            val shown = if (ResultSignals.nonForcedUpdate(this)) AgentErrorCodes.GENERIC else code
+            AgentHttpResult(false, 0, shown, msg, data, traceId.orEmpty(), retryAfter)
         }
 
         // 本地拒绝、刷新屏障失败（原请求没有发出）：notSent

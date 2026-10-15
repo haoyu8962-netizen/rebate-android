@@ -11,7 +11,9 @@
 #   2. python3 tools/codegen/gen.py --check（生成物无漂移）
 #   3. ./gradlew ktlintCheck detekt lint（含自定义规则 couliRules；0 问题）
 #   4. 源码规则扫描器单测（./gradlew -p build-logic :convention:test：字符串模板嵌套、原始字符串、字符字面量、注释）；
-#      lint 违反样例必须报错（tools/ci/lint-fixtures/ 每条规则至少一个；含插值里的中文、插值里的 SDK 初始化）
+#      lint 违反样例必须报错（tools/ci/lint-fixtures/ 每条规则至少一个；含插值里的中文、插值里的 SDK 初始化、多美元符号插值、
+#      扫不完整的文件与空扫描根——F-X-07 fail-closed；Java 块注释不嵌套——FU-AND-0715 R1-04；Java 单独回车结束行注释——R2-02，
+#      运行前先核对样例里确实有单独回车字节）
 #   5. ./gradlew assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
 #   6. ./gradlew testDebugUnitTest（含 Robolectric、ContractConformanceTest 与 DS-01 格式向量 FormatVectorTest）；
 #      ./gradlew :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug（DS-01 组件快照、APP-11 首页 golden 页、
@@ -179,10 +181,31 @@ expect_failure "违反样例：feature 字符串含中文" "no-cjk-string-in-fea
   $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/no-cjk-string-in-feature"
 expect_failure "违反样例：feature 字符串插值里的中文" "no-cjk-string-in-feature" \
   $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/no-cjk-string-in-feature-interpolation"
+expect_failure "违反样例：多美元符号插值字符串里的中文（F-AND-02）" "no-cjk-string-in-feature" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/no-cjk-string-in-feature-multi-dollar"
+expect_failure "违反样例：扫不完整的文件（未闭合原始字符串，F-X-07 fail-closed）" "scan-incomplete" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/scan-incomplete"
+expect_failure "违反样例：扫描根下没有源码（F-X-07 fail-closed）" "scan-incomplete" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/feature-to-feature-dependency"
 expect_failure "违反样例：PrivacyGate 之外初始化 SDK" "sdk-init-only-in-privacy-gate" \
   $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate"
 expect_failure "违反样例：字符串插值里初始化 SDK" "sdk-init-only-in-privacy-gate" \
   $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate-interpolation"
+expect_failure "违反样例：Java 块注释不嵌套，注释结束后的 SDK 初始化（FU-AND-0715 R1-04）" "sdk-init-only-in-privacy-gate" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate-java-comment"
+# R2-02：样例文件必须真的含单独回车（CR 后面不是 LF）；被换行转换改掉的话这条样例就测不到东西，按失败处理
+lone_cr_fixture() {
+  python3 - "$FIXTURES/sdk-init-only-in-privacy-gate-java-lone-cr/app/src/main/java/com/couli/app/LoneCrInit.java" <<'PY'
+import re, sys
+data = open(sys.argv[1], "rb").read()
+count = len(re.findall(rb"\r(?!\n)", data))
+print(f"单独回车 {count} 处")
+sys.exit(0 if count > 0 else 1)
+PY
+}
+step "违反样例含单独回车字节（R2-02）" lone_cr_fixture
+expect_failure "违反样例：Java 行注释后单独回车，回车之后的 SDK 初始化（FU-AND-0715 R2-02）" "LoneCrInit.java:12: .sdk-init-only-in-privacy-gate" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate-java-lone-cr"
 expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feature-dependency" \
   $GRADLE help "-Pcouli.fixture.featureDependency=$FIXTURES/feature-to-feature-dependency/feature-home-depends-on-search.gradle.kts"
 

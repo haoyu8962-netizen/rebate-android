@@ -675,8 +675,11 @@ class AppAgentIntegrationTest {
         send()
         push(fixtureLines("normal"))
         val old = agent.controller.value!!
-        composeRule.runOnUiThread { agent.withdrawConsent(agent.openWithdrawConfirm { true }!!, { true }) {} }
-        idleUntil { consentBodies.isNotEmpty() && agent.controller.value !== old }
+        // 显式等撤回流程交回结论（onText）：控制器在发请求之前就已作废，「请求到达 + 控制器已换」不代表响应已结算（FU-AND-0715：
+        // 主线程在同一轮空闲里发出请求时，旧条件在响应回来之前就成立，477cc25 上同样失败）
+        val outcome = mutableListOf<String>()
+        composeRule.runOnUiThread { agent.withdrawConsent(agent.openWithdrawConfirm { true }!!, { true }) { outcome += it } }
+        idleUntil { consentBodies.isNotEmpty() && agent.controller.value !== old && outcome.isNotEmpty() }
         val body = consentBodies.single()
         assertTrue(body, body.contains("\"type\":\"ai_third_party\""))
         assertTrue(body, body.contains("\"accepted\":false"))

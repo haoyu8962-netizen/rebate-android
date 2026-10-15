@@ -85,6 +85,9 @@ class ApiClient(
         // 持久化登录世代的读取也是令牌读取点（整份会话可用性要解密令牌，FU-AND-0714 第 2 轮评审 R2-01 / R2-02）：交给本屏障，
         // 凭据此刻不可读一律按未知（不读、四类缓存不读）。会话隔离由令牌存储自己的禁用状态与撤销标记表达（清除失败时置上，新会话落盘才解除）
         (tokens as? PersistedLoginEpochs)?.guardLoginEpochReads { read -> readBarrier.read(::credentialsAllowedNow, { null }, read) }
+        // 令牌存储自己发现会话不能用并丢弃（损坏、校验不通过、被撤销标记阻断）：它已推进会话世代，这里同步作废已绑定的会话归属（F-AND-33，
+        // 对照鸿蒙 FU-HM-0717 onSessionTokensCleared(discarded)）。通知发生在令牌读取过程中：只改内存，不再读令牌
+        (tokens as? SessionSelfDiscards)?.onSelfDiscarded { bound = null }
     }
 
     private val refreshExecutor: ExecutorService =
@@ -1478,6 +1481,19 @@ class ApiClient(
     }
 
     /**
+     * 刷新令牌成功写入（[SessionTokens.replaceIf]，会话世代 +1、账号与登录世代沿用）之后，已绑定的归属跟到新的会话世代（F-AND-33：刷新不是换会话；
+     * 写入之后、原请求重放之前切环境，确认 / 放弃仍按原账号给出 environment_unsettled）。只在绑定的正是刷新开始那一代、写入后世代恰好是下一代时
+     * 跟过去（不读凭据）；其余（之后已重新读过、已被清除）不动。在 [refreshLock] 下调用。
+     */
+    private fun rebindRefreshed(start: SessionSnapshot) {
+        val known = bound ?: return
+        if (known.generation != start.generation || known.unreadable) return
+        val now = tokens.generation
+        if (now != start.generation + 1) return
+        bound = BoundOwner(now, known.account, unreadable = false)
+    }
+
+    /**
      * 环境未就绪窗口里的会话归属（不读凭据）：会话世代未变、没有进入隔离时沿用 [bound]；否则（令牌已清除 / 隔离 / 换代，或从没读到过）按游客
      * （F-X-03 ⑤：令牌清除或隔离时同步改为游客）。
      */
@@ -2040,6 +2056,7 @@ class ApiClient(
                     return RefreshAttempt.Rejected
                 }
             if (!saved) return RefreshAttempt.Rejected
+            rebindRefreshed(start)
             start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(pair.access) }
         }
         afterSessionSaved(pair.scope)
@@ -2148,6 +2165,7 @@ class ApiClient(
             val start = owner.session ?: return null
             synchronized(refreshLock) {
                 if (!tokens.replaceIf(start.generation, pair.access, pair.refresh, pair.scope)) return null
+                rebindRefreshed(start)
                 start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(pair.access) }
             }
             afterSessionSaved(pair.scope)

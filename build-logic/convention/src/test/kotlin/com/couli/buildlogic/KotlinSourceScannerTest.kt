@@ -145,4 +145,51 @@ class KotlinSourceScannerTest {
         val strings = scanKotlinSource(source).strings
         assertEquals(listOf(1, 2), strings.map { it.line })
     }
+
+    // ---------------------------------------------------------------- FU-AND-0715：F-AND-02 多美元符号插值、F-X-07 fail-closed
+
+    private fun problems(source: String): List<String> = scanKotlinSource(source).problems.map { it.reason }
+
+    @Test
+    fun multiDollarStringOnlyStartsTemplatesWithTheFullPrefix() {
+        // $$"…"：单个 $ 是文字（含 ${ 中文 }），$$ 才开始模板
+        val source = "val s = \$\$\"price \${ 中文 } \$name \$\${SentryAndroid.init(c)} \$\$id!\"\nval after = 1"
+        assertEquals(listOf("price \${ 中文 } \$name ", " ", "!"), texts(source))
+        val code = code(source)
+        assertTrue(code.contains("SentryAndroid.init(c)"))
+        assertTrue(code.contains("id"))
+        assertTrue(code.contains("val after = 1"))
+        assertEquals(emptyList<String>(), problems(source))
+    }
+
+    @Test
+    fun multiDollarRawStringAndExtraDollarsAreText() {
+        val q = "\"\"\""
+        // $$$x 在 $$ 前缀下：前一个 $ 是文字，后两个开始模板
+        val source = "val s = \$\$$q a \${x} \$\$\$y b$q\nval after = 1"
+        assertEquals(listOf(" a \${x} \$", " b"), texts(source))
+        assertTrue(code(source).contains("y"))
+        assertTrue(code(source).contains("val after = 1"))
+        assertEquals(emptyList<String>(), problems(source))
+    }
+
+    @Test
+    fun completeSourcesHaveNoProblems() {
+        val q = "\"\"\""
+        val source = "val a = \"x\\\"y\" // c \"\n/* a /* b */ c */ val b = '\\''\nval c = $q\${f(\"\${g()}\")}$q\nval `d e` = '\"'"
+        assertEquals(emptyList<String>(), problems(source))
+    }
+
+    @Test
+    fun unterminatedTokensAreReportedAsIncomplete() {
+        val q = "\"\"\""
+        assertEquals(listOf("未闭合的字符串"), problems("val s = \"abc\nval t = 1"))
+        assertEquals(listOf("未闭合的原始字符串"), problems("val s = ${q}abc\nSentryAndroid.init(c)"))
+        assertEquals(listOf("未闭合的块注释"), problems("/* a /* b */ still\nval t = 1"))
+        assertEquals(listOf("未闭合的字符字面量"), problems("val c = 'ab\nval t = 1"))
+        assertEquals(listOf("未闭合的反引号标识符"), problems("val `a b\nval t = 1"))
+        assertTrue(problems("val s = \"\${f(\"x\")").contains("未闭合的字符串模板"))
+        // 行号是记号开始的那一行
+        assertEquals(listOf(2), scanKotlinSource("val a = 1\nval s = \"open\n").problems.map { it.line })
+    }
 }

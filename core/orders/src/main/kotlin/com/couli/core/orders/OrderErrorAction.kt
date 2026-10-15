@@ -62,6 +62,10 @@ object OrderErrorAction {
     const val STALE_KEY = "net.stale_data"
     const val NETWORK_KEY = "order_list.network_error"
 
+    /**
+     * [forced]：网络层是否判定强更（[ResultSignals.forcesUpdate]）。10405 而没有判定强更（F-X-09：受限会话刷新、刷新失败）→ 统一错误文案
+     * （error.50001 + trace6）+【重试】，不进强更；缺省 true 只给三端向量（向量只给错误码）。
+     */
     @Suppress("LongParameterList", "CyclomaticComplexMethod", "ReturnCount") // 三端测试接线约定的入参；逐类判定
     fun of(
         target: String,
@@ -71,6 +75,7 @@ object OrderErrorAction {
         traceId: String?,
         hasCache: Boolean,
         filtered: Boolean,
+        forced: Boolean = true,
     ): OrderErrorView {
         val next = target == LIST_NEXT
         if (transport || code == null) {
@@ -89,8 +94,13 @@ object OrderErrorAction {
                 OrderErrorView(OrderErrorKind.RETRY_AFTER, "error.${ResultSignals.RATE_LIMITED}", disableMs = disableMs, keepItems = next)
             }
 
-            code == FORCE_UPDATE -> {
+            code == FORCE_UPDATE && forced -> {
                 OrderErrorView(OrderErrorKind.FORCE_UPDATE, "error.$FORCE_UPDATE")
+            }
+
+            code == FORCE_UPDATE -> {
+                val kind = if (next) OrderErrorKind.PAGE_ERROR else OrderErrorKind.ERROR_TRACE6
+                OrderErrorView(kind, GENERIC_KEY, showTrace6 = true, keepItems = next, traceId = traceId)
             }
 
             code in SERVER_MIN..SERVER_MAX -> {

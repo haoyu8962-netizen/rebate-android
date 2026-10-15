@@ -594,8 +594,14 @@ private fun commonOutcome(result: JsonObject): WriteOutcome? {
             WriteOutcome(WriteOutcome.ERROR_TRACE6, serverErrorKey(code), keepInput = true)
         }
 
-        code == 10405 -> {
+        // 只有网络层判定强更才进强更（F-X-09，FU-AND-0715）：输入带 forced=false（受限会话刷新、刷新失败的 10405）→ 统一错误文案 + 可重试；
+        // 向量不带 forced，按原口径
+        code == 10405 && (result["forced"] as? JsonPrimitive)?.content != "false" -> {
             WriteOutcome(WriteOutcome.FORCE_UPDATE)
+        }
+
+        code == 10405 -> {
+            WriteOutcome(WriteOutcome.ERROR_TRACE6, "error.50001", keepInput = true)
         }
 
         code == 10006 -> {

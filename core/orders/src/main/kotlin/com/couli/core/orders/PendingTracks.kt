@@ -152,10 +152,12 @@ object PendingTrackDismiss {
         return obj("method" to JsonPrimitive(METHOD), "path" to JsonPrimitive(path(link)), "body" to body(attempt))
     }
 
+    /** [forced]：网络层是否判定强更（F-X-09；缺省 true 只给三端向量）。没判定强更的 10405 按错误轻提示（统一文案 + trace6，卡片保留可再点）。 */
     fun onOutcome(
         kind: String,
         code: Int?,
         headers: Map<String, String>,
+        forced: Boolean = true,
     ): PendingDismissOutcome =
         when {
             kind == KIND_OK -> {
@@ -177,7 +179,7 @@ object PendingTrackDismiss {
                 PendingDismissOutcome(PendingDismissAction.REFETCH)
             }
 
-            code == FORCE_UPDATE -> {
+            code == FORCE_UPDATE && forced -> {
                 PendingDismissOutcome(PendingDismissAction.FORCE_UPDATE)
             }
 
@@ -317,16 +319,22 @@ class PendingTrackService(
     var platform: String? = null
         private set
 
-    /** 拉一次（[onlyPlatform] 只给发起购买的页面：外跳回到前台后，只显示同平台那一张）。 */
-    fun refresh(onlyPlatform: String? = platform) {
-        if (left) return
+    /**
+     * 拉一次（[onlyPlatform] 只给发起购买的页面：外跳回到前台后，只显示同平台那一张）。[epoch] 由调用方传入它的固定会话世代（F-AND-30，FU-AND-0715：
+     * 订单列表的固定归属、发起页外跳时捕获的世代），不在发送时读当前会话来绑定；它已不是当前会话（会话存储已换号、通知还没到）→ 不发、零请求，
+     * 等会话通知清卡后由调用方按新世代再拉。
+     */
+    fun refresh(
+        epoch: Long,
+        onlyPlatform: String? = platform,
+    ) {
+        if (left || epoch != env.sessionEpoch()) return
         // 换显示位置（同一页换了平台）：旧位置上的卡片回调随之失效
         if (onlyPlatform != platform) lifetime += 1
         platform = onlyPlatform
         // 42901 禁用期内不发（执行层拦截；会话级共享，重进页面也一样）
         if (gate.active) return
         val seq = ++fetchSeq
-        val epoch = env.sessionEpoch()
         // 禁用期是独立的发送前闸门（不进归属）：网络层每次实际写出前（含自动重试、重放）核对，禁用期内不再发包；已发出的照常收结果（共性第 13、27 条）
         val owner = CallOwnership(api.epochs(), sendAllowed = { !gate.active }) { !left && seq == fetchSeq && env.sessionEpoch() == epoch }
         owners += owner
@@ -406,7 +414,7 @@ class PendingTrackService(
             if (left || env.sessionEpoch() != epoch) return@launch
             // 结果回来一律清掉这次尝试的忙碌（期间另一轮查询重建了同一尝试的卡片也一样），失败后用户能再点
             mutable.value = mutable.value.copy(busy = mutable.value.busy - card.key)
-            onDismissed(card, result)
+            onDismissed(card, result, epoch)
         }
         return true
     }
@@ -415,6 +423,7 @@ class PendingTrackService(
     private fun onDismissed(
         card: PendingTrackCardView,
         result: ApiResult,
+        epoch: Long,
     ) {
         val outcome =
             when (result) {
@@ -424,7 +433,7 @@ class PendingTrackService(
 
                 is ApiResult.Failure -> {
                     PendingTrackDismiss
-                        .onOutcome(PendingTrackDismiss.KIND_ERROR, result.code, emptyMap())
+                        .onOutcome(PendingTrackDismiss.KIND_ERROR, result.code, emptyMap(), ResultSignals.forcesUpdate(result))
                         .let {
                             if (it.actionRaw ==
                                 PendingDismissAction.DISABLE
@@ -460,7 +469,7 @@ class PendingTrackService(
             }
 
             PendingDismissAction.REFETCH -> {
-                refresh()
+                refresh(epoch)
             }
 
             PendingDismissAction.DISABLE -> {
@@ -484,7 +493,16 @@ class PendingTrackService(
 
     /** 服务端错误 → 统一的错误视图（5xxxx 带 trace6，未收录的回落 error.50001；其余按 error.<code>，没有则通用）。 */
     private fun errorView(failure: ApiResult.Failure): OrderErrorView =
-        OrderErrorAction.of(OrderErrorAction.LIST_FIRST, failure.code, false, 0L, failure.traceId, false, false)
+        OrderErrorAction.of(
+            OrderErrorAction.LIST_FIRST,
+            failure.code,
+            false,
+            0L,
+            failure.traceId,
+            false,
+            false,
+            forced = ResultSignals.forcesUpdate(failure),
+        )
 
     /**
      * 卡内【开启通知】：先记下点过（这一行随即消失），只有用户点了才经 PermissionRequester 弹系统框；结束后按新状态重算。

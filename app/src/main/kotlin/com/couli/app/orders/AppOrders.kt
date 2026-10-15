@@ -377,7 +377,8 @@ class AppOrders(
                     service.recompute()
                     return
                 }
-                service.refresh(platform)
+                // 带外跳时捕获的世代（F-AND-30：由调用方传入固定世代）
+                service.refresh(awaitingEpoch, platform)
             } else {
                 service.recompute()
             }

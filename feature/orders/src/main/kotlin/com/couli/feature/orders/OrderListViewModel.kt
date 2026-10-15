@@ -165,7 +165,7 @@ class OrderListViewModel(
         controller.onInvalidated = {
             dropPageState()
             pending?.onSessionChanged()
-            if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+            if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) refreshPending()
         }
         val conditions = savedConditions()
         // 先把条件备好并显示（等待期间不发请求）；之后条件的每次变化写进保存状态（含等待期间用户的改动）
@@ -183,6 +183,13 @@ class OrderListViewModel(
                     gate()
                     restoreJob = null
                     if (gone || controller.isOpen) return@launch
+                    if (controller.ownerUnnoticed()) {
+                        // 换号窗口（F-AND-30，FU-AND-0715）：会话存储已换、会话通知还没到——零请求。丢掉旧账号恢复的条件与页面状态，
+                        // 等通知到达（resetForSession 重取归属）后按新会话默认条件打开
+                        controller.openOnSessionNotice(config.scope)
+                        dropPageState()
+                        return@launch
+                    }
                     if (config.env.sessionEpoch() != epoch) dropAccountState()
                     start()
                 }
@@ -191,10 +198,15 @@ class OrderListViewModel(
         }
     }
 
+    /** 待跟单卡拉一次：带本页固定归属的会话世代（F-AND-30：由调用方传入固定世代，不在发送时读当前会话来绑定）。 */
+    private fun refreshPending() {
+        pending?.refresh(controller.ownerEpoch)
+    }
+
     private fun start() {
         controller.open(config.scope)
         seenRound = controller.state.value.round
-        if (controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+        if (controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
 
     /**
@@ -206,7 +218,7 @@ class OrderListViewModel(
         restoreJob = null
         job.cancel()
         pendingRestore = null
-        if (controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+        if (controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
 
     /** 本页固定归属的账号标记（账号哈希；没有会话为 null）：与执行器的请求、已显示数据同一份，不在写保存状态时再读当前会话。 */
@@ -327,7 +339,7 @@ class OrderListViewModel(
         afterUserAction()
         // 切子 Tab：搜索框一并清空（BR-TEXT-02 细则）
         setInput("")
-        if (scope == OrderQuery.SELF) pending?.refresh() else pending?.clear()
+        if (scope == OrderQuery.SELF) refreshPending() else pending?.clear()
     }
 
     fun selectGroup(
@@ -411,7 +423,7 @@ class OrderListViewModel(
         if (!controller.refresh()) return
         afterUserAction()
         // 接管恢复时 afterUserAction 已拉过待跟单卡
-        if (!waiting && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+        if (!waiting && controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
 
     /** 整页失败 / 翻页失败的【重试】。 */
@@ -442,7 +454,7 @@ class OrderListViewModel(
 
     /** 回到前台（含从外跳的平台 App 回来）：重拉待跟单卡，按最新通知权限重算通知行。 */
     fun onStarted() {
-        if (controller.state.value.scope == OrderQuery.SELF) pending?.refresh() else pending?.recompute()
+        if (controller.state.value.scope == OrderQuery.SELF) refreshPending() else pending?.recompute()
     }
 
     /** 记录滚动锚点（渲染身份有效才记；锚点订单进恢复记录）。 */
@@ -467,7 +479,7 @@ class OrderListViewModel(
         // 同步清掉上一账号的搜索框（可能是完整订单号）、半屏、锚点与待执行的恢复；条件回到默认并按新会话重取（共性第 19 条）
         dropAccountState()
         pending?.onSessionChanged()
-        if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) pending?.refresh()
+        if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
 
     /** 撤回 / 基本模式 / 切环境（AppOrders 的通知）：只清本页内存状态与旧回调；落盘的恢复记录已由 App 的清理器删除。 */
@@ -485,7 +497,7 @@ class OrderListViewModel(
         if (after != before) {
             afterUserAction()
             setInput("")
-            if (after == OrderQuery.SELF) pending?.refresh() else pending?.clear()
+            if (after == OrderQuery.SELF) refreshPending() else pending?.clear()
         }
     }
 

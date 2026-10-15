@@ -589,6 +589,9 @@ class SearchController(
     }
 }
 
+/** 统一错误文案（非强更 10405 等，F-X-09）。 */
+internal const val GENERIC_ERROR_KEY = "error.50001"
+
 /** 成功结果 → 完整 envelope（[SearchPager.append] / [SearchResultState.map] 的输入）。 */
 internal fun envelopeOf(result: ApiResult.Success): JsonObject =
     JsonObject(
@@ -602,6 +605,9 @@ internal fun envelopeOf(result: ApiResult.Success): JsonObject =
 /**
  * 任一结果 → 结果判定：成功、业务错误按外壳映射（[SearchResultState.map]）；没有外壳的失败（断网、超时、本地拒绝）为错误态，文案键为 null
  * （页面用通用失败键 error.50001，没有 trace_id 时按无编号的 fallback）。
+ *
+ * 10405 按网络层 Effect 判（F-X-09，FU-AND-0715 第 1 轮评审 R1-03）：重新包装成外壳会丢掉 Effect，所以在这里先消费——不是强更（REFRESH_ONLY、
+ * 刷新失败清会话）→ 统一错误文案 error.50001（附 trace 末 6 位）+【重试】，不显示「版本过低」；强更照旧按 error.10405（强更页由网络层打开）。
  */
 internal fun viewOf(result: ApiResult): SearchResultView =
     when (result) {
@@ -610,15 +616,19 @@ internal fun viewOf(result: ApiResult): SearchResultView =
         }
 
         is ApiResult.Failure -> {
-            SearchResultState.map(
-                JsonObject(
-                    mapOf(
-                        "code" to JsonPrimitive(result.code),
-                        "data" to result.data,
-                        "trace_id" to JsonPrimitive(result.traceId),
+            if (ResultSignals.nonForcedUpdate(result)) {
+                SearchResultView(SearchStateRaw.ERROR, GENERIC_ERROR_KEY, result.code, null, result.traceId)
+            } else {
+                SearchResultState.map(
+                    JsonObject(
+                        mapOf(
+                            "code" to JsonPrimitive(result.code),
+                            "data" to result.data,
+                            "trace_id" to JsonPrimitive(result.traceId),
+                        ),
                     ),
-                ),
-            )
+                )
+            }
         }
 
         else -> {

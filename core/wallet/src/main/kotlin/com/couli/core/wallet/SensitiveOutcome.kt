@@ -21,6 +21,12 @@ data class OutcomeInput(
     val hasTrace: Boolean = false,
     val abandonOutcome: String? = null,
     val originalCode: Int? = null,
+    /**
+     * 网络层是否判定强更（F-X-09，FU-AND-0715；[com.couli.core.network.ResultSignals.forcesUpdate]）。10405 而没有判定强更（受限会话刷新、刷新失败）
+     * 不进强更：首次提交按统一错误文案（error.50001 + trace6）回到可编辑、可重试；确认 / 放弃保持待确认（「暂时无法确认，请稍后再试」）。缺省 true 只给
+     * 三端向量（向量只给错误码）。
+     */
+    val forced: Boolean = true,
 ) {
     companion object {
         const val OK = "ok"
@@ -129,8 +135,17 @@ object SensitiveOutcome {
         val code = input.code ?: return Outcome(PENDING_CONFIRM, false, false, TITLE_KEY)
         shared(op, code, input, pending = false)?.let { return it }
         return when {
-            code == FORCE_UPDATE_CODE -> {
+            code == FORCE_UPDATE_CODE && input.forced -> {
                 Outcome(FORCE_UPDATE, false, !keyEverUnknown, "error.10405")
+            }
+
+            // 非强更的 10405（F-X-09）：键的处理同 10405（不结束；从未结果未知的下次用新键），页面给统一错误文案 + 可重试
+            code == FORCE_UPDATE_CODE && keyEverUnknown -> {
+                Outcome(PENDING_CONFIRM, false, false, RETRY_LATER_KEY, showTrace6 = true)
+            }
+
+            code == FORCE_UPDATE_CODE -> {
+                Outcome(ERROR_TRACE6, false, true, "error.$GENERIC_SERVER", showTrace6 = true)
             }
 
             code == RATE_LIMITED -> {
@@ -186,8 +201,13 @@ object SensitiveOutcome {
         val code = input.code ?: return Outcome(PENDING_CONFIRM, false, false, RETRY_LATER_KEY)
         shared(op, code, input, pending = true)?.let { return it }
         return when {
-            code == FORCE_UPDATE_CODE -> {
+            code == FORCE_UPDATE_CODE && input.forced -> {
                 Outcome(FORCE_UPDATE, false, false, "error.10405")
+            }
+
+            // 非强更的 10405（F-X-09）：保持待确认，统一的「暂时无法确认，请稍后再试」+ trace6，用户可再点
+            code == FORCE_UPDATE_CODE -> {
+                Outcome(PENDING_CONFIRM, false, false, RETRY_LATER_KEY, showTrace6 = true)
             }
 
             code == RATE_LIMITED -> {
@@ -256,8 +276,13 @@ object SensitiveOutcome {
                 shared(op, code, input, pending = true) ?: Outcome(PENDING_CONFIRM, false, false, RETRY_LATER_KEY)
             }
 
-            code == FORCE_UPDATE_CODE -> {
+            code == FORCE_UPDATE_CODE && input.forced -> {
                 Outcome(FORCE_UPDATE, false, false, "error.10405")
+            }
+
+            // 非强更的 10405（F-X-09）：同确认
+            code == FORCE_UPDATE_CODE -> {
+                Outcome(PENDING_CONFIRM, false, false, RETRY_LATER_KEY, showTrace6 = true)
             }
 
             code == BUSY -> {
