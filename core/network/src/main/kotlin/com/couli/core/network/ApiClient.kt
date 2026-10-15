@@ -72,8 +72,14 @@ class ApiClient(
     val inFlight: InFlightCalls = InFlightCalls(),
     /** 凭据读取屏障（F-X-03；App 里与设备注册、撤回同意、环境切换共用一份）：令牌的每次读取都在它里面现判可读。 */
     private val readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
+    /** Debug / Staging 的本机替身（实际传输入口、写出前核对之后才问它，APP-10b §2 第 13 条）；Release 为 null。 */
+    local: LocalExchange? = null,
 ) {
-    private val transport = HttpTransport(http, inFlight)
+    private val transport = HttpTransport(http, inFlight, local)
+
+    /** 流式请求的执行线程（每条流一个，阻塞读 ResponseBody.source()；守护线程）。 */
+    private val streamExecutor: ExecutorService =
+        Executors.newCachedThreadPool { runnable -> Thread(runnable, "couli-agent-stream").apply { isDaemon = true } }
 
     init {
         // 持久化登录世代的读取也是令牌读取点（整份会话可用性要解密令牌，FU-AND-0714 第 2 轮评审 R2-01 / R2-02）：交给本屏障，
@@ -280,6 +286,8 @@ class ApiClient(
     private data class RunOptions(
         val abandonFor: ApiOperation? = null,
         val pendingAccount: String? = null,
+        /** APP-10b：流式调用的传输接收端（普通调用为 null）。 */
+        val stream: StreamTap? = null,
     )
 
     /** 10002 / 只刷新时等单飞刷新的结论。 */
@@ -348,6 +356,43 @@ class ApiClient(
 
     /** 阻塞执行一次调用。 */
     fun execute(call: ApiCall): ApiResult = execute(call, navigationTicket())
+
+    /**
+     * 流式请求（APP-10b §2 第 1 条，F-X-04）：只给 [ApiStreamOperations] 里的 operation（表外本地拒绝 stream_not_allowed）。与普通请求同一条管线（operation 查表、
+     * 路径参数编码、公共头、可选 Authorization、不签名、调用归属、每次实际写出前的 admit / sendAllowed、单飞刷新与 10402 重新注册后同体重放一次、10405、撤回 /
+     * 切环境的同步取消、[cancelOwned]），另加 Accept: text/event-stream 与 Accept-Encoding: identity；没有整体调用超时。响应按 Content-Type 分流：SSE 的头与原始
+     * 字节交 [sink]（IO 线程），其他按统一外壳解包交 [ApiStreamSink.onEnvelope]。返回的句柄 cancel = Call.cancel()，之后不再交付。
+     */
+    fun stream(
+        request: ApiStreamRequest,
+        sink: ApiStreamSink,
+    ): ApiStreamHandle {
+        val handle = ApiStreamHandle()
+        val operation = ApiOperations.byId(request.operationId)
+        if (operation == null || !ApiStreamOperations.isStreaming(request.operationId)) {
+            sink.onEnvelope(ApiResult.LocalReject(ApiStreamOperations.NOT_STREAMING))
+            return handle
+        }
+        val ticket = navigationTicket()
+        val tap = StreamTap(handle, sink)
+        val call =
+            ApiCall(
+                operationId = request.operationId,
+                pathParams = request.pathParams,
+                body = request.body,
+                ownership = request.ownership,
+                expectedAccount = request.expectedAccount,
+            )
+        streamExecutor.execute {
+            val result =
+                runCatching {
+                    runLogical(call, operation, RunOptions(pendingAccount = call.expectedAccount, stream = tap), newId(), ticket)
+                }.getOrElse { ApiResult.TransportFailure(HttpTransport.KIND_DISCONNECT, null, null, pendingKeyUnknown = false) }
+            // 已分流为流：终结已由传输层交出；被取消的一律不再回调
+            if (!tap.started && !handle.cancelled) sink.onEnvelope(result)
+        }
+        return handle
+    }
 
     private fun execute(
         call: ApiCall,
@@ -728,6 +773,7 @@ class ApiClient(
     }
 
     /** 首次发送与内部续发（至多 1 次）的循环；每次发送前过屏障、核对调用归属、重新判定放行与组头签名。 */
+    @Suppress("CyclomaticComplexMethod") // 按分支逐条对照规则
     private fun attempts(
         call: ApiCall,
         operation: ApiOperation,
@@ -737,7 +783,12 @@ class ApiClient(
         var current = call
         val budget = Budget()
         while (true) {
-            passSessionBarrier(operation, logical.owner)?.let { return it }
+            // 单次发送（身份事件与【停止】的 cancel，APP-10b 鸿蒙 R1-02、G64）：刷新屏障在途就不等（等完会带新令牌），按没发出结束；也不由它触发屏障刷新
+            if (call.singleShot) {
+                if (barrierPending(operation)) return ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED)
+            } else {
+                passSessionBarrier(operation, logical.owner)?.let { return it }
+            }
             val state = context()
             // 环境未就绪（F-X-03 ①④）：不读凭据，按已绑定的会话归属给出与读得到时相同的分类，其余一律 environment_unsettled
             if (unsettledOnly(state)) return ApiResult.LocalReject(unsettledReject(operation, options))
@@ -748,7 +799,7 @@ class ApiClient(
                 return ApiResult.LocalReject(LocalRejectReason.ACCOUNT_MISMATCH)
             }
             val prepared =
-                when (val outcome = prepare(current, operation, state, session)) {
+                when (val outcome = prepare(current, operation, state, session, options.stream != null)) {
                     is Prepared.Rejected -> return ApiResult.LocalReject(outcome.reason)
                     is Prepared.Ready -> outcome
                 }
@@ -822,11 +873,16 @@ class ApiClient(
     ): Step {
         val key = prepared.idempotencyKey
         val sent =
-            when (val outcome = exchange(call, operation, prepared, logical)) {
+            when (val outcome = exchange(call, operation, prepared, logical, options.stream)) {
                 is Sent.Rejected -> return Step.Done(ApiResult.LocalReject(outcome.reason))
                 is Sent.Done -> outcome
             }
         val exchange = sent.exchange
+        // APP-10b：已分流为 SSE 流，终结已交出（之后不再重放，G23）
+        if (exchange is Exchange.Streamed) {
+            settle(logical, PendingKeyStore.ENVELOPE_SUCCESS)
+            return Step.Done(ApiResult.Success(null, null, key))
+        }
         when (exchange) {
             is Exchange.Envelope -> observeServerDate(exchange.headers)
             is Exchange.NotModified -> observeServerDate(exchange.headers)
@@ -878,7 +934,7 @@ class ApiClient(
         val ownership = ownerReject(logical.owner, context())
         // F-ALL-08（APP-03b 共性第 25 条）：有效世代的 10402——含重放里再次收到的——都立刻隔离这次请求所用的设备凭据；
         // 与重新注册、重放预算分开：预算用完时原调用照常结束，之后的恢复只交给设备注册的退避链
-        if (envelope.code == DEVICE_REJECTED && ownership == null) {
+        if (envelope.code == DEVICE_REJECTED && ownership == null && !call.singleShot) {
             val usedDeviceId = sent.request.request.headers[HeaderNames.DEVICE_ID]
             hooks.quarantineDevice(usedDeviceId)
             // 第 25 条补全（Android 第 1 轮评审 R1-02、共性第 34 条）：重放里再次收到 10402、重放预算已用完，这次调用不会再进入重新注册；
@@ -886,8 +942,22 @@ class ApiClient(
             val noReRegister = effect.kind != ErrorEffectKind.REGISTER_DEVICE_REPLAY
             if (noReRegister && operation.operationId != REGISTER_DEVICE) hooks.recoverDevice(usedDeviceId)
         }
+        // 单次发送（APP-10b 鸿蒙 R1-02、G64）：不刷新、不重新注册、不重放、不清会话、不导航、不登记待办；只结算 10405 强更（42901 由调用方写闸门）
+        if (call.singleShot && effect.kind != ErrorEffectKind.FORCE_UPDATE) {
+            settle(logical, envelopeKind)
+            effect = deliver(staleSessionEffect(effect), logical, options, SINGLE_SHOT)
+            return Step.Done(ApiResult.Failure(envelope.code, envelope.msg, data, envelope.traceId, effect, key))
+        }
         // 刷新类与清会话已按自己的结论核对过归属（刷新失败清的正是本世代，lessons 37）
         var resolved = false
+        // APP-10b Android R2-02（rule-gaps A23）：x-auth optional 的 agent operation 带着本会话的 Authorization 仍收到 10001 = 服务端已不认这一代登录。公共管线在这里
+        // 结算原登录世代的会话失效——与 10404 同一把锁、同一个世代核对（[clearOwnedSession]：归属仍是发起时那一代才清，期间已登录的新身份不动），清理经
+        // sessionStored 同步通知身份变化（Agent 控制器随之作废、按新身份重建）；Effect 仍是 LOGIN、带清理后的世代，是否跳登录由页面按自己的许可决定
+        // （已停止的这一轮不导航、不弹层，A19）。单次发送（cancel）在上面已按不清会话结束
+        val agentLogin = envelope.code == LOGIN_REQUIRED && operation.pathTemplate.startsWith(AGENT_PATH_PREFIX)
+        if (agentLogin && ownership == null && sent.request.accessToken != null) {
+            clearOwnedSession(logical.owner)?.let { cleared -> effect = effect.copy(sessionEpoch = cleared) }
+        }
         when (effect.kind) {
             ErrorEffectKind.REFRESH_REPLAY, ErrorEffectKind.REFRESH_ONLY -> {
                 // 10002 刷新后重放；10405 + 受支持版本 + deletion_only 只刷新（R1-09）。旧调用不发起刷新：refreshAfter 只为本次所用
@@ -1151,20 +1221,23 @@ class ApiClient(
      * 发送；读接口超时 / 断连按退避自动重试。每次重试前核对调用归属（A-R2-04：退避期间换了账号或重新登录，结束旧调用），
      * 再重新取状态、重新判定放行、重新组头与签名（R1-01）。每次写出前网络拦截器再核对一次（[guardFor]，A-R2-01）。
      */
-    @Suppress("TooGenericExceptionCaught") // 发送中途的意外异常：键按结果未知处理后原样抛出
+    @Suppress("TooGenericExceptionCaught", "CyclomaticComplexMethod") // 发送中途的意外异常：键按结果未知处理后原样抛出
     private fun exchange(
         call: ApiCall,
         operation: ApiOperation,
         first: Prepared.Ready,
         logical: Logical,
+        tap: StreamTap? = null,
     ): Sent {
-        val retry = retryPolicy(operation)
+        val policy = retryPolicy(operation)
+        // APP-10b G35：断线类历史重载关掉 GET 自动重试（每次尝试只发一次）；单次发送同样不重试
+        val retry = if (call.autoRetry && !call.singleShot) policy else policy.copy(autoRetries = 0)
         var request = first
         var attempt = 0
         while (true) {
             val result =
                 try {
-                    transport.send(request.request, retry.timeoutMillis, guardFor(logical.owner, operation, call, request))
+                    transport.send(request.request, retry.timeoutMillis, guardFor(logical.owner, operation, call, request), tap)
                 } catch (error: Exception) {
                     settle(logical, PendingKeyStore.NO_ENVELOPE)
                     throw error
@@ -1227,7 +1300,13 @@ class ApiClient(
         prepared: Prepared.Ready,
     ): SendGuard =
         // 调用方自带归属的（桥调用、设备注册）：写出之后归属失效（页面关闭、注册的最后一个调用方失效）同样取消在途请求（R3-03）
-        SendGuard(owner.epochs, owner.deadlineNanos, abandoned = owner.stillOwned?.let { { owner.disowned() } }, tag = owner.ownership) {
+        SendGuard(
+            owner.epochs,
+            owner.deadlineNanos,
+            abandoned = owner.stillOwned?.let { { owner.disowned() } },
+            tag = owner.ownership,
+            onCommitted = owner.ownership?.onWritten?.let { written -> { written(true) } },
+        ) {
             val now = context()
             ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, prepared, now)
         }
@@ -1296,6 +1375,7 @@ class ApiClient(
         operation: ApiOperation,
         state: NetworkContext,
         session: SessionSnapshot?,
+        streaming: Boolean = false,
     ): Prepared {
         val readable = readable(state)
         val accessToken = session?.accessToken
@@ -1320,6 +1400,8 @@ class ApiClient(
         key?.let { headers[HeaderNames.IDEMPOTENCY_KEY] = it }
         if (readable && operation.stepUp != null) call.stepUpToken?.let { headers[HeaderNames.STEP_UP_TOKEN] = it }
         if (operation.isRead) call.ifNoneMatch?.let { headers[HeaderNames.IF_NONE_MATCH] = it }
+        // APP-10b G17、G18：流式请求带 Accept: text/event-stream 与 Accept-Encoding: identity
+        if (streaming) ApiStreamRequestPolicy.extraHeaders(headers)
         // 个性化推荐已关闭（APP-12 G03）：只在已同意隐私政策时带；基本模式、尚未决定不带（brief §2.5）
         if (state.privacy == PrivacyRaw.FULL &&
             state.personalizationOff
@@ -1425,6 +1507,14 @@ class ApiClient(
     /** 会话作用域：凭据不可读或没有会话时按 full（不带令牌，接口照 full 判定）。 */
     private fun SessionSnapshot?.scopeOrFull(): String = this?.scope ?: SessionScopeRaw.FULL
 
+    /** 受限会话刷新屏障此刻在途（单次发送不等它，APP-10b G64）。x-auth=none 的接口不受屏障约束。 */
+    private fun barrierPending(operation: ApiOperation): Boolean =
+        operation.auth != AUTH_NONE &&
+            synchronized(barrierLock) {
+                settleBarrier()
+                barrier != null
+            }
+
     /**
      * 受限会话屏障（BR-ID-01 细则「受限会话」；R1-10、lessons 19、30、31）：冷启动后第一次能读到会话时、或强更状态从 below /
      * unknown 变为受支持时，存储的会话是 deletion_only → 先单飞刷新；刷新结束前，其余带令牌的请求（x-auth 不是 none）一律等待，
@@ -1433,6 +1523,7 @@ class ApiClient(
      * - 刷新被拒：返回 [ApiResult.SessionEnded]（R1-09），原请求不发；Effect 按结算那一刻的强更状态（lessons 20）；
      * - 超时、断连等暂时失败：按网络错误结束（不带旧受限令牌发出），屏障重新到期，下一个请求再刷新。
      */
+
     private fun passSessionBarrier(
         operation: ApiOperation,
         owner: CallOwner,
@@ -1888,6 +1979,7 @@ class ApiClient(
                     is Exchange.Transport -> return RefreshAttempt.Transient(exchange.kind)
                     is Exchange.NotModified -> return RefreshAttempt.Transient(HttpTransport.KIND_NO_ENVELOPE)
                     is Exchange.NotSent -> return notSentRefresh(exchange.reason)
+                    is Exchange.Streamed -> return RefreshAttempt.Transient(HttpTransport.KIND_NO_ENVELOPE)
                 }
             // 刷新请求自身遇到可校时的 10401：校时后换 X-Timestamp、X-Nonce 重签 1 次，仍在同一个单飞窗口里（R3-07、BR-ID-09）
             // 10402：见 [reRegisterForRefresh]；重放仍是 10402 按暂时失败结束（不清会话）
@@ -2249,11 +2341,18 @@ class ApiClient(
 
     companion object {
         private const val REFRESH = "refreshToken"
+
+        /** 单次发送的 Effect 一律按「旧调用」交付（不导航、不登记待办、不进 10006 落点，APP-10b G64）。 */
+        private const val SINGLE_SHOT = "single_shot"
         private const val ABANDON = "abandonIdempotencyKey"
         private const val RISK_NOTICE_ROUTE = "RiskNotice"
         private const val REGISTER_DEVICE = "registerDevice"
         private const val HTTP_NOT_MODIFIED = 304
         private const val LOGIN = "Login"
+
+        /** 未登录（10001）与 agent operation 的路径前缀（R2-02：带令牌的 agent 请求收到 10001 时按世代结算会话失效）。 */
+        private const val LOGIN_REQUIRED = 10001
+        private const val AGENT_PATH_PREFIX = "/v1/agent/"
         private const val FORCE_UPDATE = "ForceUpdate"
         private const val AUTH_NONE = "none"
         private const val INVALID_SIGNATURE = 10401

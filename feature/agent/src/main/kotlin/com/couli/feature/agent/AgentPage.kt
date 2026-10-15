@@ -89,6 +89,30 @@ object AgentTags {
     fun newChatError(key: String): String = "agent_error_new_chat_$key"
 
     fun upgrade(key: String): String = "agent_upgrade_$key"
+
+    // ---- APP-10b
+    const val EARLIER = "agent_earlier"
+    const val EARLIER_NONE = "agent_earlier_none"
+    const val SESSION_ENDED = "agent_session_ended"
+    const val SESSION_ENDED_NEW_CHAT = "agent_session_ended_new_chat"
+    const val REPORT_SHEET = "agent_report_sheet"
+    const val REPORT_SUBMIT = "agent_report_submit"
+    const val REPORT_SUPPLEMENT = "agent_report_supplement"
+
+    fun reportReason(index: Int): String = "agent_report_reason_$index"
+
+    fun feedbackUp(key: String): String = "agent_feedback_up_$key"
+
+    fun feedbackDown(key: String): String = "agent_feedback_down_$key"
+
+    fun reported(key: String): String = "agent_reported_$key"
+
+    fun reply(key: String): String = "agent_reply_$key"
+
+    /** 举报的操作宿主（长按 + 读屏「更多操作 → 举报」；有文字为正文、只有卡片为卡片区，R2-06）。 */
+    fun reportHost(key: String): String = "agent_report_host_$key"
+
+    fun status(key: String): String = "agent_status_$key"
 }
 
 /**

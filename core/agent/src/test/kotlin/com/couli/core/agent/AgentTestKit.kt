@@ -39,6 +39,19 @@ internal class AgentTestKit {
     var consentReply: suspend (Boolean) -> AgentHttpResult = { ok() }
     val consentCalls = mutableListOf<Boolean>()
 
+    // ---- APP-10b：应用级接线（缺省与 APP-10 旧测试相同的行为）
+
+    /** 三组闸门（null = 退回共享闸门 [gate]）。 */
+    var gates: AgentGates? = null
+    val ledger = AgentCancelLedger()
+
+    /** 控制器上报的应用级「AI 同意失效」（归属键）。 */
+    val lapses = mutableListOf<Any>()
+    var allowed = true
+    var foreground = true
+    var randomUnit = 0.5
+    var consentLapsed = false
+
     /** 此刻的身份（测试改它模拟换号、撤回、切环境）。 */
     var identity: AgentIdentity? = member("user-a")
 
@@ -73,6 +86,13 @@ internal class AgentTestKit {
                 log = { logs += it },
                 examples = { examples },
                 context = context,
+                gates = gates,
+                ledger = ledger,
+                aiConsentLost = { lapses += it },
+                consentLapsed = consentLapsed,
+                allowed = { allowed },
+                foreground = { foreground },
+                random = { randomUnit },
             ),
         ).also { c ->
             c.setVisible(visible)
@@ -142,6 +162,9 @@ internal class AgentTestKit {
 
         fun line(ndjson: String) = sink.onData(AgentSse.sseTextOfNdjsonLine(ndjson))
 
+        /** 原始字节（APP-10b 字节入口）。 */
+        fun bytes(chunk: ByteArray) = sink.onBytes(chunk)
+
         fun fixture(
             name: String,
             upTo: Int = Int.MAX_VALUE,
@@ -165,10 +188,18 @@ internal class AgentTestKit {
         }
         var currentReply: suspend () -> AgentHttpResult = { ok(JsonObject(mapOf("session" to kotlinx.serialization.json.JsonNull))) }
         var cancelReply: suspend () -> AgentHttpResult = { ok() }
+        var historyReply: suspend (String?) -> AgentHttpResult = { ok(emptyHistory()) }
+        var feedbackReply: suspend () -> AgentHttpResult = { ok() }
+        var reportReply: suspend () -> AgentHttpResult = { ok() }
         var creates = 0
         var currents = 0
         val cancels = mutableListOf<Pair<String, AgentCall>>()
+        val histories = mutableListOf<Pair<String?, AgentCall>>()
+        val feedbacks = mutableListOf<Pair<String, String>>()
+        val reports = mutableListOf<Pair<String, String>>()
         val owned = mutableListOf<Any>()
+        val ownedExcept = mutableListOf<Pair<Any, String>>()
+        val scopes = mutableListOf<Pair<Any, String>>()
         var hold: CompletableDeferred<Unit>? = null
 
         override suspend fun createSession(call: AgentCall): AgentHttpResult {
@@ -210,9 +241,55 @@ internal class AgentTestKit {
             return cancelReply()
         }
 
+        override suspend fun listMessages(
+            sessionId: String,
+            cursor: String?,
+            limit: Int,
+            call: AgentCall,
+            autoRetry: Boolean,
+        ): AgentHttpResult {
+            if (!call.sendAllowed()) return notSent("history")
+            histories += cursor to call
+            return historyReply(cursor)
+        }
+
+        override suspend fun setFeedback(
+            messageId: String,
+            value: String,
+            call: AgentCall,
+        ): AgentHttpResult {
+            if (!call.sendAllowed()) return notSent("feedback")
+            feedbacks += messageId to value
+            return feedbackReply()
+        }
+
+        override suspend fun report(
+            messageId: String,
+            reason: String,
+            call: AgentCall,
+        ): AgentHttpResult {
+            if (!call.sendAllowed()) return notSent("report")
+            reports += messageId to reason
+            return reportReply()
+        }
+
         /** 只记录（不替控制器关流）：「同步关连接」必须由控制器自己做，测试才能看出来。 */
         override fun cancelOwned(identityKey: Any) {
             owned += identityKey
+        }
+
+        override fun cancelOwnedExcept(
+            identityKey: Any,
+            keepScope: String,
+        ) {
+            ownedExcept += identityKey to keepScope
+        }
+
+        override fun cancelScope(
+            identityKey: Any,
+            scope: String,
+        ) {
+            scopes += identityKey to scope
         }
 
         private fun notSent(op: String): AgentHttpResult {
@@ -249,6 +326,16 @@ internal class AgentTestKit {
         ): AgentHttpResult = AgentHttpResult(false, http, code, "error", data, trace, retryAfter)
 
         fun consentData(): JsonObject = JsonObject(mapOf("consent_type" to JsonPrimitive("ai_third_party")))
+
+        /** 空的历史首页（items 空、没有更早、未过期）。 */
+        fun emptyHistory(): JsonObject =
+            JsonObject(
+                mapOf(
+                    "items" to kotlinx.serialization.json.JsonArray(emptyList()),
+                    "next_cursor" to kotlinx.serialization.json.JsonNull,
+                    "expired" to JsonPrimitive(false),
+                ),
+            )
 
         private val root: File by lazy {
             val start = File(System.getProperty("user.dir") ?: error("缺少 user.dir")).canonicalFile

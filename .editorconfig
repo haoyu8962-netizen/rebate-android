@@ -151,3 +151,17 @@ ktlint_standard_blank-line-between-when-conditions = disabled
 ktlint_standard_chain-method-continuation = disabled
 ktlint_standard_function-signature = disabled
 ktlint_standard_when-entry-bracing = disabled
+
+# APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改（brief §4）；它的格式与以下 ktlint 规则不一致，只对这一个文件关掉这几条，其余照常检查。
+[core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt]
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_blank-line-before-declaration = disabled
+ktlint_standard_blank-line-between-when-conditions = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_multiline-expression-wrapping = disabled
+ktlint_standard_no-wildcard-imports = disabled
+ktlint_standard_when-entry-bracing = disabled
+ktlint_standard_wrapping = disabled
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled

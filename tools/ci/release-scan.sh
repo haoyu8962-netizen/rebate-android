@@ -19,7 +19,11 @@
 #         - Debug 本机假钱包服务的标记 COULI_FAKE_WALLET_SERVER_APP09（app/src/debugFeatures 的 DebugFakeWallet.kt；APP-09）
 #         - Debug 本机假「我的」服务的标记 COULI_FAKE_ME_SERVER_APP12（app/src/debugFeatures 的 DebugFakeMe.kt；APP-12）
 #         - Debug 本机假首页服务的标记 COULI_FAKE_HOME_SERVER_APP11（app/src/debugFeatures 的 DebugFakeHome.kt；APP-11）
-#         - Debug 本机假 Agent 服务的标记 COULI_FAKE_AGENT_SERVER_APP10（app/src/debugFeatures/agent 的 AgentFakeStream.kt；APP-10）
+#         - Debug 本机假 Agent 服务的标记 COULI_FAKE_AGENT_SERVER_APP10（app/src/debugFeatures/agent 的 AgentFakeStream.kt；APP-10；APP-10b 的
+#           历史 / 反馈 / 举报 / 流式假实现 AgentFakeServer 同一标记）
+#         - Agent 向量接线的测试探针标记 COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B（core/agent/src/test 的 TestAgentVectorWiring.kt；APP-10b
+#           鸿蒙 R1-04：假端口、虚拟流、硬编码帧只许在测试源码集——debug / staging / release 制品都不得出现；--self-test 用合成制品做反向核对）
+#         - Agent 流 fixture 文件（assets/agent-streams/*.ndjson；APP-10 A02：只挂 debug / staging 的 assets，Release 不得带）
 #         - Debug 本机假账号服务的标记 COULI_FAKE_ACCOUNT_SERVER_APP13A（app/src/debugFeatures 的 DebugFakeAccount.kt；APP-13a）
 #         - Debug 路由可用性覆盖开关的标记 COULI_ROUTE_OVERRIDE_APP13A（app/src/debugFeatures/routing 的 VariantRouteOverride.kt；APP-13a G01）
 #         - 首页草稿预览 HomePreview 的标记 COULI_HOME_PREVIEW_APP11（app/src/debugFeatures/home 的 HomePreviewPage.kt；APP-11，路由名另按 debug_only 检查）
@@ -146,6 +150,7 @@ scan_apk() {
   [ "$status" -eq 0 ] || fail "unzip 失败（退出码 ${status}）：无法解包 $apk（不是有效的 APK / ZIP，或 unzip 本身出错）"
 
   find "$tmp/apk" -type f -print0 > "$tmp/files.list" || fail "列出解包文件失败"
+  ( cd "$tmp/apk" && find . -type f ) > "$tmp/files.names" || fail "列出解包文件名失败"
   local dump="$tmp/strings.txt"
   : > "$dump" || fail "无法写 $dump"
   local count=0 dex=0 file rel esc
@@ -166,8 +171,9 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'COULI_FAKE_HOME_SERVER_APP11' 'COULI_FAKE_AGENT_SERVER_APP10' 'COULI_FAKE_ACCOUNT_SERVER_APP13A' 'COULI_ROUTE_OVERRIDE_APP13A' 'COULI_HOME_PREVIEW_APP11' 'debug-web-code'; do
+  for pattern in 'COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B' 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'COULI_FAKE_HOME_SERVER_APP11' 'COULI_FAKE_AGENT_SERVER_APP10' 'COULI_FAKE_ACCOUNT_SERVER_APP13A' 'COULI_ROUTE_OVERRIDE_APP13A' 'COULI_HOME_PREVIEW_APP11' 'debug-web-code'; do
     case "$pattern" in
+      COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B) label="agent_test_probe" ;;
       "$conformance_marker") label="bridge_conformance" ;;
       "$LOOPBACK_PATTERN") label="loopback_origin" ;;
       conformance-harness) label="test_login" ;;
@@ -197,6 +203,11 @@ scan_apk() {
       echo "$label" >> "$out/hits"
     fi
   done
+  # Agent 流 fixture（APP-10 A02、APP-10b §0 第 7 条）：Release 不得带 fixture 资源文件
+  if grep_file '(^|/)agent-streams/[^/]+\.ndjson$' "$tmp/files.names" "$tmp/hit.txt"; then
+    echo "  命中 agent_fixtures：$(head -1 "$tmp/hit.txt")"
+    echo "agent_fixtures" >> "$out/hits"
+  fi
   local route
   for route in $routes; do
     if grep_file "(^|[^A-Za-z0-9_])${route}([^A-Za-z0-9_]|\$)" "$dump" "$tmp/hit.txt"; then
@@ -296,7 +307,9 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "route_override"
   require_label "debug" "home_preview"
   require_label "debug" "fake_trade_ports"
+  require_label "debug" "agent_fixtures"
   require_label "debug" "debuggable"
+  forbid_label "debug" "agent_test_probe"
   echo "  debug 共命中 $SCAN_HITS 项"
 
   echo "release-scan --self-test：staging 制品必须命中（${staging_apk}）"
@@ -322,6 +335,8 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "route_override"
   require_label "staging" "home_preview"
   require_label "staging" "fake_trade_ports"
+  require_label "staging" "agent_fixtures"
+  forbid_label "staging" "agent_test_probe"
   forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"
   echo "  staging 共命中 $SCAN_HITS 项"
@@ -332,6 +347,21 @@ if [ "${1:-}" = "--self-test" ]; then
     echo "release-scan --self-test：失败，release 制品命中 $SCAN_HITS 项：$(printf '%s' "$SCAN_LABELS" | tr '\n' ' ')" >&2
     exit 1
   fi
+  # 反向核对（APP-10b，鸿蒙 R1-04）：测试源码集的探针标记与 fixture 一旦进了 Release 制品必须被拦。以 release 制品为底合成一个带探针标记、
+  # 带 fixture 文件的制品（不签名、只给扫描用），扫描必须命中这两项
+  synth_dir="$(mktemp -d "${TMPDIR:-/tmp}/couli-scan-synth.XXXXXX")" || fail "mktemp 失败"
+  cp "$release_apk" "$synth_dir/synthetic.apk" || fail "复制 release 制品失败"
+  mkdir -p "$synth_dir/add/assets/agent-streams" || fail "mkdir 失败"
+  printf 'COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B\n' > "$synth_dir/add/assets/agent-probe.txt" || fail "写合成标记失败"
+  printf '{"event":"meta"}\n' > "$synth_dir/add/assets/agent-streams/normal.ndjson" || fail "写合成 fixture 失败"
+  status=0
+  (cd "$synth_dir/add" && zip -q -r "$synth_dir/synthetic.apk" assets) || status=$?
+  [ "$status" -eq 0 ] || fail "zip 合成制品失败（退出码 ${status}）"
+  echo "release-scan --self-test：合成制品（release + 测试探针标记 + fixture）必须命中"
+  run_scan "$synth_dir/synthetic.apk"
+  require_label "synthetic" "agent_test_probe"
+  require_label "synthetic" "agent_fixtures"
+  rm -rf "$synth_dir"
   echo "release-scan --self-test：通过"
   exit 0
 fi

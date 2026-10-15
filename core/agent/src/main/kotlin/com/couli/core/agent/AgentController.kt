@@ -66,6 +66,27 @@ class AgentDeps(
      * 控制器核对页面票据与登录世代后调它，App 同步作废这个控制器（清空）并按此刻的身份重建。缺省不做（单测）。
      */
     val rebuildIdentity: () -> Unit = {},
+    /**
+     * APP-10b：三组 Retry-After 闸门（发送 / 读取 / 动作，按不含页面实例的会话归属，App 级跨页面实例保留，G24、G55、鸿蒙 R3-03）。为 null 时三组都退回
+     * APP-10 的共享闸门 [gate]（旧测试接线）。
+     */
+    val gates: AgentGates? = null,
+    /** 同一 run 只发 1 次 cancel 的账本（App 级，与归属协调器共用；重进页面也不再发，G01、G25）。 */
+    val ledger: AgentCancelLedger = AgentCancelLedger(),
+    /** 此刻不含页面实例的归属键（App 给；【停止】cancel 的准入与结果按它核对，鸿蒙 R3-01 / G77）。为 null 时按完整身份比较。 */
+    val currentOwnerKey: (() -> Any?)? = null,
+    /** 任何来源的 AI 10004 汇入应用级「AI 同意失效」（参数为构造时固定的不含页面实例的归属键，共性第 33 条）。 */
+    val aiConsentLost: (Any) -> Unit = {},
+    /** 构造时这个归属已处于应用级「AI 同意失效」：一开始就是「需要重新同意」，不取会话、不拉历史（鸿蒙 R2-02）。 */
+    val consentLapsed: Boolean = false,
+    /** 应用级准入（身份变更在途、AI 同意失效、配置关闭；鸿蒙 R1-03、R1-07）：控制器准入与端口出口同时核对。 */
+    val allowed: () -> Boolean = { true },
+    /** App 此刻在前台（后台不发起任何重试，03 §7.2、G38）。 */
+    val foreground: () -> Boolean = { true },
+    /** 退避抖动的随机数（[0, 1)，可注入，G38）。 */
+    val random: () -> Double = { Math.random() },
+    /** 「身份变更在途」期间页面要一个控制器时建的挂起态（BLOCKED：空白、不发任何请求；流程结束后 App 重建，鸿蒙 R1-03）。 */
+    val suspended: Boolean = false,
 )
 
 /** 控制器内部的一轮对话。 */
@@ -73,7 +94,52 @@ private class Turn(
     var run: AgentRunTicket,
     val userText: String,
     val body: String,
+    /** 发送时刻（历史对齐的时间窗下界用，G05）；历史轮为 created_at。 */
+    val sentAtMs: Long = 0,
 ) {
+    /** 历史接口给的这一轮（冷启动恢复、重载替换、翻页、追加）：只用历史形状，没有 run_id、不给【停止】（编排者补充第 3 条）。 */
+    var history = false
+
+    /** 发出时的进入世代（发送结果的导航、提示、弹框都按它核对，鸿蒙 R1-05）。 */
+    var entry = 0L
+
+    /** 历史里这一轮用户消息的 id（对齐与追加去重用）。 */
+    var userMessageId: String? = null
+
+    /** 可信的回复 message_id（流内 meta 给的、或历史里确为 assistant 的；G03）。反馈 / 举报只对它开放。 */
+    var replyId: String? = null
+
+    /** meta.message_id 在历史里指向 user（G03 示例冲突）：不当回复 id 用，入口不显示。 */
+    var replyIdDistrusted = false
+
+    /** duplicate 收尾尚未以历史替换（G28：替换后才显示【赞】【踩】）。 */
+    var duplicatePending = false
+    val seq = AgentSeqGuard()
+
+    /** 缺号：本条 incomplete，连接保持只等终止帧或断线（G11）。 */
+    var gapped = false
+
+    /** 重载状态机（断线【重试】、缺号、duplicate 收尾、cancel 30505、【刷新】）。 */
+    var reconnect: AgentReconnect? = null
+    var reloadTimer: (() -> Unit)? = null
+
+    /** 【停止】流程（meta 前点停止显示「正在停止」，G26）。 */
+    var stopFlowRef: AgentStopFlow? = null
+
+    val stopFlow: AgentStopFlow? get() = stopFlowRef
+    var stopTimer: (() -> Unit)? = null
+    val feedback = AgentFeedbackState()
+    val report = AgentReportState()
+
+    /**
+     * 这条回复的动作票据（Android R2-01，共性第 40 条）：历史替换 / 重载重置反馈与举报状态时 +1，之前发出的反馈 / 举报结果只做共享结算（AI 10004、42901、10405、
+     * 30501），不再更新这一轮的新状态。
+     */
+    var actionSeq = 0L
+
+    /** duplicate 30506 之后的【刷新】（G40，用户点才拉历史）。 */
+    var refreshable = false
+
     var state: AgentStreamState = StreamReducer.initial()
     var phase: String = AgentTurnPhase.CONNECTING
     var client: StreamClient<AgentRunTicket>? = null
@@ -81,6 +147,9 @@ private class Turn(
 
     /** 同一 client_msg_id 重发中：duplicate 流不并入原消息（G26）。 */
     var resend = false
+
+    /** 用户已启动的恢复流程重发过（断线【重试】，R1-03）：之后本地没发出也保留原轮次、只留【重试】，不删除。 */
+    var resumed = false
     var resendState: AgentStreamState = StreamReducer.initial()
     var consentReplays = 0
 
@@ -95,6 +164,8 @@ private class Turn(
 
     /** 购买结果对商品卡的更新（card_id#item_card_id → 新卡）。 */
     val products = mutableMapOf<String, JsonObject>()
+
+    val stopping: Boolean get() = stopFlowRef?.phase == AgentStopPhase.STOPPING
 }
 
 /**
@@ -110,15 +181,20 @@ private class Turn(
 @Suppress("TooManyFunctions", "LargeClass") // 页面状态机的全部分支集中在一处，逐条对照 03 §7 与鸿蒙三轮评审
 class AgentController(
     private val deps: AgentDeps,
-) {
+) : AgentOwnershipTarget,
+    AgentConsentLapseTarget {
     val serial: Long = SERIALS.incrementAndGet()
     private val identity: AgentIdentity = deps.identity
+
+    /** 构造时固定的不含页面实例的归属键（应用级「AI 同意失效」、三组闸门、【停止】cancel 的结果按它核对，鸿蒙 R3-01）。 */
+    private val ownerKey: Any = identity.ownerKey
 
     /**
      * 会员但账号未知（F-AND-28，R1-04：已登录却读不出账号）：可恢复的初始化失败——不取会话、不建会话、不发消息流（canSend = false），
      * 实际发包出口同样拒绝；【重试】经 [AgentDeps.rebuildIdentity] 清空并按新身份重建。
      */
     private val identityUnknown: Boolean = identity.member && identity.account == null
+    private val gates: AgentGates = deps.gates ?: AgentGates.shared(deps.gate)
     private var disposed = false
     private var started = false
     private var phase: String = AgentPhase.IDLE
@@ -137,10 +213,13 @@ class AgentController(
     private var submitting: AgentConsentTicket? = null
     private var consentFailed = false
 
-    /** 页面此刻可见（Tab 选中、没被覆盖、在前台；App 在同步可见性出口写入，鸿蒙 R1-02）。 */
+    /** 页面此刻可见（Tab 选中、没被覆盖、在前台；App 在同步可见性出口写入）。 */
     private var visible = false
 
-    /** 进入世代：每次离开（不可见）+1，之前发起的异步结果只结算、不改界面。 */
+    /**
+     * 进入世代：每次离开（不可见）+1——只撤销导航、弹层与读屏播报的许可（APP-10b G02、编排者补充第 2 条：流、计时、在途请求照常）；之前发起的异步结果
+     * 照常结算、改内存，但不导航、不弹框、不提示。
+     */
     private var entry = 0L
 
     /** 卡片动作世代：【停止】、【新对话】、流内 10004 +1（鸿蒙 R1-03）。 */
@@ -153,22 +232,59 @@ class AgentController(
     private val mutableSnapshot = MutableStateFlow(AgentSnapshot())
     val snapshot: StateFlow<AgentSnapshot> = mutableSnapshot.asStateFlow()
 
+    /** 隐藏期间不把快照交给界面，回到可见时一次性应用（G02）。 */
+    private val publishGate = AgentPublishGate()
+
+    /** 本次进入周期收到 30501（七个 operation 与流内）：之后不再发任何 agent 请求（鸿蒙 R1-06、G62）。 */
+    private var unavailableLocked = false
+
+    /** 会话已过期（expired=true）：整段只读（G09）。 */
+    private var readOnly = false
+
+    /** 会话已结束（历史 / 翻页 30504）的提示（error.30504）。 */
+    private var sessionEndedText = ""
+
+    /** 向上翻页（G08）。没有拉过历史为 null。 */
+    private var pager: AgentHistoryPager? = null
+    private var earlierError = ""
+
+    /** 历史票据：作废（新对话、停止、10004、归属变化）时 +1，之前发出的历史、翻页、重载结果只结算共享事实（鸿蒙 R2-03）。 */
+    private var historySeq = 0L
+
+    /** 反馈 / 举报的工作世代（【停止】、10004 作废 +1）。 */
+    private var workSeq = 0L
+
+    /** 正在把 AI 10004 上报给应用级入口（防重入：App 回调本控制器的 [consentLapsed] 时跳过，鸿蒙 G78）。 */
+    private var lapseReporting = false
+
+    /** 此刻打开举报半屏的那一轮（只关本实例）。 */
+    private var reportTurn: Turn? = null
+
     init {
         phase =
             when {
+                deps.suspended -> AgentPhase.BLOCKED
+
                 deps.contract == null -> AgentPhase.UNAVAILABLE
+
                 identity.basic -> AgentPhase.BLOCKED
+
                 identityUnknown -> AgentPhase.LOAD_FAILED
+
+                // 应用级「AI 同意失效」（鸿蒙 R2-02）：重建出来的控制器一开始就是「需要重新同意」，不取会话、不拉历史
+                deps.consentLapsed -> AgentPhase.CONSENT_DECLINED
+
                 else -> AgentPhase.IDLE
             }
+        if (deps.consentLapsed) {
+            consentGate = AgentConsentGate.REFUSED
+            started = true
+        }
         if (identityUnknown) loadErrorText = errorText(AgentErrorCodes.GENERIC, "")
-        // 共享订阅（限流闸门、金额隐藏偏好）：作废时释放（APP-12 第 1 条：旧对话含收益金额不再可达）
-        subscriptions +=
-            deps.scope.launch {
-                deps.gate.blocked
-                    .drop(1)
-                    .collect { publish() }
-            }
+        // 共享订阅（三组限流闸门、金额隐藏偏好）：作废时释放（APP-12 第 1 条：旧对话含收益金额不再可达）
+        listOf(gates.send, gates.read, gates.action).map { it.blocked }.distinct().forEach { flow ->
+            subscriptions += deps.scope.launch { flow.drop(1).collect { publish() } }
+        }
         subscriptions += deps.scope.launch { deps.masked.drop(1).collect { publish() } }
         mutableSnapshot.value = buildSnapshot()
     }
@@ -198,80 +314,220 @@ class AgentController(
     /** 收益卡是否有实时金额正在显示（测试用：金额只在内存，不落盘）。 */
     val liveEarningsShown: Boolean get() = turns.any { t -> t.state.cards.any { it.liveEarnings } }
 
-    /** 第一次显示：取当前会话（不拉历史，G02）。Release / 无接口为「未开放」，不发请求。 */
+    /** 当前活动流的交付计数（抓包断言：作废之后不再变化）。 */
+    val streamDeliveries: Int get() = turns.sumOf { it.client?.delivered ?: 0 }
+
+    /** 本次进入周期已锁「未开放」（30501）。 */
+    val unavailableForEntry: Boolean get() = unavailableLocked
+
+    override fun boundOwnerKey(): Any = ownerKey
+
+    /** 此刻的归属键（App 给的不含页面实例的；没有接时按完整身份）。 */
+    private fun ownerNow(): Any? =
+        deps.currentOwnerKey?.let { runCatching(it).getOrNull() } ?: runCatching { deps.currentIdentity()?.ownerKey }.getOrNull()
+
+    /** 原归属（不含页面实例）此刻仍是同一归属。 */
+    private fun ownerStill(): Boolean = ownerNow() == ownerKey
+
+    /** 第一次显示：取当前会话，有会话再取历史首页（只读，不建会话、不发消息，G39）。Release 关闭 / 30501 为「未开放」，不发请求。 */
+    @Suppress("ComplexCondition") // 条件逐项
     fun start() {
         if (started || !alive() || !visible) return
         started = true
-        if (phase == AgentPhase.UNAVAILABLE || phase == AgentPhase.BLOCKED || identityUnknown) {
+        if (phase == AgentPhase.UNAVAILABLE || phase == AgentPhase.BLOCKED || identityUnknown || phase == AgentPhase.CONSENT_DECLINED) {
             publish()
             return
         }
         load()
     }
 
+    @Suppress("ReturnCount") // 账号未知、没有端口、读取闸门依次返回
     private fun load() {
         if (identityUnknown) return
         val contract = deps.contract ?: return
+        if (gates.read.active) {
+            // 读取闸门（42901）期间不发：整页显示加载失败 + 受读取闸门控制的【重试】（APP-12 第 23 条）
+            phase = AgentPhase.LOAD_FAILED
+            loadErrorText = errorText(AgentErrorCodes.RATE_LIMITED, "")
+            publish()
+            return
+        }
         phase = AgentPhase.LOADING
         loadErrorText = ""
         publish()
         val conversation = this.conversation
         val entry = this.entry
-        // 鸿蒙 R2-02：这次取会话只在仍处于本次加载时发出（离页退回 idle、回来重取的是新请求）
-        val call = call { phase == AgentPhase.LOADING }
+        val seq = historySeq
+        // 这次取会话只在仍处于本次加载时发出（鸿蒙 R2-02）
+        val call = call(AgentOperation.CURRENT) { phase == AgentPhase.LOADING && seq == historySeq }
         deps.scope.launch {
             val r = contract.currentSession(call)
-            // 先核对归属，再核对进入世代与可见性：离开后到达的结果只结算闸门与强更，不改界面（离开时已退回 idle，回来重取）
-            if (!alive()) return@launch
-            if (!current(entry) || conversation != this@AgentController.conversation) {
-                settleOnly(r)
+            // 先核对归属，再核对对话与历史票据；不合的结果只结算共享事实，不改内存与界面
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(r, AgentOperation.CURRENT)) return@launch
+            if (conversation != this@AgentController.conversation || seq != historySeq || phase != AgentPhase.LOADING) {
+                settleOnly(r, AgentOperation.CURRENT)
                 return@launch
             }
-            if (r.ok) {
-                // 「成功但为空」（session=null）与「加载失败」分开（APP-11 第 6 条）：空会话等第一次发送时再建
-                sessionId = sessionIdOf(AgentJson.objectOf(r.data["session"]))
+            if (!r.ok) {
+                loadFailed(r, AgentOperation.CURRENT, entry)
+                return@launch
+            }
+            // 「成功但为空」（session=null）与「加载失败」分开（APP-11 第 6 条）：空会话等第一次发送时再建
+            val id = sessionIdOf(AgentJson.objectOf(r.data["session"]))
+            sessionId = id
+            if (id == null) {
                 phase = AgentPhase.READY
                 publish()
                 return@launch
             }
-            loadFailed(r)
+            loadFirstPage(id, entry)
         }
     }
 
-    private fun loadFailed(r: AgentHttpResult) {
-        when (sharedError(r, null)) {
+    /** 进入页面拿到当前会话后取历史首页（limit=20，G08、G39；ApiClient 的 GET 自动重试 1 次照旧，G35）。冷启动 / 页面实例新建：整页替换空对话（G06）。 */
+    @Suppress("ComplexCondition") // 条件逐项
+    private fun loadFirstPage(
+        id: String,
+        entry: Long,
+    ) {
+        val contract = deps.contract ?: return
+        val conversation = this.conversation
+        val seq = historySeq
+        val call = call(AgentOperation.HISTORY) { phase == AgentPhase.LOADING && seq == historySeq && sessionId == id }
+        deps.scope.launch {
+            val r = contract.listMessages(id, null, AgentHistory.LIMIT, call)
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(r, AgentOperation.HISTORY)) return@launch
+            if (conversation != this@AgentController.conversation || seq != historySeq || sessionId != id || phase != AgentPhase.LOADING) {
+                settleOnly(r, AgentOperation.HISTORY)
+                return@launch
+            }
+            if (!r.ok) {
+                loadFailed(r, AgentOperation.HISTORY, entry)
+                return@launch
+            }
+            val page = AgentHistory.page(r.data, deps.routes)
+            if (page == null) {
+                // 外壳成功但形状不对：按加载失败（不当成空对话，APP-12 第 23 条）
+                loadFailed(AgentHttpResult.network(), AgentOperation.HISTORY, entry)
+                return@launch
+            }
+            turns = historyTurns(page.items)
+            pager = AgentHistoryPager(page.nextCursor)
+            earlierError = ""
+            if (page.dropped > 0) deps.log("agent history dropped ${page.dropped}")
+            phase = AgentPhase.READY
+            if (page.expired) applyExpired()
+            publish()
+        }
+    }
+
+    /** 取会话 / 历史首页失败（G24 表）：30501 → 未开放；AI 10004 → 锁闸门（取会话弹框）；30504 → 空对话 + error.30504；其余 → 加载失败 + 统一文案（5xxxx 带 trace6）。 */
+    private fun loadFailed(
+        r: AgentHttpResult,
+        op: String,
+        entry: Long,
+    ) {
+        val d = AgentTransportErrorPolicy.decideResult(op, r, current(entry), true)
+        when (sharedError(r, null, op, entry)) {
             AgentSharedError.UNAVAILABLE -> {
-                phase = AgentPhase.UNAVAILABLE
+                Unit
             }
 
             AgentSharedError.CONSENT -> {
-                phase = AgentPhase.READY
+                if (phase == AgentPhase.LOADING) phase = AgentPhase.READY
             }
 
             else -> {
-                phase = AgentPhase.LOAD_FAILED
-                loadErrorText = errorText(r.codeOrGeneric, r.traceId)
+                if (d.action == AgentOpDecision.EMPTY_CONVERSATION) {
+                    // 历史 30504：清掉本地 session_id、显示空对话 + error.30504（下次发送重新建会话）
+                    sessionId = null
+                    sessionEndedText = errorText(AgentErrorCodes.ROUND_LIMIT, "")
+                    phase = AgentPhase.READY
+                } else {
+                    phase = AgentPhase.LOAD_FAILED
+                    loadErrorText = if (r.notSent) errorText(AgentErrorCodes.GENERIC, "") else errorText(r.codeOrGeneric, r.traceId)
+                }
             }
         }
         publish()
     }
 
-    // ---------------------------------------------------------------- 四个待定 operation 共用的错误规则（APP-10 共性第 6、18 条）
+    /** 过期会话（expired=true，G09）：整段只读——输入框、胶囊、示例问题禁用，显示 error.30504 +【新对话】；卡片按钮、反馈 / 举报照常。 */
+    private fun applyExpired() {
+        readOnly = true
+        sessionEndedText = errorText(AgentErrorCodes.ROUND_LIMIT, "")
+    }
+
+    /** 历史项 → 本地轮（按 user + 其后的 assistant 分组；页首没有 user 的回复自成一轮）。 */
+    private fun historyTurns(items: List<AgentHistoryItem>): List<Turn> = AgentHistory.groups(items).flatMap(::historyTurnsOf)
+
+    private fun historyTurnsOf(g: AgentHistoryGroup): List<Turn> {
+        val replies = g.replies.ifEmpty { listOf(null) }
+        return replies.mapIndexed { i, reply -> historyTurn(if (i == 0) g.user else null, reply) }
+    }
+
+    private fun historyTurn(
+        user: AgentHistoryItem?,
+        reply: AgentHistoryItem?,
+    ): Turn {
+        val id = reply?.messageId ?: user?.messageId ?: ""
+        runSeq += 1
+        val run = AgentRunTicket(serial, conversation, "h:$id#$runSeq", "")
+        val t = Turn(run, user?.text.orEmpty(), "", user?.createdAtMs ?: 0)
+        t.history = true
+        t.userMessageId = user?.messageId
+        t.phase = AgentTurnPhase.ENDED
+        if (reply != null) applyHistoryReply(t, reply)
+        return t
+    }
+
+    /** 历史回复写进这一轮（只用历史形状：收益卡历史形状、没有 run_id、不给【停止】、不更新额度，G42、AC-S1-148 ④）。 */
+    private fun applyHistoryReply(
+        t: Turn,
+        reply: AgentHistoryItem,
+    ) {
+        t.replyId = reply.messageId
+        t.replyIdDistrusted = false
+        t.duplicatePending = false
+        t.state =
+            AgentStreamState(
+                status = reply.status,
+                metaSeen = true,
+                messageId = reply.messageId,
+                text = reply.text,
+                cards = reply.cards,
+            )
+        t.error = if (reply.status == AgentStatus.ERROR) AgentErrorView(errorText(AgentErrorCodes.GENERIC, "")) else null
+        // 历史替换只作废这条回复旧动作的票据（R2-01）：在途的反馈 / 举报结果之后只做共享结算，不更新这里重置后的新状态
+        t.actionSeq += 1
+        t.feedback.reset()
+        t.report.reset()
+        t.phase = AgentTurnPhase.ENDED
+    }
+
+    // ---------------------------------------------------------------- 七个 operation 共用的错误规则（APP-10 共性第 6、18 条，APP-10b §2 第 10 条）
+
+    /** 这个 operation 所属的 Retry-After 闸门（G24：发送 / 读取 / 动作三组）。 */
+    private fun gate(op: String): AgentGate = gates.of(op)
 
     /**
-     * createAgentSession、getCurrentAgentSession、sendAgentMessage、cancelAgentRun 同一套（调用方已核对归属与进入世代）：42901 → 共享闸门
-     * （Retry-After 缺省 5 秒）；10405 → 强更；10004(ai_third_party) → 同意弹窗（[pendingRun] 为待重放的 run）；10001 / 10005 / 其他 10004 → 统一分流；
-     * 30501 → 未开放（由调用方切换）；30505 → 静默；本地没发出 → 静默；其余交调用方。
+     * 七个 operation 同一套（调用方已核对归属与对话）：42901 → 所属闸门（Retry-After 缺省 5 秒）；10405 → 强更；AI 10004 → 同步作废并锁同意闸门（只有发送类
+     * 在发起时的进入世代仍有效、页面可见时才弹框，[pendingRun] 为待重放的 run）；10001 / 10005 / 非 AI 10004 → 统一分流（可见才导航）；30501 → 本次进入锁「未开放」；
+     * 本地没发出 → 静默；其余交调用方。
      */
     @Suppress("ReturnCount") // 没发出、按码、同意、统一分流依次返回
     private fun sharedError(
         r: AgentHttpResult,
         pendingRun: String?,
+        op: String = AgentOperation.SEND,
+        entry: Long = this.entry,
     ): String {
         if (r.notSent) return AgentSharedError.SILENT
         when (r.code) {
             AgentErrorCodes.RATE_LIMITED -> {
-                deps.gate.start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
+                gate(op).start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
                 return AgentSharedError.RATE_LIMITED
             }
 
@@ -281,33 +537,66 @@ class AgentController(
             }
 
             AgentErrorCodes.UNAVAILABLE -> {
+                lockUnavailable()
                 return AgentSharedError.UNAVAILABLE
             }
 
             AgentErrorCodes.RUN_MISSING -> {
-                return AgentSharedError.SILENT
+                if (op == AgentOperation.CANCEL) return AgentSharedError.SILENT
             }
         }
         if (AgentConsentPolicy.shows(r.code, r.consentType)) {
-            consentLost(pendingRun, interactive = true)
+            val interactive = AgentTransportErrorPolicy.sendClass(op) && current(entry)
+            aiConsentRevoked(if (interactive) pendingRun else null, interactive)
             return AgentSharedError.CONSENT
         }
         if (r.code == AgentErrorCodes.LOGIN || r.code == AgentErrorCodes.CONSENT || r.code == AgentErrorCodes.BIND_PHONE) {
-            unified(r)
+            if (current(entry)) unified(r)
             return AgentSharedError.UNIFIED
         }
         return AgentSharedError.OTHER
     }
 
     /**
-     * 迟到的结果（离页后、旧对话、旧 run、已被新请求取代的 operation；调用方已核对归属仍是同一身份）：只结算同一身份的共享事实——42901 闸门、10405 强更、
-     * AI 10004（立即锁住发送闸门，但不弹框，鸿蒙 R2-01、H27）；不弹层、不导航、不改消息（鸿蒙 R2-03、R2-04；APP-12 第 34 条：结算前已核对身份）。
+     * 七个 operation 的 HTTP 结果（含流式请求没成为流的 JSON 外壳）回到主线程后的统一收口（Android R3-01，共性第 33、35、45 条，S0）：**先**按发起时不含页面实例的
+     * ownerKey 结算跨页面共享事实，**再**由调用方做页面 alive / 对话 / 动作票据判断。返回 true = 控制器已作废，结算到此为止，调用方不再碰消息、提示、导航。
+     * - 控制器仍有效：返回 false，调用方照常判票据（不合的走 [settleOnly]，合的走 [sharedError]：共享事实在那两处结算，弹框、提示、导航按页面许可）。
+     * - 控制器已作废、仍是同一归属（页面实例销毁 / 以相同 ownerKey 重建）：AI 10004 汇入应用级失效入口 [AgentDeps.aiConsentLost]（App 同步停下此刻同归属的控制器：
+     *   关新流、取消所属请求、锁同意闸门）；42901 按三组闸门归属写入（App 级，按归属保存，重建页同样受限）；10405 强更。30501 只锁本次进入周期，作废的控制器已没有
+     *   进入周期，不处理（重建页由服务端再给）。
+     * - 不同归属（换号、撤回、切环境）：整体丢弃，只保留 10405 强更（应用级事实，与 G70 / 【停止】cancel 同口径）。
      */
-    private fun settleOnly(r: AgentHttpResult) {
+    @Suppress("ReturnCount") // 有效、无事可结、换归属、同归属依次返回
+    private fun settleFirst(
+        r: AgentHttpResult,
+        op: String,
+    ): Boolean {
+        if (alive()) return false
+        if (r.ok || r.notSent) return true
+        if (!ownerStill()) {
+            if (r.code == AgentErrorCodes.FORCE_UPDATE) runCatching { deps.forceUpdate() }
+            return true
+        }
+        when {
+            r.code == AgentErrorCodes.RATE_LIMITED -> gate(op).start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
+            r.code == AgentErrorCodes.FORCE_UPDATE -> runCatching { deps.forceUpdate() }
+            AgentConsentPolicy.shows(r.code, r.consentType) -> runCatching { deps.aiConsentLost(ownerKey) }
+        }
+        return true
+    }
+
+    /**
+     * 迟到的结果（旧对话、旧 run、已被新请求取代、历史票据已作废；调用方已核对固定身份仍是同一身份）：只结算同一身份的共享事实——42901 所属闸门、10405 强更、
+     * AI 10004（同步作废并锁闸门，但不弹框，鸿蒙 R1-01、R2-01）、30501（本次进入不再发，R1-06）；不弹层、不导航、不改消息。
+     */
+    private fun settleOnly(
+        r: AgentHttpResult,
+        op: String = AgentOperation.SEND,
+    ) {
         if (r.notSent) return
         when {
             r.code == AgentErrorCodes.RATE_LIMITED -> {
-                deps.gate.start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
+                gate(op).start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
                 publish()
             }
 
@@ -315,16 +604,103 @@ class AgentController(
                 deps.forceUpdate()
             }
 
+            r.code == AgentErrorCodes.UNAVAILABLE -> {
+                lockUnavailable()
+                publish()
+            }
+
             AgentConsentPolicy.shows(r.code, r.consentType) -> {
-                consentLost(null, interactive = false)
+                aiConsentRevoked(null, interactive = false)
             }
         }
     }
 
+    /** 30501（七个 operation 与流内，鸿蒙 R1-06）：同步作废本控制器的在途工作，本次进入周期一直「未开放」、不再发任何 agent 请求。 */
+    private fun lockUnavailable() {
+        if (unavailableLocked) return
+        unavailableLocked = true
+        haltOwnedWork(AgentErrorCodes.UNAVAILABLE)
+        phase = AgentPhase.UNAVAILABLE
+    }
+
     /**
-     * 收到 AI 10004（APP-10 共性第 16、22 条，S0）：不论来自发送、同意后的重放、新对话、停止还是取会话，都立即撤销发送许可。
-     * - [interactive]（发起时的进入世代、对话与 operation 票据都仍有效）：弹同意框（[pendingRun] 为待重放的 run；重放过一次的不再给）。
-     * - 否则（迟到结果）：只锁闸门、不弹框（refused，回到页面显示说明与【重新同意】，鸿蒙 H27）。
+     * 统一的同步作废入口（鸿蒙 R1-01，共性第 10、26 条）：关所有流、停 30 秒 / 正在停止 / 重载计时、cancelOwned、作废卡片回调与购买、作废在途历史页与翻页、关举报半屏；
+     * 进行中的回复本地结束（error.<code>）、不更新额度。七个 operation 与流内的 AI 10004、30501 都先走它。
+     */
+    private fun haltOwnedWork(code: Int) {
+        turns.forEach { t ->
+            t.client?.cancel()
+            t.client = null
+            cancelTimers(t)
+            t.reconnect = null
+            t.feedback.abort()
+            t.report.abort()
+            if (!t.state.ended || t === active) {
+                t.state = t.state.copy(status = AgentStatus.ERROR)
+                t.error = AgentErrorView(errorText(code, ""))
+                t.phase = AgentTurnPhase.ENDED
+            }
+        }
+        active = null
+        reportTurn?.report?.close()
+        reportTurn = null
+        historySeq += 1
+        workSeq += 1
+        pager?.failed()
+        runCatching { deps.contract?.cancelOwned(identity) }
+        revokeCardActions()
+    }
+
+    /**
+     * 收到 AI 10004（APP-10 共性第 16、22 条，APP-10b 共性第 10、27、33 条，S0）：不论来自哪个 operation、流内、重放、旧 run、【停止】的 cancel，都先同步作废
+     * 本控制器的在途工作（[haltOwnedWork]）并锁住同意闸门，再以构造时的不含页面实例的归属键上报应用级「AI 同意失效」（重建的控制器、新页面实例照样禁发，
+     * 直到同一归属重新同意成功）。[interactive]：发送类且发起时的进入世代仍有效、页面可见 → 弹同意框（[pendingRun] 为待重放的 run）。
+     */
+    private fun aiConsentRevoked(
+        pendingRun: String?,
+        interactive: Boolean,
+    ) {
+        val keep = turns.firstOrNull { it.run.run == pendingRun }
+        // HTTP 10004 不清空对话（G61）；待重放的那一轮保留为「待同意」
+        val pending = keep?.takeIf { interactive && it.phase == AgentTurnPhase.AWAITING_CONSENT }
+        if (pending != null) {
+            // 先把待重放的那一轮挪开，免得被同步作废收尾成 error
+            pending.client?.cancel()
+            pending.client = null
+        }
+        val saved = pending?.let { it.state to it.error }
+        haltOwnedWork(AgentErrorCodes.CONSENT)
+        if (pending != null && saved != null) {
+            pending.state = saved.first
+            pending.error = saved.second
+            pending.phase = AgentTurnPhase.AWAITING_CONSENT
+        }
+        consentLost(pending?.run?.run, interactive && (pending != null || pendingRun == null))
+        if (consentGate == AgentConsentGate.CLEAR) consentGate = AgentConsentGate.REFUSED
+        if (!lapseReporting) {
+            lapseReporting = true
+            try {
+                runCatching { deps.aiConsentLost(ownerKey) }
+            } finally {
+                lapseReporting = false
+            }
+        }
+        publish()
+    }
+
+    /** 应用级「AI 同意失效」下发（鸿蒙 R2-02）：同步作废并锁闸门（不弹框、不导航、不再上报）。 */
+    override fun consentLapsed() {
+        if (disposed || lapseReporting) return
+        haltOwnedWork(AgentErrorCodes.CONSENT)
+        consentLost(null, interactive = false)
+        if (consentGate == AgentConsentGate.CLEAR) consentGate = AgentConsentGate.REFUSED
+        publish()
+    }
+
+    /**
+     * 锁同意闸门（APP-10 共性第 16、22 条，S0）。
+     * - [interactive]（发起时的进入世代、对话与 operation 票据都仍有效，且页面可见）：弹同意框（[pendingRun] 为待重放的 run；重放过一次的不再给）。
+     * - 否则（迟到结果、隐藏期间）：只锁闸门、不弹框（refused，回到页面显示说明与【重新同意】，鸿蒙 H27、G59）。
      * 提交中收到的 10004 来自提交之前发出的请求（闸门非 clear 时不发包）：不改提交中的状态，由记录结果决定（鸿蒙 H28）。已在待同意时不重复开框。
      */
     @Suppress("ReturnCount") // 提交中、待同意、弹框、只锁闸门依次处理
@@ -334,15 +710,16 @@ class AgentController(
     ) {
         if (consentGate == AgentConsentGate.SUBMITTING) return
         if (consentGate == AgentConsentGate.AWAITING && consent != null) return
-        if (interactive) {
+        if (interactive && visible) {
             openConsent(pendingRun)
             return
         }
+        // 隐藏期间（G59）：不保留待重放消息，回到页面显示【重新同意】，用户自己重发
+        pendingRun?.let(::dropPending)
         consent = null
         consentGate = AgentConsentGate.REFUSED
         consentFailed = false
         if (phase == AgentPhase.IDLE || phase == AgentPhase.LOADING || phase == AgentPhase.LOAD_FAILED) {
-            // 离页时退回 idle 的加载：不再自动重取（闸门已锁，取会话也不会发出），回来显示【重新同意】
             started = true
             phase = AgentPhase.CONSENT_DECLINED
         }
@@ -363,40 +740,44 @@ class AgentController(
         }
     }
 
-    // ---------------------------------------------------------------- 可见性（APP-10 共性第 2、17 条）
+    // ---------------------------------------------------------------- 可见性（APP-10b G02，编排者补充第 2 条）
 
     /**
-     * 同步可见性出口（App 在切 Tab、被覆盖、前后台变化时同步调用）。离开：进入世代 +1，关闭当前连接、取消计时（本条消息记为连接中断、给同键【重试】），
-     * 加载中退回 idle（回来重取）；之后到达的建会话、取会话、停止、同意结果只结算、不改界面。草稿与滚动位置由页面在内存里保留（鸿蒙 H17）。
+     * 同步可见性出口（App 在切 Tab、被同栈页面覆盖、前后台变化时同步调用）。按 03 §7.2（2026-10-14 更正）：**切 Tab 不断流、不重拉历史**——流、30 秒 / 90 秒计时、
+     * 在途请求照常；离开只让进入世代 +1（撤销导航、弹层与读屏播报的许可），隐藏期间快照照常算但不交给界面，回到可见时一次性应用。举报半屏随离开关闭（只关本实例）。
+     * Activity 真正销毁、会话 / 身份事件由 App 经 [dispose] / [stopForOwnership] 断流。
      */
     fun setVisible(visible: Boolean) {
         if (disposed || visible == this.visible) return
         this.visible = visible
         if (visible) {
-            publish()
+            // 回到可见：隐藏期间算好的状态一次性应用（G02）
+            publishGate.setVisible(true)
+            mutableSnapshot.value = buildSnapshot()
             return
         }
+        publishGate.setVisible(false)
         entry += 1
-        active?.let { a ->
-            a.client?.cancel()
-            a.client = null
-            a.resend = false
-            a.state = StreamReducer.disconnected(a.state)
-            a.error = AgentErrorView(AgentDraftTexts.text(DISCONNECTED_KEY), retry = AgentRetryTap(a.run, AgentRetryMode.SAME))
-            a.phase = AgentTurnPhase.ENDED
-            active = null
-        }
-        if (phase == AgentPhase.LOADING) {
-            phase = AgentPhase.IDLE
-            started = false
-        }
+        reportTurn?.report?.close()
+        reportTurn = null
+        // 隐藏期间结束的回复不播报（回来一次性应用的快照不带播报，避免重复曝光）
+        announcement = ""
         publish()
     }
+
+    /** App 前后台变化（03 §7.2、G38、鸿蒙 R1-08）：进后台暂停全部历史重载（退避等待与在途请求都结束为只留【重试】），回前台不续。 */
+    fun onForeground(foreground: Boolean) {
+        if (disposed || foreground) return
+        turns.forEach { t -> t.reconnect?.let { r -> r.pause()?.let { step -> finishReload(t, r, step, entry) } } }
+    }
+
+    /** App 此刻在前台（读不出按后台）。 */
+    private fun foregroundNow(): Boolean = runCatching(deps.foreground).getOrDefault(false)
 
     /** 发起时的进入世代仍有效且页面可见。 */
     private fun current(entry: Long): Boolean = entry == this.entry && visible
 
-    /** 加载失败的【重试】（受 42901 闸门控制）。 */
+    /** 加载失败的【重试】（受读取闸门控制）。 */
     fun retryLoad(t: AgentPageTicket) {
         if (identityUnknown) {
             // 身份初始化失败（R1-04）：此刻的身份与构造时只差账号（同一页面实例、登录世代、隐私 / 环境世代、AI 同意世代）才交给 App 重建；
@@ -404,7 +785,7 @@ class AgentController(
             if (!disposed && ownTicket(t) && sameButAccount()) deps.rebuildIdentity()
             return
         }
-        if (!pageOk(t) || phase != AgentPhase.LOAD_FAILED || deps.gate.active) return
+        if (!pageOk(t) || phase != AgentPhase.LOAD_FAILED || gates.read.active) return
         load()
     }
 
@@ -433,12 +814,17 @@ class AgentController(
     }
 
     /**
-     * 实际发包出口的闸门（APP-10 共性第 1、17 条）：创建请求时固定「进入世代 + 对话世代 + 本 operation 的票据（[op]）」，sendAllowed 只比较这些固定值与
-     * 此刻的控制器、42901 闸门、AI 同意闸门、可见性；任何一次核对不通过就永久失效（离页再回来、新对话、停止、同意被撤销后都不会恢复）。
+     * 实际发包出口的闸门（APP-10 共性第 1、17 条，APP-10b G02）：创建请求时固定「对话世代 + 本 operation 的票据（[op]）」，sendAllowed 只比较这些固定值与此刻的控制器、
+     * 所属 Retry-After 闸门、AI 同意闸门、30501 锁、应用级准入（身份变更在途、AI 同意失效、配置关闭）；任何一次核对不通过就永久失效（新对话、停止、同意被撤销
+     * 后都不会恢复）。切 Tab 不撤销它（只撤销导航与弹层许可）。
      */
-    private fun call(op: () -> Boolean): AgentCall {
-        val entry = this.entry
+    private fun call(
+        operation: String,
+        scope: String = AgentCall.SCOPE_PAGE,
+        op: () -> Boolean,
+    ): AgentCall {
         val conversation = this.conversation
+        val groupGate = gate(operation)
         var revoked = false
         return AgentCall(
             identityKey = identity,
@@ -449,24 +835,25 @@ class AgentController(
                 } else {
                     val ok =
                         runCatching {
-                            !identityUnknown && alive() && entry == this.entry && conversation == this.conversation && visible &&
-                                !deps.gate.active && consentGate == AgentConsentGate.CLEAR && op()
+                            !identityUnknown && !unavailableLocked && alive() && conversation == this.conversation && !groupGate.active &&
+                                consentGate == AgentConsentGate.CLEAR && deps.allowed() && op()
                         }.getOrDefault(false)
                     if (!ok) revoked = true
                     ok
                 }
             },
             owner = { alive() },
+            scope = scope,
         )
     }
 
     // ---------------------------------------------------------------- 发送
 
-    /** 输入框是否可发：就绪、不在发送中、不在禁用期、额度没用完、AI 同意已记录、页面可见。 */
+    /** 输入框是否可发：就绪、不在发送中、不在禁用期、额度没用完、AI 同意已记录、页面可见、不是只读会话。 */
     val canSend: Boolean
         get() =
-            !identityUnknown && alive() && visible && phase == AgentPhase.READY && active == null && !deps.gate.active &&
-                !quotaExhausted && consentGate == AgentConsentGate.CLEAR
+            !identityUnknown && alive() && visible && phase == AgentPhase.READY && active == null && !gates.send.active &&
+                !quotaExhausted && consentGate == AgentConsentGate.CLEAR && !readOnly && !unavailableLocked
 
     /** 发送一条消息（文本 1–500 字，按 Unicode 码点；超出不让发送）。返回是否已受理。 */
     @Suppress("ReturnCount") // 票据、空、过长、限流、不可发依次返回
@@ -482,7 +869,7 @@ class AgentController(
             deps.toast(AgentDraftTexts.text(TOO_LONG_KEY))
             return false
         }
-        if (deps.gate.active) {
+        if (gates.send.active) {
             // 本地限流拦下时提示一次 42901（APP-09 第 45、56 条）
             deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
             return false
@@ -500,7 +887,8 @@ class AgentController(
             )
         // 情境只附在用户发的第一条上（G27）
         context = null
-        val turn = Turn(run, text, body.toString())
+        sessionEndedText = ""
+        val turn = Turn(run, text, body.toString(), deps.clock())
         turns = turns + turn
         active = turn
         announcement = ""
@@ -514,38 +902,64 @@ class AgentController(
         return AgentRunTicket(serial, conversation, "$clientMsgId#$runSeq", clientMsgId)
     }
 
-    /** 发出（必要时先建会话）；每次异步等待结束后复核控制器、对话世代、run 票据（APP-04 第 30、60 条）。 */
-    @Suppress("CyclomaticComplexMethod", "ReturnCount") // 闸门、已有会话、建会话依次处理
-    private fun dispatch(turn: Turn) {
+    /**
+     * 发出（必要时先建会话）；每次异步等待结束后复核控制器、对话世代、run 票据（APP-04 第 30、60 条）。
+     * [resume]：用户已启动的恢复流程（断线【重试】查历史后同一 client_msg_id 重发，G07）——切 Tab 保活（G02、Android R1-03）：页面隐藏不拦、不删已有轮次，
+     * 隐藏期间只暂停界面发布、回到 Tab 一次性应用；同意闸门、30501、App 在后台照常拦下，但保留原轮次并给 RELOAD【重试】。
+     */
+    @Suppress("CyclomaticComplexMethod", "ReturnCount", "ComplexCondition") // 闸门、已有会话、建会话依次处理
+    private fun dispatch(
+        turn: Turn,
+        resume: Boolean = false,
+    ) {
         val run = turn.run
         val contract = deps.contract ?: return
-        if (consentGate != AgentConsentGate.CLEAR || !visible) {
+        val blocked = consentGate != AgentConsentGate.CLEAR || unavailableLocked
+        if (resume && (blocked || !runCatching(deps.foreground).getOrDefault(false))) {
+            // 恢复流程被闸门 / 后台拦下：不发，原消息与已收到的部分回复保留，只留【重试】（R1-03）
+            disconnectedForRetry(turn)
+            publish()
+            return
+        }
+        if (!resume && (blocked || !visible)) {
             // 实际发送出口（APP-10 共性第 1、2 条）：同意未记录成功或页面不可见时一律不发；这一轮不留在列表里
             removeTurn(turn)
             publish()
             return
         }
+        turn.entry = this.entry
         sessionId?.let {
             stream(turn, it)
             return
         }
         val entry = this.entry
-        // 只为这一轮、这一个 run 建会话（停止、新对话、重试换 run、离页后都永久失效，鸿蒙 R2-02）
-        val call = call { active === turn && turn.run == run && sessionId == null }
+        // 只为这一轮、这一个 run 建会话（停止、新对话、重试换 run 后都永久失效，鸿蒙 R2-02）；挂在 run:<run> 子归属上（【停止】同步取消它，R1-11）
+        val call =
+            call(AgentOperation.CREATE, AgentCall.runScope(run.run)) {
+                active === turn && turn.run == run && sessionId == null && (!resume || foregroundNow())
+            }
         deps.scope.launch {
             val r = contract.createSession(call)
-            // 先核对固定身份；旧 run / 离页后到达的结果只结算共享事实（42901、10405、AI 10004），再按票据决定是否改界面（共性第 18 条）
-            if (!alive()) return@launch
-            if (!runOk(run) || active !== turn || !current(entry)) {
-                settleOnly(r)
+            // 先核对固定身份；旧 run 的结果只结算共享事实（42901、10405、AI 10004、30501），再按票据决定是否改界面（共性第 18 条）
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(r, AgentOperation.CREATE)) return@launch
+            if (!runOk(run) || active !== turn) {
+                settleOnly(r, AgentOperation.CREATE)
                 return@launch
             }
             val id = if (r.ok) sessionIdOf(AgentJson.objectOf(r.data["session"]) ?: r.data) else null
             if (id == null) {
-                jsonFailed(turn, if (r.ok) AgentHttpResult.network() else r)
+                jsonFailed(turn, if (r.ok) AgentHttpResult.network() else r, AgentOperation.CREATE, entry)
                 return@launch
             }
             sessionId = id
+            if (resume && !foregroundNow()) {
+                // 恢复流程的异步续发在后台到达（Android R2-04，共性第 42 条）：会话照常记下，不发流；保留原轮次与同一 client_msg_id，恢复为 RELOAD【重试】，
+                // 回前台不自动续发（与切 Tab 保活区分：页面隐藏但 App 在前台时照发，R1-03）
+                disconnectedForRetry(turn)
+                publish()
+                return@launch
+            }
             stream(turn, id)
         }
     }
@@ -558,28 +972,58 @@ class AgentController(
         val client =
             StreamClient(contract, deps.timer, turn.run) { ticket: AgentRunTicket, event: AgentStreamEvent -> onStream(ticket, event) }
         client.log = deps.log
+        // 流已关闭（作废 / 页面重建）后才回到主线程的 JSON 外壳：不交界面，只进收口函数结算共享事实（R3-01）
+        client.late = { _: AgentRunTicket, result: AgentHttpResult -> lateJson(result) }
         turn.client = client
+        turn.gapped = false
         val run = turn.run
-        // 许可绑定这一轮、这个 run、这一个流客户端（停止、断线收尾、重试换 run 之后都永久失效）
-        client.start(sessionId, turn.body, call { active === turn && turn.run == run && turn.client === client })
+        // 许可绑定这一轮、这个 run、这一个流客户端（停止、断线收尾、重试换 run 之后都永久失效）；挂在 stream:<run> 子归属上（【停止】在 meta 前保留它，R2-03）
+        // 恢复流程（resumed）的最终发送准入另复核前后台（R2-04）：后台时不写出，按 notSent 收尾为保留原轮次的 RELOAD【重试】
+        val resumed = turn.resumed
+        client.start(
+            sessionId,
+            turn.body,
+            call(AgentOperation.SEND, AgentCall.streamScope(run.run)) {
+                active === turn && turn.run == run &&
+                    turn.client === client && (!resumed || foregroundNow())
+            },
+        )
     }
 
-    /** 流事件：先比票据（控制器存活、对话世代、run 是当前活动 run），不等即丢弃，什么都不改。 */
+    /** 流已关闭后才到的 JSON 外壳（R3-01）：先经收口函数（控制器已作废 → 按原 ownerKey 结算），控制器仍有效也只结算共享事实，不改消息、不提示、不导航。 */
+    private fun lateJson(r: AgentHttpResult) {
+        if (settleFirst(r, AgentOperation.SEND)) return
+        settleOnly(r, AgentOperation.SEND)
+    }
+
+    /**
+     * 流事件：先比票据（控制器存活、对话世代、run 是当前活动 run），不等即丢弃，什么都不改（迟到的 JSON 错误与流内 10004 / 30501 只结算共享事实）。
+     * 切 Tab 不断流（G02）：隐藏期间照常处理、只是不交界面。
+     */
     @Suppress("ReturnCount", "CyclomaticComplexMethod", "NestedBlockDepth", "LongMethod", "ComplexCondition") // 票据、各事件依次处理
     private fun onStream(
         ticket: AgentRunTicket,
         event: AgentStreamEvent,
     ) {
-        if (!runOk(ticket) || !visible) {
+        val stopping = turns.firstOrNull { it.run == ticket && it.stopping }
+        if (stopping != null) {
+            onStoppingStream(stopping, event)
+            return
+        }
+        if (!runOk(ticket)) {
+            // 先共享结算、后页面判断（R3-01）：控制器已作废时，迟到的 JSON 外壳只按原 ownerKey 结算共享事实
+            val json = event.result?.takeIf { event.kind == AgentStreamEventKind.JSON }
+            if (json != null && settleFirst(json, AgentOperation.SEND)) return
             if (alive()) {
-                // 同一身份的旧 run 迟到的 JSON 错误只结算共享事实（42901、10405、AI 10004），不改界面（共性第 18 条）
-                if (event.kind == AgentStreamEventKind.JSON) event.result?.let(::settleOnly)
-                // 旧 run 迟到的流内 error 10004 同样是同一身份的共享事实：只锁闸门、不弹框、不改界面（共性第 22 条）
+                // 同一身份的旧 run 迟到的 JSON 错误只结算共享事实（42901、10405、AI 10004、30501），不改界面（共性第 18 条）
+                json?.let { settleOnly(it, AgentOperation.SEND) }
+                // 旧 run 迟到的流内 error 10004 同样是同一身份的共享事实：同步作废并锁闸门、不弹框、不改界面（共性第 22、27 条）
                 val frame = event.frame
-                if (event.kind == AgentStreamEventKind.FRAME && frame != null && frame.ok &&
+                if ((event.kind == AgentStreamEventKind.FRAME || event.kind == AgentStreamEventKind.GAP_TERMINAL) && frame != null &&
+                    frame.ok &&
                     consentFrame(AgentTerminal(frame.event, frame.data))
                 ) {
-                    consentLost(null, interactive = false)
+                    aiConsentRevoked(null, interactive = false)
                 }
             }
             return
@@ -600,6 +1044,7 @@ class AgentController(
                             // 服务端按新请求处理（不是 duplicate）：这一次的流就是这条消息
                             turn.resend = false
                             turn.state = turn.resendState
+                            trustMeta(turn)
                         }
 
                         turn.resendState.ended -> {
@@ -612,38 +1057,87 @@ class AgentController(
                         }
                     }
                 } else {
+                    val before = turn.state.metaSeen
                     turn.state = StreamReducer.frame(turn.state, frame, deps.routes)
+                    if (!before && turn.state.metaSeen) trustMeta(turn)
                 }
                 if (turn.state.metaSeen) turn.phase = AgentTurnPhase.STREAMING
                 afterFrame(turn)
             }
 
-            AgentStreamEventKind.EOF, AgentStreamEventKind.TIMEOUT -> {
+            AgentStreamEventKind.SEQ_GAP -> {
+                // 缺号（G11、G36）：本条结束为 incomplete（同「连接中断」样式但不给【重试】），连接保持只等终止帧或断线，之后自动拉历史替换本条
+                turn.gapped = true
+                turn.state = turn.state.copy(status = AgentStatus.INCOMPLETE)
+                turn.error = null
+                publish()
+            }
+
+            AgentStreamEventKind.GAP_TERMINAL -> {
+                val frame = event.frame
+                if (frame != null && consentFrame(AgentTerminal(frame.event, frame.data))) {
+                    streamConsentLost(turn, AgentTerminal(frame.event, frame.data))
+                    return
+                }
+                if (frame != null && frame.event == AgentEvent.ERROR &&
+                    AgentJson.intOf(frame.data["code"]) == AgentErrorCodes.UNAVAILABLE.toLong()
+                ) {
+                    lockUnavailable()
+                    publish()
+                    return
+                }
+                gapEnded(turn)
+            }
+
+            AgentStreamEventKind.EOF, AgentStreamEventKind.TIMEOUT, AgentStreamEventKind.ROUND_LIMIT -> {
+                if (turn.gapped) {
+                    gapEnded(turn)
+                    return
+                }
                 turn.resend = false
                 turn.state = StreamReducer.disconnected(turn.state)
                 finishTurn(turn)
             }
 
             AgentStreamEventKind.LIMIT -> {
-                // 单帧 data 超过 64 KiB（03 §7.2，Android R1-04）：StreamClient 已关连接；已并入的内容保留，本地结束这一轮（不更新额度）
+                // 单帧 data 或半行超过上限（03 §7.2，Android R1-04、APP-10b G22）：StreamClient 已关连接；已并入的内容保留，本地结束为 limited（不更新额度）
                 turn.resend = false
                 turn.state = StreamReducer.limited(turn.state)
                 finishTurn(turn)
             }
 
             AgentStreamEventKind.JSON -> {
-                jsonFailed(turn, event.result ?: AgentHttpResult.network())
+                jsonFailed(turn, event.result ?: AgentHttpResult.network(), AgentOperation.SEND, turn.entry)
             }
 
             AgentStreamEventKind.FAILED -> {
-                if (turn.state.metaSeen) {
+                if (turn.gapped) {
+                    gapEnded(turn)
+                } else if (turn.state.metaSeen) {
                     turn.state = StreamReducer.disconnected(turn.state)
                     finishTurn(turn)
                 } else {
-                    jsonFailed(turn, event.result ?: AgentHttpResult.network())
+                    jsonFailed(turn, event.result ?: AgentHttpResult.network(), AgentOperation.SEND, turn.entry)
                 }
             }
         }
+    }
+
+    /** meta.message_id 当作回复 id（G03、编排者补充第 3 条：流内 meta 给的才画反馈 / 举报；在历史里指向 user 时另行作废）。 */
+    private fun trustMeta(turn: Turn) {
+        turn.replyId = turn.state.messageId
+        turn.replyIdDistrusted = false
+    }
+
+    /** 缺号之后收到终止帧或断线：关连接，自动拉一次历史替换本条（失败按 1/2/4/8 退避，5 次后留【重试】，G11、G38）。 */
+    private fun gapEnded(turn: Turn) {
+        turn.client?.cancel()
+        turn.client = null
+        turn.resend = false
+        turn.phase = AgentTurnPhase.ENDED
+        if (active === turn) active = null
+        publish()
+        startReload(turn, AgentReloadTrigger.SEQ_GAP, userRetry = false)
     }
 
     private fun afterFrame(turn: Turn) {
@@ -666,8 +1160,8 @@ class AgentController(
     }
 
     /**
-     * duplicate=true 的流（G26）：不并入、不更新额度。done → 本地消息结束（保留已收到的内容）；error 30506 → 显示 error.30506 并给同键【重试】；
-     * error 10004 → 与普通流同一处理（共性第 22 条）；其他 error → 按流内 error。
+     * duplicate=true 的流（03 §7.2、APP-10b §2 第 6 条，替代 APP-10 G26 的「不补拉」）：不并入、不更新额度。done / 其他 error → 关连接，自动拉一次历史替换本条
+     * （替换后才显示【赞】【踩】，G28）；error 30506 → 不自动轮询，显示 error.30506 +【刷新】，发送闸门禁用 5 秒（G40）；error 10004 → 与普通流同一处理（共性第 22 条）。
      */
     private fun endDuplicate(turn: Turn) {
         val dup = turn.resendState
@@ -677,29 +1171,36 @@ class AgentController(
             streamConsentLost(turn, terminal!!)
             return
         }
-        when {
-            terminal?.event == AgentEvent.DONE -> {
-                turn.state = turn.state.copy(status = AgentStatus.DONE)
-                turn.error = null
-            }
-
-            terminal?.code == AgentErrorCodes.RUN_IN_PROGRESS.toLong() -> {
+        if (terminal?.event == AgentEvent.ERROR && terminal.code == AgentErrorCodes.UNAVAILABLE.toLong()) {
+            lockUnavailable()
+            publish()
+            return
+        }
+        when (AgentReconnect.duplicateEnd(terminal)) {
+            AgentReloadAction.REFRESH_BUTTON -> {
+                gates.send.start(AgentReconnect.RUN_IN_PROGRESS_DISABLE_MS)
                 turn.state = turn.state.copy(status = AgentStatus.ERROR)
+                turn.refreshable = true
                 turn.error =
                     AgentErrorView(
                         errorText(AgentErrorCodes.RUN_IN_PROGRESS, turn.traceId),
-                        retry = AgentRetryTap(turn.run, AgentRetryMode.SAME),
+                        retry = AgentRetryTap(turn.run, AgentRetryMode.REFRESH),
                     )
+                closeActive(turn)
             }
 
             else -> {
-                turn.state = turn.state.copy(status = AgentStatus.ERROR)
-                turn.error = terminal?.let { streamErrorView(turn, it.data) }
+                // 服务端已结束原 run：本条按已结束显示（保留已收到的内容），拉历史替换后才显示【赞】【踩】
+                turn.duplicatePending = true
+                turn.state = turn.state.copy(status = if (terminal?.event == AgentEvent.DONE) AgentStatus.DONE else AgentStatus.ERROR)
+                turn.error = null
+                closeActive(turn)
+                startReload(turn, AgentReloadTrigger.DUPLICATE_DONE, userRetry = false)
             }
         }
-        closeActive(turn)
     }
 
+    @Suppress("ReturnCount") // 逐项提前返回
     private fun finishTurn(turn: Turn) {
         val s = turn.state
         val terminal = s.terminal
@@ -708,18 +1209,27 @@ class AgentController(
             streamConsentLost(turn, terminal!!)
             return
         }
+        if (terminal?.event == AgentEvent.ERROR && terminal.code == AgentErrorCodes.UNAVAILABLE.toLong()) {
+            // 流内 30501（鸿蒙 R1-06）：本次进入周期锁「未开放」
+            lockUnavailable()
+            publish()
+            return
+        }
+        if (s.duplicate && terminal != null) {
+            // meta.duplicate=true 直接下发的流（没有经同键重发）：同 duplicate 收尾（G40 / 03 §7.2）
+            turn.resendState = s
+            turn.state = s.copy(duplicate = false)
+            endDuplicate(turn)
+            return
+        }
         turn.error =
             when {
-                s.duplicate && terminal?.event == AgentEvent.ERROR && terminal.code == AgentErrorCodes.RUN_IN_PROGRESS.toLong() -> {
-                    // duplicate 流收到 30506（G26）：结束 loading，显示 error.30506 并给同键【重试】，不自动轮询
-                    AgentErrorView(
-                        errorText(AgentErrorCodes.RUN_IN_PROGRESS, turn.traceId),
-                        retry = AgentRetryTap(turn.run, AgentRetryMode.SAME),
-                    )
-                }
-
                 s.status == AgentStatus.DISCONNECTED -> {
-                    AgentErrorView(AgentDraftTexts.text(DISCONNECTED_KEY), retry = AgentRetryTap(turn.run, AgentRetryMode.SAME))
+                    AgentErrorView(
+                        AgentDraftTexts.text(DISCONNECTED_KEY),
+                        retry = AgentRetryTap(turn.run, retryModeForDisconnect()),
+                        hint = AgentDraftTexts.text(DISCONNECTED_HINT_KEY),
+                    )
                 }
 
                 s.status == AgentStatus.ERROR && terminal?.event == AgentEvent.ERROR -> {
@@ -734,11 +1244,13 @@ class AgentController(
         closeActive(turn)
     }
 
+    /** 断线【重试】：有历史接口时先拉历史首页（G07）；没有（APP-10 测试替身）同键重发。 */
+    private fun retryModeForDisconnect(): String = AgentRetryMode.RELOAD
+
     /**
-     * 流内 error 帧 code=10004（共性第 22 条，S0；普通流、duplicate 流、重试后的 duplicate 收尾同一出口）：同步执行禁发——停止本对话的所有流与计时、
-     * 作废卡片回调和购买执行（cardEpoch +1）、对话世代 +1（已发出的 sendAllowed、停止许可、卡片 / 快捷追问 / 【重试】票据一律失效）、清空同意被撤销后
-     * 不可展示的对话，再把闸门锁成 refused。是否弹框另判：流契约的 error 帧没有 consent_type（不新增契约字段），不成立 → 不弹框，页面显示「暂不使用」
-     * 同款说明与【重新同意】（鸿蒙 H27）；不弹框也必须禁发。
+     * 流内 error 帧 code=10004（共性第 22 条，S0；普通流、duplicate 流、重试后的 duplicate 收尾同一出口）：同步执行禁发——停止本对话的所有流与计时、作废卡片回调和
+     * 购买执行（cardEpoch +1）、对话世代 +1、清空同意被撤销后不可展示的对话，再把闸门锁成 refused，并上报应用级「AI 同意失效」。是否弹框另判：流契约的 error 帧
+     * 没有 consent_type，不成立 → 不弹框，页面显示「暂不使用」同款说明与【重新同意】（鸿蒙 H27）；不弹框也必须禁发。
      */
     private fun streamConsentLost(
         turn: Turn,
@@ -749,9 +1261,8 @@ class AgentController(
         turn.client = null
         dropConversation()
         val consentType = AgentJson.stringOf(terminal.data["consent_type"])
-        consentLost(null, interactive = AgentConsentPolicy.shows(AgentErrorCodes.CONSENT, consentType) && visible)
-        if (consentGate == AgentConsentGate.CLEAR) consentGate = AgentConsentGate.REFUSED
-        publish()
+        val interactive = AgentConsentPolicy.shows(AgentErrorCodes.CONSENT, consentType) && visible
+        aiConsentRevoked(null, interactive)
     }
 
     private fun closeActive(turn: Turn) {
@@ -759,7 +1270,8 @@ class AgentController(
         turn.client?.cancel()
         turn.client = null
         if (active === turn) active = null
-        announcement = plain(turn.state)
+        // 读屏播报只在可见时（隐藏期间结束的回复回来不补播，G02）
+        announcement = if (visible) plain(turn.state) else ""
         publish()
     }
 
@@ -804,42 +1316,60 @@ class AgentController(
         )
     }
 
-    /** 发送返回 JSON 错误（G24）；42901、10405、10004、统一分流与其他三个 operation 共用 [sharedError]（共性第 6 条）。 */
+    /**
+     * 发送 / 建会话返回 JSON 错误（G24、APP-10b §2 第 10 条）；42901、10405、10004、30501、统一分流与其他 operation 共用 [sharedError]（共性第 6 条）。
+     * [entry]：发起时的进入世代（导航、提示、弹框都按它核对，鸿蒙 R1-05）。
+     */
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount") // 按 G24 的动作表逐条
     private fun jsonFailed(
         turn: Turn,
         r: AgentHttpResult,
+        op: String,
+        entry: Long,
     ) {
         turn.client?.cancel()
         turn.client = null
-        val code = r.codeOrGeneric
+        // 业务错误码分流之前先分三类（Android R1-02，G19、G34、A12，共性第 37 条）：本地没发出 → 静默移除；没有统一外壳（断网、超时、网关错误页、planned 期间 404）
+        // 或外壳成功却不是流（application/json code=0）→ 本条「连接中断」+ RELOAD【重试】（先查历史再决定替换或同一 client_msg_id 重发，G07）；不把无外壳当 50001
+        if (r.notSent) {
+            // 本地没有发出（准入不通过、归属已变）：新消息不留在列表里（不改绑到新身份，G23、APP-10 H11）；恢复流程的重发保留原轮次与【重试】（R1-03）
+            if (turn.resumed) disconnectedForRetry(turn) else removeTurn(turn)
+            publish()
+            return
+        }
+        if (r.code < 0 || r.ok) {
+            disconnectedForRetry(turn)
+            publish()
+            return
+        }
+        val code = r.code
         val d = AgentSendErrorPolicy.decide(r.httpStatus, code, r.data, r.retryAfter, r.traceId, r.consentType)
+        val shown = current(entry)
         turn.phase = AgentTurnPhase.FAILED
         when (d.action) {
             AgentSendAction.UNAVAILABLE -> {
-                phase = AgentPhase.UNAVAILABLE
                 removeTurn(turn)
+                lockUnavailable()
             }
 
             AgentSendAction.QUOTA -> {
                 quotaExhausted = true
-                turn.error = quotaView(turn)
+                turn.error = quotaView(turn, AgentJson.stringOf(r.data["next"]))
             }
 
             AgentSendAction.NEW_CHAT -> {
-                turn.error =
-                    AgentErrorView(errorText(code, r.traceId), newChat = AgentPageTicket(serial, conversation))
+                turn.error = AgentErrorView(errorText(code, r.traceId), newChat = AgentPageTicket(serial, conversation))
             }
 
             AgentSendAction.RUN_IN_PROGRESS -> {
-                deps.gate.start(d.disableMs)
-                deps.toast(errorText(code, r.traceId))
+                gates.send.start(d.disableMs)
+                if (shown) deps.toast(errorText(code, r.traceId))
                 removeTurn(turn)
             }
 
             AgentSendAction.RATE_LIMITED -> {
-                sharedError(r, null)
-                deps.toast(errorText(code, r.traceId))
+                sharedError(r, null, op, entry)
+                if (shown) deps.toast(errorText(code, r.traceId))
                 removeTurn(turn)
             }
 
@@ -852,33 +1382,37 @@ class AgentController(
                     // 提交中收到的 10004 来自提交前发出的请求：不改提交中的状态；这一条给同键【重试】（记录成功后用户自己点，鸿蒙 H28）
                     turn.error =
                         AgentErrorView(errorText(AgentErrorCodes.CONSENT, r.traceId), retry = AgentRetryTap(turn.run, AgentRetryMode.SAME))
+                    // 仍要同步作废其余在途工作并上报应用级失效（共性第 10、33 条）
+                    aiConsentRevoked(null, interactive = false)
                 } else if (turn.consentReplays >= 1) {
-                    // 同意后重放只一次；再遇 10004 不再自动重放（按统一错误显示），但必须立即重新锁住闸门并再弹同意框（共性第 16 条，S0：
-                    // 重放次数只限制自动重放，不跳过同意状态的更新；这一次的弹窗没有待重放消息）
+                    // 同意后重放只一次；再遇 10004 不再自动重放（按统一错误显示），但必须立即重新锁住闸门并（发起时仍可见才）再弹同意框——这一次的弹窗没有
+                    // 待重放消息（共性第 16 条，S0；鸿蒙 R1-05：隐藏期间只锁）
                     turn.error = AgentErrorView(errorText(AgentErrorCodes.CONSENT, r.traceId))
                     if (active === turn) active = null
-                    consentLost(null, interactive = true)
+                    turn.phase = AgentTurnPhase.ENDED
+                    aiConsentRevoked(null, interactive = shown)
                 } else {
                     turn.phase = AgentTurnPhase.AWAITING_CONSENT
                     if (active === turn) active = null
-                    sharedError(r, turn.run.run)
+                    sharedError(r, turn.run.run, op, entry)
                     return
                 }
             }
 
             AgentSendAction.FORCE_UPDATE -> {
-                sharedError(r, null)
+                sharedError(r, null, op, entry)
                 removeTurn(turn)
             }
 
             AgentSendAction.TEXT_TOO_LONG -> {
-                deps.toast(AgentDraftTexts.text(TOO_LONG_KEY))
+                if (shown) deps.toast(AgentDraftTexts.text(TOO_LONG_KEY))
                 removeTurn(turn)
             }
 
             else -> {
-                // 统一分流（10001 / 10005 / 非 AI 的 10004 / 表外码）：交统一入口（打开前置页或提示）；本条显示统一文案（5xxxx 带 trace6）
-                sharedError(r, null)
+                // 统一分流（10001 / 10005 / 非 AI 的 10004 / 表外码）：交统一入口（可见才打开前置页或提示）；本条显示统一文案（5xxxx 带 trace6）。
+                // 无外壳与本地没发出已在上面分出（R1-02）
+                sharedError(r, null, op, entry)
                 turn.error = AgentErrorView(errorText(code, r.traceId))
             }
         }
@@ -887,60 +1421,79 @@ class AgentController(
     }
 
     /**
-     * 30502 额度用完（AgentQuotaGuest / AgentQuotaPhone，G24）：游客 →【登录】；会员未绑手机（或未知，按未验证）→【绑定手机号】；已绑手机的会员不再引导绑定
-     * （BR-AI-15 none 分支，鸿蒙 H10 / H23），只给【去搜索】与「明天再来」的说明。
+     * 发送没有形成流、也没有可用的业务码（无外壳、外壳成功却不是流、流前传输失败）：本条「连接中断」+ 说明句 + RELOAD【重试】（G19、G34、A12）。
+     * 【重试】先查历史再决定替换或同一 client_msg_id 重发（G07）；还没有会话时没有历史可查，直接同键重发（[retry]）。
      */
-    private fun quotaView(turn: Turn): AgentErrorView {
-        val run = turn.run
-        val search =
-            AgentTap(
-                run.controller,
-                run.conversation,
-                run.run,
-                "",
-                AgentTapKind.SEARCH,
-                SEARCH_ROUTE,
-                AgentJson.EMPTY,
-                RouteSource.IN_APP,
-                AgentDraftTexts.text(SEARCH_KEY),
+    private fun disconnectedForRetry(turn: Turn) {
+        turn.client?.cancel()
+        turn.client = null
+        turn.resend = false
+        turn.state = StreamReducer.disconnected(turn.state)
+        turn.gapped = false
+        turn.error =
+            AgentErrorView(
+                AgentDraftTexts.text(DISCONNECTED_KEY),
+                retry = AgentRetryTap(turn.run, AgentRetryMode.RELOAD),
+                hint = AgentDraftTexts.text(DISCONNECTED_HINT_KEY),
             )
+        turn.phase = AgentTurnPhase.ENDED
+        if (active === turn) active = null
+    }
+
+    /**
+     * 30502 额度用完（AgentQuota* 稿；CT-LOCK-01 G08、G27）：按服务端 data.next 选按钮——login →【登录】；bind_phone →【绑定手机号】；none → 只给【去搜索】与
+     * 「明天再来」；缺失或不认识 → 回落本地身份规则（游客 → 登录；会员未绑或未知 → 绑定；已绑 → 只有搜索，APP-10 H23 / A14）。reset_at 不显示。
+     */
+    private fun quotaView(
+        turn: Turn,
+        next: String?,
+    ): AgentErrorView {
+        val run = turn.run
+
+        fun tap(
+            kind: String,
+            route: String,
+            labelKey: String,
+        ) = AgentTap(
+            run.controller,
+            run.conversation,
+            run.run,
+            "",
+            kind,
+            route,
+            AgentJson.EMPTY,
+            RouteSource.IN_APP,
+            AgentDraftTexts.text(labelKey),
+        )
         val bound = if (identity.member) runCatching { deps.phoneBound() }.getOrNull() else null
+        val local =
+            when {
+                !identity.member -> AgentQuotaPolicy.IDENTITY_GUEST
+                bound == true -> AgentQuotaPolicy.IDENTITY_BOUND
+                else -> AgentQuotaPolicy.IDENTITY_UNBOUND
+            }
+        val buttons = AgentQuotaPolicy.buttons(next, local)
         val (upgrade, hint) =
             when {
-                !identity.member -> {
-                    AgentTap(
-                        run.controller,
-                        run.conversation,
-                        run.run,
-                        "",
-                        AgentTapKind.LOGIN,
-                        LOGIN_ROUTE,
-                        AgentJson.EMPTY,
-                        RouteSource.IN_APP,
-                        AgentDraftTexts.text("agent.draft.login"),
-                    ) to
-                        AgentDraftTexts.text("agent.draft.quota.guest_hint")
+                AgentQuotaPolicy.ROUTE_LOGIN in buttons -> {
+                    tap(AgentTapKind.LOGIN, LOGIN_ROUTE, "agent.draft.login") to AgentDraftTexts.text("agent.draft.quota.guest_hint")
                 }
 
-                bound != true -> {
-                    AgentTap(
-                        run.controller,
-                        run.conversation,
-                        run.run,
-                        "",
-                        AgentTapKind.BIND_PHONE,
-                        BIND_PHONE_ROUTE,
-                        AgentJson.EMPTY,
-                        RouteSource.IN_APP,
-                        AgentDraftTexts.text("agent.draft.bind_phone"),
-                    ) to AgentDraftTexts.text("agent.draft.quota.phone_hint")
+                AgentQuotaPolicy.ROUTE_BIND_PHONE in buttons -> {
+                    tap(AgentTapKind.BIND_PHONE, BIND_PHONE_ROUTE, "agent.draft.bind_phone") to
+                        AgentDraftTexts.text("agent.draft.quota.phone_hint")
                 }
 
                 else -> {
                     null to AgentDraftTexts.text("agent.draft.quota.member_hint")
                 }
             }
-        return AgentErrorView(errorText(AgentErrorCodes.QUOTA, ""), search = search, upgrade = upgrade, quotaHint = hint)
+        return AgentErrorView(
+            errorText(AgentErrorCodes.QUOTA, ""),
+            search = tap(AgentTapKind.SEARCH, SEARCH_ROUTE, SEARCH_KEY),
+            upgrade = upgrade,
+            quotaHint = hint,
+        )
     }
 
     private fun removeTurn(turn: Turn) {
@@ -948,41 +1501,545 @@ class AgentController(
         if (active === turn) active = null
     }
 
+    // ---------------------------------------------------------------- 历史重载（APP-10b §2 第 6 条，G06、G07、G38）
+
+    /**
+     * 开始一次重载（断线【重试】、缺号、duplicate 收尾、cancel 30505、【刷新】）：同意闸门锁住 → 不请求；App 在后台 → 只留【重试】（不发）；否则拉历史首页，
+     * 失败按 1 / 2 / 4 / 8 秒（带抖动）自动重试，含首次共 5 次（这些请求关掉 ApiClient 的 GET 自动重试，G35）。
+     */
+    private fun startReload(
+        turn: Turn,
+        trigger: String,
+        userRetry: Boolean,
+    ) {
+        cancelTimers(turn, stop = false)
+        val r = AgentReconnect(trigger, userRetry, deps.random)
+        turn.reconnect = r
+        val entry = this.entry
+        val step = r.begin(runCatching(deps.foreground).getOrDefault(false), consentGate == AgentConsentGate.CLEAR)
+        runReload(turn, r, step, entry)
+    }
+
+    private fun runReload(
+        turn: Turn,
+        r: AgentReconnect,
+        step: AgentReloadStep,
+        entry: Long,
+    ) {
+        if (turn.reconnect !== r) return
+        when (step.kind) {
+            AgentReloadStep.REQUEST -> {
+                requestReload(turn, r, entry)
+            }
+
+            AgentReloadStep.WAIT -> {
+                publish()
+                turn.reloadTimer =
+                    deps.timer.after(step.delayMs) {
+                        turn.reloadTimer = null
+                        if (turn.reconnect !== r || !alive()) return@after
+                        runReload(turn, r, r.onTimer(runCatching(deps.foreground).getOrDefault(false)), entry)
+                    }
+            }
+
+            else -> {
+                finishReload(turn, r, step, entry)
+            }
+        }
+    }
+
+    /** 一次历史请求（读取闸门；挂在 reload:<run> 子归属上，进后台、停止、作废时同步取消）。结果先比票据（控制器、对话、这一轮、这一次重载、历史票据）。 */
+    @Suppress("ReturnCount", "ComplexCondition") // 没有端口、没有会话、读取闸门、票据依次返回
+    private fun requestReload(
+        turn: Turn,
+        r: AgentReconnect,
+        entry: Long,
+    ) {
+        val contract = deps.contract
+        val id = sessionId
+        if (contract == null || id == null) {
+            finishReload(turn, r, r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.NETWORK, false, null, -1, null), false, false), entry)
+            return
+        }
+        if (gates.read.active) {
+            // G58：读取闸门期内不发，本轮只留【重试】
+            finishReload(
+                turn,
+                r,
+                r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.ENVELOPE, false, null, AgentErrorCodes.RATE_LIMITED, null), false, false),
+                entry,
+            )
+            return
+        }
+        val conversation = this.conversation
+        val seq = historySeq
+        val scope = AgentCall.reloadScope(turn.run.run)
+        val call = call(AgentOperation.HISTORY, scope) { turn.reconnect === r && seq == historySeq && sessionId == id }
+        publish()
+        deps.scope.launch {
+            val res = contract.listMessages(id, null, AgentHistory.LIMIT, call, autoRetry = false)
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(res, AgentOperation.HISTORY)) return@launch
+            if (conversation != this@AgentController.conversation || seq != historySeq || turn.reconnect !== r || turn !in turns) {
+                settleOnly(res, AgentOperation.HISTORY)
+                return@launch
+            }
+            if (!runCatching(deps.foreground).getOrDefault(false)) {
+                // 结果在后台到达（R1-08）：只结算共享事实，暂停重载（只留【重试】）
+                settleOnly(res, AgentOperation.HISTORY)
+                r.pause()?.let { finishReload(turn, r, it, entry) }
+                return@launch
+            }
+            reloadResult(turn, r, res, entry)
+        }
+    }
+
+    @Suppress("ReturnCount", "CyclomaticComplexMethod", "LongMethod") // 成功、形状、外壳码依次处理
+    private fun reloadResult(
+        turn: Turn,
+        r: AgentReconnect,
+        res: AgentHttpResult,
+        entry: Long,
+    ) {
+        val sendOpen = !gates.send.active && consentGate == AgentConsentGate.CLEAR
+        val consentOpen = consentGate == AgentConsentGate.CLEAR
+        if (res.ok) {
+            val page = AgentHistory.page(res.data, deps.routes)
+            if (page == null) {
+                runReload(
+                    turn,
+                    r,
+                    r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.NETWORK, false, null, -1, null), sendOpen, consentOpen),
+                    entry,
+                )
+                return
+            }
+            val m = AgentHistoryMerge.match(page, turnKey(turn), claimed(turn))
+            // G03：meta.message_id 在历史里指向 user：不当回复 id 用（入口不显示），对齐改按文本与时间
+            val replyId = turn.replyId
+            if (replyId != null && page.items.any { it.messageId == replyId && it.isUser }) turn.replyIdDistrusted = true
+            if (page.expired) applyExpired()
+            if (m.matched) {
+                lastReloadMatch = m
+            } else if (r.trigger != AgentReloadTrigger.REFRESH) {
+                // 对不上（鸿蒙 R1-09、G66）：保留本地，按消息 id 去重把历史里本地没有的整轮追加在后面（只在内存）
+                appendHistory(page)
+            }
+            val step =
+                r.onOutcome(
+                    AgentReloadOutcome(AgentReloadOutcome.SUCCESS, m.matched, m.reply?.finishReason, 0, null),
+                    sendOpen,
+                    consentOpen,
+                )
+            if (page.expired && step.action == AgentReloadAction.RESEND) {
+                // 只读会话不重发（R1-10）
+                finishReload(turn, r, AgentReloadStep.final(AgentReloadAction.NEW_CHAT, AgentStatus.DISCONNECTED), entry)
+                return
+            }
+            finishReload(turn, r, step, entry)
+            return
+        }
+        if (res.notSent || res.code < 0) {
+            runReload(
+                turn,
+                r,
+                r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.NETWORK, false, null, -1, null), sendOpen, consentOpen),
+                entry,
+            )
+            return
+        }
+        when (res.code) {
+            AgentErrorCodes.RATE_LIMITED, AgentErrorCodes.UNAVAILABLE, AgentErrorCodes.FORCE_UPDATE -> {
+                sharedError(res, null, AgentOperation.HISTORY, entry)
+                if (res.code == AgentErrorCodes.UNAVAILABLE) {
+                    publish()
+                    return
+                }
+                reloadError = if (res.code == AgentErrorCodes.RATE_LIMITED) errorText(res.code, "") else ""
+                finishReload(
+                    turn,
+                    r,
+                    r.onOutcome(
+                        AgentReloadOutcome(AgentReloadOutcome.ENVELOPE, false, null, AgentErrorCodes.RATE_LIMITED, null),
+                        false,
+                        false,
+                    ),
+                    entry,
+                )
+            }
+
+            AgentErrorCodes.CONSENT, AgentErrorCodes.LOGIN, AgentErrorCodes.BIND_PHONE -> {
+                // G65（鸿蒙 R1-13）：前置码不再退避——按重载开始时的进入世代与可见性做统一分流（可见才打开前置页），本条显示统一文案并保留【重试】；AI 10004 锁闸门
+                val ai = AgentConsentPolicy.shows(res.code, res.consentType)
+                sharedError(res, null, AgentOperation.HISTORY, entry)
+                if (ai) {
+                    finishReload(
+                        turn,
+                        r,
+                        r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.ENVELOPE, false, null, res.code, res.consentType), false, false),
+                        entry,
+                    )
+                    return
+                }
+                reloadError = errorText(res.code, res.traceId)
+                finishReload(turn, r, AgentReloadStep.final(AgentReloadAction.RETRY_ONLY, AgentStatus.DISCONNECTED), entry)
+            }
+
+            AgentErrorCodes.ROUND_LIMIT -> {
+                finishReload(
+                    turn,
+                    r,
+                    r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.ENVELOPE, false, null, res.code, null), false, false),
+                    entry,
+                )
+            }
+
+            else -> {
+                // 5xxxx 等：照退避重试；用尽后显示统一文案 + trace6（不压成无诊断的「连接中断」，R1-13）
+                reloadError = errorText(res.code, res.traceId)
+                runReload(
+                    turn,
+                    r,
+                    r.onOutcome(AgentReloadOutcome(AgentReloadOutcome.ENVELOPE, false, null, res.code, null), sendOpen, consentOpen),
+                    entry,
+                )
+            }
+        }
+    }
+
+    /** 最近一次重载对上的历史轮（[finishReload] 替换时用）。 */
+    private var lastReloadMatch: AgentTurnMatch? = null
+
+    /** 最近一次重载失败的统一文案（只留【重试】时显示；空串用「连接中断」）。 */
+    private var reloadError = ""
+
+    /** 重载结束：替换 / 同键重发 / 只留【重试】/ 会话已结束 / 锁同意 / 保持原样（G07）。 */
+    @Suppress("CyclomaticComplexMethod", "LongMethod") // 每种动作一个分支
+    private fun finishReload(
+        turn: Turn,
+        r: AgentReconnect,
+        step: AgentReloadStep,
+        entry: Long,
+    ) {
+        if (turn.reconnect !== r) return
+        turn.reconnect = null
+        turn.reloadTimer?.invoke()
+        turn.reloadTimer = null
+        if (step.paused || step.action == AgentReloadAction.RETRY_ONLY || step.action == AgentReloadAction.PAUSED) {
+            // 历史请求在途时进后台也要同步取消（R1-08）
+            runCatching { deps.contract?.cancelScope(identity, AgentCall.reloadScope(turn.run.run)) }
+        }
+        val match = lastReloadMatch
+        lastReloadMatch = null
+        val failure = reloadError
+        reloadError = ""
+        when (step.action) {
+            AgentReloadAction.REPLACE -> {
+                val g = match?.group
+                if (g != null) replaceWithHistory(turn, g)
+            }
+
+            AgentReloadAction.RESEND -> {
+                resendSame(turn)
+                return
+            }
+
+            AgentReloadAction.RETRY_ONLY, AgentReloadAction.PAUSED -> {
+                if (turn.duplicatePending || r.trigger == AgentReloadTrigger.CANCEL_30505) {
+                    // duplicate / 30505 重载失败：本条保持本地（不再显示连接中断），【刷新】留给用户
+                    turn.refreshable = r.trigger != AgentReloadTrigger.CANCEL_30505
+                } else {
+                    turn.state = turn.state.copy(status = AgentStatus.DISCONNECTED)
+                    turn.gapped = false
+                    turn.error =
+                        AgentErrorView(
+                            failure.ifEmpty { AgentDraftTexts.text(DISCONNECTED_KEY) },
+                            retry = AgentRetryTap(turn.run, AgentRetryMode.RELOAD),
+                            hint = if (failure.isEmpty()) AgentDraftTexts.text(DISCONNECTED_HINT_KEY) else "",
+                        )
+                }
+            }
+
+            AgentReloadAction.NEW_CHAT -> {
+                // 历史 30504：会话已失效（G07）——本轮结束为「这个对话已结束」+【新对话】，清本地会话，不重发
+                sessionId = null
+                turn.state =
+                    turn.state.copy(
+                        status =
+                            if (turn.state.status ==
+                                AgentStatus.INCOMPLETE
+                            ) {
+                                AgentStatus.DISCONNECTED
+                            } else {
+                                turn.state.status
+                            },
+                    )
+                turn.error = AgentErrorView(errorText(AgentErrorCodes.ROUND_LIMIT, ""), newChat = AgentPageTicket(serial, conversation))
+            }
+
+            AgentReloadAction.CONSENT -> {
+                if (step.lockAiGate) aiConsentRevoked(null, interactive = false)
+                if (turn.state.status == AgentStatus.INCOMPLETE) turn.state = turn.state.copy(status = AgentStatus.DISCONNECTED)
+            }
+
+            else -> {
+                // KEEP（duplicate / 30505 / 【刷新】对不上）：本条保持原样
+                if (turn.duplicatePending) {
+                    turn.duplicatePending = false
+                    turn.refreshable = true
+                    if (turn.error == null) turn.error = AgentErrorView("", retry = AgentRetryTap(turn.run, AgentRetryMode.REFRESH))
+                }
+            }
+        }
+        if (entry != this.entry) announcement = ""
+        publish()
+    }
+
+    /** 用历史替换发起重载的这一轮（G06）：只替换这一轮；新 run 键让旧卡片回调与购买尝试失效，新卡按新票据渲染；不查钱包、不更新额度、不自动滚动。 */
+    private fun replaceWithHistory(
+        turn: Turn,
+        g: AgentHistoryGroup,
+    ) {
+        turn.client?.cancel()
+        turn.client = null
+        runSeq += 1
+        turn.run = AgentRunTicket(serial, conversation, "${turn.run.clientMsgId}#$runSeq", turn.run.clientMsgId)
+        turn.history = true
+        turn.userMessageId = g.user?.messageId
+        turn.refreshable = false
+        turn.gapped = false
+        turn.revoked = false
+        turn.products.clear()
+        val reply = g.replies.firstOrNull()
+        if (reply != null) {
+            applyHistoryReply(turn, reply)
+        } else {
+            turn.state = turn.state.copy(status = AgentStatus.DONE)
+            turn.error = null
+        }
+        runCatching { deps.cancelPurchase() }
+    }
+
+    /** 对不上时把历史里本地没有的整轮追加在对话后面（按消息 id 去重，G66）。 */
+    private fun appendHistory(page: AgentHistoryPage) {
+        val local = turns.flatMap { listOfNotNull(it.userMessageId, it.replyId) }.toSet()
+        val extra = AgentHistoryMerge.appendable(page, local).flatMap(::historyTurnsOf)
+        if (extra.isNotEmpty()) turns = turns + extra
+    }
+
+    /** 本地这一轮的对齐依据（G05）。 */
+    private fun turnKey(turn: Turn): AgentTurnKey =
+        AgentTurnKey(turn.userText, turn.sentAtMs, turn.replyId?.takeIf { !turn.replyIdDistrusted })
+
+    /** 其他本地轮次已确认的消息归属（鸿蒙 R3-02、F-X-06 ①）：其他轮的历史 user id、回复 id、同键重发流的回复 id。 */
+    private fun claimed(turn: Turn): Set<String> =
+        turns.filter { it !== turn }.flatMap { listOfNotNull(it.userMessageId, it.replyId, it.resendState.messageId) }.toSet()
+
+    /** 用同一 client_msg_id 重发（G07 没受理；BR-AI-23 ⑥ 服务端去重）。 */
+    private fun resendSame(turn: Turn) {
+        if (!alive()) return
+        if (active != null || readOnly) {
+            // 无法立即重发（恢复期间用户已发出新的一轮占着发送通道，或会话只读；Android R2-05，共性第 43 条）：不静默返回——把目标轮恢复为「连接中断」+ RELOAD【重试】
+            // 并发布快照（[finishReload] 已清掉 reconnect）；新的一轮结束后也不自动重发，由用户再点【重试】
+            if (turn !== active) disconnectedForRetry(turn)
+            publish()
+            return
+        }
+        turn.run = newRun(ClientMsgId.forRetry(ClientMsgId.RETRY_DISCONNECTED, turn.run.clientMsgId))
+        turn.error = null
+        turn.phase = AgentTurnPhase.CONNECTING
+        turn.gapped = false
+        // 已收到的部分内容保留；回来的若是 duplicate 两帧，按 duplicate 收尾（拉历史替换），不并入
+        turn.resend = turn.state.metaSeen
+        turn.resendState = StreamReducer.initial()
+        if (!turn.resend) turn.state = StreamReducer.initial()
+        turn.resumed = true
+        active = turn
+        publish()
+        dispatch(turn, resume = true)
+    }
+
+    private fun cancelTimers(
+        turn: Turn,
+        stop: Boolean = true,
+    ) {
+        turn.reloadTimer?.invoke()
+        turn.reloadTimer = null
+        if (stop) {
+            turn.stopTimer?.invoke()
+            turn.stopTimer = null
+        }
+    }
+
     // ---------------------------------------------------------------- 停止、新对话、重试
 
-    /** 【停止】：本地立即 cancelled，再调 cancelAgentRun（带原身份；发包前复核身份未变，30505 静默）。 */
-    @Suppress("ReturnCount") // 票据、没有活动 run、不发 cancel 依次返回
+    /**
+     * 【停止】（APP-10b §2 第 7 条，G26）：同步作废本控制器归属的历史 / 反馈 / 举报 / 建会话 / 其他轮重载（保留这一轮的流通道例外，鸿蒙 R2-03），本地立即结束为
+     * cancelled、作废这一对话已渲染的卡片回调与在途购买（共性第 3 条）。有 run_id → 关连接、发 1 次 cancel（以 run 去重，连点、重进页面也不再发；动作闸门期间不发）；
+     * 没有 run_id（meta 之前）→ 显示「正在停止」，连接保持到 meta 到达（最长 30 秒）后关连接并发 1 次 cancel；30 秒没有 meta 或先到了终止帧就只关连接、不发。
+     * 没有连接（建会话在途，G52）→ 立即本地结束、不发。
+     */
+    @Suppress("ReturnCount") // 票据、没有活动 run 依次返回
     fun stop(t: AgentRunTicket) {
         if (!runOk(t)) return
         val turn = active ?: return
-        val action = AgentTicketPolicy.action(AgentTicketEvent.STOP)
-        turn.client?.cancel()
-        turn.client = null
+        stopOwnedWork(turn)
         turn.state = StreamReducer.localCancel(turn.state)
         turn.resend = false
         turn.error = null
         turn.phase = AgentTurnPhase.ENDED
         active = null
-        // 共性第 3 条（brief §0.3）：停止同步作废这一对话已渲染的卡片回调与在途购买尝试；这一轮的卡片照常显示、按钮不再可用
         revokeCardActions()
         turn.revoked = true
-        publish()
+        val flow = AgentStopFlow(deps.ledger)
+        turn.stopFlowRef = flow
         val runId = turn.state.runId
-        val contract = deps.contract
-        if (!action.sendsCancel || runId == null || contract == null) return
-        // 停止请求固定原对话与 operation 票据（停止时的 run 序号）：之后有新对话、新消息、重试或离页，结果只结算共享事实，不弹框、不导航、不改新对话
-        // （共性第 19 条）。发包许可固定进入世代与原对话（新对话、离页后不再发 cancel，与 G06 一致）；同一对话里接着发新消息不挡停止
-        val entry = this.entry
+        val hasConnection = turn.client?.active == true
+        val effect = flow.stop(if (hasConnection || runId != null) runId else null, !gates.action.active)
+        if (runId == null && hasConnection) {
+            // G26：连接保持到 meta（最长 30 秒）；内容帧一律不交 Reducer
+            turn.stopTimer =
+                deps.timer.after(AgentStopFlow.META_WAIT_MS) {
+                    turn.stopTimer = null
+                    applyStop(turn, flow.onWaitExpired())
+                }
+            publish()
+            return
+        }
+        if (runId == null) {
+            // G52：建会话在途、还没有连接：立即本地结束，不发 cancel（这一轮的建会话已随 run 子归属取消）
+            flow.onTerminal()
+            runCatching { deps.contract?.cancelScope(identity, AgentCall.runScope(turn.run.run)) }
+        }
+        applyStop(turn, effect)
+    }
+
+    /** 「正在停止」期间这一轮的流事件（G26）：meta → 关连接、发 1 次 cancel；终止帧 / 断线 → 只关连接；其余丢弃（内容票据已作废）。 */
+    @Suppress("CyclomaticComplexMethod") // 按分支逐条对照规则
+    private fun onStoppingStream(
+        turn: Turn,
+        event: AgentStreamEvent,
+    ) {
+        val flow = turn.stopFlow ?: return
+        val frame = event.frame
+        val effect =
+            when {
+                event.kind == AgentStreamEventKind.FRAME && frame?.event == AgentEvent.META -> {
+                    flow.onMeta(
+                        AgentJson.stringOf(frame.data["run_id"]),
+                        !gates.action.active,
+                    )
+                }
+
+                event.kind == AgentStreamEventKind.FRAME && frame != null && AgentSeqGuard.isTerminal(frame.event) -> {
+                    flow.onTerminal()
+                }
+
+                event.kind == AgentStreamEventKind.GAP_TERMINAL ||
+                    event.kind == AgentStreamEventKind.EOF ||
+                    event.kind == AgentStreamEventKind.TIMEOUT ||
+                    event.kind == AgentStreamEventKind.ROUND_LIMIT ||
+                    event.kind == AgentStreamEventKind.FAILED ||
+                    event.kind == AgentStreamEventKind.JSON ||
+                    event.kind == AgentStreamEventKind.LIMIT -> {
+                    flow.onTerminal()
+                }
+
+                else -> {
+                    AgentStopEffect.NONE
+                }
+            }
+        // 正在停止期间迟到的流内 10004 仍是同一身份的共享事实（共性第 22 条）
+        if (frame != null && frame.ok && consentFrame(AgentTerminal(frame.event, frame.data))) aiConsentRevoked(null, interactive = false)
+        // 等待 meta 期间收到的非 SSE 结果（HTTP JSON：AI 10004、42901、10405、30501；10002 / 10402 已在 ApiClient 重放一次后给出最终结果）同样按原身份结算共享事实：
+        // AI 10004 汇入应用级同意失效（不含页面实例的 ownerKey）、同步停流作废所属工作并封住后续发送，不弹框、不导航（Android R1-01，共性第 33、36 条）
+        if (event.kind == AgentStreamEventKind.JSON && alive()) event.result?.let { settleOnly(it, AgentOperation.SEND) }
+        applyStop(turn, effect)
+    }
+
+    private fun applyStop(
+        turn: Turn,
+        effect: AgentStopEffect,
+    ) {
+        if (effect.close) {
+            turn.stopTimer?.invoke()
+            turn.stopTimer = null
+            turn.client?.cancel()
+            turn.client = null
+        }
+        effect.cancelRunId?.let { sendCancel(turn, it) }
+        publish()
+    }
+
+    /**
+     * 【停止】的同步作废范围（鸿蒙 R2-03、G72）：除这一轮的流（stream:<run>，meta 前最多等 30 秒）以外，本控制器页面归属的全部请求经 cancelOwnedExcept 同步取消；
+     * 历史票据 +1（迟到的历史 / 翻页 / 重载结果只结算共享事实）、其他轮的重载停下只留【重试】、在途翻页回到可点；在途反馈静默回滚、在途举报解除（半屏与已选原因保留）；
+     * 工作世代 +1 让迟到结果只结算共享事实（不导航）。应用级 cancel 不挂页面归属，不受影响。
+     */
+    private fun stopOwnedWork(turn: Turn) {
+        historySeq += 1
+        workSeq += 1
+        pager?.failed()
+        turns.filter { it !== turn }.forEach { other ->
+            other.reconnect?.let { r -> r.pause()?.let { step -> finishReload(other, r, step, entry) } }
+            other.feedback.abort()
+            other.report.abort()
+        }
+        turn.feedback.abort()
+        turn.report.abort()
+        runCatching { deps.contract?.cancelOwnedExcept(identity, AgentCall.streamScope(turn.run.run)) }
+    }
+
+    /**
+     * 停止的 cancel（单次发送、不挂页面归属）：准入核对原归属（不含页面实例，[AgentDeps.currentOwnerKey]）与动作闸门；结果按原归属结算——不同归属整体丢弃（只保留
+     * 10405 强更）；同归属：42901 写动作闸门（提示一次）、AI 10004 汇入应用级失效（控制器仍在就同步作废，不弹框不导航）、30501 锁本次进入、30505 按契约拉一次历史
+     * 替换原轮（G25）；200 静默；其余只记本机日志（鸿蒙 R2-01、R3-01，G60、G70、G77）。
+     */
+    @Suppress("ComplexCondition", "CyclomaticComplexMethod") // 条件逐项；按分支逐条对照规则
+    private fun sendCancel(
+        turn: Turn,
+        runId: String,
+    ) {
+        val contract = deps.contract ?: return
         val conversation = this.conversation
+        val entry = this.entry
         val seq = runSeq
-        val call = call { true }
-        deps.scope.launch {
-            val r = contract.cancelRun(runId, call)
-            afterOp(
-                r,
-                { current(entry) && conversation == this@AgentController.conversation && seq == runSeq && active == null },
-                OP_CANCEL,
+        val actionGate = gates.action
+        val call =
+            AgentCall(
+                identityKey = identity,
+                anonymous = !identity.member,
+                sendAllowed = { ownerStill() && !actionGate.active && !unavailableLocked },
+                owner = { ownerStill() },
+                pageOwned = false,
+                singleShot = true,
             )
+        deps.scope.launch {
+            val r = runCatching { contract.cancelRun(runId, call) }.getOrElse { AgentHttpResult.network() }
+            if (r.ok || r.notSent) return@launch
+            // 先共享结算、后页面判断（R3-01）：控制器已作废时按原 ownerKey 结算（同归属：42901 写动作闸门、AI 10004 汇入应用级失效、10405；不同归属只保留 10405）
+            if (settleFirst(r, AgentOperation.CANCEL)) return@launch
+            val result = AgentCancelPolicy.result(r)
+            if (result.gateDelayMs > 0) {
+                actionGate.start(result.gateDelayMs)
+                if (current(entry)) deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
+            }
+            if (result.forceUpdate) deps.forceUpdate()
+            if (result.lockAiGate) {
+                aiConsentRevoked(null, interactive = false)
+                return@launch
+            }
+            if (result.unavailable) {
+                lockUnavailable()
+                publish()
+                return@launch
+            }
+            if (result.reload && conversation == this@AgentController.conversation && turn in turns && seq >= 0) {
+                // 30505：按契约「刷新会话消息」（G25）——拉一次历史，本轮在服务端已以非 cancelled 结束时用历史替换
+                startReload(turn, AgentReloadTrigger.CANCEL_30505, userRetry = false)
+                return@launch
+            }
+            if (!r.ok) deps.log("agent cancel result ${r.code}")
         }
     }
 
@@ -993,104 +2050,142 @@ class AgentController(
     }
 
     /**
-     * 建会话（新对话）与停止的结果（共性第 6、18 条）：先核对归属；成功不处理；票据失效只结算共享事实；仍有效时 30505、本地没发出静默，其余按 [sharedError]，
-     * 剩下的码提示统一文案（5xxxx 带 trace6），不直接吞掉。
+     * 建会话（新对话）的结果（共性第 6、18 条）：先核对归属；成功不处理；票据失效只结算共享事实；仍有效时本地没发出静默，其余按 [sharedError]，剩下的码提示统一文案
+     * （5xxxx 带 trace6），不直接吞掉。
      */
     private fun afterOp(
         r: AgentHttpResult,
         uiOk: () -> Boolean,
         op: String,
+        entry: Long,
     ) {
         if (!alive() || r.ok) return
         if (!uiOk()) {
-            settleOnly(r)
+            settleOnly(r, op)
             return
         }
-        when (sharedError(r, null)) {
-            AgentSharedError.UNAVAILABLE -> {
-                phase = AgentPhase.UNAVAILABLE
+        when (sharedError(r, null, op, entry)) {
+            AgentSharedError.UNAVAILABLE, AgentSharedError.RATE_LIMITED -> {
                 publish()
             }
 
             AgentSharedError.OTHER -> {
-                if (r.code < 0) deps.log("agent $op failed") else deps.toast(errorText(r.code, r.traceId))
-            }
-
-            AgentSharedError.RATE_LIMITED -> {
-                publish()
+                if (r.code < 0) {
+                    deps.log("agent $op failed")
+                } else if (current(entry)) {
+                    deps.toast(errorText(r.code, r.traceId))
+                }
             }
         }
     }
 
-    /** 【新对话】：作废当前对话与所有卡片回调（在途 run 本地结束、不发 cancel），createAgentSession。 */
+    /** 【新对话】：作废当前对话与所有卡片回调（在途 run 本地结束、不发 cancel），同步取消本控制器归属的在途请求，createAgentSession。 */
     @Suppress("ReturnCount") // 票据、没有端口、未就绪依次返回
     fun newChat(t: AgentPageTicket) {
         if (!pageOk(t)) return
         dropConversation()
         quotaExhausted = false
+        readOnly = false
+        sessionEndedText = ""
+        pager = null
+        earlierError = ""
         publish()
         val contract = deps.contract ?: return
         if (phase != AgentPhase.READY) return
         val conversation = this.conversation
         val entry = this.entry
         val seq = runSeq
-        // 只为这一次新对话建会话（再点新对话、离页、已有会话后永久失效）
-        val call = call { sessionId == null }
+        // 只为这一次新对话建会话（再点新对话、已有会话后永久失效）
+        val call = call(AgentOperation.CREATE) { sessionId == null }
         deps.scope.launch {
             val r = contract.createSession(call)
-            // 先核对固定身份，再结算共享事实；对话、进入世代、之后是否又发起了 run 决定能不能改界面（共性第 18 条）
-            if (!alive()) return@launch
+            // 先核对固定身份，再结算共享事实；对话、之后是否又发起了 run 决定能不能改界面（共性第 18 条）
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(r, AgentOperation.CREATE)) return@launch
             val own = conversation == this@AgentController.conversation && sessionId == null
             if (r.ok) {
                 val id = sessionIdOf(AgentJson.objectOf(r.data["session"]) ?: r.data)
-                if (own && current(entry) && id != null) sessionId = id
+                if (own && id != null) sessionId = id
                 return@launch
             }
-            afterOp(r, { own && current(entry) && seq == runSeq && active == null }, OP_SESSION)
+            afterOp(r, { own && seq == runSeq && active == null }, AgentOperation.CREATE, entry)
         }
     }
 
-    /** 同步作废当前对话（新对话、流内 10004）：关连接、停计时、清消息与卡片回调；对话世代 +1。同意闸门不随新对话解除（没记录成功就一直禁发）。 */
+    /**
+     * 同步作废当前对话（新对话、流内 10004、会话已不存在）：关连接、停计时、同步取消本控制器归属的在途请求（鸿蒙 R1-11）、清消息与卡片回调；对话世代 +1。
+     * 同意闸门不随新对话解除（没记录成功就一直禁发）。
+     */
     private fun dropConversation() {
         turns.forEach { turn ->
             turn.client?.cancel()
             turn.client = null
+            cancelTimers(turn)
+            turn.reconnect = null
         }
         active = null
         turns = emptyList()
         conversation += 1
         sessionId = null
+        historySeq += 1
+        workSeq += 1
+        reportTurn = null
+        runCatching { deps.contract?.cancelOwned(identity) }
         revokeCardActions()
         announcement = ""
     }
 
-    /** 【重试】：沿用同一 client_msg_id（50401、断线、duplicate 30506）或新消息（流内 error）。 */
-    @Suppress("ReturnCount", "ComplexCondition") // 票据、限流、两种模式
+    /**
+     * 【重试】：断线 → 先拉历史首页（G07，[AgentRetryMode.RELOAD]）；50401 等 → 同一 client_msg_id 重发（[AgentRetryMode.SAME]）；流内 error → 新消息
+     * （[AgentRetryMode.NEW]）；duplicate 30506 的【刷新】→ 拉一次历史首页（[AgentRetryMode.REFRESH]）。后台不发（03 §7.2）。
+     */
+    @Suppress("ReturnCount", "ComplexCondition", "CyclomaticComplexMethod") // 票据、限流、各模式
     fun retry(t: AgentRetryTap) {
         val turn = turnOf(t.controller, t.conversation, t.run) ?: return
-        if (active != null || turn.error?.retry == null || turn.run.clientMsgId != t.clientMsgId || consentGate != AgentConsentGate.CLEAR ||
-            !visible
+        val tap = turn.error?.retry
+        if (active != null || tap == null || turn.run.clientMsgId != t.clientMsgId || tap.mode != t.mode ||
+            consentGate != AgentConsentGate.CLEAR ||
+            !visible || turn.reconnect != null || unavailableLocked
         ) {
             return
         }
-        if (deps.gate.active) {
+        when (t.mode) {
+            AgentRetryMode.RELOAD, AgentRetryMode.REFRESH -> {
+                if (gates.read.active) {
+                    deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
+                    return
+                }
+                if (sessionId == null) {
+                    // 还没有会话（建会话前就断了）：没有历史可拉，同键重发
+                    if (t.mode == AgentRetryMode.RELOAD) resendSame(turn)
+                    return
+                }
+                turn.error = null
+                if (turn.state.status == AgentStatus.DISCONNECTED) turn.state = turn.state.copy(status = AgentStatus.STREAMING)
+                startReload(
+                    turn,
+                    if (t.mode ==
+                        AgentRetryMode.REFRESH
+                    ) {
+                        AgentReloadTrigger.REFRESH
+                    } else {
+                        AgentReloadTrigger.DISCONNECT
+                    },
+                    userRetry = true,
+                )
+                return
+            }
+        }
+        if (gates.send.active) {
             deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
             return
         }
+        if (readOnly) return
         if (t.mode == AgentRetryMode.NEW) {
             sendText(turn.userText)
             return
         }
-        turn.run = newRun(ClientMsgId.forRetry(ClientMsgId.RETRY_DISCONNECTED, turn.run.clientMsgId))
-        turn.error = null
-        turn.phase = AgentTurnPhase.CONNECTING
-        // 已收到的部分内容保留（不补拉历史，G02 ②）；回来的若是 duplicate 两帧，按 G26 收尾，不并入
-        turn.resend = turn.state.metaSeen
-        turn.resendState = StreamReducer.initial()
-        if (!turn.resend) turn.state = StreamReducer.initial()
-        active = turn
-        publish()
-        dispatch(turn)
+        resendSame(turn)
     }
 
     /** 快捷追问 / 示例问题 / 「换一批」：用户点击才发（绑定渲染时的对话世代；卡片上的胶囊另比卡片动作世代）。 */
@@ -1102,6 +2197,286 @@ class AgentController(
 
     private fun sendText(text: String) {
         send(AgentPageTicket(serial, conversation), text)
+    }
+
+    // ---------------------------------------------------------------- 向上翻页（G08）
+
+    /**
+     * 滚到顶部（第一条消息进入可见区）：按 next_cursor 取更早一页，一次只在途一页（读取闸门；ApiClient 的 GET 自动重试 1 次照旧）。结果比票据（对话、历史票据）后插在前面；
+     * 30504 复用会话失效处理（鸿蒙 R2-04）；失败保留完整结果显示统一文案（5xxxx 带 trace6，R2-05），点它再试。
+     */
+    @Suppress("ReturnCount", "ComplexCondition", "CyclomaticComplexMethod") // 票据、闸门、游标依次返回
+    fun loadEarlier(t: AgentPageTicket) {
+        if (!pageOk(t) || phase != AgentPhase.READY || gates.read.active || unavailableLocked) return
+        val contract = deps.contract ?: return
+        val id = sessionId ?: return
+        val p = pager ?: return
+        val cursor = p.top() ?: return
+        earlierError = ""
+        val conversation = this.conversation
+        val seq = historySeq
+        val entry = this.entry
+        publish()
+        val call = call(AgentOperation.HISTORY) { seq == historySeq && sessionId == id && pager === p }
+        deps.scope.launch {
+            val r = contract.listMessages(id, cursor, AgentHistory.LIMIT, call)
+            // 先共享结算、后页面判断（R3-01）：控制器已作废（页面重建 / 换身份）时只按原 ownerKey 结算共享事实
+            if (settleFirst(r, AgentOperation.HISTORY)) return@launch
+            if (conversation != this@AgentController.conversation || seq != historySeq || pager !== p) {
+                settleOnly(r, AgentOperation.HISTORY)
+                return@launch
+            }
+            val page = if (r.ok) AgentHistory.page(r.data, deps.routes) else null
+            if (page != null) {
+                val local = turns.flatMap { listOfNotNull(it.userMessageId, it.replyId) }.toSet()
+                val older = AgentHistory.groups(page.items).filter { g -> g.ids.none { it in local } }.flatMap(::historyTurnsOf)
+                turns = older + turns
+                p.arrived(page.nextCursor)
+                if (page.expired) applyExpired()
+                publish()
+                return@launch
+            }
+            p.failed()
+            if (r.ok) {
+                earlierError = AgentDraftTexts.text(EARLIER_FAILED_KEY)
+            } else if (r.code == AgentErrorCodes.ROUND_LIMIT) {
+                sessionGone()
+                return@launch
+            } else {
+                when (sharedError(r, null, AgentOperation.HISTORY, entry)) {
+                    AgentSharedError.CONSENT, AgentSharedError.UNAVAILABLE -> {
+                        Unit
+                    }
+
+                    else -> {
+                        earlierError =
+                            if (r.notSent || r.code < 0) errorText(AgentErrorCodes.GENERIC, "") else errorText(r.codeOrGeneric, r.traceId)
+                    }
+                }
+            }
+            publish()
+        }
+    }
+
+    /** 会话已不存在（翻页 30504，鸿蒙 R2-04、G73）：作废旧会话工作、清 session_id / 分页 / 对话，显示 error.30504 +【新对话】（下次发送重建会话）。 */
+    private fun sessionGone() {
+        dropConversation()
+        pager = null
+        earlierError = ""
+        readOnly = false
+        sessionEndedText = errorText(AgentErrorCodes.ROUND_LIMIT, "")
+        phase = AgentPhase.READY
+        publish()
+    }
+
+    // ---------------------------------------------------------------- 反馈与举报（APP-10b §2 第 8、9 条，G28、G29、G31）
+
+    /** 这一轮此刻显示【赞】【踩】与举报入口（G03、G28）。 */
+    private fun actionsVisible(t: Turn): Boolean =
+        AgentFeedback.visible(
+            AgentRole.ASSISTANT,
+            t.state.status,
+            t.replyId,
+            !t.replyIdDistrusted,
+            if (t.replyIdDistrusted) AgentRole.USER else AgentRole.ASSISTANT,
+            t.duplicatePending,
+        ) && !t.stopping && t.reconnect == null && hasBody(t)
+
+    /**
+     * 回复有正文（编排者裁定第 3 条、Android R1-05）：正文为空（例如停止于第一个字之前的历史回复）不画【赞】【踩】与举报入口。正文按可见内容算：渲染后的文字非空白，
+     * 或有卡片（只有卡片的回复也是用户看到的回答，A18）。出错 / 30506 的回复只要有正文且有可信回复 id 照常可反馈。
+     */
+    private fun hasBody(t: Turn): Boolean = plain(t.state).isNotBlank() || t.state.cards.isNotEmpty()
+
+    private fun replyTurn(t: AgentReplyTicket): Turn? {
+        if (!alive() || t.controller != serial || t.conversation != conversation) return null
+        return turns.firstOrNull { it.replyId == t.messageId }?.takeIf(::actionsVisible)
+    }
+
+    /** 点【赞】/【踩】：乐观置为实心（读屏「已赞 / 已踩」），发 setAgentMessageFeedback；同值不发、在途不可点、动作闸门期间不发（G28）。 */
+    @Suppress("ReturnCount", "ComplexCondition", "CyclomaticComplexMethod") // 票据、闸门、状态依次返回；结果分共享结算与状态两层（R2-01）
+    fun feedback(
+        t: AgentReplyTicket,
+        value: String,
+    ) {
+        if (!visible || unavailableLocked) return
+        val turn = replyTurn(t) ?: return
+        val contract = deps.contract ?: return
+        if (gates.action.active) {
+            deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
+            return
+        }
+        val send = turn.feedback.tap(value) ?: return
+        publish()
+        val seq = workSeq
+        val conversation = this.conversation
+        val entry = this.entry
+        val messageId = t.messageId
+        val act = turn.actionSeq
+        val call = call(AgentOperation.FEEDBACK) { seq == workSeq && turn.replyId == messageId && turn.actionSeq == act }
+        deps.scope.launch {
+            val r = contract.setFeedback(messageId, send, call)
+            // 先共享结算、后页面判断（R3-01）：控制器已作废时只按原 ownerKey 结算共享事实（AI 10004、42901、10405）
+            if (settleFirst(r, AgentOperation.FEEDBACK)) return@launch
+            // 控制器仍有效：AI 10004 先于动作状态机结算（R2-01，S0），不依赖动作状态机此刻是否仍在途
+            if (actionConsentFirst(r)) return@launch
+            if (seq != workSeq || conversation != this@AgentController.conversation || turn !in turns || turn.replyId != messageId ||
+                turn.actionSeq != act
+            ) {
+                settleOnly(r, AgentOperation.FEEDBACK)
+                return@launch
+            }
+            val fail = turn.feedback.result(r)
+            if (fail != null) {
+                actionFailed(fail, r, AgentOperation.FEEDBACK, entry)
+            } else if (!r.ok) {
+                // 状态机已不在途（被重置）：失败结果仍做共享结算
+                settleOnly(r, AgentOperation.FEEDBACK)
+            }
+            publish()
+        }
+    }
+
+    /** 长按回复气泡 / 读屏「更多操作 → 举报」：打开举报半屏（同样的显示条件；已举报不再提供）。 */
+    @Suppress("ReturnCount") // 逐项提前返回
+    fun openReport(t: AgentReplyTicket) {
+        if (!visible || unavailableLocked) return
+        val turn = replyTurn(t) ?: return
+        if (turn.report.reported) return
+        reportTurn?.takeIf { it !== turn }?.report?.close()
+        turn.report.open()
+        reportTurn = turn
+        publish()
+    }
+
+    /** 关闭举报半屏（【关闭】、系统返回、点遮罩）：只关这一个实例，已填内容保留在内存（同一条再打开仍在）。 */
+    fun closeReport(t: AgentReplyTicket) {
+        val turn = reportTurn ?: return
+        if (turn.replyId != t.messageId || t.controller != serial) return
+        turn.report.close()
+        reportTurn = null
+        publish()
+    }
+
+    /** 选原因（五选一，默认不选）。 */
+    fun selectReportReason(
+        t: AgentReplyTicket,
+        reason: String,
+    ) {
+        val turn = reportTurn?.takeIf { it.replyId == t.messageId && t.controller == serial } ?: return
+        if (reason !in AgentReport.reasons()) return
+        turn.report.select(reason)
+        publish()
+    }
+
+    /** 补充说明（选填；按 200 − 原因长度 − 1 个码点限长，G29）。只在内存，不进日志与埋点。 */
+    fun editReportSupplement(
+        t: AgentReplyTicket,
+        text: String,
+    ) {
+        val turn = reportTurn?.takeIf { it.replyId == t.messageId && t.controller == serial } ?: return
+        turn.report.supplement = text
+        publish()
+    }
+
+    /** 【提交举报】：reason 按 G29 拼成 1–200 码点（超出不让提交）；单飞；动作闸门期间不发。 */
+    @Suppress("ReturnCount", "ComplexCondition", "CyclomaticComplexMethod") // 票据、闸门、状态依次返回
+    fun submitReport(t: AgentReplyTicket) {
+        if (!visible || unavailableLocked) return
+        val turn = reportTurn?.takeIf { it.replyId == t.messageId && t.controller == serial && t.conversation == conversation } ?: return
+        val contract = deps.contract ?: return
+        if (gates.action.active) {
+            deps.toast(errorText(AgentErrorCodes.RATE_LIMITED, ""))
+            return
+        }
+        val reason = turn.report.submit() ?: return
+        publish()
+        val seq = workSeq
+        val conversation = this.conversation
+        val entry = this.entry
+        val messageId = t.messageId
+        val act = turn.actionSeq
+        val call = call(AgentOperation.REPORT) { seq == workSeq && turn.replyId == messageId && turn.actionSeq == act }
+        deps.scope.launch {
+            val r = contract.report(messageId, reason, call)
+            // 先共享结算、后页面判断（R3-01）
+            if (settleFirst(r, AgentOperation.REPORT)) return@launch
+            // 控制器仍有效：AI 10004 先于动作状态机结算（R2-01，S0）
+            if (actionConsentFirst(r)) return@launch
+            if (seq != workSeq || conversation != this@AgentController.conversation || turn !in turns || turn.replyId != messageId ||
+                turn.actionSeq != act
+            ) {
+                settleOnly(r, AgentOperation.REPORT)
+                return@launch
+            }
+            if (!r.ok && !turn.report.inFlight) {
+                // 状态机已不在途（被重置）：失败结果仍做共享结算
+                settleOnly(r, AgentOperation.REPORT)
+                publish()
+                return@launch
+            }
+            val outcome = turn.report.result(r)
+            if (outcome.success) {
+                if (reportTurn === turn) reportTurn = null
+                if (current(entry)) deps.toast(AgentDraftTexts.text(AgentReport.TOAST_KEY))
+            } else {
+                if (!turn.report.sheetOpen && reportTurn === turn) reportTurn = null
+                outcome.failure?.let { actionFailed(it, r, AgentOperation.REPORT, entry) }
+            }
+            publish()
+        }
+    }
+
+    /**
+     * 反馈 / 举报结果的第一层（Android R2-01，共性第 33、40 条，S0）：控制器仍有效时（已作废的由 [settleFirst] 结算），在消费动作状态机之前独立结算 AI 10004——
+     * 同步停流、作废所属工作、锁同意闸门并以构造时不含页面实例的 ownerKey 上报应用级失效 1 次（不弹框、不导航）。返回 true = 已结算，调用方不再处理。
+     */
+    private fun actionConsentFirst(r: AgentHttpResult): Boolean {
+        if (r.notSent || !AgentConsentPolicy.shows(r.code, r.consentType)) return false
+        aiConsentRevoked(null, interactive = false)
+        return true
+    }
+
+    /** 反馈 / 举报失败的共享结算与提示（G24、G31）：AI 10004 → 同步作废并锁闸门（不弹框）；42901 → 动作闸门；前置码 → 可见才导航；其余可见时提示。 */
+    private fun actionFailed(
+        fail: AgentActionFailure,
+        r: AgentHttpResult,
+        op: String,
+        entry: Long,
+    ) {
+        val shared = sharedError(r, null, op, entry)
+        if (shared == AgentSharedError.CONSENT || shared == AgentSharedError.UNAVAILABLE || shared == AgentSharedError.UNIFIED) return
+        if (shared == AgentSharedError.RATE_LIMITED || shared == AgentSharedError.FORCE_UPDATE) return
+        if (fail.message.isNotEmpty() && current(entry)) deps.toast(fail.message)
+    }
+
+    // ---------------------------------------------------------------- 归属变化（APP-10b G01，应用级协调器调用）
+
+    /**
+     * 应用级归属协调器（[AgentOwnershipStop]）在退出登录、撤回 AI 同意、撤回隐私、切环境等流程的确认入口同步调用：同步作废本控制器（关连接、停计时、作废票据与
+     * 卡片回调、cancelOwned、清空对话），交出在途的那一轮——run_id（没有 meta 为 null）+ 以原身份准入的 cancel 调用（不挂页面归属、单次发送；准入核对原归属与动作
+     * 闸门）。控制器自己不发 cancel（APP-10 G06 / 旧向量 ticket 表照旧）。
+     */
+    override fun stopForOwnership(event: String): AgentOwnedRun? {
+        if (disposed) return null
+        val turn = active
+        val runId = turn?.state?.runId
+        val actionGate = gates.action
+        val epochs = identity.epochs
+        val call =
+            AgentCall(
+                identityKey = identity,
+                anonymous = !identity.member,
+                sendAllowed = {
+                    ownerStill() && runCatching { deps.currentIdentity()?.epochs == epochs }.getOrDefault(false) &&
+                        !actionGate.active
+                },
+                owner = { ownerStill() },
+                pageOwned = false,
+                singleShot = true,
+            )
+        dispose()
+        return turn?.let { AgentOwnedRun(runId, call, ownerKey) }
     }
 
     // ---------------------------------------------------------------- 卡片动作（只在用户点击时）
@@ -1305,7 +2680,7 @@ class AgentController(
         consentFailed = true
         dropPending(t.pendingRun)
         phase = AgentPhase.CONSENT_DECLINED
-        if (r.code == AgentErrorCodes.RATE_LIMITED) deps.gate.start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
+        if (r.code == AgentErrorCodes.RATE_LIMITED) gates.send.start(AgentSendErrorPolicy.retryAfterMs(r.retryAfter))
         if (r.code == AgentErrorCodes.FORCE_UPDATE) deps.forceUpdate()
         if (current(entry) && !r.notSent && r.code != AgentErrorCodes.FORCE_UPDATE) {
             val route = AgentPrereq.route(r.code, r.data)
@@ -1359,13 +2734,18 @@ class AgentController(
 
     // ---------------------------------------------------------------- 作废
 
-    /** 同步作废（归属变化、页面销毁）：关闭连接、取消计时、作废全部 run 票据与卡片回调、清空消息与金额、释放订阅；不发 cancel（G06）。 */
+    /**
+     * 同步作废（归属变化、页面销毁、配置关闭）：关闭连接、取消全部计时（30 秒 / 90 秒、正在停止、重载退避）、作废全部 run 票据与卡片回调、cancelOwned（历史、反馈、
+     * 举报、建会话一并取消）、清空消息与金额、释放订阅；控制器自己不发 cancel（G06；身份事件的 cancel 由应用级协调器在调用它之前捕获）。
+     */
     fun dispose() {
         if (disposed) return
         disposed = true
         turns.forEach { turn ->
             turn.client?.cancel()
             turn.client = null
+            cancelTimers(turn)
+            turn.reconnect = null
         }
         turns = emptyList()
         active = null
@@ -1373,6 +2753,10 @@ class AgentController(
         submitting = null
         context = null
         quotaLeft = null
+        reportTurn = null
+        pager = null
+        historySeq += 1
+        workSeq += 1
         runCatching { deps.contract?.cancelOwned(identity) }
         subscriptions.forEach { it.cancel() }
         subscriptions.clear()
@@ -1407,6 +2791,7 @@ class AgentController(
         if (!alive()) return AgentSnapshot(owner = serial, conversation = conversation, phase = phase, revision = revision, page = page)
         val masked = deps.masked.value
         val orders = AgentDraftTexts.text("agent.draft.chip.orders")
+        val p = pager
         return AgentSnapshot(
             owner = serial,
             conversation = conversation,
@@ -1414,33 +2799,85 @@ class AgentController(
             turns = turns.map { turnView(it, masked) },
             sending = active != null,
             stop = active?.run,
-            limited = deps.gate.active,
+            limited = gates.send.active,
             quotaExhausted = quotaExhausted,
             quotaLeft = quotaLeft,
             consent = consent,
             consentGate = consentGate,
             consentFailed = consentFailed,
             page = page,
-            examples = deps.examples().map { AgentChipTap(serial, conversation, it, it) },
-            ordersChip = AgentChipTap(serial, conversation, orders, orders),
+            examples = if (readOnly) emptyList() else deps.examples().map { AgentChipTap(serial, conversation, it, it) },
+            ordersChip = if (readOnly) null else AgentChipTap(serial, conversation, orders, orders),
             filingText = deps.filingText(),
             contextLabelKey = contextLabel(),
             loadErrorText = loadErrorText,
             revision = revision,
             announcement = announcement,
             amountMasked = masked,
+            readLimited = gates.read.active,
+            actionLimited = gates.action.active,
+            hasEarlier = p?.hasEarlier == true,
+            earlierLoading = p?.loading == true,
+            earlierError = earlierError,
+            historyExhausted = p != null && !p.hasEarlier && turns.isNotEmpty(),
+            readOnly = readOnly,
+            sessionEndedText = sessionEndedText,
+            reportSheet = reportSheetView(),
         )
     }
 
+    @Suppress("ReturnCount") // 逐项提前返回
+    private fun reportSheetView(): AgentReportSheet? {
+        val t = reportTurn ?: return null
+        val id = t.replyId ?: return null
+        val r = t.report
+        if (!r.sheetOpen) return null
+        val check = AgentReport.compose(r.selected, r.supplement)
+        return AgentReportSheet(
+            ticket = AgentReplyTicket(serial, conversation, id),
+            excerpt = excerpt(plain(t.state)),
+            reasons = AgentReport.reasons(),
+            selected = r.selected,
+            supplement = r.supplement,
+            supplementLimit = AgentReport.supplementLimit(r.selected),
+            submitEnabled = check.validation == AgentReportCheck.OK && !r.inFlight && !gates.action.active,
+            inFlight = r.inFlight,
+            reasonError = r.inlineError,
+            tooLong = check.validation == AgentReportCheck.TOO_LONG,
+        )
+    }
+
+    @Suppress("CyclomaticComplexMethod") // 按分支逐条对照规则
     private fun turnView(
         t: Turn,
         masked: Boolean,
     ): AgentTurnView {
         val state = t.state
         val ended = t.phase == AgentTurnPhase.ENDED
-        val chips = state.suggestions.map { AgentChipTap(serial, conversation, it.text, it.sendText) }
+        val chips = if (readOnly) emptyList() else state.suggestions.map { AgentChipTap(serial, conversation, it.text, it.sendText) }
         // 每条已结束的 assistant 回复都有 AiLabel（done、error、停止、断线收尾都算，03 §7.2；共性第 8 条）：meta.ai_label，缺则字典 ai_label
-        val label = if (ended && state.metaSeen) state.aiLabel ?: DefaultTexts.text(AI_LABEL_KEY) else null
+        val label = if (ended && state.metaSeen && !t.stopping) state.aiLabel ?: DefaultTexts.text(AI_LABEL_KEY) else null
+        val id = t.replyId
+        val actions =
+            if (id != null && ended && actionsVisible(t)) {
+                AgentReplyActions(
+                    ticket = AgentReplyTicket(serial, conversation, id),
+                    selected = t.feedback.selected,
+                    enabled = t.feedback.enabled && !gates.action.active,
+                    a11y = AgentFeedback.a11y(t.feedback.selected),
+                    reported = t.report.reported,
+                )
+            } else {
+                null
+            }
+        val statusText =
+            when {
+                t.stopping -> AgentDraftTexts.text(STOPPING_KEY)
+                state.status == AgentStatus.CANCELLED && state.text.isEmpty() && t.history -> AgentDraftTexts.text(AgentHistory.STOPPED_KEY)
+                state.status == AgentStatus.LIMITED -> AgentDraftTexts.text(LIMITED_KEY)
+                state.status == AgentStatus.INCOMPLETE -> AgentDraftTexts.text(INCOMPLETE_KEY)
+                else -> ""
+            }
         return AgentTurnView(
             key = t.run.run,
             run = t.run,
@@ -1453,7 +2890,10 @@ class AgentController(
             chips = if (ended) chips else emptyList(),
             aiLabel = label,
             error = t.error,
-            streaming = t === active,
+            streaming = t === active || t.reconnect != null,
+            history = t.history,
+            actions = actions,
+            statusText = statusText,
         )
     }
 
@@ -1772,6 +3212,8 @@ class AgentController(
             phase = AgentPhase.CONSENT_DECLINED
         }
         revision += 1
+        // G02：隐藏期间快照照常算但不交给界面（只记有变化），回到可见时一次性应用
+        if (!publishGate.offer()) return
         mutableSnapshot.value = buildSnapshot()
     }
 
@@ -1784,6 +3226,23 @@ class AgentController(
         const val PAGE_NAME = "AgentChat"
         private val SERIALS = AtomicLong(0)
         private const val DISCONNECTED_KEY = "agent.draft.disconnected"
+        private const val DISCONNECTED_HINT_KEY = "agent.draft.disconnected_hint"
+        private const val STOPPING_KEY = "agent.draft.stopping"
+        private const val LIMITED_KEY = "agent.draft.limited"
+        private const val INCOMPLETE_KEY = "agent.draft.incomplete"
+        private const val EARLIER_FAILED_KEY = "agent.draft.history.failed"
+
+        /** 举报半屏里被举报回复摘要的码点上限（截断加省略号，代拟）。 */
+        private const val EXCERPT_MAX = 60
+        private const val ELLIPSIS = "…"
+
+        /** 被举报回复的摘要（受限渲染之后的纯文字，截断）。 */
+        fun excerpt(text: String): String {
+            val flat = text.replace('\n', ' ').trim()
+            if (AgentJson.codePoints(flat) <= EXCERPT_MAX) return flat
+            return flat.substring(0, flat.offsetByCodePoints(0, EXCERPT_MAX)) + ELLIPSIS
+        }
+
         private const val TOO_LONG_KEY = "agent.draft.too_long"
         private const val SEARCH_KEY = "agent.draft.search"
         private const val AI_LABEL_KEY = "ai_label"
@@ -1798,8 +3257,6 @@ class AgentController(
         private const val AVAILABILITY_OK = "ok"
         private const val AVAILABILITY_OFF_SHELF = "off_shelf"
         private const val AVAILABILITY_COUPON_GONE = "coupon_gone"
-        private const val OP_CANCEL = "cancel"
-        private const val OP_SESSION = "session"
         private const val CONTEXT_PRODUCT = "product_key"
         private const val CONTEXT_ORDER = "order_id"
         private const val CONTEXT_TEXT = "text"

@@ -46,6 +46,9 @@ internal object ShellDraftTexts {
     // TODO(N-16) 待法务定稿，不得提审
     const val TAB_AGENT = "AI 助手"
 
+    // TODO(N-38) 代拟：agent.entry.visible=false 时底部 AI 助手 Tab 换成「搜索」（BR-AI-12，APP-10b G32）
+    const val TAB_SEARCH = "搜索"
+
     // TODO(N-16) 待法务定稿，不得提审
     const val TAB_ORDERS = "订单"
 

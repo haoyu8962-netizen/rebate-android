@@ -67,6 +67,8 @@ import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -89,9 +91,17 @@ class ProductPageActions(
     val onSimilar: (product: JsonObject) -> Unit = {},
     /** 30143 商品信息已失效：【重新搜索】经 Router 打开 Search。 */
     val onResearch: () -> Unit = {},
-    /** 【问问 AI】经 Router 打开 AgentChat。 */
-    val onAskAi: () -> Unit = {},
+    /** 【问问 AI】经 Router 打开 AgentChat（App 给；null 不绘制）。 */
+    val onAskAi: (() -> Unit)? = null,
+    /**
+     * 【问问 AI】此刻是否绘制（App 订阅 `agent.entry.visible` / Agent 可用性，运行中变化随之更新，Android R1-04、共性第 39 条）；null 时只看 [onAskAi]。
+     * 为 false 时不绘制按钮，也没有可点的回退回调。
+     */
+    val askAiVisible: StateFlow<Boolean>? = null,
 )
+
+/** 没给 [ProductPageActions.askAiVisible] 时的常量「可见」。 */
+private val ASK_AI_ALWAYS: StateFlow<Boolean> = MutableStateFlow(true)
 
 /** 详情页配置。[platform] / [productKey] / [itemRef] 是路由参数（routes.json ProductDetail）。 */
 @Suppress("LongParameterList") // 执行器依赖、文案、路由参数与出口逐项给
@@ -215,6 +225,7 @@ object ProductTags {
     const val LOADING = "product_loading"
     const val DISCLAIMER = "product_disclaimer"
     const val COMPARE_REASON = "product_compare_reason"
+    const val ASK_AI = "product_ask_ai"
 }
 
 private object ProductKeys {
@@ -479,12 +490,18 @@ private fun BottomBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        CouliButton(
-            text = texts.text(ProductKeys.ASK_AI),
-            onClick = model.config.actions.onAskAi,
-            variant = CouliButtonVariant.TEXT,
-            size = CouliButtonSize.COMPACT,
-        )
+        val ask = model.config.actions.onAskAi
+        val askShown by (model.config.actions.askAiVisible ?: ASK_AI_ALWAYS).collectAsStateWithLifecycle()
+        // 入口关闭（agent.entry.visible=false、Agent 不可用）时不绘制、不回退成打开 AgentChat（R1-04、G56）
+        if (ask != null && askShown) {
+            CouliButton(
+                text = texts.text(ProductKeys.ASK_AI),
+                onClick = ask,
+                variant = CouliButtonVariant.TEXT,
+                size = CouliButtonSize.COMPACT,
+                modifier = Modifier.testTag(ProductTags.ASK_AI),
+            )
+        }
         BuyButton(
             base = base,
             rebate = card.data.displayedRebate,

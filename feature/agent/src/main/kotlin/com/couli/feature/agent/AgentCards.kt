@@ -1,7 +1,11 @@
 package com.couli.feature.agent
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,11 +25,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -40,6 +50,8 @@ import com.couli.core.agent.AgentDraftTexts
 import com.couli.core.agent.AgentErrorView
 import com.couli.core.agent.AgentJson
 import com.couli.core.agent.AgentProductView
+import com.couli.core.agent.AgentReplyTicket
+import com.couli.core.agent.AgentRetryMode
 import com.couli.core.agent.AgentSnapshot
 import com.couli.core.agent.AgentStatus
 import com.couli.core.agent.AgentTap
@@ -90,24 +102,78 @@ internal fun AgentTurnItem(
         modifier = Modifier.fillMaxWidth().testTag(AgentTags.turn(turn.key)),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            Text(
-                text = turn.userText,
-                style = CouliTypography.body,
-                color = CouliColors.textPrimary,
-                modifier =
-                    Modifier
-                        .widthIn(max = USER_BUBBLE_MAX.dp)
-                        .background(CouliColors.brandSubtle, RoundedCornerShape(CouliRadius.card))
-                        .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2)
-                        .semantics {
-                            contentDescription =
-                                AgentDraftTexts.format("agent.draft.a11y.user_said", mapOf("text" to turn.userText))
-                        },
-            )
+        // 历史里页首没有用户消息的回复（G06）：不画空的用户气泡
+        if (turn.userText.isNotEmpty()) UserBubble(turn)
+        // 回复区没有任何内容（如发送即失败）时不放空容器（否则外层 spacedBy 多出一道间距）
+        if (hasReplyBody(turn)) ReplyBody(turn, s, controller, ui)
+        turn.error?.let { ErrorBlock(turn.key, it, s, controller, ui) }
+        if (turn.chips.isNotEmpty()) ChipRow(turn.chips, enabled = s.canCompose, scope = "suggest_${turn.key}", onChip = controller::chip)
+        val actions = turn.actions
+        if (actions != null) {
+            FeedbackBar(turn.key, turn.aiLabel, actions, controller, texts)
+        } else {
+            turn.aiLabel?.let { AiLabel(text = it, modifier = Modifier.testTag(AgentTags.AI_LABEL)) }
         }
+    }
+}
+
+private fun hasReplyBody(turn: AgentTurnView): Boolean =
+    turn.tools.isNotEmpty() || turn.blocks.isNotEmpty() || turn.cards.isNotEmpty() || turn.streaming || turn.statusText.isNotEmpty() ||
+        (turn.phase == AgentTurnPhase.ENDED && turn.status == AgentStatus.CANCELLED)
+
+/** 用户这一条（右侧气泡；历史里的用户原文原样纯文本显示、不可点，G41）。 */
+@Composable
+private fun UserBubble(turn: AgentTurnView) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        Text(
+            text = turn.userText,
+            style = CouliTypography.body,
+            color = CouliColors.textPrimary,
+            modifier =
+                Modifier
+                    .widthIn(max = USER_BUBBLE_MAX.dp)
+                    .background(CouliColors.brandSubtle, RoundedCornerShape(CouliRadius.card))
+                    .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2)
+                    .semantics {
+                        contentDescription =
+                            AgentDraftTexts.format("agent.draft.a11y.user_said", mapOf("text" to turn.userText))
+                    },
+        )
+    }
+}
+
+/**
+ * assistant 回复（工具状态、受限文本、卡片、状态说明）。长按回复文字打开举报半屏（AgentReport 稿）；读屏另有等价入口——无障碍「更多操作」里的「举报」
+ * （G29、G54：不占视觉空间，长按不可达时可用）。只对 Core 给了 [AgentTurnView.actions] 且没举报过的回复提供。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ReplyBody(
+    turn: AgentTurnView,
+    s: AgentSnapshot,
+    controller: AgentController,
+    ui: AgentPageUi,
+) {
+    val texts = ui.texts
+    val report = turn.actions?.takeIf { !it.reported }?.ticket
+    val reportLabel = reportActionLabel(texts)
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag(AgentTags.reply(turn.key)),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+    ) {
         turn.tools.forEach { ToolRow(it) }
-        turn.blocks.forEach { TextBlock(it) }
+        // 举报的操作宿主（长按 + 读屏「更多操作 → 举报」）挂在可聚焦的节点上（只挂在不可聚焦的外层容器上 TalkBack 拿不到，截图读屏顺序时发现）：
+        // 有文字挂在正文上；只有卡片的回复（A18 算有正文）另有一个铺在卡片区下层的宿主（Android R2-06，见下）
+        val hostModifier = Modifier.reportHost(turn.key, reportLabel, report?.let { r -> { controller.openReport(r) } })
+        // 没有正文时不放空容器（否则外层 spacedBy 多出一道间距）
+        if (turn.blocks.isNotEmpty()) {
+            Column(modifier = hostModifier, verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+                turn.blocks.forEach { TextBlock(it) }
+            }
+        }
         if (turn.streaming && turn.blocks.isEmpty() && turn.cards.isEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
                 CircularProgressIndicator(
@@ -118,13 +184,111 @@ internal fun AgentTurnItem(
                 Text(text = texts.text("agent.draft.a11y.thinking"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
             }
         }
-        turn.cards.forEach { card -> AgentCard(card, s, controller, ui) }
-        if (turn.phase == AgentTurnPhase.ENDED && turn.status == AgentStatus.CANCELLED) {
-            Text(text = texts.text("agent.draft.cancelled"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+        ReplyCards(turn, s, controller, ui, report, reportLabel)
+        // 状态说明：正在停止（G26）/ 回复内容过长（limited）/ 不完整（缺号，G36）/ 已停止（历史）；否则停止后显示「已停止生成」
+        val status =
+            turn.statusText.ifEmpty {
+                if (turn.phase == AgentTurnPhase.ENDED && turn.status == AgentStatus.CANCELLED) texts.text("agent.draft.cancelled") else ""
+            }
+        if (status.isNotEmpty()) {
+            Text(
+                text = status,
+                style = CouliTypography.footnote,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.testTag(AgentTags.status(turn.key)),
+            )
         }
-        turn.error?.let { ErrorBlock(turn.key, it, s, controller, ui) }
-        if (turn.chips.isNotEmpty()) ChipRow(turn.chips, enabled = s.canCompose, scope = "suggest_${turn.key}", onChip = controller::chip)
-        turn.aiLabel?.let { AiLabel(text = it, modifier = Modifier.testTag(AgentTags.AI_LABEL)) }
+    }
+}
+
+/** 回复里的卡片：只有卡片、可举报的回复另带举报宿主（R2-06），其余照常逐张渲染。 */
+@Composable
+private fun ReplyCards(
+    turn: AgentTurnView,
+    s: AgentSnapshot,
+    controller: AgentController,
+    ui: AgentPageUi,
+    report: AgentReplyTicket?,
+    reportLabel: String,
+) {
+    if (turn.blocks.isEmpty() && turn.cards.isNotEmpty() && report != null) {
+        CardOnlyReportHost(turn, s, controller, ui, reportLabel) { controller.openReport(report) }
+    } else {
+        turn.cards.forEach { card -> AgentCard(card, s, controller, ui) }
+    }
+}
+
+/**
+ * 只有卡片的回复（R2-06）：卡片区整块长按打开举报（在 Initial 阶段先于卡片按钮判定，短按照常交给卡片）；读屏宿主是铺满卡片区、排在卡片之前的兄弟叶节点
+ * （「AI 回复的卡片」+ 长按动作 + 更多操作 → 举报）。卡片与卡片按钮不并进宿主，仍是各自的节点与可点按钮。
+ */
+@Composable
+private fun CardOnlyReportHost(
+    turn: AgentTurnView,
+    s: AgentSnapshot,
+    controller: AgentController,
+    ui: AgentPageUi,
+    reportLabel: String,
+    open: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxWidth().pointerInput(turn.key) { longPressBeforeChildren(open) }) {
+        Box(
+            modifier =
+                Modifier
+                    .matchParentSize()
+                    .testTag(AgentTags.reportHost(turn.key))
+                    .semantics {
+                        contentDescription = ui.texts.text(CARD_REPLY_KEY)
+                        onLongClick(reportLabel) { open().let { true } }
+                        customActions = listOf(CustomAccessibilityAction(reportLabel) { open().let { true } })
+                    },
+        )
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            turn.cards.forEach { card -> AgentCard(card, s, controller, ui) }
+        }
+    }
+}
+
+/** 正文的举报操作宿主：长按打开举报半屏，读屏「更多操作 → 举报」（G29、G54）；[open] 为 null（不可举报）时只占满宽度。 */
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.reportHost(
+    key: String,
+    label: String,
+    open: (() -> Unit)?,
+): Modifier =
+    if (open == null) {
+        fillMaxWidth()
+    } else {
+        fillMaxWidth()
+            .testTag(AgentTags.reportHost(key))
+            .combinedClickable(onClickLabel = null, onLongClickLabel = label, onLongClick = open, onClick = {})
+            .semantics { customActions = listOf(CustomAccessibilityAction(label) { open().let { true } }) }
+    }
+
+/**
+ * 卡片区的长按（R2-06）：在 Initial 阶段先于卡片按钮看到按下；按住超过长按时长、没有移出触摸范围 → 打开举报并吃掉这次手势剩下的事件（松手不再当成卡片按钮的点击）。
+ * 提前松手或移动的照常交给卡片。
+ */
+private suspend fun PointerInputScope.longPressBeforeChildren(open: () -> Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val ended =
+            withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                var gone = false
+                while (!gone) {
+                    val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id }
+                    gone =
+                        change == null || !change.pressed || (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                }
+                true
+            }
+        if (ended == null) {
+            open()
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.forEach { it.consume() }
+            } while (event.changes.any { it.pressed })
+        }
     }
 }
 
@@ -198,7 +362,7 @@ private fun ErrorBlock(
         modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space3),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        Text(text = error.text, style = CouliTypography.body, color = CouliColors.textPrimary)
+        if (error.text.isNotEmpty()) Text(text = error.text, style = CouliTypography.body, color = CouliColors.textPrimary)
         if (error.quotaHint.isNotEmpty()) Text(text = error.quotaHint, style = CouliTypography.footnote, color = CouliColors.textSecondary)
         if (error.searchHint.isNotEmpty()) {
             Text(
@@ -212,10 +376,14 @@ private fun ErrorBlock(
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
             error.retry?.let { retry ->
+                // APP-10b G24、鸿蒙 R2-06：断线重载与【刷新】受读取闸门控制，同键重发 / 新消息受发送闸门控制
+                val reading = retry.mode == AgentRetryMode.RELOAD || retry.mode == AgentRetryMode.REFRESH
                 CouliButton(
-                    text = texts.text("agent.draft.retry"),
+                    text = texts.text(if (retry.mode == AgentRetryMode.REFRESH) "agent.draft.refresh" else "agent.draft.retry"),
                     onClick = { controller.retry(retry) },
-                    enabled = !s.limited && !s.sending && s.consentGate == com.couli.core.agent.AgentConsentGate.CLEAR,
+                    enabled =
+                        !(if (reading) s.readLimited else s.limited) && !s.sending &&
+                            s.consentGate == com.couli.core.agent.AgentConsentGate.CLEAR,
                     variant = CouliButtonVariant.SECONDARY,
                     size = CouliButtonSize.COMPACT,
                     modifier = Modifier.testTag(AgentTags.retry(key)),
@@ -248,6 +416,8 @@ private fun ErrorBlock(
                 )
             }
         }
+        // AgentDisconnected 稿：「已生成的内容保留在上面，点「重试」继续查询」
+        if (error.hint.isNotEmpty()) Text(text = error.hint, style = CouliTypography.footnote, color = CouliColors.textSecondary)
     }
 }
 
@@ -655,6 +825,7 @@ private fun MatchRow(
 }
 
 private const val USER_BUBBLE_MAX = 320
+private const val CARD_REPLY_KEY = "agent.draft.a11y.card_reply"
 private const val GRID_CELL_MIN = 160
 private const val GRID_FONT_MAX = 1.3f
 private const val BULLET = "•"

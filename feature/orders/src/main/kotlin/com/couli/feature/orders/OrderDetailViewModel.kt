@@ -80,6 +80,7 @@ import com.couli.generated.OrderTimelineNode
 import com.couli.generated.Routes
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -205,6 +206,9 @@ fun OrderDetailScreen(config: OrderDetailConfig) {
     }
 }
 
+/** 没给 [OrderDetailConfig.askAiVisible] 时的常量「可见」。 */
+private val ASK_AI_ALWAYS: StateFlow<Boolean> = MutableStateFlow(true)
+
 @Composable
 private fun DetailContent(
     model: OrderDetailViewModel,
@@ -245,7 +249,9 @@ private fun DetailContent(
         if (actions.appealPendingBlock) AppealBlock(texts) { controller.openAppeal(version) }
         ProductCard(texts, detail, onViewProduct = { controller.viewProduct(version) }, onCopy = { controller.copy(version) })
         // 【问问 AI】（APP-10 G27，鸿蒙 H06：设计稿 OrderDetail* 没有位置，代拟放在商品卡下方一行文字按钮；待设计补位置）
-        config.askAi?.let { ask ->
+        val askShown by (config.askAiVisible ?: ASK_AI_ALWAYS).collectAsStateWithLifecycle()
+        // 入口关闭（agent.entry.visible=false、Agent 不可用）时不绘制（R1-04、G56）
+        config.askAi?.takeIf { askShown }?.let { ask ->
             CouliButton(
                 text = texts.text("order_detail.ask_ai"),
                 onClick = ask,

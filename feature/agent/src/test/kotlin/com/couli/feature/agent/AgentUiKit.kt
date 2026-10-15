@@ -64,6 +64,10 @@ internal class AgentUiKit {
                 toast = { toasts += it },
                 examples = { examples },
                 filingText = { filing },
+                // 与 App 同口径：发送 / 读取 / 动作三组闸门分开（APP-10b G24）
+                gates =
+                    com.couli.core.agent.AgentGates
+                        .create({ now }, { identity.ownerKey }),
             ),
         ).also {
             it.setVisible(true)
@@ -108,11 +112,12 @@ internal class AgentUiKit {
         code: Int,
         status: Int = 422,
         text: String = "今天还能问吗",
+        data: String = "{}",
     ) {
         check(c.send(c.snapshot.value.page, text))
         val s = port.streams.last()
         s.sink.onHeaders(status, mapOf("Content-Type" to "application/json"))
-        s.sink.onData("""{"code":$code,"msg":"m","data":{},"trace_id":"0199a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b"}""")
+        s.sink.onData("""{"code":$code,"msg":"m","data":$data,"trace_id":"0199a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b"}""")
         s.sink.onEnd()
     }
 
@@ -161,6 +166,11 @@ internal class AgentUiKit {
         val streams = mutableListOf<Stream>()
         var current: AgentHttpResult = ok(JsonObject(mapOf("session" to JsonNull)))
 
+        /** APP-10b：历史首页 / 翻页、反馈、举报的回答（null = 空页 / 成功）。 */
+        var history: ((String?) -> AgentHttpResult)? = null
+        var feedback: AgentHttpResult = ok(JsonObject(emptyMap()))
+        var report: AgentHttpResult = ok(JsonObject(emptyMap()))
+
         override suspend fun createSession(call: AgentCall): AgentHttpResult =
             if (call.sendAllowed()) {
                 ok(
@@ -188,6 +198,38 @@ internal class AgentUiKit {
         override fun cancelOwned(identityKey: Any) {
             streams.forEach { it.cancelled = true }
         }
+
+        override suspend fun listMessages(
+            sessionId: String,
+            cursor: String?,
+            limit: Int,
+            call: AgentCall,
+            autoRetry: Boolean,
+        ): AgentHttpResult {
+            if (!call.sendAllowed()) return AgentHttpResult.notSentResult()
+            return history?.invoke(cursor)
+                ?: ok(
+                    JsonObject(
+                        mapOf(
+                            "items" to kotlinx.serialization.json.JsonArray(emptyList()),
+                            "next_cursor" to JsonNull,
+                            "expired" to JsonPrimitive(false),
+                        ),
+                    ),
+                )
+        }
+
+        override suspend fun setFeedback(
+            messageId: String,
+            value: String,
+            call: AgentCall,
+        ): AgentHttpResult = if (call.sendAllowed()) feedback else AgentHttpResult.notSentResult()
+
+        override suspend fun report(
+            messageId: String,
+            reason: String,
+            call: AgentCall,
+        ): AgentHttpResult = if (call.sendAllowed()) report else AgentHttpResult.notSentResult()
     }
 
     companion object {

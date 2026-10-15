@@ -26,6 +26,13 @@ object HeaderNames {
     const val PERSONALIZATION = "X-Personalization"
     const val PERSONALIZATION_OFF = "off"
 
+    /** APP-10b G18：流式请求带 Accept: text/event-stream。 */
+    const val ACCEPT = "Accept"
+
+    /** APP-10b G17：流式请求带 Accept-Encoding: identity（流不压缩，关掉 OkHttp 透明 gzip）。 */
+    const val ACCEPT_ENCODING = "Accept-Encoding"
+    const val CONTENT_TYPE = "Content-Type"
+
     /** 配置拉取的条件请求（03 §4.3，APP-03b）。 */
     const val IF_NONE_MATCH = "If-None-Match"
     const val ETAG = "ETag"
@@ -156,8 +163,19 @@ object RequestHeaderPolicy {
      */
     val UNDECIDED_ALLOWED: Set<String> = setOf("getConfig", "listArticles")
 
-    /** 不带 Idempotency-Key 的写接口（openapi：Takes no Idempotency-Key header）。 */
-    val NO_IDEMPOTENCY_KEY: Set<String> = setOf("abandonIdempotencyKey")
+    /**
+     * 不带 Idempotency-Key 的写接口：作废接口（openapi：Takes no Idempotency-Key header）；Agent 的 5 个写 operation（契约 x-idempotent:false，APP-10b
+     * brief §0 第 3 条：不带 Idempotency-Key；发送靠 client_msg_id 去重，反馈 / 举报不幂等；与鸿蒙 NO_IDEMPOTENCY_HEADER 同一张）。
+     */
+    val NO_IDEMPOTENCY_KEY: Set<String> =
+        setOf(
+            "abandonIdempotencyKey",
+            "createAgentSession",
+            "sendAgentMessage",
+            "cancelAgentRun",
+            "setAgentMessageFeedback",
+            "reportAgentMessage",
+        )
 
     /**
      * deletion_only 会话下按请求体才接受的接口（BR-ID-01 细则「受限会话」表与「版本策略」表）。

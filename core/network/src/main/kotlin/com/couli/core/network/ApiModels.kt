@@ -130,6 +130,13 @@ data class ApiCall(
     val ifNoneMatch: String? = null,
     val ownership: CallOwnership? = null,
     val expectedAccount: String? = null,
+    /**
+     * 单次发送（APP-10b 鸿蒙 R1-02、共性第 11、23 条；身份事件与【停止】的 cancelAgentRun）：受限会话刷新屏障在途就按没发出结束；不 GET 重试、不 10401 重签、
+     * 10002 不刷新、10402 不重新注册、都不重放，也不清会话、不隔离凭据、不导航、不登记待办；只结算 10405 强更（42901 原样交给调用方写闸门）。
+     */
+    val singleShot: Boolean = false,
+    /** 读接口超时 / 断连的自动重试（03 §4.2，缺省开）；APP-10b G35：断线类历史重载关掉（每次尝试只发一次）。 */
+    val autoRetry: Boolean = true,
 )
 
 /**
@@ -140,6 +147,7 @@ data class ApiCall(
  * 有它时每个 OkHttp Call 的超时都截到剩余预算（到期由 OkHttp 取消 Call），到期之后这次调用一律按失效处理：不再退避、不再重试、
  * 不进入任何恢复分支，写出前的守卫同样拒绝。
  */
+@Suppress("LongParameterList") // 字段逐项
 class CallOwnership(
     val epochs: CallEpochs,
     val deadlineNanos: Long? = null,
@@ -161,6 +169,11 @@ class CallOwnership(
      * 被取消，成功与错误响应（含 10405）照常处理。没有为 null（行为与之前相同）。
      */
     val sendAllowed: (() -> Boolean)? = null,
+    /**
+     * 这次调用的请求写出前核对放行、即将写出时调一次（参数 true；APP-10b：身份事件的 cancel 早于流程自己的请求，流程据此等「已写出」而不等结果）。
+     * 在网络线程调用，要快、不阻塞；没有为 null。
+     */
+    val onWritten: ((Boolean) -> Unit)? = null,
     val stillOwned: () -> Boolean,
 ) {
     /** 截止时刻已过。 */

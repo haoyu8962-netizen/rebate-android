@@ -9,20 +9,31 @@ import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.HomeDestination
 import com.couli.app.trade.AppTrade
+import com.couli.core.agent.AgentCancelDispatch
+import com.couli.core.agent.AgentCancelLedger
+import com.couli.core.agent.AgentConsentLapse
 import com.couli.core.agent.AgentContextHandoff
 import com.couli.core.agent.AgentContextSource
 import com.couli.core.agent.AgentContextTicket
 import com.couli.core.agent.AgentContractPort
 import com.couli.core.agent.AgentController
 import com.couli.core.agent.AgentDeps
+import com.couli.core.agent.AgentGates
 import com.couli.core.agent.AgentHttpResult
 import com.couli.core.agent.AgentIdentity
+import com.couli.core.agent.AgentIdentityChange
 import com.couli.core.agent.AgentJson
+import com.couli.core.agent.AgentOwnershipEvent
+import com.couli.core.agent.AgentOwnershipHandlers
+import com.couli.core.agent.AgentOwnershipStop
 import com.couli.core.agent.AgentProductRef
 import com.couli.core.agent.AgentProductView
+import com.couli.core.agent.AgentSyncAction
+import com.couli.core.agent.AgentSyncPolicy
 import com.couli.core.agent.AgentTimer
 import com.couli.core.agent.AgentWithdrawFlow
 import com.couli.core.agent.AgentWithdrawOutcome
+import com.couli.core.agent.toAgentResult
 import com.couli.core.clientcore.ClientEvent
 import com.couli.core.me.shanghaiIso
 import com.couli.core.network.ApiCall
@@ -78,7 +89,12 @@ class MainAgentTimer : AgentTimer {
  * - **可见性**（APP-10 共性第 2、17 条，APP-11 第 18、22 条）：Agent Tab 选中（外壳在提交切 Tab 的同步出口里先写目标值）、Tab 外壳之上没有别的页面（回退栈的同步出口）、
  *   App 在前台；任一变了在同一个同步出口通知控制器（离开即撤销本次进入世代：关连接、停计时）与本页购买执行器。Tab 根不随切 Tab 销毁控制器（对话保留在内存）。
  * - **页面实例**：Agent 页真正销毁（Activity 结束，配置重建除外）时 [onPageDestroyed]：page_destroyed（清空消息，不发 cancel），下次进入从空对话开始。
- * - Release（[port] 恒为 null）：「未开放」，不显示输入框、不弹同意框、不发请求。
+ * - APP-10b（F-X-04）：Debug / Release 同一个真实端口（ApiAgentContractPort，经 ApiClient 管线；Debug / Staging 的本机假服务在 ApiClient 的实际传输入口按
+ *   DebugMockGate 换入）。「未开放」只看 `agent.entry.visible`、`config.agent.enabled` 与本次进入收到的 30501（[available]）；关闭时不发任何 agent 请求，
+ *   `agent.entry.visible=false` 时底部 Tab 换「搜索」、首页 / 详情 / 订单详情的「问 AI」入口随之隐藏（G32、G56）。
+ * - APP-10b 应用级：三组 Retry-After 闸门（[gates]，按不含页面实例的归属保存，同归属重建保留，鸿蒙 R3-03）、cancel 账本、归属协调器（退出登录 / 撤回 AI 同意 /
+ *   撤回隐私的确认入口先停流并以原身份尽力发 1 次 cancel，切环境只停流，G01）、「身份变更在途」（期间不重建、不准入，R1-03）、「AI 同意失效」（所有来源的 AI 10004
+ *   按不含页面实例的归属汇入，R3-01）。
  * 只在主线程使用。
  */
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -87,7 +103,7 @@ class AppAgent(
     private val tokens: SessionTokens,
     private val routing: AppRouting,
     private val privacy: AppPrivacy,
-    /** 待定 operation（G01）：debug / staging 本机假服务（假服务开关在 + 当前环境允许 MOCK_DATA 才给，每次发包另核对）；Release 恒为 null。 */
+    /** 七个 agent operation 的端口（APP-10b：生产是 ApiAgentContractPort，Debug / Release 同一份；测试可注入替身）。为 null 时「未开放」。 */
     private val port: () -> AgentContractPort?,
     private val envKey: () -> String,
     private val configData: () -> JsonObject?,
@@ -106,8 +122,36 @@ class AppAgent(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /** Agent 四个待定 operation 共享的 42901 截止时间（身份变化时重置：旧会话的 42901 不限流新会话，APP-12 第 34 条）。 */
+    /** APP-10 的共享 42901 截止时间（旧接线与测试观察用；APP-10b 起七个 operation 按 [gates] 三组分开）。 */
     val gate = WalletRateGate(scope, clock)
+
+    /**
+     * 三组 Retry-After 闸门（发送 / 读取 / 动作，G24、APP-12 第 5、22 条）：按此刻不含页面实例的归属判定；同归属的控制器作废 / 页面重建保留截止时间，归属真正改变才清理
+     * （[AgentGates.retain]，鸿蒙 R3-03）。
+     */
+    val gates: AgentGates = AgentGates.create(clock, { runCatching { identity().ownerKey }.getOrNull() }, scope)
+
+    /** 同一 run 只发 1 次 cancel（【停止】与归属协调器共用，跨页面实例）。 */
+    private val ledger = AgentCancelLedger()
+
+    /** 应用级「AI 同意失效」（鸿蒙 R2-02、R3-01）。 */
+    val consentLapse = AgentConsentLapse()
+
+    /** 应用级「身份变更在途」（鸿蒙 R1-03）。 */
+    val identityChange = AgentIdentityChange()
+
+    /** 归属协调器（G01）：结果只结算共享事实（42901 写动作闸门、10405 强更、AI 10004 → 应用级失效），不导航、不弹框。 */
+    private val ownershipStop =
+        AgentOwnershipStop(
+            ledger,
+            AgentOwnershipHandlers(
+                rateLimited = { owner, ms -> if (runCatching { identity().ownerKey }.getOrNull() == owner) gates.action.start(ms) },
+                forceUpdate = { serverForced() },
+                aiConsentLost = { owner -> lapse(owner) },
+                log = log,
+            ),
+            scope,
+        )
 
     /** 设置页撤回 AI 同意的 42901 禁用期（鸿蒙 H30：本入口独立，不并入四个 operation 的共享闸门）。 */
     val withdrawGate = WalletRateGate(scope, clock)
@@ -167,6 +211,8 @@ class AppAgent(
 
     fun onForeground(value: Boolean) {
         foreground = value
+        // 进后台暂停全部历史重载（03 §7.2、G38、鸿蒙 R1-08）；回前台不续
+        mutableController.value?.onForeground(value)
         visibilityChanged()
     }
 
@@ -222,18 +268,35 @@ class AppAgent(
         return mutableController.value ?: build(identity())
     }
 
-    /** 会话、隐私、环境变化后同步（同一同步出口）：身份变了 → 作废旧控制器、重置共享禁用期，已显示过 Agent 页时立即按新身份重建。 */
+    /** 上一次构造控制器时的可用性（配置变化而身份没变也要同步，鸿蒙 R1-07）。 */
+    private var builtAvailable = true
+
+    /** 上一次构造的是「身份变更在途」期间的挂起态（流程结束后必须重建）。 */
+    private var builtSuspended = false
+
+    /**
+     * 会话、隐私、环境、配置变化后同步（同一同步出口，[AgentSyncPolicy]）：身份或可用性变了 → 作废旧控制器，已显示过 Agent 页时立即按新身份与配置重建；「身份变更在途」
+     * （退出登录 / 撤回 AI 同意 / 撤回隐私的请求还没落定）期间只作废、不重建（鸿蒙 R1-03）。
+     */
     fun sync() {
+        // 隐私结论、身份、配置变化都经这里：详情页【问问 AI】的绘制随之更新（R1-04）
+        refreshAskVisible()
         val current = mutableController.value
         val next = identity()
         // 身份变化：销毁旧身份打开的撤回确认框（Android R1-01）
         mutableWithdrawConfirm.value?.let { if (it.identity.ownerKey != next.ownerKey) mutableWithdrawConfirm.value = null }
-        if (current != null && current.alive() && current.boundIdentity == next) return
+        val oldKey = current?.takeIf { it.alive() && !builtSuspended }?.boundIdentity
+        val action = AgentSyncPolicy.decide(oldKey, builtAvailable, next, available(), identityChange.active, wanted)
+        if (action == AgentSyncAction.KEEP) return
         // 购买执行器随归属变化释放（Android R1-02）；唯一的例外是游客点购买被 10001 拦下、登录完成（见 [loginResumable]）
-        val resume = purchase?.takeIf { current != null && loginResumable(current.boundIdentity, next, it) }
+        val resume =
+            purchase?.takeIf {
+                current != null && action == AgentSyncAction.REBUILD &&
+                    loginResumable(current.boundIdentity, next, it)
+            }
         if (resume != null) purchase = null
         if (current != null) invalidate()
-        val rebuilt = if (wanted) build(next) else null
+        val rebuilt = if (action == AgentSyncAction.REBUILD) build(next) else null
         if (resume != null) {
             if (rebuilt != null) adoptPurchase(resume, rebuilt) else resume.release()
         }
@@ -241,12 +304,24 @@ class AppAgent(
 
     private fun build(identity: AgentIdentity): AgentController {
         var built: AgentController? = null
+        builtAvailable = available()
+        builtSuspended = identityChange.active
+        // 三组闸门按不含页面实例的归属保存（同归属重建保留，换归属才清，鸿蒙 R3-03）
+        gates.retain(identity.ownerKey)
         val deps =
             AgentDeps(
                 identity = identity,
                 currentIdentity = ::identity,
-                contract = port(),
+                contract = if (builtAvailable) port() else null,
                 gate = gate,
+                gates = gates,
+                ledger = ledger,
+                currentOwnerKey = { runCatching { identity().ownerKey }.getOrNull() },
+                aiConsentLost = { owner -> lapse(owner) },
+                consentLapsed = consentLapse.blocks(identity.ownerKey),
+                allowed = ::requestsAllowed,
+                foreground = { foreground },
+                suspended = builtSuspended,
                 scope = scope,
                 timer = timer,
                 clock = clock,
@@ -292,17 +367,74 @@ class AppAgent(
         if (wanted) build(identity())
     }
 
-    /** 同步作废当前控制器（关连接、停计时、清消息与金额、释放订阅；不发 cancel，G06）。 */
+    /** 同步作废当前控制器（关连接、停计时、cancelOwned、清消息与金额、释放订阅；控制器自己不发 cancel，G06）。三组闸门同归属保留（R3-03）。 */
     fun invalidate() {
         val old = mutableController.value
         mutableController.value = null
         old?.dispose()
         releasePurchase()
         gate.reset()
+        gates.retain(runCatching { identity().ownerKey }.getOrNull() ?: Unit)
         memory.clear()
         mutableToast.value = null
         mutableWithdrawConfirm.value = null
     }
+
+    // ---------------------------------------------------------------- 可用性与应用级准入（APP-10b）
+
+    /** 「未开放」之外（配置）：`agent.entry.visible` 与 `config.agent.enabled` 都没关（缺省可用；只认 false 为关，G32）。 */
+    fun available(): Boolean = entryVisible() && agentEnabled()
+
+    /** features.flags['agent.entry.visible']（缺省可见；只认 false 为关）。Tab 与「问 AI」入口按它裁剪（G32、G56）。 */
+    fun entryVisible(): Boolean =
+        runCatching {
+            val flags = (configData()?.get(CONFIG_FEATURES) as? JsonObject)?.get(CONFIG_FLAGS) as? JsonObject
+            AgentJson.boolOf(flags?.get(ENTRY_VISIBLE_FLAG)) != false
+        }.getOrDefault(true)
+
+    /** config.agent.enabled（缺省可用；只认 false 为关）。 */
+    private fun agentEnabled(): Boolean = runCatching { AgentJson.boolOf(agentConfig()?.get(CONFIG_ENABLED)) != false }.getOrDefault(true)
+
+    /**
+     * 应用级准入（端口出口与控制器准入共用，线程安全）：身份变更在途、此刻归属处于「AI 同意失效」、配置关闭 → 不放行。捕获的那一次身份 cancel 与流程自己的请求不经它。
+     */
+    fun requestsAllowed(): Boolean =
+        runCatching { !identityChange.active && !consentLapse.blocks(identity().ownerKey) && available() }.getOrDefault(false)
+
+    /** 配置变化（Config 拉取完成、LKG 更新）：可用性变了就同步作废并重建（关闭时立即停流、取消所属请求、切「未开放」，鸿蒙 R1-07）。 */
+    fun onConfigChanged() = sync()
+
+    /**
+     * 任何来源的 AI 10004（控制器内、【停止】cancel、身份事件 cancel）汇入应用级「AI 同意失效」（共性第 28、33 条，S0）：按不含页面实例的归属核对，此刻仍是同一归属才记下，
+     * 并同步停下该归属此刻的控制器；不同归属整体丢弃。
+     */
+    private fun lapse(owner: Any) {
+        consentLapse.lapse(owner, runCatching { identity().ownerKey }.getOrNull(), mutableController.value)
+    }
+
+    // ---------------------------------------------------------------- 身份事件（APP-10b G01，编排者补充第 1 条）
+
+    /**
+     * 退出登录、撤回 AI 同意、撤回隐私同意在**用户确认后的同步入口、发出该流程自己的请求之前**调用：先进入「身份变更在途」（期间不重建、不准入），同步停流（控制器作废：
+     * 关连接、停计时、作废票据与卡片回调、清空对话），再以原身份尽力发一次 cancel（单次发送、不挂页面归属、不等结果）。返回写出信号：流程等它写出（或确定不写出，
+     * 最多 [AgentCancelDispatch.WRITE_WAIT_MS]）再发自己的请求，保证 cancel 早于自身请求。流程结束（成功、失败、被拒）必须调 [endIdentityChange]。
+     */
+    fun beginIdentityChange(event: String): AgentCancelDispatch {
+        identityChange.begin(event)
+        val decision = ownershipStop.before(event, mutableController.value)
+        handoff.clear()
+        invalidate()
+        return ownershipStop.dispatch(decision, if (available()) port() else null)
+    }
+
+    /** 身份事件流程结束：解除「身份变更在途」，按此刻身份与配置重建。 */
+    fun endIdentityChange(event: String) {
+        identityChange.end(event)
+        sync()
+    }
+
+    /** 应用级 cancel 的发出次数（测试与诊断）。 */
+    val ownershipCancels: Int get() = ownershipStop.sent
 
     /** 切换环境开始（清理器第一步之前）：作废控制器与还没交出的情境（之后的同步按新环境重建）。 */
     fun onEnvironmentSwitching() {
@@ -327,6 +459,24 @@ class AppAgent(
     fun connect() {
         privacy.onConclusionChanged { sync() }
         scope.launch { routing.session.drop(1).collect { sync() } }
+    }
+
+    private val mutableEntryVisible = MutableStateFlow(true)
+
+    /** 底部 Agent Tab 与「问 AI」入口此刻是否显示（`agent.entry.visible`，G32、G56）；外壳与首页 / 详情页订阅它。 */
+    val entryVisibleState: StateFlow<Boolean> = mutableEntryVisible.asStateFlow()
+
+    /** 接 Config 变化（AppModule）：入口开关与可用性变了立即同步（关闭时停流、取消所属请求、切「未开放」，鸿蒙 R1-07）。 */
+    fun connectConfig(changes: Flow<*>) {
+        mutableEntryVisible.value = entryVisible()
+        refreshAskVisible()
+        scope.launch {
+            changes.collect {
+                mutableEntryVisible.value = entryVisible()
+                refreshAskVisible()
+                sync()
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 购买
@@ -555,15 +705,19 @@ class AppAgent(
         val stillFixed = { runCatching { identity().ownerKey == fixed.ownerKey }.getOrDefault(false) }
         val owner = CallOwnership(fixed.epochs, sendAllowed = stillFixed) { stillFixed() }
         val r = client.send(ApiCall(RECORD_CONSENT, body = body.toString(), ownership = owner, expectedAccount = fixed.account))
-        if (r is ApiResult.Success) consentRecorded(accepted)
+        if (r is ApiResult.Success) {
+            consentRecorded(accepted)
+            // 同一归属重新同意记录成功：解除应用级「AI 同意失效」（鸿蒙 R2-02）
+            if (accepted && stillFixed()) consentLapse.agreed(fixed.ownerKey)
+        }
         return r.toAgentResult()
     }
 
     /** 此刻的导航票据（设置页撤回的导航许可用，APP-12 G09）。 */
     fun navTicket(): Any? = routing.navTickets.ticket()
 
-    /** 设置页【撤回 AI 服务同意】是否显示：只在 Agent 可用的构建与环境里、已同意隐私政策时（Release 现为不显示，G18）。 */
-    fun withdrawAvailable(): Boolean = port() != null && privacy.conclusion == PrivacyState.CONSENTED
+    /** 设置页【撤回 AI 服务同意】是否显示：Agent 可用（入口开关、agent.enabled）、已同意隐私政策时（APP-10b：Release 同样显示，§2 第 12 条）。 */
+    fun withdrawAvailable(): Boolean = available() && port() != null && privacy.conclusion == PrivacyState.CONSENTED
 
     private var withdrawConfirmSeq = 0L
     private val mutableWithdrawConfirm = MutableStateFlow<AgentWithdrawConfirm?>(null)
@@ -622,10 +776,17 @@ class AppAgent(
             log("agent consent withdraw rejected: identity changed")
             return
         }
+        // 42901 禁用期内不进入身份变更（流程不会发请求，G63）
+        if (withdrawGate.active) return
+        // 确认后的同步入口（G01）：先进入「身份变更在途」并停流、以原身份尽力发 cancel，再发 recordConsent(false)
+        val cancel = beginIdentityChange(AgentOwnershipEvent.AI_CONSENT_WITHDRAWN)
         val flow =
             AgentWithdrawFlow(
                 gate = withdrawGate,
-                record = { recordConsent(false, CHANNEL_PRIVACY_CENTER, fixed) },
+                record = {
+                    cancel.awaitWritten()
+                    recordConsent(false, CHANNEL_PRIVACY_CENTER, fixed)
+                },
                 withdrawn = {
                     aiConsentGeneration += 1
                     handoff.clear()
@@ -643,8 +804,13 @@ class AppAgent(
             )
         mutableWithdrawing.value = true
         scope.launch {
-            val o = flow.run()
-            mutableWithdrawing.value = false
+            val o =
+                try {
+                    flow.run()
+                } finally {
+                    mutableWithdrawing.value = false
+                    endIdentityChange(AgentOwnershipEvent.AI_CONSENT_WITHDRAWN)
+                }
             log("agent consent withdraw ok=${o.ok} code=${o.result.code}")
             if (o.text.isNotEmpty() && (o.ok || stillFixed())) onText(o.text)
         }
@@ -655,12 +821,25 @@ class AppAgent(
     /** 情境入口的交接（共性第 4 条）。 */
     private val handoff = AgentContextHandoff()
 
-    /** 情境入口（【问问 AI】）此刻能不能显示：只在 Agent 可用的构建与环境里、已同意隐私政策时（Release 不显示）。 */
-    fun askAvailable(): Boolean = port() != null && privacy.conclusion == PrivacyState.CONSENTED
+    /** 情境入口（【问问 AI】）此刻能不能显示：Agent 可用（入口开关、agent.enabled，G56）、已同意隐私政策时。 */
+    fun askAvailable(): Boolean = available() && port() != null && privacy.conclusion == PrivacyState.CONSENTED
+
+    private val mutableAskVisible = MutableStateFlow(false)
+
+    /**
+     * 商品详情 / 订单详情的【问问 AI】此刻是否绘制（[askAvailable] 的可订阅版，Android R1-04、共性第 39 条）：配置（`agent.entry.visible`、agent.enabled）、
+     * 隐私结论、身份变化时同步更新，详情页订阅它决定画不画按钮。
+     */
+    val askVisibleState: StateFlow<Boolean> = mutableAskVisible.asStateFlow()
+
+    private fun refreshAskVisible() {
+        mutableAskVisible.value = runCatching { askAvailable() }.getOrDefault(false)
+    }
 
     /**
      * 来源页的【问问 AI】（共性第 4 条）：[sources] 是来源页自己的「回退栈条目 → 构造时固定的票据」表（第一次取时按此刻身份固定，之后只比较）；[pageAlive] 是来源页
-     * 实例仍在栈里；[context] 是渲染时固定的 {order_id} / {product_key}。Agent 不可用时为 null（不显示入口）。
+     * 实例仍在栈里；[context] 是渲染时固定的 {order_id} / {product_key}。没有回退栈条目时为 null。是否绘制由 [askVisibleState] 决定（运行中配置变化随之更新，
+     * R1-04）；点击时 [openWithContext] 再核对一次可用性，入口已关闭时不交出情境、不打开。
      */
     fun askEntry(
         sources: MutableMap<String, AgentContextSource>,
@@ -668,7 +847,8 @@ class AppAgent(
         pageAlive: () -> Boolean,
         context: JsonObject,
     ): (() -> Unit)? {
-        if (entryId == null || !askAvailable()) return null
+        refreshAskVisible()
+        if (entryId == null) return null
         val source = sources.getOrPut(entryId) { contextSource(pageAlive) }
         return { openWithContext(AgentContextTicket(source, context)) }
     }
@@ -681,6 +861,11 @@ class AppAgent(
      * 旧回调一律拒绝。push / 桥带来的 AgentChat.context 一律不读（03 §4.4）。
      */
     fun openWithContext(ticket: AgentContextTicket) {
+        // G56（FU-HM-0715）：入口开关已关（隐藏后残留的旧按钮）不交出情境、不打开
+        if (!askAvailable()) {
+            log("agent entry hidden; in-app open ignored")
+            return
+        }
         if (!handoff.offer(ticket, identity().ownerKey, mutableController.value)) {
             log("agent context handoff rejected")
             return
@@ -731,6 +916,10 @@ class AppAgent(
         /** 购买待办的「登录」类型（OpenPurchaseController 登记的 kind 原值）。 */
         private const val PENDING_LOGIN = "login"
         private const val CONFIG_AGENT = "agent"
+        private const val CONFIG_FEATURES = "features"
+        private const val CONFIG_FLAGS = "flags"
+        private const val CONFIG_ENABLED = "enabled"
+        const val ENTRY_VISIBLE_FLAG = "agent.entry.visible"
         private const val EXAMPLES_MAX = 6
     }
 }
@@ -743,29 +932,3 @@ class AgentWithdrawConfirm internal constructor(
 ) {
     override fun toString(): String = "AgentWithdrawConfirm#$id"
 }
-
-/** ApiClient 的结果 → Agent 端口的结果（保留错误码、trace_id、data、Retry-After、本地拒绝）。 */
-internal fun ApiResult.toAgentResult(): AgentHttpResult =
-    when (this) {
-        is ApiResult.Success -> {
-            AgentHttpResult(true, HTTP_OK, 0, "", (data as? JsonObject) ?: AgentJson.EMPTY, traceId.orEmpty(), null)
-        }
-
-        is ApiResult.Failure -> {
-            val ms = effect.disableMillis
-            val retryAfter = if (code == RATE_LIMITED && ms != null && ms > 0) ((ms + MS - 1) / MS).toString() else null
-            AgentHttpResult(false, 0, code, msg, data, traceId.orEmpty(), retryAfter)
-        }
-
-        is ApiResult.LocalReject -> {
-            AgentHttpResult.notSentResult()
-        }
-
-        else -> {
-            AgentHttpResult.network()
-        }
-    }
-
-private const val HTTP_OK = 200
-private const val RATE_LIMITED = 42901
-private const val MS = 1_000L

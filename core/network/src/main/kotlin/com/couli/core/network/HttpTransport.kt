@@ -49,6 +49,26 @@ internal sealed interface Exchange {
     data class NotSent(
         val reason: String,
     ) : Exchange
+
+    /** APP-10b：响应分流为 SSE 流，响应头与字节已逐块交给 [StreamTap]（终结已交出：结束 / 失败 / 被取消）。 */
+    data object Streamed : Exchange
+}
+
+/**
+ * 一次流式调用在传输层的接收端（APP-10b §2 第 1 条）：[ApiClient.stream] 建、[HttpTransport.send] 用。响应头到达后按 Content-Type 分流（G19）：SSE → 头与
+ * 原始字节块逐块交 [sink]（IO 线程；[handle] 已取消的一律丢弃）；其他 → 照普通请求读完整正文解包（[started] 保持 false，ApiClient 按结果路径交 onEnvelope）。
+ */
+internal class StreamTap(
+    val handle: ApiStreamHandle,
+    val sink: ApiStreamSink,
+) {
+    /** 已分流为流（之后不再重放、不再交 onEnvelope）。 */
+    @Volatile
+    var started = false
+
+    /** 已收到的 SSE 字节数（G23：有字节之后不再重放）。 */
+    @Volatile
+    var bytes = 0L
 }
 
 /**
@@ -66,6 +86,8 @@ internal class SendGuard(
     val abandoned: (() -> Boolean)? = null,
     /** 调用方的归属标记（[CallOwnership]）：[InFlightCalls.cancelTagged] 据此取消这次发送；没有为 null。 */
     val tag: Any? = null,
+    /** 写出前核对放行、即将写出时调一次（[CallOwnership.onWritten]，APP-10b：身份事件的 cancel 早于流程自己的请求）。 */
+    val onCommitted: (() -> Unit)? = null,
     val admit: () -> String?,
 )
 
@@ -89,18 +111,22 @@ internal class PreparedRequest(
 internal class HttpTransport(
     private val http: OkHttpClient,
     private val inFlight: InFlightCalls,
+    /** Debug / Staging 的本机替身（写出前核对之后才问它，APP-10b §2 第 13 条）；Release 为 null。 */
+    private val local: LocalExchange? = null,
 ) {
     private val clients = mutableMapOf<Long, OkHttpClient>()
+    private val streamClients = mutableMapOf<Long, OkHttpClient>()
 
     /**
      * 发一次（不重试）。Call 登记进 [InFlightCalls]（撤回同意、切换环境时立即取消）；写出前由网络拦截器按 [guard] 再核对一次。
      * 没写出就结束的（登记前世代已变、核对不放行、写出前被取消）返回 [Exchange.NotSent]。
      */
-    @Suppress("SwallowedException", "ReturnCount") // 传输异常转成结果（timeout / disconnect），由管线与未决键按「没有统一外壳」处理
+    @Suppress("SwallowedException", "ReturnCount", "CyclomaticComplexMethod") // 传输异常转成结果（timeout / disconnect），由管线与未决键按「没有统一外壳」处理
     fun send(
         prepared: PreparedRequest,
         timeoutMillis: Long,
         guard: SendGuard,
+        tap: StreamTap? = null,
     ): Exchange {
         val attempt = SingleAttempt(guard, inFlight)
         val builder = Request.Builder().url(prepared.url).tag(SingleAttempt::class.java, attempt)
@@ -112,15 +138,21 @@ internal class HttpTransport(
                 else -> OneShotBody(ByteArray(0), null)
             }
         builder.method(prepared.method, body)
-        val call = client(timeoutMillis).newCall(builder.build())
+        val call = (if (tap != null) streamClient(timeoutMillis) else client(timeoutMillis)).newCall(builder.build())
         // 与调用方的截止时间绑定（R2-01、共性第 45 条）：Call 的整体超时取「本次超时」与「剩余预算」中较小的，到期由 OkHttp
-        // 取消这个 Call（阻塞中的 execute 立即结束）；预算已用完的不发出
-        if (!bindDeadline(call, guard.deadlineNanos, timeoutMillis)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
+        // 取消这个 Call（阻塞中的 execute 立即结束）；预算已用完的不发出。流式请求没有整体调用超时（G16：空闲与单轮上限由 StreamClient 负责）
+        if (tap == null &&
+            !bindDeadline(call, guard.deadlineNanos, timeoutMillis)
+        ) {
+            return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
+        }
         if (!inFlight.register(call, guard.epochs, guard.tag)) return Exchange.NotSent(LocalRejectReason.CALL_CANCELLED)
+        // 流式句柄的取消 = Call.cancel()（同步关闭连接；还没写出的不再写出）
+        tap?.handle?.bind { call.cancel() }
         // 没人要了就取消（共性第 54 条）：共享刷新的最后一个调用方到期或失效时，连同在途的刷新请求一起取消
         val watch = guard.abandoned?.let { abandoned -> watchAbandoned(call, abandoned) }
         return try {
-            call.execute().use(::toExchange)
+            call.execute().use { response -> if (tap != null) streamExchange(response, tap, attempt) else toExchange(response) }
         } catch (timeout: InterruptedIOException) {
             // 超时（含 callTimeout）：结果未知，调用方按「没有统一外壳」处理
             attempt.notSent() ?: Exchange.Transport(if (attempt.invalidated()) KIND_CANCELLED else KIND_TIMEOUT, null)
@@ -168,9 +200,91 @@ internal class HttpTransport(
                 .retryOnConnectionFailure(false)
                 .followRedirects(false)
                 .followSslRedirects(false)
+                .apply { local?.let { addInterceptor(LocalAnswerInterceptor(it)) } }
                 .addNetworkInterceptor(SingleAttemptInterceptor)
                 .build()
         }
+
+    /**
+     * 流式客户端（APP-10b §3 Android，20261014 §4「Android 流式连接单独网络客户端」）：由同一个共享 OkHttpClient 派生，保留它的拦截器与连接池，
+     * 加同一个写出前核对的网络拦截器；retryOnConnectionFailure(false)、不跟随重定向；readTimeout / callTimeout 为 0（空闲 30 秒与单轮 90 秒由 StreamClient
+     * 负责），connectTimeout / writeTimeout 沿用普通请求的值。请求头显式 Accept-Encoding: identity（关掉 OkHttp 透明 gzip，G17）。
+     */
+    @Synchronized
+    private fun streamClient(timeoutMillis: Long): OkHttpClient =
+        streamClients.getOrPut(timeoutMillis) {
+            http
+                .newBuilder()
+                .callTimeout(0, TimeUnit.MILLISECONDS)
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .connectTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
+                .writeTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(false)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .apply { local?.let { addInterceptor(LocalAnswerInterceptor(it)) } }
+                .addNetworkInterceptor(SingleAttemptInterceptor)
+                .build()
+        }
+
+    /**
+     * 流式响应（APP-10b G19）：text/event-stream 且 2xx → 头交 sink，ResponseBody.source() 逐块读出的原始字节交 sink（每块交付前核对句柄与调用归属），
+     * 结束 / 失败各交一次终结（被取消不交）；其他 → 与普通请求同一解包（[toExchange]）。
+     */
+    @Suppress("SwallowedException", "CyclomaticComplexMethod", "LoopWithTooManyJumpStatements", "ReturnCount")
+    private fun streamExchange(
+        response: Response,
+        tap: StreamTap,
+        attempt: SingleAttempt,
+    ): Exchange {
+        if (!ApiStreamRoutingPolicy.isStream(response.code, response.header(HeaderNames.CONTENT_TYPE))) return toExchange(response)
+        tap.started = true
+        val handle = tap.handle
+        val sink = tap.sink
+        if (handle.cancelled || attempt.invalidated()) return Exchange.Streamed
+        sink.onHeaders(response.code, response.headers.toMap().mapKeys { it.key.lowercase() })
+        val source = response.body.source()
+        val buffer = ByteArray(STREAM_CHUNK)
+        try {
+            while (true) {
+                val n = source.read(buffer)
+                if (n < 0) break
+                if (n == 0) continue
+                if (handle.cancelled || attempt.invalidated() || attempt.guard.abandoned?.invoke() == true) {
+                    handle.countDropped()
+                    return Exchange.Streamed
+                }
+                tap.bytes += n
+                handle.countDelivered()
+                sink.onBytes(buffer.copyOf(n))
+            }
+        } catch (io: IOException) {
+            if (!handle.cancelled && !attempt.invalidated()) sink.onFailure(KIND_DISCONNECT)
+            return Exchange.Streamed
+        }
+        if (!handle.cancelled && !attempt.invalidated()) sink.onEnd()
+        return Exchange.Streamed
+    }
+
+    /**
+     * Debug / Staging 本机替身在实际传输入口的拦截器（APP-10b §2 第 13 条）：替身认领的请求先过同一个写出前核对（发送计数、世代、调用归属、发送前闸门、放行判定），
+     * 放行才交替身回答（替身每次现判 DebugMockGate，不回答就交真实网络）。不认领的照常往下走。
+     */
+    private class LocalAnswerInterceptor(
+        private val local: LocalExchange,
+    ) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val attempt = request.tag(SingleAttempt::class.java)
+            if (attempt == null || !runCatching { local.handles(request) }.getOrDefault(false)) return chain.proceed(request)
+            admitOrThrow(attempt)
+            return local.answer(request) { chain.call().isCanceled() } ?: run {
+                // 替身此刻不回答（闸门关了）：交真实网络。写出前核对已做过一次，网络拦截器不再重复计数
+                attempt.attempts.decrementAndGet()
+                chain.proceed(request)
+            }
+        }
+    }
 
     /**
      * 一次调用的网络发送（Request 的 tag；OkHttp 内部重发与跟随沿用同一个 tag）：发送计数、写出前核对的结论、是否已写出。
@@ -209,13 +323,7 @@ internal class HttpTransport(
     private object SingleAttemptInterceptor : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val attempt = chain.request().tag(SingleAttempt::class.java) ?: return chain.proceed(chain.request())
-            if (attempt.attempts.incrementAndGet() > 1) throw IOException("底层重发已拦下")
-            val reason = attempt.inFlight.admit(attempt.guard.epochs, attempt.guard.admit)
-            if (reason != null) {
-                attempt.blocked = reason
-                throw IOException("写出前核对未放行：$reason")
-            }
-            attempt.committed = true
+            admitOrThrow(attempt)
             return chain.proceed(chain.request())
         }
     }
@@ -263,6 +371,21 @@ internal class HttpTransport(
         private const val BYTE_MASK = 0xff
         private const val ASCII_LIMIT = 0x80
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        /** 流式响应每次读的字节上限（一块交付一次；行与帧的上限由 Core 的 AgentSse 按字节判定）。 */
+        private const val STREAM_CHUNK = 8 * 1024
+
+        /** 写出前核对（普通与流式、真实网络与本机替身同一处）：同一次调用的第二次网络发送中止；世代、归属、闸门与放行判定不通过的不写出。 */
+        private fun admitOrThrow(attempt: SingleAttempt) {
+            if (attempt.attempts.incrementAndGet() > 1) throw IOException("底层重发已拦下")
+            val reason = attempt.inFlight.admit(attempt.guard.epochs, attempt.guard.admit)
+            if (reason != null) {
+                attempt.blocked = reason
+                throw IOException("写出前核对未放行：$reason")
+            }
+            attempt.committed = true
+            attempt.guard.onCommitted?.let { runCatching(it) }
+        }
 
         /** 统一外壳：JSON 对象，code 为整数，msg 为字符串。 */
         @Suppress("ReturnCount") // 外壳的三个必需字段逐项校验

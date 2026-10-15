@@ -11,6 +11,8 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.HomeDestination
 import com.couli.app.routing.NavTickets
 import com.couli.app.routing.RouteDestination
+import com.couli.core.agent.AgentCancelDispatch
+import com.couli.core.agent.AgentOwnershipEvent
 import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.me.CustomerServiceEntry
@@ -126,6 +128,14 @@ class AppMe(
     private val api: PageApi = ApiClientPageApi(client),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * APP-10b G01（编排者补充第 1 条）：Agent 的应用级归属协调器。退出登录、撤回隐私同意在确认后的同步入口先调 [beginAgentIdentityChange]（进入「身份变更在途」、
+     * 停流、以原身份尽力发 1 次 cancel），等 cancel 写出（不等结果）再发流程自己的请求；流程落定后调 [endAgentIdentityChange]。AppModule 在建好 AppAgent 后接上；
+     * 没接时什么都不做。
+     */
+    var beginAgentIdentityChange: (String) -> AgentCancelDispatch = { AgentCancelDispatch.NONE }
+    var endAgentIdentityChange: (String) -> Unit = {}
     private var navController: NavController? = null
     private val tickets: NavTickets get() = routing.navTickets
 
@@ -408,6 +418,8 @@ class AppMe(
         // 确认生效的同步入口立即停报推送（共性第 2 条）；撤回停报闸门与会话无关，撤回完成前登录新会话也不恢复上报（Android R1-01，共性第 19 条）
         push.beginWithdraw()
         pushTracker.cancelColdStart()
+        // APP-10b G01：此刻仍是完整模式——Agent 先停流并以原身份尽力发 1 次 cancel，早于撤回请求与本地清理
+        val agentCancel = beginAgentIdentityChange(AgentOwnershipEvent.PRIVACY_WITHDRAWN)
         val version = privacyVersion()
         val body =
             PrivacyWithdrawFlow
@@ -416,6 +428,7 @@ class AppMe(
         val epochs = client.inFlight.epochs()
         scope.launch {
             try {
+                agentCancel.awaitWritten()
                 if (body != null) {
                     // 有令牌也是设备级（服务端处理）；结果不影响本地撤回（G24）。超时上限照网络层写接口默认，这里另设上限防止卡住撤回
                     withTimeoutOrNull(WITHDRAW_TIMEOUT_MS) {
@@ -430,6 +443,7 @@ class AppMe(
                 // 撤回清理结束（含落盘失败）之后才解除撤回停报闸门：此时已是基本模式，上报仍按隐私结论不发
                 mutableWithdrawing.value = false
                 push.endWithdraw()
+                endAgentIdentityChange(AgentOwnershipEvent.PRIVACY_WITHDRAWN)
             }
         }
     }
@@ -493,12 +507,16 @@ class AppMe(
         val origin = topRoute()
         val ticket = tickets.routerTicket()
         push.halt()
+        // APP-10b G01：确认后的同步入口——Agent 先停流并以原身份尽力发 1 次 cancel（单次发送），等它写出再发 logout
+        val agentCancel = beginAgentIdentityChange(AgentOwnershipEvent.LOGOUT)
         scope.launch {
             val done =
                 try {
+                    agentCancel.awaitWritten()
                     appLogin.logout()
                 } finally {
                     loggingOut = false
+                    endAgentIdentityChange(AgentOwnershipEvent.LOGOUT)
                 }
             syncIdentity()
             val here = runCatching(stillHere).getOrDefault(false) || origin in LOGIN_ONLY

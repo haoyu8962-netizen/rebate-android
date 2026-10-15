@@ -90,6 +90,8 @@ internal class DebugFakeLoginServer(
         val request = chain.request()
         // 实际传输入口（F-X-02）：闸门关着（开关不在、prod、环境未就绪）整条交给真实网络
         if (!gateOpen()) return chain.proceed(request)
+        // Agent（APP-10b）：七个 agent operation 由 ApiClient 实际传输入口的本机替身（AgentFakeServer，写出前核对之后）回答，这里不接、不给通用回答
+        if (request.url.encodedPath.startsWith("/v1/agent/")) return chain.proceed(request)
         // 商品图（APP-06a 共性第 22 条的冒烟）：img.example.test 的图片在本机现画
         if (request.url.host == DebugFakeTrade.IMAGE_HOST) {
             val image = imageDrawer(request.url.encodedPath)

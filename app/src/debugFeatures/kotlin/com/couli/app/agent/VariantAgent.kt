@@ -2,37 +2,33 @@ package com.couli.app.agent
 
 import android.content.Context
 import com.couli.app.DebugMockGate
-import com.couli.core.agent.AgentContractPort
+import com.couli.core.network.LocalExchange
 import java.io.File
 
 /**
- * debug / staging：Agent 四个待定 operation 的端口（G01）。只有本机假服务打开（与假登录服务同一个开关文件）且当前环境允许 MOCK_DATA（prod 不允许，F-X-02）时
- * 才给端口；否则与 Release 一样为 null（Agent 页「未开放」、不发请求）。每次实际发包由 [AgentFakeStream] 再核对同一道闸（APP-11 第 16 条）。
- * 状态文件 files/[FAKE_AGENT_STATE_FILE]（每行 key=value）：
- * - agent_fixture=<名字>：normal、tool-failed、cancelled、disconnected、unknown-card、unknown-card-page-guide、error、error-search-fallback、fallback、
- *   normal-page-guide、normal-earnings、normal-earnings-history、duplicate-ended-done 等；构造：login_required、grid、relaxed、spec_unconfirmed、
- *   price_compare_risk、off_shelf、coupon_gone；json_<错误码>；
- * - agent_consent=pending（AI 同意未记录：发消息回 10004）；agent_load=10004|fail。
+ * debug / staging：七个 agent operation 的本机假服务（APP-10b §2 第 13 条）挂在 ApiClient 的实际传输入口（[LocalExchange]，写出前核对之后）。每次回答现判
+ * DebugMockGate（开关文件在 + 当前环境允许 MOCK_DATA + 环境就绪；prod 一律不允许），不允许时交真实网络（真实端口与 Release 同一份）。
+ * 状态文件 files/[FAKE_AGENT_STATE_FILE]（每行 key=value，键见 [AgentFakeServer]）。
  */
-internal fun variantAgentPort(context: Context): AgentContractPort? = agentFakeStream(context).takeIf { it.enabled() }
+internal fun variantLocalExchange(context: Context): LocalExchange? = agentFakeServer(context)
 
 /** recordConsent 成功后：假服务记下「AI 同意已记录 / 已撤回」（只在内存）。 */
 internal fun variantAgentConsentRecorded(
     context: Context,
     accepted: Boolean,
 ) {
-    agentFakeStream(context).consentGranted = accepted
+    agentFakeServer(context).consentGranted = accepted
 }
 
 /** 进程内唯一的假 Agent 服务。 */
-internal fun agentFakeStream(context: Context): AgentFakeStream =
+internal fun agentFakeServer(context: Context): AgentFakeServer =
     synchronized(FakeAgents) {
         FakeAgents.instance ?: run {
             val app = context.applicationContext
             val stateFile = File(DebugMockGate.stateDir(app), FAKE_AGENT_STATE_FILE)
-            AgentFakeStream(
+            AgentFakeServer(
                 // 统一闸门（F-X-02，DebugMockGate）：开关 + MOCK_DATA + 环境就绪；第二道只核对环境（双重核对，结果相同）
-                switchOn = DebugMockGate.of(app),
+                gate = DebugMockGate.of(app),
                 mockAllowed = { DebugMockGate.mockDataAllowed(app) },
                 fixtures = { name ->
                     runCatching {
@@ -43,7 +39,6 @@ internal fun agentFakeStream(context: Context): AgentFakeStream =
                     }.getOrNull()
                 },
                 state = { readState(stateFile) },
-                timer = MainAgentTimer(),
             ).also { FakeAgents.instance = it }
         }
     }
@@ -58,7 +53,7 @@ private fun readState(file: File): Map<String, String> =
     }.getOrNull().orEmpty()
 
 private object FakeAgents {
-    var instance: AgentFakeStream? = null
+    var instance: AgentFakeServer? = null
 }
 
 internal const val FAKE_AGENT_STATE_FILE = "couli_fake_agent_state.txt"

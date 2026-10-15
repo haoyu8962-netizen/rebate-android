@@ -209,6 +209,45 @@ class AppAgentIntegrationTest {
         override fun cancelOwned(identityKey: Any) {
             streams.forEach { it.cancelled = true }
         }
+
+        override suspend fun listMessages(
+            sessionId: String,
+            cursor: String?,
+            limit: Int,
+            call: AgentCall,
+            autoRetry: Boolean,
+        ): AgentHttpResult =
+            if (call.sendAllowed()) {
+                AgentHttpResult(
+                    true,
+                    200,
+                    0,
+                    "ok",
+                    JsonObject(
+                        mapOf(
+                            "items" to kotlinx.serialization.json.JsonArray(emptyList()),
+                            "next_cursor" to JsonNull,
+                            "expired" to JsonPrimitive(false),
+                        ),
+                    ),
+                    "trace",
+                    null,
+                )
+            } else {
+                AgentHttpResult.notSentResult()
+            }
+
+        override suspend fun setFeedback(
+            messageId: String,
+            value: String,
+            call: AgentCall,
+        ): AgentHttpResult = AgentHttpResult.notSentResult()
+
+        override suspend fun report(
+            messageId: String,
+            reason: String,
+            call: AgentCall,
+        ): AgentHttpResult = AgentHttpResult.notSentResult()
     }
 
     private class MemoryStore : PrivacyStore {
@@ -600,18 +639,32 @@ class AppAgentIntegrationTest {
         )
     }
 
+    // APP-10b G02（编排者补充第 2 条，03 §7.2 2026-10-14 更正）：原断言「切 Tab 即关连接、回来不续」改为切 Tab 保活（改动限于该裁定范围，原名
+    // switchingTabClosesStreamAndComingBackDoesNotResume）：切走期间流照常、不重拉历史、不更新界面，回到 Tab 一次性应用
     @Test
-    fun switchingTabClosesStreamAndComingBackDoesNotResume() {
+    fun switchingTabKeepsStreamAndComingBackAppliesOnce() {
         launch()
         send()
         val a = port.streams.last()
         push(fixtureLines("normal").take(3), a, end = false)
+        val currents = port.currents
         open("Home")
-        assertTrue(a.cancelled)
-        assertFalse(a.call.sendAllowed())
+        assertFalse(a.cancelled)
+        assertTrue(a.call.sendAllowed())
+        // 切走期间到达的帧：并入内存，不交界面
+        composeRule.runOnUiThread { fixtureLines("normal").drop(3).forEach { a.sink.onData(AgentSse.sseTextOfNdjsonLine(it)) } }
+        settle()
         open("AgentChat")
-        assertTrue(tree().contains("连接中断"))
+        assertFalse(tree().contains("连接中断"))
+        assertEquals(
+            "done",
+            agent.controller.value!!
+                .snapshot.value.turns
+                .single()
+                .status,
+        )
         assertEquals(1, port.streams.size)
+        assertEquals(currents, port.currents)
     }
 
     // ---------------------------------------------------------------- 同意（BR-ID-14）与设置页撤回（G18）

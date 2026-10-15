@@ -9,6 +9,7 @@ import com.couli.core.orders.OrderStaleCache
 import com.couli.core.orders.OrderTexts
 import com.couli.core.orders.PendingClosedAttempts
 import com.couli.core.orders.PendingTrackEnv
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -98,6 +99,8 @@ class OrderDetailConfig(
      * 点击只把 {order_id} 交给 Agent 页（不自动发送，附在用户发的第一条上）。「为什么没返利」仍直接显示、不进 AI（BR-AI-09）。
      */
     val askAi: (() -> Unit)? = null,
+    /** 【问问 AI】此刻是否绘制（App 订阅 `agent.entry.visible` / Agent 可用性，运行中变化随之更新，Android R1-04）；null 时只看 [askAi]。 */
+    val askAiVisible: StateFlow<Boolean>? = null,
 )
 
 /** 页面上的路由名（routes.json；跨功能跳转只经 Router）。 */

@@ -8,7 +8,7 @@ import com.couli.app.DebugFakeHome
 import com.couli.app.DebugFakeLoginServer
 import com.couli.app.DebugMockGate
 import com.couli.app.RawFakeServerSwitch
-import com.couli.app.agent.AgentFakeStream
+import com.couli.app.agent.AgentFakeServer
 import com.couli.app.applyDebugClipSample
 import com.couli.app.buildDefaultEnvironment
 import com.couli.app.conformanceLaunchAllowed
@@ -27,9 +27,6 @@ import com.couli.app.variantLaborBackend
 import com.couli.app.variantRealNameBackend
 import com.couli.app.variantStepUpPhone
 import com.couli.app.web.ConformanceSource
-import com.couli.core.agent.AgentCall
-import com.couli.core.agent.AgentStreamSink
-import com.couli.core.agent.AgentTimer
 import com.couli.core.config.AppEnvironment
 import com.couli.core.config.DebugCapabilities
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
@@ -47,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -260,54 +258,32 @@ class FollowupAnd0714DebugGateTest {
         }
     }
 
+    // APP-10b：Agent 假服务改为 ApiClient 实际传输入口的替身（AgentFakeServer，LocalExchange），本例的接线随之改写（断言不变：流进行中切到 prod，之后的帧一律不交、
+    // 按传输失败结束一次）
     @Test
     fun fx02_agent_stream_frames_after_switching_to_prod_are_not_delivered() {
         var mock = true
-        val timers = mutableListOf<() -> Unit>()
-        val stream =
-            AgentFakeStream(
-                switchOn = { true },
+        val server =
+            AgentFakeServer(
+                gate = { true },
                 mockAllowed = { mock },
                 fixtures = { name -> if (name == "normal") NDJSON else null },
-                state = { mapOf("agent_fixture" to "normal") },
-                timer =
-                    AgentTimer { _, block ->
-                        timers += block
-                        {}
-                    },
+                state = { mapOf("agent_fixture" to "normal", "agent_interval_ms" to "300") },
             )
-        val chunks = StringBuilder()
-        var failures = 0
-        var ended = false
-        val sink =
-            object : AgentStreamSink {
-                override fun onHeaders(
-                    status: Int,
-                    headers: Map<String, String>,
-                ) = Unit
-
-                override fun onData(chunk: String) {
-                    chunks.append(chunk)
-                }
-
-                override fun onEnd() {
-                    ended = true
-                }
-
-                override fun onFailure() {
-                    failures += 1
-                }
-            }
-        stream.sendMessage("s-1", """{"client_msg_id":"m-1"}""", AgentCall("owner-a", false, { true }, { true }), sink)
-        timers.removeAt(0)() // headers
-        timers.removeAt(0)() // 第一帧
-        val delivered = chunks.length
-        assertTrue(delivered > 0)
+        val request =
+            okhttp3.Request
+                .Builder()
+                .url("https://api.example.test/v1/agent/sessions/s-1/messages")
+                .post("""{"client_msg_id":"m-000001"}""".toRequestBody("application/json".toMediaType()))
+                .build()
+        val source = server.answer(request) { false }!!.body.source()
+        val chunks = okio.Buffer()
+        assertTrue(source.read(chunks, 8192) > 0) // 第一帧
+        val delivered = chunks.size
         mock = false // 流进行中切到 prod
-        while (timers.isNotEmpty()) timers.removeAt(0)()
-        assertEquals("之后的帧一律不交", delivered, chunks.length)
-        assertFalse(ended)
-        assertEquals("按传输失败结束一次", 1, failures)
+        val failure = runCatching { while (source.read(chunks, 8192) >= 0) Unit }.exceptionOrNull()
+        assertEquals("之后的帧一律不交", delivered, chunks.size)
+        assertTrue("按传输失败结束一次", failure is java.io.IOException)
     }
 
     @Test

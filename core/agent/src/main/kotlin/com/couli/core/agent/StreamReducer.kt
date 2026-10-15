@@ -28,6 +28,9 @@ object AgentStatus {
     /** 本地按输出上限或单帧上限结束（03 §7.2；规范化约定，向量未覆盖，rule-gaps A16）。 */
     const val LIMITED = "limited"
 
+    /** 缺号（APP-10b G11、G36）：本地结束，等终止帧或断线后拉历史替换；显示同「连接中断」但不给【重试】。 */
+    const val INCOMPLETE = "incomplete"
+
     /** 只由 historyCard 导入的快照（规范化约定，不是新的业务状态，向量 gaps G04）。 */
     const val HISTORY = "history"
 }
@@ -95,7 +98,7 @@ data class AgentStreamState(
     val ended: Boolean
         get() =
             status == AgentStatus.DONE || status == AgentStatus.CANCELLED || status == AgentStatus.ERROR ||
-                status == AgentStatus.DISCONNECTED || status == AgentStatus.LIMITED
+                status == AgentStatus.DISCONNECTED || status == AgentStatus.LIMITED || status == AgentStatus.INCOMPLETE
 
     val mergeIntoMessage: Boolean get() = !duplicate
 

@@ -127,9 +127,10 @@ fun AgentScreen(
 
                     s.phase == AgentPhase.LOAD_FAILED -> {
                         val page = s.page
+                        // 整页加载失败的【重试】受读取闸门控制（G24、鸿蒙 R2-06）
                         ErrorState(
                             title = s.loadErrorText,
-                            retry = StateAction(texts.text(RETRY_KEY), enabled = !s.limited) { controller.retryLoad(page) },
+                            retry = StateAction(texts.text(RETRY_KEY), enabled = !s.readLimited) { controller.retryLoad(page) },
                             modifier = Modifier.fillMaxSize().testTag(AgentTags.LOAD_FAILED),
                         )
                     }
@@ -148,8 +149,12 @@ fun AgentScreen(
                 }
             }
             ui.purchaseBanner()
+            // 会话已结束 / 已过期（G09、历史 30504）：error.30504 +【新对话】
+            if (ready) SessionEndedBanner(s, controller, texts)
             if (ready) Composer(s, controller, ui)
         }
+        // 举报半屏（G29，AgentReport 稿）：页面可见才组合；离开（切 Tab、被覆盖）时 Core 已关闭本实例
+        ReportSheetHost(s, controller, texts, visible)
         ToastHost(ui)
         // 同意弹窗（共性第 5 条，APP-11 第 3、18、21 条）：只在「票据仍是此刻那一张、页面可见、没有阻挡层」时组合；不满足时不组合（不提交、不算拒绝），
         // 条件恢复后按同一张票据再显示。系统模态：系统返回先关它、读屏只读弹窗内容
@@ -276,7 +281,7 @@ private fun ConsentDeclined(
  * 消息列表（03 §7.5，G30）：用户没有上滑时跟随新内容（离底部超过一屏 1/4 视为已上滑，代拟），上滑后显示「回到底部」；读屏开启时一律不自动滚动，新内容只播报
  * 文字（不播报卡片与金额，APP-11 第 14、20 条）。滚动位置只在内存里保留（[AgentPageMemory]）。
  */
-@Suppress("CyclomaticComplexMethod") // 跟随、读屏、回到底部逐项
+@Suppress("CyclomaticComplexMethod", "ComplexCondition") // 跟随、读屏、回到底部逐项
 @Composable
 private fun MessageList(
     s: AgentSnapshot,
@@ -343,7 +348,16 @@ private fun MessageList(
                 androidx.compose.foundation.layout
                     .PaddingValues(CouliSpacing.space4),
         ) {
+            // 向上翻页（G08）：顶端一行「加载更早的消息」/「没有更早的消息」
+            if (s.hasEarlier || s.earlierLoading || s.historyExhausted) item(key = EARLIER_ITEM_KEY) { EarlierRow(s, controller, ui.texts) }
             items(s.turns, key = { it.key }) { turn -> AgentTurnItem(turn, s, controller, ui) }
+        }
+        // 第一条消息进入可见区（滚到顶部）：取更早一页（一次只在途一页；读取闸门期间不取，G08）
+        val atTop by remember(list) { derivedStateOf { list.firstVisibleItemIndex == 0 && list.layoutInfo.totalItemsCount > 0 } }
+        LaunchedEffect(atTop, s.hasEarlier, s.earlierLoading, s.readLimited, s.earlierError) {
+            if (atTop && s.hasEarlier && !s.earlierLoading && !s.readLimited && s.earlierError.isEmpty() && list.isScrollInProgress) {
+                controller.loadEarlier(page)
+            }
         }
         if (!atBottom) {
             Row(
@@ -455,7 +469,8 @@ private fun Composer(
                 BasicTextField(
                     value = draft,
                     onValueChange = ::write,
-                    enabled = !s.quotaExhausted && s.consentGate == AgentConsentGate.CLEAR,
+                    // 只读会话（G09）同样禁用
+                    enabled = !s.quotaExhausted && s.consentGate == AgentConsentGate.CLEAR && !s.readOnly,
                     textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
                     cursorBrush = SolidColor(CouliColors.textPrimary),
                     maxLines = INPUT_MAX_LINES,
@@ -563,6 +578,7 @@ private const val NEW_CHAT_KEY = "agent.draft.new_chat"
 private const val UNAVAILABLE_KEY = "error.30501"
 private const val RETRY_KEY = "agent.draft.retry"
 private const val BACK_KEY = "agent.draft.back_to_bottom"
+private const val EARLIER_ITEM_KEY = "agent_earlier_row"
 
 /** 页面票据（供卡片渲染器把对话级动作交回同一张票据）。 */
 internal val AgentSnapshot.pageTicket: AgentPageTicket get() = page

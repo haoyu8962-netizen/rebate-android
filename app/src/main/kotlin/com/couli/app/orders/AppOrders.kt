@@ -248,6 +248,8 @@ class AppOrders(
             rateGate = rateGate,
             bindSession = { handler -> if (entryId != null) detailSessions[entryId] = handler },
             askAi = agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf(ORDER_ID to JsonPrimitive(orderId)))),
+            // 入口开关运行中变化随之更新（R1-04、G56）
+            askAiVisible = agent?.askVisibleState,
         )
     }
 

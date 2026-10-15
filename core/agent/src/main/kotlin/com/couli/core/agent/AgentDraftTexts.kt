@@ -10,7 +10,7 @@ fun interface AgentTexts {
 
 /**
  * Agent 页（APP-10）里契约 texts.default.json 还没有的文案键（rule-gaps G12、G16、G25、G29、G30；照 N-26、N-30–N-35 的集中草稿表做法）。
- * 整张表都是「待定稿，不得提审」：TODO(N-36) 契约补键后改为契约优先、本表兜底（现在已是契约优先）。
+ * 整张表都是「待定稿，不得提审」：TODO(N-36)、TODO(N-38) 契约补键后改为契约优先、本表兜底（现在已是契约优先）。
  * - agent.guide.*、agent.earnings.*：逐字照抄 规划/08 BR-TEXT-22 细则表（G12）。
  * - 输入框、按钮、胶囊、额度页、未开放态：照设计稿 Agent / AgentStreaming / AgentDisconnected / AgentUnavailable / AgentQuota* 的原文。
  * - AgentConsent（G16）：照 AgentConsent 稿的可见文字，「[待定：同意文本其余正文]」待法务定稿（Q-F3），不得提审。
@@ -135,6 +135,48 @@ object AgentDraftTexts : AgentTexts {
             "agent.draft.route.OrderList" to "订单",
             "agent.draft.route.InviteShare" to "邀请好友",
             "agent.draft.route.Messages" to "消息中心",
+            // ---- APP-10b（TODO(N-38)，G30）：契约 texts.default.json 没有这些键。照 AgentResult / AgentReport / AgentReported 稿与 flow-map 23.2.22
+            // 逐字；标「代拟」的规划与设计稿都没有原文（三端同一张，鸿蒙 AgentDraftTexts.ets）。error.30505 不显示（G25 静默），不进本表。
+            "agent.draft.feedback.up" to "赞",
+            "agent.draft.feedback.down" to "踩",
+            "agent.draft.feedback.up_selected" to "已赞",
+            "agent.draft.feedback.down_selected" to "已踩",
+            "agent.draft.report.entry" to "举报",
+            // 读屏等价入口（G29、G54）：无障碍「更多操作」里的动作名（代拟）
+            "agent.draft.report.more" to "更多操作",
+            "agent.draft.report.more_entry" to "更多操作，举报",
+            // 只有卡片、没有文字的回复的读屏操作宿主（Android R2-06，代拟）
+            "agent.draft.a11y.card_reply" to "AI 回复的卡片",
+            "agent.draft.report.title" to "举报这条回复",
+            "agent.draft.report.subtitle" to "选择原因后提交，我们会核实处理",
+            "agent.draft.report.reason.misleading" to "内容不实或有误导",
+            "agent.draft.report.reason.illegal" to "含违法违规内容",
+            "agent.draft.report.reason.vulgar" to "含低俗、冒犯内容",
+            "agent.draft.report.reason.infringe" to "侵犯他人权益",
+            "agent.draft.report.reason.other" to "其他问题",
+            "agent.draft.report.supplement" to "补充说明（选填）",
+            "agent.draft.report.submit" to "提交举报",
+            "agent.draft.report.reported" to "已举报",
+            "agent.draft.report.toast" to "举报已提交，我们会核实处理",
+            "agent.draft.report.joiner" to "：",
+            "agent.draft.report.too_long" to "补充说明太长了，请删减后再提交",
+            "agent.draft.report.reason_error" to "请重新选择举报原因",
+            "agent.draft.report.close" to "关闭",
+            "agent.draft.action_failed" to "操作没有成功，请稍后再试",
+            "agent.draft.stopping" to "正在停止",
+            "agent.draft.stopped" to "已停止",
+            "agent.draft.limited" to "回复内容过长，后面的内容不再显示",
+            "agent.draft.replying" to "回复中",
+            "agent.draft.refresh" to "刷新",
+            "agent.draft.history.earlier" to "加载更早的消息",
+            "agent.draft.history.none" to "没有更早的消息",
+            "agent.draft.history.failed" to "加载失败，点此重试",
+            "agent.draft.history.load_failed" to "对话记录加载失败",
+            "agent.draft.readonly" to "这个对话已结束，只能查看",
+            "agent.draft.consent.not_saved" to "同意没有保存成功",
+            "agent.draft.quota.tomorrow" to "今天的提问次数用完了，明天再来吧",
+            // 缺号（G36）：本条结束、等历史替换（代拟）
+            "agent.draft.incomplete" to "这条回复不完整，正在重新获取",
         )
 
     private val WALLET_EARLIEST: String get() = WalletDraftTexts.DRAFTS["wallet.earliest"].orEmpty()

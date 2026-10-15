@@ -33,6 +33,8 @@ complexity:
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
       # APP-10 的 Agent 向量测试同样由 Codex 先写、本仓库不改
       - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
+      # APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
       # APP-13a 的账号向量测试同样由 Codex 先写、本仓库不改
       - '**/core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt'
   CyclomaticComplexMethod:
@@ -46,6 +48,8 @@ complexity:
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
       - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
+      # APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt'
   NestedBlockDepth:
     excludes:
@@ -53,6 +57,8 @@ complexity:
       - '**/core/me/src/test/kotlin/com/couli/core/me/MeVectorTest.kt'
       - '**/core/home/src/test/kotlin/com/couli/core/home/HomeVectorTest.kt'
       - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
+      # APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable']
 
@@ -66,10 +72,14 @@ style:
   WildcardImport:
     excludes:
       - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentVectorTest.kt'
+      # APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
   # APP-07 的剪贴板向量测试由 Codex 先写、本仓库不改：只对这一个文件放宽它触发的这一条
   ReturnCount:
     excludes:
       - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ClipboardVectorTest.kt'
+      # APP-10b 的 Agent 传输向量测试由 Codex 先写、本仓库不改
+      - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
       # APP-08 的订单向量测试由 Codex 先写、本仓库不改
       - '**/core/orders/src/test/kotlin/com/couli/core/orders/OrderVectorTest.kt'
       # FU-CLIP 的剪贴板候选向量测试由 Codex 先写、本仓库不改

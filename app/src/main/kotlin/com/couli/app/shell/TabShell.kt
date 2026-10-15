@@ -89,6 +89,12 @@ enum class ShellTab(
 fun TabShell(
     selected: ShellTab,
     onSelect: (ShellTab) -> Unit,
+    /**
+     * APP-10b G32（BR-AI-12）：`agent.entry.visible=false` 时 AI 助手 Tab 换成「搜索」——同一位置显示搜索图标与名称，点它经 Router 打开 Search（[onSearch]），
+     * 不切到 Agent 页。缺省为 false（Tab 照旧）。
+     */
+    agentAsSearch: Boolean = false,
+    onSearch: () -> Unit = {},
     tabRoot: @Composable (ShellTab) -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas).testTag(TAB_SHELL_TAG)) {
@@ -97,9 +103,21 @@ fun TabShell(
         }
         Box(modifier = Modifier.fillMaxWidth().background(CouliColors.backgroundSurface).navigationBarsPadding()) {
             TabBar(
-                items = ShellTab.entries.map { it.item },
+                items =
+                    ShellTab.entries.map {
+                        if (agentAsSearch &&
+                            it == ShellTab.AGENT
+                        ) {
+                            TabItem(CouliIcons.search, ShellDraftTexts.TAB_SEARCH)
+                        } else {
+                            it.item
+                        }
+                    },
                 selectedIndex = selected.ordinal,
-                onSelect = { onSelect(ShellTab.entries[it]) },
+                onSelect = { index ->
+                    val tab = ShellTab.entries[index]
+                    if (agentAsSearch && tab == ShellTab.AGENT) onSearch() else onSelect(tab)
+                },
             )
         }
     }

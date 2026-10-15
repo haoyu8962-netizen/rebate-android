@@ -129,6 +129,12 @@ object AgentRetryMode {
 
     /** 新消息、新 client_msg_id（流内 error 后的人工重试）。 */
     const val NEW = "new"
+
+    /** APP-10b：断线后的【重试】——先拉历史首页（退避），再按 G07 决定替换 / 同键重发 / 只留【重试】。 */
+    const val RELOAD = "reload"
+
+    /** APP-10b G40：duplicate 30506 之后的【刷新】（用户点才拉一次历史首页，不重发）。 */
+    const val REFRESH = "refresh"
 }
 
 /** 【重试】：{run 票据, client_msg_id}。 */
@@ -225,7 +231,43 @@ data class AgentErrorView(
     val searchHint: String = "",
     val upgrade: AgentTap? = null,
     val quotaHint: String = "",
+    /** 「连接中断」稿的说明行（AgentDisconnected：「已生成的内容保留在上面，点「重试」继续查询」）。 */
+    val hint: String = "",
 )
+
+/** 一条回复的【赞】【踩】与举报入口（只对可信的回复 id 画，G03、G28；票据渲染时固定）。 */
+data class AgentReplyActions(
+    val ticket: AgentReplyTicket,
+    /** 已选（up / down / null）。 */
+    val selected: String?,
+    /** 在途时两个按钮都不可点。 */
+    val enabled: Boolean,
+    /** 读屏：「已赞 / 已踩」（未选为空串）。 */
+    val a11y: String,
+    /** 已举报（本对话内不再提供入口，G29）。 */
+    val reported: Boolean,
+)
+
+/** 举报半屏（AgentReport 稿；只关本实例，系统返回先关）。原因与补充说明只在内存。toString 不带内容。 */
+@Suppress("LongParameterList") // 字段逐项
+class AgentReportSheet(
+    val ticket: AgentReplyTicket,
+    /** 被举报回复的摘要（受限渲染、截断）。 */
+    val excerpt: String,
+    val reasons: List<String>,
+    val selected: String?,
+    val supplement: String,
+    /** 补充说明输入框的码点上限（200 − 原因长度 − 1，G29）。 */
+    val supplementLimit: Int,
+    val submitEnabled: Boolean,
+    val inFlight: Boolean,
+    /** 20001：原因旁提示。 */
+    val reasonError: Boolean,
+    /** 超出 200 码点：不让提交并提示。 */
+    val tooLong: Boolean,
+) {
+    override fun toString(): String = "AgentReportSheet(${ticket.messageId})"
+}
 
 /** 一轮对话（用户这一条 + assistant 回复）的展示。toString 不带对话内容。 */
 @Suppress("LongParameterList") // 一轮对话展示字段逐项
@@ -243,6 +285,12 @@ class AgentTurnView(
     val aiLabel: String?,
     val error: AgentErrorView?,
     val streaming: Boolean,
+    /** APP-10b：这一轮来自历史接口（只用历史形状、没有【停止】）。 */
+    val history: Boolean = false,
+    /** 【赞】【踩】与举报入口（不满足显示条件为 null）。 */
+    val actions: AgentReplyActions? = null,
+    /** 本条状态的说明（「正在停止」「已停止」「回复内容过长…」「这条回复不完整…」；没有为空串）。 */
+    val statusText: String = "",
 ) {
     override fun toString(): String = "AgentTurnView($key, $phase, $status)"
 }
@@ -324,10 +372,28 @@ data class AgentSnapshot(
     val announcement: String = "",
     /** 金额隐藏偏好此刻的值（收益卡、订单卡已按它取好展示值；页面只用于读屏说明）。 */
     val amountMasked: Boolean = false,
+    /** APP-10b：读取闸门（42901，取会话、历史、翻页、重载）禁用期：整页【重试】、翻页、【刷新】、重连查询置灰（G24、鸿蒙 R2-06）。 */
+    val readLimited: Boolean = false,
+    /** 动作闸门（反馈、举报、cancel）禁用期：【赞】【踩】、【提交举报】置灰。 */
+    val actionLimited: Boolean = false,
+    /** 还有更早的消息（next_cursor 不为 null，G08）。 */
+    val hasEarlier: Boolean = false,
+    /** 更早一页在途。 */
+    val earlierLoading: Boolean = false,
+    /** 翻页失败的统一文案（空串没有失败，鸿蒙 G74；点它重试）。 */
+    val earlierError: String = "",
+    /** 已经拉过历史且没有更早的了（显示「没有更早的消息」，G08）。 */
+    val historyExhausted: Boolean = false,
+    /** 会话已过期（expired=true）：整段只读，输入框与胶囊禁用，显示 error.30504 +【新对话】（G09）。 */
+    val readOnly: Boolean = false,
+    /** 会话已结束（历史 30504 / 翻页 30504）：error.30504 +【新对话】（下次发送重建会话）。 */
+    val sessionEndedText: String = "",
+    /** 此刻打开的举报半屏（没有为 null）。 */
+    val reportSheet: AgentReportSheet? = null,
 ) {
-    /** 发送与胶囊此刻可用（限流期、AI 同意没记录成功、额度用完、发送中都不可用；执行层另有同一闸门）。 */
+    /** 发送与胶囊此刻可用（限流期、AI 同意没记录成功、额度用完、发送中、只读都不可用；执行层另有同一闸门）。 */
     val canCompose: Boolean
-        get() = phase == AgentPhase.READY && !sending && !limited && !quotaExhausted && consentGate == AgentConsentGate.CLEAR
+        get() = phase == AgentPhase.READY && !sending && !limited && !quotaExhausted && consentGate == AgentConsentGate.CLEAR && !readOnly
 
     override fun toString(): String = "AgentSnapshot(owner=$owner, conversation=$conversation, phase=$phase, turns=${turns.size})"
 }

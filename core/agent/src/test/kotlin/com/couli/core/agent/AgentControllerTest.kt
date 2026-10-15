@@ -15,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -191,9 +192,16 @@ class AgentControllerTest {
         c.sendNow("之前的收益")
         kit.port.last.headers()
         kit.port.last.line(META)
-        // SSE 收到历史形状（G13）：历史渲染，没有任何金额
-        kit.port.last.line(AgentTestKit.fixtureLines("normal-earnings-history").single())
-        kit.port.last.line(frameLine("done", 9, """{"finish_reason":"stop","quota_left":1}"""))
+        // SSE 收到历史形状（G13）：历史渲染，没有任何金额。APP-10b G11：真实流按帧 id 判序，构造帧改为连续编号（id 2、3；原为 4、9）
+        kit.port.last.line(
+            AgentTestKit
+                .fixtureLines(
+                    "normal-earnings-history",
+                ).single()
+                .replace("\"id\":4,", "\"id\":2,")
+                .replace("\"seq\":4,", "\"seq\":2,"),
+        )
+        kit.port.last.line(frameLine("done", 3, """{"finish_reason":"stop","quota_left":1}"""))
         val v =
             c
                 .turns()
@@ -680,29 +688,27 @@ class AgentControllerTest {
 
     // ---------------------------------------------------------------- 可见性、30 秒、trace6、AiLabel
 
+    // APP-10b G02（编排者补充第 2 条）：原断言「离页即关连接、许可不复活」按 03 §7.2（2026-10-14 更正）改为切 Tab 保活（改动限于该裁定范围，原名
+    // leavingPageClosesStreamAndPermitNeverRecovers）：隐藏期间流照常、快照不交界面，回来一次性应用；页面许可（sendAllowed）不随隐藏撤销
     @Test
-    fun leavingPageClosesStreamAndPermitNeverRecovers() {
+    fun hidingTabKeepsStreamAndAppliesOnReturn() {
         val c = kit.controller()
         c.sendNow()
         val s = kit.port.last
         s.headers()
         s.line(META)
         val allowed = s.call.sendAllowed
+        val before = c.snapshot.value
         c.setVisible(false)
-        assertTrue(s.cancelled)
-        assertEquals(AgentStatus.DISCONNECTED, c.streamStates.single().status)
-        c.setVisible(true)
-        assertFalse(allowed())
-        // 迟到的帧不改界面
+        assertFalse(s.cancelled)
+        assertTrue(allowed())
+        // 隐藏期间到达的帧照常并入内存，但不交给界面
         s.fixture("normal")
-        assertEquals("", c.streamStates.single().text)
-        assertNotNull(
-            c
-                .turns()
-                .single()
-                .error
-                ?.retry,
-        )
+        assertEquals(AgentStatus.DONE, c.streamStates.single().status)
+        assertSame(before, c.snapshot.value)
+        c.setVisible(true)
+        assertEquals(AgentStatus.DONE, c.turns().single().status)
+        assertNull(c.turns().single().error)
     }
 
     @Test
@@ -790,6 +796,8 @@ class AgentControllerTest {
         assertEquals(RouteSource.IN_APP.raw, kit.opens.single().source)
     }
 
+    // APP-10b §2 第 6 条（G07、03 §7.2）：断线【重试】先拉历史首页；本轮不在历史里才同键重发；duplicate 收尾改为拉历史替换（替代 APP-10 G26 的「不补拉」）。
+    // 原断言「【重试】直接同键重发、duplicate done 本地结束」按此改（同一 client_msg_id、duplicate 不并入、不更新额度三条照旧）
     @Test
     fun disconnectedRetryReusesClientMsgIdAndDuplicateDoesNotMerge() {
         val c = kit.controller()
@@ -804,12 +812,16 @@ class AgentControllerTest {
                 .single()
                 .error!!
                 .retry!!
-        assertEquals(AgentRetryMode.SAME, retry.mode)
+        assertEquals(AgentRetryMode.RELOAD, retry.mode)
         c.retry(retry)
+        // 先拉历史首页（关掉 GET 自动重试），本轮不在历史里 → 同键重发
+        assertEquals(1, kit.port.histories.size)
         val second = kit.port.last
         assertEquals(first.clientMsgId, second.clientMsgId)
         second.headers()
         second.fixture("duplicate-ended-done")
+        // duplicate 收尾：不并入、不更新额度，自动再拉一次历史替换本条
+        assertEquals(2, kit.port.histories.size)
         val state = c.streamStates.single()
         assertEquals(AgentStatus.DONE, state.status)
         assertEquals("为你找到以下商品，", state.text)
@@ -824,7 +836,8 @@ class AgentControllerTest {
         kit.port.last.fixture("duplicate-in-progress")
         val error = c.turns().single().error!!
         assertEquals("上一条还在回复中", error.text)
-        assertEquals(AgentRetryMode.SAME, error.retry!!.mode)
+        // APP-10b G40：duplicate 30506 不自动轮询，给【刷新】（用户点才拉历史首页、不重发）；原断言「同键【重试】」按此改
+        assertEquals(AgentRetryMode.REFRESH, error.retry!!.mode)
         assertNull(c.snapshot.value.quotaLeft)
     }
 

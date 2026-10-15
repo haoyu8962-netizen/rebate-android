@@ -104,6 +104,45 @@ class FollowupAnd0714FixR1AgentTest {
 
         override fun cancelOwned(identityKey: Any) = Unit
 
+        override suspend fun listMessages(
+            sessionId: String,
+            cursor: String?,
+            limit: Int,
+            call: AgentCall,
+            autoRetry: Boolean,
+        ): AgentHttpResult =
+            if (call.sendAllowed()) {
+                AgentHttpResult(
+                    true,
+                    200,
+                    0,
+                    "ok",
+                    JsonObject(
+                        mapOf(
+                            "items" to kotlinx.serialization.json.JsonArray(emptyList()),
+                            "next_cursor" to JsonNull,
+                            "expired" to JsonPrimitive(false),
+                        ),
+                    ),
+                    "trace",
+                    null,
+                )
+            } else {
+                AgentHttpResult.notSentResult()
+            }
+
+        override suspend fun setFeedback(
+            messageId: String,
+            value: String,
+            call: AgentCall,
+        ): AgentHttpResult = AgentHttpResult.notSentResult()
+
+        override suspend fun report(
+            messageId: String,
+            reason: String,
+            call: AgentCall,
+        ): AgentHttpResult = AgentHttpResult.notSentResult()
+
         private fun ok(data: JsonObject) = AgentHttpResult(true, 200, 0, "ok", data, "trace-000123", null)
     }
 

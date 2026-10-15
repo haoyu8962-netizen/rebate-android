@@ -367,10 +367,10 @@ class AppSearch(
                     // 用回调传入的当前商品构造参数：首次进入详情、没点过购买也带 q 与 platform（A-R1-15）
                     onSimilar = { product -> purchase?.controller?.similar(product) ?: openSimilar(product) },
                     onResearch = { open(SEARCH_ROUTE, JsonObject(emptyMap())) },
-                    // G27：带 {product_key}，不自动发送（附在用户发的第一条上）；Agent 不可用时照旧只打开 AgentChat（Release 为「未开放」）
+                    // G27：带 {product_key}，不自动发送（附在用户发的第一条上）。入口开关 / Agent 不可用时不绘制、也不回退成直接打开 AgentChat（R1-04、G56）
                     onAskAi =
-                        agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf("product_key" to JsonPrimitive(key))))
-                            ?: { open(AGENT_ROUTE, JsonObject(emptyMap())) },
+                        agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf("product_key" to JsonPrimitive(key)))),
+                    askAiVisible = agent?.askVisibleState,
                 ),
             bindLeave = { leave -> bind(entryId, leave) },
             creditEnabled = ::creditEnabled,

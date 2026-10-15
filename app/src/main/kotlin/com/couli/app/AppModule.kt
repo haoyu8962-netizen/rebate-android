@@ -9,7 +9,7 @@ import com.couli.app.account.AppAccount
 import com.couli.app.agent.AppAgent
 import com.couli.app.agent.connectAgentScreenReader
 import com.couli.app.agent.variantAgentConsentRecorded
-import com.couli.app.agent.variantAgentPort
+import com.couli.app.agent.variantLocalExchange
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.AppTracker
 import com.couli.app.clientcore.clientPrivacyRaw
@@ -340,6 +340,8 @@ object AppModule {
             // debug / staging：Debug 专用的本机假登录服务（打开时整段在本机回答，不连任何地址）；release 是普通 OkHttpClient
             http = variantHttpClient(context),
             readBarrier = readBarrier,
+            // APP-10b §2 第 13 条：debug / staging 的本机 Agent 假服务在实际传输入口（写出前核对之后）按 DebugMockGate 换入；release 为 null
+            local = variantLocalExchange(context),
         ).also { client ->
             // 强更状态恢复为受支持时，受限会话屏障到期（R1-10、lessons 19）：状态源一变就通知，不只靠下一个请求观察
             update.onRouterUpdate { client.onUpdateStateChanged(it.toNetworkUpdate()) }
@@ -941,13 +943,23 @@ object AppModule {
         home: AppHome,
         search: AppSearch,
         orders: AppOrders,
-    ): AppAgent =
-        AppAgent(
+    ): AppAgent {
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        var built: AppAgent? = null
+        val agentPort =
+            com.couli.core.agent.ApiAgentContractPort(
+                client = client,
+                main = { runnable -> main.post(runnable) },
+                // 应用级准入（身份变更在途、AI 同意失效、配置关闭），在网络线程现判
+                allowed = { built?.requestsAllowed() == true },
+            )
+        return AppAgent(
             client = client,
             tokens = tokens,
             routing = routing,
             privacy = privacy,
-            port = { variantAgentPort(context) },
+            // APP-10b：Debug / Release 同一个真实端口（经 ApiClient 管线；假服务在传输入口换入）
+            port = { agentPort },
             envKey = { variantEnvironmentKey(context) },
             configData = { config.store.snapshots.value.data },
             mask = mask.hidden,
@@ -965,8 +977,15 @@ object AppModule {
             // 情境入口（G27）：商品详情、订单详情的【问问 AI】
             search.agent = agent
             orders.agent = agent
+            // APP-10b G01：退出登录、撤回隐私同意的确认入口经应用级协调器先停流并尽力 cancel
+            me.beginAgentIdentityChange = agent::beginIdentityChange
+            me.endAgentIdentityChange = agent::endIdentityChange
+            // 配置变化（agent.enabled / agent.entry.visible）立即同步（鸿蒙 R1-07）
+            agent.connectConfig(config.store.snapshots)
+            built = agent
             agentInstance = agent
         }
+    }
 
     /** 金额隐藏开关（G24：本机偏好，订单与钱包共用同一份；存储名 couli_amount_mask 与键不变）。 */
     @Provides

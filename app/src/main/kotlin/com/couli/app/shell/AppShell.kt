@@ -311,6 +311,15 @@ fun AppShell(
     SideEffect { routing.navTickets.onTab(selection.tab.route) }
     // Agent 页：恢复保存的选中项（Activity 重建、进程恢复）等不经 onOpenTab 的情形兜底同步（用户点 Tab 已在同步出口告知）
     if (agent != null) SideEffect { agent.onTab(selection.tab.route) }
+    // APP-10b G32 / G56：agent.entry.visible=false → AI 助手 Tab 换「搜索」、首页【问 AI】隐藏；停在 Agent Tab 时回首页
+    val noAgentEntry = remember { MutableStateFlow(true) }
+    val agentEntryVisible by (agent?.entryVisibleState ?: noAgentEntry).collectAsStateWithLifecycle()
+    if (!agentEntryVisible && selection.tab == ShellTab.AGENT) {
+        SideEffect {
+            agent?.onTab(ShellTab.HOME.route)
+            selection = guardedSelection(ShellTab.HOME, routing.guardState())
+        }
+    }
 
     // 钱包（APP-09）：提交成功替换栈顶、收款账号保存后出栈都经这个 NavController
     if (wallet != null) {
@@ -343,6 +352,8 @@ fun AppShell(
                 TabShell(
                     selected = selection.tab,
                     onSelect = { tab -> onTabClick(tab, routing) },
+                    agentAsSearch = !agentEntryVisible,
+                    onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
                     tabRoot = { tab ->
                         TabRoot(
                             tab = tab,
@@ -497,7 +508,15 @@ private fun TabRoot(
             HomeWithSearch(
                 onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
                 header = { clipboard?.let { HomeClipboardArea(it) } },
-                onAskAi = home?.let { { routing.router.open(inAppRequest(ShellTab.AGENT.route)) } },
+                // G56（FU-HM-0715 口径）：入口开关关闭时【问 AI】一并隐藏
+                onAskAi =
+                    home?.takeIf { agent?.entryVisible() != false }?.let {
+                        {
+                            routing.router.open(
+                                inAppRequest(ShellTab.AGENT.route),
+                            )
+                        }
+                    },
             ) { registry.Render(destination) }
         }
     } else if (tab == ShellTab.AGENT && agent != null) {

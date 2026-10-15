@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * 条目形状：`{kindRaw: frame|ping|malformed|too_large, event?, id?, dataText?}`（id 是字符串）。只在调用方线程使用。
  */
+@Suppress("TooManyFunctions") // 一处集中
 class AgentSse {
     private val buffer = StringBuilder()
     private var event: String? = null
@@ -35,6 +36,117 @@ class AgentSse {
     /** 收到的完整行数（字段行、注释行、空行；G33：每收到一行就重置 30 秒断线计时；半行不算）。 */
     var linesSeen: Long = 0
         private set
+
+    // ---------------------------------------------------------------- 字节入口（APP-10b §2 第 2 条，F-X-04）
+    // 在解码前按 UTF-8 字节切行（认 \n、\r\n、单独 \r，G21），累计当前帧 data 值与当前半行的原始字节数（G22：data 上限 64 KiB，不计多行合并的
+    // 合成换行（G49，与鸿蒙同口径）；半行上限 64 KiB + 16，注释行同样受限），超限输出一次 too_large 后不再解析；完整行才交 [StreamUtf8Decoder]
+    // 解码一次（非法序列 U+FFFD）。流首 BOM（EF BB BF）在切行之前的字节层识别并跳过（可能跨块；鸿蒙 R1-12），解码器不再另丢。
+
+    private var lineBytes = ByteArray(LINE_INITIAL)
+    private var lineLength = 0
+    private var lastWasCr = false
+
+    /** 字节入口当前帧 data 值的累计字节。 */
+    private var byteDataBytes = 0L
+
+    /** 流首 BOM：0–2 = 已吻合的 BOM 字节数（可能跨块），-1 = 已判定完毕。 */
+    private var bomMatched = 0
+    private val decoder = StreamUtf8Decoder(stripBom = false)
+
+    /** 解析缓冲里还没成行的字节数（含解码器里的残缺序列、跨块未判定的 BOM 前缀）。 */
+    val bufferedByteCount: Int get() = lineLength + decoder.bufferedByteCount + maxOf(0, bomMatched)
+
+    /** 本流出现过的非法 UTF-8 次数（只给本机日志用次数）。 */
+    val invalidUtf8: Int get() = decoder.invalidSequences
+
+    /** 增量喂入一块原始字节，返回这一块里完成的条目（超限为一条 too_large，之后一律丢弃）。 */
+    @Suppress("ReturnCount", "LoopWithTooManyJumpStatements") // 已超限、逐行、尾段依次返回
+    fun feedBytes(chunk: ByteArray): List<JsonObject> {
+        if (overflowed) return emptyList()
+        val out = mutableListOf<JsonObject>()
+        val bytes = skipBom(chunk)
+        var start = 0
+        for (i in bytes.indices) {
+            val b = bytes[i]
+            if (lastWasCr) {
+                lastWasCr = false
+                if (b == LF) {
+                    start = i + 1
+                    continue
+                }
+            }
+            if (b != LF && b != CR) continue
+            if (!appendLine(bytes, start, i)) return out + overflowBytes()
+            start = i + 1
+            lastWasCr = b == CR
+            if (!completeLine(out)) return out + overflowBytes()
+        }
+        if (!appendLine(bytes, start, bytes.size)) return out + overflowBytes()
+        return out
+    }
+
+    /** 流首 BOM：逐字节比对 EF BB BF（跨块时先留着已吻合的前缀）；三个都吻合 → 丢弃；中途不吻合 → 前缀补回本块开头，之后不再认 BOM。 */
+    @Suppress("ReturnCount") // 逐项提前返回
+    private fun skipBom(bytes: ByteArray): ByteArray {
+        if (bomMatched < 0) return bytes
+        var i = 0
+        while (i < bytes.size && bomMatched < BOM_BYTES.size) {
+            if (bytes[i] != BOM_BYTES[bomMatched]) {
+                val kept = bomMatched
+                bomMatched = -1
+                val merged = ByteArray(kept + bytes.size - i)
+                BOM_BYTES.copyInto(merged, 0, 0, kept)
+                bytes.copyInto(merged, kept, i, bytes.size)
+                return merged
+            }
+            bomMatched += 1
+            i += 1
+        }
+        if (bomMatched == BOM_BYTES.size) bomMatched = -1
+        return if (i == 0) bytes else bytes.copyOfRange(i, bytes.size)
+    }
+
+    /** 字节入口超限：清掉已累积的内容并停止解析。 */
+    private fun overflowBytes(): JsonObject {
+        lineBytes = ByteArray(0)
+        lineLength = 0
+        byteDataBytes = 0
+        return overflow()
+    }
+
+    /** 把 [from, to) 追加进半行缓冲；超过半行上限返回 false。 */
+    @Suppress("ReturnCount") // 逐项提前返回
+    private fun appendLine(
+        bytes: ByteArray,
+        from: Int,
+        to: Int,
+    ): Boolean {
+        val n = to - from
+        if (n <= 0) return true
+        if (lineLength + n > MAX_LINE_BYTES) return false
+        if (lineLength + n > lineBytes.size) {
+            var size = maxOf(LINE_INITIAL, lineBytes.size)
+            while (size < lineLength + n) size *= 2
+            lineBytes = lineBytes.copyOf(minOf(size, MAX_LINE_BYTES.toInt()))
+        }
+        bytes.copyInto(lineBytes, lineLength, from, to)
+        lineLength += n
+        return true
+    }
+
+    /** 一行完整：data 行先按原始字节累计上限，再解码一次交给与字符串入口相同的行处理。超限返回 false。 */
+    private fun completeLine(out: MutableList<JsonObject>): Boolean {
+        val prefix = dataPrefix(lineBytes, lineLength)
+        if (prefix >= 0) {
+            byteDataBytes += lineLength - prefix
+            if (byteDataBytes > FRAME_DATA_MAX_BYTES) return false
+        }
+        val text = decoder.decode(lineBytes, 0, lineLength) + decoder.flush()
+        lineLength = 0
+        linesSeen += 1
+        line(text)?.let(out::add)
+        return true
+    }
 
     /** 增量喂入一块文本，返回这一块里完成的条目。 */
     @Suppress("ReturnCount") // 已超限、逐行、半行超限依次返回
@@ -68,11 +180,16 @@ class AgentSse {
         return tooLarge()
     }
 
-    /** 连接正常结束：没遇到空行的尾帧不派发（只丢弃半行与未完成的帧）。 */
+    /** 连接正常结束：没遇到空行的尾帧不派发（只丢弃半行与未完成的帧）。字节入口的半行、CR 状态、BOM 判定与解码器一并清掉。 */
     fun finish(): List<JsonObject> {
         buffer.setLength(0)
         pendingBytes = 0
         reset()
+        lineLength = 0
+        lastWasCr = false
+        byteDataBytes = 0
+        bomMatched = -1
+        decoder.finish()
         return emptyList()
     }
 
@@ -81,6 +198,7 @@ class AgentSse {
         id = null
         data = null
         dataBytes = 0
+        byteDataBytes = 0
     }
 
     @Suppress("ReturnCount") // 空行、注释、字段依次处理
@@ -139,6 +257,31 @@ class AgentSse {
 
         /** 半行判定时给字段名与冒号空格留的余量（`data: `）。 */
         private const val LINE_PREFIX_SLACK = 16L
+
+        /** 字节入口的半行上限（G22：64 KiB + 16）。 */
+        const val MAX_LINE_BYTES = FRAME_DATA_MAX_BYTES + LINE_PREFIX_SLACK
+        private const val LINE_INITIAL = 256
+        private const val LF: Byte = 0x0A
+        private const val CR: Byte = 0x0D
+        private val BOM_BYTES = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+        private val DATA_NAME = byteArrayOf(0x64, 0x61, 0x74, 0x61)
+        private const val COLON: Byte = 0x3A
+        private const val SPACE: Byte = 0x20
+
+        /** 「data」字段行的值起点（字段名 data、冒号、可选一个空格之后）；不是 data 行为 -1。 */
+        @Suppress("ReturnCount") // 名字、只有名字、冒号、空格依次返回
+        private fun dataPrefix(
+            raw: ByteArray,
+            length: Int,
+        ): Int {
+            if (length < DATA_NAME.size) return -1
+            for (k in DATA_NAME.indices) if (raw[k] != DATA_NAME[k]) return -1
+            if (length == DATA_NAME.size) return DATA_NAME.size
+            if (raw[DATA_NAME.size] != COLON) return -1
+            val afterColon = DATA_NAME.size + 1
+            return if (length > afterColon && raw[afterColon] == SPACE) afterColon + 1 else afterColon
+        }
+
         private const val PING_COMMENT = "ping"
         private const val FIELD_EVENT = "event"
         private const val FIELD_ID = "id"
