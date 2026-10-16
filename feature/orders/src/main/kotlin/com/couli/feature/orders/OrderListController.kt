@@ -3,9 +3,11 @@ package com.couli.feature.orders
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
 import com.couli.core.network.LocalRejectReason
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
+import com.couli.core.network.SessionIdentity
 import com.couli.core.orders.OrderConditions
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderErrorAction
@@ -99,7 +101,7 @@ data class OrderListSnapshot(
  * 当前会话与固定归属、已显示数据的身份：不一致就先作废旧列表（清结果、条件回默认，通知页面清搜索框等），再按新会话重取，不把旧数据绑到新会话。
  * 会话通知是否已处理按「最近一次处理的会话通知 / 清理」（[noticedEpoch]）判断，不看最近一次请求的世代。
  */
-@Suppress("TooManyFunctions") // 页面每个入口一个函数
+@Suppress("TooManyFunctions", "LargeClass") // 页面每个入口一个函数；统一的身份判定与恢复入口（FU-AND-0717 第 3 轮）放在同一个执行器里
 class OrderListController(
     private val api: PageApi,
     private val env: OrderEnv,
@@ -113,7 +115,7 @@ class OrderListController(
     private var current = 0L
 
     /** 本页查询与请求的固定归属（构造时一次性取；只在会话清理、作废旧列表时重取）。 */
-    private var owner = Owner(env.sessionEpoch(), env.account())
+    private var owner = Owner.of(env.identity())
 
     /** 最近一次处理过的会话通知 / 清理所对应的会话世代（不随请求变化）。 */
     private var noticedEpoch = owner.epoch
@@ -123,6 +125,19 @@ class OrderListController(
 
     /** 发现身份已变、作废了旧列表时通知页面（清搜索框、半屏、锚点与待执行的恢复，待跟单卡）。 */
     var onInvalidated: () -> Unit = {}
+
+    /**
+     * 本页按一份已确认快照接管了归属（FU-AND-0717 第 3 轮整体重理：未知期建的页第一次确认账号，或分区第一次确认，R2-02）。[byUser] 为这次接管发生在
+     * 用户入口里（用户已接管页面，恢复记录不得再覆盖）。页面据此做尚未完成的恢复决策（[reopenAdopted] / [resumeAfterAdopt]）。
+     */
+    var onAdopted: (identity: SessionIdentity, byUser: Boolean) -> Unit = { _, _ -> resumeAfterAdopt() }
+
+    /**
+     * 最近一次第一页加载因身份中止（未知期建的页、会话已换代而还没确认新身份；FU-AND-0717 第 3 轮）：页面停在可重试的错误态（不是无出口的加载中），
+     * 身份确认（App 下发或【重试】取一份快照）后按当前条件补取。
+     */
+    var identityAborted: Boolean = false
+        private set
 
     private var left = false
     private var opened = false
@@ -152,6 +167,74 @@ class OrderListController(
     /** 本页固定归属的会话世代。 */
     val ownerEpoch: Long get() = owner.epoch
 
+    /** 本页固定归属取得时身份已知（F-X-19 补充：未知期间建的页延后恢复决策，身份已知时接管，[onIdentityConfirmed]）。 */
+    val ownerKnown: Boolean get() = owner.known
+
+    /** 本页固定归属的持久化登录世代（恢复记录、缓存的分区；与账号同一份快照）。 */
+    val ownerLoginEpoch: String? get() = owner.loginEpoch
+
+    /**
+     * 本页固定归属与一份快照 [identity] 的比较（FU-AND-0717 第 3 轮整体重理：唯一的判定，[SessionIdentity.verdictFor]，含持久化世代）。只比较，不赋值。
+     */
+    fun verdict(identity: SessionIdentity): IdentityVerdict = identity.verdictFor(owner.account, owner.epoch, owner.loginEpoch)
+
+    /**
+     * App 下发的一份已确认快照（会话判据没变，F-X-19 补充三 ②；FU-AND-0717 第 3 轮统一的页面恢复入口）：按本页的判定——已确认换代按它重置（同
+     * [onSessionChanged]）；第一次确认（未知期建的页、分区第一次确认）按它接管归属并交页面完成恢复决策；同一身份而最近一次加载因身份中止则补取；未知不动。
+     * 返回结论（页面据此清本页状态）。
+     */
+    fun onIdentityConfirmed(identity: SessionIdentity): IdentityVerdict {
+        if (left) return IdentityVerdict.UNKNOWN
+        val verdict = verdict(identity)
+        when (verdict) {
+            IdentityVerdict.CHANGED -> resetForSession(force = true, identity)
+            IdentityVerdict.ADOPT -> adopt(identity, byUser = false)
+            IdentityVerdict.SAME -> if (identityAborted && opened) load(newRound = false)
+            IdentityVerdict.UNKNOWN -> Unit
+        }
+        return verdict
+    }
+
+    /**
+     * 按一份已确认快照接管归属（[IdentityVerdict.ADOPT]）：账号第一次确认时作废在途、清掉游标（此前没有发布过数据）；分区第一次确认时同一账号同一世代，
+     * 已显示的结果照旧。之后交页面做恢复决策（[onAdopted]）。
+     */
+    private fun adopt(
+        identity: SessionIdentity,
+        byUser: Boolean,
+    ) {
+        if (owner.account == null) {
+            seq += 1
+            current = seq
+            cancelAll()
+            nextCursor = null
+        }
+        owner = Owner.of(identity)
+        noticedEpoch = owner.epoch
+        onAdopted(identity, byUser)
+    }
+
+    /** 接管之后按页面决策出的条件重开：[restored] 为保存的条件（不算新一轮），否则按 [routeScope] 的默认条件。 */
+    fun reopenAdopted(
+        routeScope: String?,
+        restored: OrderConditions?,
+    ) {
+        if (left) return
+        query = if (restored != null) OrderQuery.restore(restored) else OrderQuery.initial(routeScope)
+        update { it.reset(query.conditions()).copy(toast = null) }
+        if (opened) {
+            load(newRound = restored == null)
+        } else {
+            prepared = true
+            preparedRestored = restored != null
+        }
+    }
+
+    /** 接管之后保留当前条件（用户已接管、或没有可恢复的记录）：最近一次加载因身份中止时按当前条件补取，否则不动（不清空已显示的列表）。 */
+    fun resumeAfterAdopt() {
+        if (!left && opened && identityAborted) load(newRound = false)
+    }
+
     init {
         // 页面的禁用状态跟会话级的那一份（待跟单查询、关闭、详情收到的 42901 也让本页置灰）
         scope.launch { gate.blocked.collect { b -> if (!left) update { it.copy(blocked = b) } } }
@@ -164,12 +247,14 @@ class OrderListController(
     fun open(
         routeScope: String?,
         restored: OrderConditions? = null,
+        identity: SessionIdentity? = null,
     ) {
         if (opened || left) return
         opened = true
-        // 打开前会话已换代（通知还没到）：先按新会话重置，不把保存的旧条件交给新会话
-        if (sessionStale()) {
-            invalidateStale()
+        // 打开前会话已确认换代（通知还没到）：先按新会话重置，不把保存的旧条件交给新会话。只用一份快照（调用方已取得的那一份优先，R2-01），未知不决策
+        val id = identity ?: env.identity()
+        if (entryVerdict(id) == IdentityVerdict.CHANGED) {
+            invalidateStale(id)
             return
         }
         if (!prepared) {
@@ -197,8 +282,11 @@ class OrderListController(
     /** 已开始取数（页面打开过，或恢复等待期间用户已发起新查询）。 */
     val isOpen: Boolean get() = opened
 
-    /** 当前会话已不是本页的固定归属、而会话通知 / 清理还没到（换号窗口）。只比较，不赋值。 */
-    fun ownerUnnoticed(): Boolean = env.sessionEpoch() != owner.epoch || env.account() != owner.account
+    /**
+     * 一份快照 [identity] 是否说明本页固定归属已确认换代（第 1 轮修复 R1-02 / R1-03；第 3 轮统一为 [verdict]）：快照未知时判不清，返回 false（调用方
+     * 延后决策）。只比较，不赋值。
+     */
+    fun ownerChanged(identity: SessionIdentity): Boolean = verdict(identity) == IdentityVerdict.CHANGED
 
     /**
      * 换号窗口里的恢复等待结束（F-AND-30，FU-AND-0715）：不打开、不发请求；丢掉保存的旧条件（含搜索词），条件回默认；会话通知 / 清理到达时
@@ -283,32 +371,40 @@ class OrderListController(
         return true
     }
 
-    /**
-     * 页面身份没建立（F-AND-28）：本页固定归属的账号为空、却是已登录（构造时账号读不出），这时停在可恢复的错误态。
-     * 页面入口据此决定是否走 [rebuildIdentity]（第 1 轮评审 R1-03）。
-     */
-    val identityUnbound: Boolean get() = !left && owner.account == null && env.loggedIn()
-
-    /**
-     * 身份初始化失败后的重建（第 1 轮评审 R1-03；页面的【重试】、下拉刷新在渲染身份只差「账号此前读不出」时调用）：只在本页仍在、固定归属账号为空、
-     * 登录世代仍是本页固定的那一代（[ownerEpoch]）、此刻账号已读得出时执行——作废在途、清空结果与条件、通知页面换渲染身份（[onInvalidated]），
-     * 再按此刻的会话重取固定归属并取第一页（与 [invalidateStale] 同一出口）。账号仍读不出、登录世代已变（交给会话通知）都不做，返回 false。
-     */
-    fun rebuildIdentity(): Boolean {
-        if (!identityUnbound || env.sessionEpoch() != owner.epoch || env.account() == null) return false
-        invalidateStale()
-        return true
-    }
-
     /** 【重试】：整页失败重取第一页；翻页失败重试翻页；stale 状态下翻页的【重试】重取第一页。 */
     fun retry(): Boolean =
         when {
-            left || invalidatedStale() || blockedOrLeft() -> false
+            left -> false
+
+            // 加载因身份中止（FU-AND-0717 第 3 轮）：用户点【重试】取一份快照走统一的恢复入口（第一次确认即接管并补取；仍未知停在可重试的错误态）
+            identityAborted -> retryIdentity()
+
+            invalidatedStale() || blockedOrLeft() -> false
+
             s.phase == OrderListPhase.ERROR -> load(newRound = false).let { true }
+
             s.staleAt != null -> refresh()
+
             s.loadMoreError != null -> loadMore()
+
             else -> false
         }
+
+    /** [retry] 的身份恢复：一份快照；已确认换代按它重置，第一次确认接管（用户入口），同一身份补取；未知仍停在错误态（换一次提示）。 */
+    private fun retryIdentity(): Boolean {
+        val id = env.identity()
+        when (entryVerdict(id)) {
+            IdentityVerdict.CHANGED -> invalidateStale(id)
+
+            // 【重试】不算接管恢复（条件没变）：页面按是否已被接管决策，补取在接管里做
+            IdentityVerdict.ADOPT -> adopt(id, byUser = false)
+
+            IdentityVerdict.SAME -> if (!blockedOrLeft()) load(newRound = false)
+
+            IdentityVerdict.UNKNOWN -> if (!blockedOrLeft()) load(newRound = false)
+        }
+        return true
+    }
 
     /** 加载更多：已到底、正在加载、下拉刷新进行中（新一轮还没回来）、42901 禁用中、显示的是缓存时不做（返回 false）。 */
     @Suppress("ReturnCount")
@@ -325,7 +421,11 @@ class OrderListController(
         update { it.copy(loadingMore = true, loadMoreError = null) }
         scope.launch {
             val result = send(request, call)
-            if (!accept(request)) return@launch
+            if (!accept(request)) {
+                // 仍是当前请求、只是本进程登录世代已变（换代还没确认）：结束「加载中」，不停在没有出口的翻页加载
+                if (!left && current == request.seq) update { it.copy(loadingMore = false) }
+                return@launch
+            }
             owners.clear()
             nextPageDone(request, result)
         }
@@ -393,13 +493,13 @@ class OrderListController(
             return
         }
         if (owner.account == null) {
-            // 页面身份没建立（F-AND-28，APP-09 共性第 65 条）：已登录却读不出账号——可恢复的初始化失败。不以 expectedAccount = null 发请求、不读写
-            // 缓存、不发布订单数据；【重试】等入口的身份检查（[invalidatedStale]）发现账号已读得出时先清空、再重新取得固定归属
+            // 页面身份没建立（F-AND-28，APP-09 共性第 65 条：未知期建的页）：不以 expectedAccount = null 发请求、不读写缓存、不发布订单数据；停在可重试的
+            // 错误态并记下（FU-AND-0717 第 3 轮），身份确认（App 下发 / 【重试】的一份快照）后补取
             begin()
-            val view = errorView(OrderErrorAction.LIST_FIRST, ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE), hasCache = false)
-            update { it.reset(conditions).copy(phase = OrderListPhase.ERROR, error = view, round = nextRound(it, newRound)) }
+            abortForIdentity(conditions, newRound)
             return
         }
+        identityAborted = false
         if (gate.active) {
             begin()
             update { it.reset(conditions).copy(phase = OrderListPhase.ERROR, error = blockedError(), round = nextRound(it, newRound)) }
@@ -425,12 +525,17 @@ class OrderListController(
         }
         scope.launch {
             val result = send(request, call)
-            if (!accept(request)) return@launch
+            if (!accept(request)) {
+                // 仍是当前请求、只是本进程登录世代已变（换代还没确认，FU-AND-0717 第 3 轮）：不停在没有出口的加载中——旧会话的结果不显示，
+                // 进可重试的错误态（条件保留），身份确认后补取 / 按换代重置
+                if (!left && current == request.seq) abortForIdentity(conditions, newRound = false)
+                return@launch
+            }
             owners.clear()
             val data = (result as? ApiResult.Success)?.let { OrderJson.listData(it.data) }
             if (data != null) {
                 // 缓存归属用请求开始时的固定归属（不在结果到达时再读当前会话）
-                if (cacheable) cache?.writeList(request.account, conditions.scope, data, clock())
+                if (cacheable) cache?.writeList(request.account, conditions.scope, data, clock(), request.loginEpoch)
                 firstPageLoaded(request, data)
                 return@launch
             }
@@ -492,7 +597,7 @@ class OrderListController(
         previousCursor: String?,
     ) {
         val transport = result is ApiResult.TransportFailure
-        val cached = if (transport && cacheable) cache?.readList(request.account, s.scope) else null
+        val cached = if (transport && cacheable) cache?.readList(request.account, s.scope, request.loginEpoch) else null
         val view = errorView(OrderErrorAction.LIST_FIRST, result, hasCache = cached != null, filtered = filtered)
         when (view.actionRaw) {
             OrderErrorKind.SHOW_STALE -> {
@@ -593,6 +698,16 @@ class OrderListController(
         gate.active &&
             ((result is ApiResult.LocalReject && result.reason == LocalRejectReason.CALL_CANCELLED) || result is ApiResult.TransportFailure)
 
+    /** 身份暂时确认不了（未知期建的页、换代还没确认）：可重试的错误态并记下中止（条件保留，结果不发布）。 */
+    private fun abortForIdentity(
+        conditions: OrderConditions,
+        newRound: Boolean,
+    ) {
+        identityAborted = true
+        val view = errorView(OrderErrorAction.LIST_FIRST, ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE), hasCache = false)
+        update { it.reset(conditions).copy(phase = OrderListPhase.ERROR, error = view, round = nextRound(it, newRound)) }
+    }
+
     private fun blockedError(): OrderErrorView = OrderErrorView(OrderErrorKind.RETRY_AFTER, "error.${ResultSignals.RATE_LIMITED}")
 
     private fun startBlock(millis: Long) {
@@ -617,9 +732,15 @@ class OrderListController(
         round: Long? = null,
         identity: OrderListIdentity? = null,
     ): Boolean {
-        if (left || invalidatedStale()) return false
+        if (left) return false
+        // 一份快照（R2-01 同类）：确认换代先作废旧列表；身份暂时未知只拦下这次写入（不清、不作废）；已显示数据的身份用同一份快照核对
+        val now = env.identity()
+        if (entryVerdict(now) == IdentityVerdict.CHANGED) {
+            invalidateStale(now)
+            return false
+        }
         val shown = s.identity ?: return false
-        if (shown.epoch != env.sessionEpoch() || shown.account != env.account()) return false
+        if (!now.isOwnedBy(shown.account, shown.epoch)) return false
         if (identity != null && identity != shown) return false
         if (round != null && round != s.round) return false
         val row = s.items.firstOrNull { it.orderId == orderId } ?: return false
@@ -652,7 +773,7 @@ class OrderListController(
     @Suppress("ReturnCount") // 离开、行不在、单号种类不同逐项
     fun patch(detail: OrderDetail) {
         // 已显示的数据不属于当前会话（换代通知还没到）：不把新会话的详情接进旧列表
-        if (left || sessionStale()) return
+        if (left || entryVerdict(env.identity()) != IdentityVerdict.SAME) return
         val fresh = detail.summary.copy(actualFen = null, clawbackFen = null)
         val index = s.items.indexOfFirst { it.orderId == fresh.orderId }
         if (index < 0) return
@@ -674,26 +795,46 @@ class OrderListController(
      * 会话变了（登录、退出、换账号）：会话世代不同时作废全部在途请求、清掉旧账号的结果（不把旧账号的结果显示给新账号），条件回到默认，重新取第一页
      * （游客不发请求）。
      */
-    fun onSessionChanged() = resetForSession(force = false)
+    fun onSessionChanged() = onSessionChanged(null)
+
+    /**
+     * App 层用一份已确认的身份快照识别出会话换代（第 1 轮修复 R1-03：含本进程计数不变、只有持久化世代换了的情形；没给时本页取一份）：快照未知什么都不做
+     * （未知不决策）；说明归属已确认换代、或这一代的会话通知还没处理过（[noticedEpoch]）时按它重置——作废并取消在途请求、清掉旧结果与条件、按这份快照
+     * 重新绑定归属（不另读一次身份），再按新会话取第一页。
+     */
+    fun onSessionChanged(identity: SessionIdentity?) {
+        if (left) return
+        val id = identity ?: env.identity()
+        if (!id.known) return
+        if (verdict(id) == IdentityVerdict.CHANGED || id.loginEpoch != noticedEpoch) {
+            resetForSession(force = true, id)
+        } else {
+            onIdentityConfirmed(id)
+        }
+    }
 
     /**
      * 撤回同意、进入基本模式、切换环境（APP-08 共性第 36、38 条）：不论会话世代是否已经变化，同步作废在途请求、清掉已显示的结果与条件（含可能是
      * 完整订单号的搜索词），回到默认条件重新取（游客不发请求）。
      */
-    fun onCleanup() = resetForSession(force = true)
+    fun onCleanup() = resetForSession(force = true, env.identity(), cleanup = true)
 
     /**
      * 是否已处理过这一代会话的通知按 [noticedEpoch]（最近一次处理的会话通知 / 清理）判断，不看最近一次请求的世代：入口作废旧列表时重取了归属，
      * 之后到达的会话通知仍照常重置一次（R1-01）。
      */
     @Suppress("ReturnCount") // 离开、恢复等待中、同一会话三个出口
-    private fun resetForSession(force: Boolean) {
+    private fun resetForSession(
+        force: Boolean,
+        identity: SessionIdentity,
+        cleanup: Boolean = false,
+    ) {
         if (left) return
-        val now = env.sessionEpoch()
+        val now = identity.loginEpoch
         if (!opened) {
             // 恢复等待期间：丢掉旧账号保存的条件（含搜索词），等待结束后按默认条件打开（共性第 19、21 条）
             noticedEpoch = now
-            rebind()
+            rebind(identity, cleanup)
             if (prepared) {
                 preparedRestored = false
                 query = OrderQuery.initial(s.scope)
@@ -702,55 +843,83 @@ class OrderListController(
             // 换号窗口里推迟的打开（F-AND-30）：通知已到、归属已按新会话重取，此刻才按新会话默认条件取第一页（游客不发）
             if (openDeferredSet) {
                 openDeferredSet = false
-                open(openDeferred)
+                open(openDeferred, identity = identity)
             }
             return
         }
-        if (!force && now == noticedEpoch && !sessionStale()) return
+        if (!force && now == noticedEpoch && entryVerdict(identity) != IdentityVerdict.CHANGED) return
         noticedEpoch = now
-        rebind()
+        // 作废并取消旧请求（下面 load 里的 begin 同样会做；先做，免得旧结果在重置与新请求之间落地）
+        seq += 1
+        current = seq
+        cancelAll()
+        nextCursor = null
+        rebind(identity, cleanup)
         query = OrderQuery.initial(s.scope)
         // 上一账号的轻提示与结果一并清掉（不等新请求回来）
         update { it.reset(query.conditions()).copy(toast = null) }
         load(newRound = true)
     }
 
-    /** 当前会话与本页的固定归属、已显示数据的身份不一致（会话已换代、作废通知还没到）。只比较，不赋值。 */
-    @Suppress("ReturnCount") // 固定归属、没有数据、已显示身份逐项
-    private fun sessionStale(): Boolean {
-        val epoch = env.sessionEpoch()
-        val account = env.account()
-        if (epoch != owner.epoch || account != owner.account) return true
-        val shown = s.identity ?: return false
-        return shown.epoch != epoch || shown.account != account
-    }
-
-    /** 入口的身份检查：不一致就先作废旧列表并返回 true（这次操作不执行）。 */
-    private fun invalidatedStale(): Boolean {
-        if (left || !sessionStale()) return false
-        invalidateStale()
-        return true
+    /**
+     * 入口的判定（一份快照 [identity]）：本页固定归属的 [verdict]；归属没变时再用同一份快照核对已显示数据的身份（APP-08 共性第 44 条）。只比较，不赋值。
+     */
+    private fun entryVerdict(identity: SessionIdentity): IdentityVerdict {
+        val verdict = verdict(identity)
+        val shown = s.identity
+        val shownMoved = verdict == IdentityVerdict.SAME && shown != null && !identity.isOwnedBy(shown.account, shown.epoch)
+        return if (shownMoved) IdentityVerdict.CHANGED else verdict
     }
 
     /**
-     * 作废旧列表（R1-01）：作废并取消在途请求，同步清掉已显示的结果、游标与条件（含搜索词），通知页面清搜索框等；再按此刻的会话重取固定归属并
-     * 取默认条件的第一页（游客不发）。之后到达的会话通知仍会再重置一次（[noticedEpoch] 不变）。
+     * 入口的身份检查（FU-AND-0717 第 3 轮整体重理：只取一份快照，R2-01）：已确认换代就先按这份快照作废旧列表并返回 true（这次操作不执行）；本页是未知期
+     * 建的、或分区第一次确认，按这份快照接管（用户入口：恢复记录不再覆盖用户的操作）后继续；身份暂时未知不决策（不清、不作废），照常继续。
      */
-    private fun invalidateStale() {
+    private fun invalidatedStale(): Boolean {
+        if (left) return false
+        val id = env.identity()
+        return when (entryVerdict(id)) {
+            IdentityVerdict.CHANGED -> {
+                invalidateStale(id)
+                true
+            }
+
+            IdentityVerdict.ADOPT -> {
+                adopt(id, byUser = true)
+                false
+            }
+
+            else -> {
+                false
+            }
+        }
+    }
+
+    /**
+     * 作废旧列表（R1-01）：作废并取消在途请求，同步清掉已显示的结果、游标与条件（含搜索词），通知页面清搜索框等；再按发现换代的那一份快照 [identity]
+     * 重取固定归属（不另读一次）并取默认条件的第一页（游客不发）。之后到达的会话通知仍会再重置一次（[noticedEpoch] 不变）。
+     */
+    private fun invalidateStale(identity: SessionIdentity) {
         seq += 1
         current = seq
         cancelAll()
         nextCursor = null
-        rebind()
+        rebind(identity)
         query = OrderQuery.initial(s.scope)
         update { it.reset(query.conditions()).copy(toast = null) }
         onInvalidated()
         if (opened) load(newRound = true)
     }
 
-    /** 重取固定归属（只在会话清理与作废旧列表时；同一次读取取账号与世代）。 */
-    private fun rebind() {
-        owner = Owner(env.sessionEpoch(), env.account())
+    /**
+     * 重取固定归属（只在会话清理、作废旧列表时）：用调用方那一份快照——已知才换，未知保留原归属（不决策）；撤回 / 切环境的清理（[cleanup]）是明确的
+     * 清理事件，照这份快照换（未知即按未知期建的页处理）。
+     */
+    private fun rebind(
+        identity: SessionIdentity,
+        cleanup: Boolean = false,
+    ) {
+        if (identity.known || cleanup) owner = Owner.of(identity)
     }
 
     /**
@@ -766,16 +935,26 @@ class OrderListController(
 
     // ---------------------------------------------------------------- 请求
 
-    /** 本页的固定归属：账号 + 会话世代。 */
+    /**
+     * 本页的固定归属：一份身份快照（F-X-19 补充二）里的会话世代、账号、持久化登录世代（缓存分区，F-X-17）与「身份是否已知」。
+     */
     private data class Owner(
         val epoch: Long,
         val account: String?,
-    )
+        val loginEpoch: String? = null,
+        val known: Boolean = true,
+    ) {
+        companion object {
+            fun of(identity: SessionIdentity): Owner = Owner(identity.loginEpoch, identity.account, identity.partition, identity.known)
+        }
+    }
 
     private class Request(
         val seq: Long,
         val epoch: Long,
         val account: String?,
+        /** 请求开始时固定的持久化登录世代（缓存写入的分区，F-X-17）。 */
+        val loginEpoch: String?,
     ) {
         /** 这个请求带回的结果的固定身份。 */
         fun identity(version: Long) = OrderListIdentity(account, epoch, version)
@@ -786,7 +965,7 @@ class OrderListController(
         seq += 1
         current = seq
         cancelAll()
-        return Request(seq, owner.epoch, owner.account)
+        return Request(seq, owner.epoch, owner.account, owner.loginEpoch)
     }
 
     private fun accept(request: Request): Boolean = !left && current == request.seq && env.sessionEpoch() == request.epoch

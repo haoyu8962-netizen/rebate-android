@@ -27,6 +27,17 @@ interface OrderEnv {
     /** 当前有效会话的账号（缓存按它隔离；会话读不出时为 null，不读不写缓存）。 */
     fun account(): String?
 
+    /**
+     * 一份固定的身份快照（F-X-17 / F-X-19 补充二，FU-AND-0717）：已知与否、账号、会话世代与持久化登录世代（缓存 / 恢复记录的分区）同一次取得。页面与请求的
+     * 归属只用这一份，不拼接 [sessionEpoch] 与 [account] 两次读取。缺省（旧单测）按两次读取拼出、没有分区世代。
+     */
+    fun identity(): com.couli.core.network.SessionIdentity {
+        // 先取登录世代、再读账号（与 ApiClient.sessionIdentity 的「读取前世代」同一顺序）
+        val epoch = sessionEpoch()
+        return com.couli.core.network
+            .SessionIdentity(known = true, account = account(), loginEpoch = epoch, partition = null)
+    }
+
     /** /v1/config.help_links（生效配置：当前 → LKG → 包内）。 */
     fun helpLinks(): JsonObject?
 
@@ -94,6 +105,11 @@ class OrderDetailConfig(
     val rateGate: OrderRateGate? = null,
     /** 会话换代的入口交给 App（App 在会话通知里同步调用：清掉已显示的详情并按新会话重取，APP-08 共性第 1 条）。 */
     val bindSession: (onSessionChanged: () -> Unit) -> Unit = {},
+    /**
+     * 统一的页面恢复入口交给 App（FU-AND-0717 第 3 轮，R2-03）：App 每次身份已知的检查都把那一份快照交来（[changed] 为 App 判定会话换代）。登记了它的页面
+     * 由 App 只经它通知（不再调 [bindSession] 的入口）。
+     */
+    val bindIdentity: (onIdentity: (identity: com.couli.core.network.SessionIdentity, changed: Boolean) -> Unit) -> Unit = { },
     /**
      * APP-10 G27：【问问 AI】（App 给；只在 Agent 可用的构建与环境里有，Release 为 null 不显示）。App 在来源页构造时固定归属与页面票据、渲染时固定 order_id，
      * 点击只把 {order_id} 交给 Agent 页（不自动发送，附在用户发的第一条上）。「为什么没返利」仍直接显示、不进 AI（BR-AI-09）。

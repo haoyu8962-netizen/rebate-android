@@ -60,6 +60,7 @@ import com.couli.core.designsystem.ProductThumbnail
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.couliCard
+import com.couli.core.network.IdentityVerdict
 import com.couli.core.orders.CreditPeriodText
 import com.couli.core.orders.OrderAmountCells
 import com.couli.core.orders.OrderDetail
@@ -107,6 +108,17 @@ class OrderDetailViewModel(
             restoreJob?.cancel()
             restoreJob = null
             controller.onSessionChanged()
+        }
+        // App 下发的已确认快照（FU-AND-0717 第 3 轮统一的页面恢复入口，R2-03）：会话换代按它清空重取；判据没变时第一次确认接管、加载曾因身份中止的补取
+        initial.bindIdentity { identity, changed ->
+            val verdict = if (changed) IdentityVerdict.CHANGED else controller.verdict(identity)
+            if (verdict == IdentityVerdict.CHANGED) {
+                restoreJob?.cancel()
+                restoreJob = null
+                controller.onSessionChanged(identity)
+            } else {
+                controller.onIdentityConfirmed(identity)
+            }
         }
         val restored = saved.get<Boolean>(K_STARTED) == true
         saved[K_STARTED] = true

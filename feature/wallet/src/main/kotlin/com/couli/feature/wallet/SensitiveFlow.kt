@@ -114,9 +114,11 @@ interface FlowHost {
  * - 结果未知 → 待确认：新的提交入口置灰，只有【确认上一笔】（原键原体重发，二次验证照常）与【放弃上一笔】（二次确认后作废）；
  * - 待确认状态的来源始终是本机未决记录（[refreshPending]），进入页面、回前台、登录成功、会话换代后都按当前账号重读；不按时间解除；别的账号的不读不发；
  * - 提交、确认、放弃离开页面不取消（未决记录兜底）：页面出栈后迟到的响应不改页面，结论只落到未决记录（网络层结算）。
+ * - F-AND-37（FU-AND-0717）：复用的 step-up token 按账号 + 表单 / 待确认意图固定的登录世代 + 此刻的会话作用域 + action 核对（StepUpTokenCache，与 APP-13a 共用），
+ *   换世代、换作用域后旧 token 不复用。
  * 只在主线程使用。
  */
-@Suppress("TooManyFunctions", "LongParameterList", "ReturnCount", "ComplexCondition") // 提交、二次验证、确认、放弃、恢复各一组入口；依赖逐项给；逐项提前返回
+@Suppress("TooManyFunctions", "LongParameterList", "ReturnCount", "ComplexCondition", "LargeClass") // 提交、二次验证、确认、放弃、恢复、接管各一组入口；依赖逐项给；逐项提前返回
 class SensitiveFlow(
     private val deps: WalletDeps,
     private val scope: CoroutineScope,
@@ -217,14 +219,16 @@ class SensitiveFlow(
             update { it.copy(error = notice("error.42901")) }
             return
         }
-        // 会话账号读不出：不能确定这次提交属于谁，不发（只做判断，不从当前会话取账号）
-        if (deps.env.account() == null) {
+        // 一份身份快照（FU-AND-0717 第 3 轮整体重理：不先读账号、再读世代与账号）。会话账号读不出（身份暂时未知、没有会话）：不能确定这次提交属于谁，
+        // 不发（只做判断，不从当前会话取账号）
+        val now = deps.env.identitySnapshot()
+        if (!now.known || now.account == null) {
             update { it.copy(error = notice(WalletErrors.NETWORK_KEY)) }
             return
         }
         // 表单所属身份先于生成键、读取 token 核对（共性第 52 条，Android R3-01）：会话已换而清空通知还没执行时，旧表单不发、不登记到新账号；
         // 之后的键、token、未决记录与网络层 expectedAccount 都用这份固定身份（共性第 65 条：账号取自表单身份，不取自当前会话）
-        if (!owns(owner)) return
+        if (owner != formOwner || !now.isOwnedBy(owner.account, owner.epoch)) return
         val account = owner.account ?: return
         val click = Click(account, owner.epoch)
         val key = reuseKey ?: deps.newKey()
@@ -233,17 +237,26 @@ class SensitiveFlow(
         lastSummary = summary
         lastClick = click
         update { it.copy(phase = FlowState.SUBMITTING, error = null, fieldErrors = emptyList(), fieldErrorKey = null, guideRoute = null) }
-        send(click, key, body, summary, token = deps.tokens.take(action, account, deps.clock()), replayed = false)
+        send(click, key, body, summary, deps.tokens.take(action, account, deps.clock(), click.epoch, deps.env.sessionScope()), false)
     }
 
     /** 渲染快照的身份就是本流程当前的表单身份，且仍是当前会话（共性第 52 条）。 */
     private fun owns(owner: FormOwner): Boolean = owner == formOwner && owner.current(deps.env)
 
+    /** 写请求结局的共享结算是否仍属于点击时的会话：本进程登录世代没变、一份快照没有确认换代（未知照常结算，F-X-22）。 */
+    private fun settleable(
+        account: String,
+        epoch: Long,
+    ): Boolean =
+        deps.env.sessionEpoch() == epoch &&
+            deps.env.identitySnapshot().verdictFor(account, epoch, null, trackPartition = false) !=
+            com.couli.core.network.IdentityVerdict.CHANGED
+
     /** 点击时的会话与账号仍是当前的（同一账号重新登录也算换代）。 */
     private fun owned(
         account: String,
         epoch: Long,
-    ): Boolean = deps.env.sessionEpoch() == epoch && deps.env.account() == account
+    ): Boolean = deps.env.ownedBy(account, epoch)
 
     /**
      * [replayed]：这次是本次用户提交在二次验证之后的原键重放（10003 重放预算已用，APP-09 共性第 16 条）。请求在会话级作用域执行（共性第 40 条），
@@ -309,7 +322,9 @@ class SensitiveFlow(
         outcome: Outcome?,
         countToken: Boolean,
     ) {
-        if (!owned(account, epoch)) return
+        // F-X-22（窄修三核对）：已发出的写请求的结局只在「确认换代」时不结算；身份暂时读不出（同一登录世代）照常结算——成功不能因一次读取失败
+        // 丢掉共享结算（钱包失效通知、token 计数），页面结论另由 [onSubmitResult] 按本进程登录世代落地，不显示成可重试错误
+        if (!settleable(account, epoch)) return
         if (countToken && result is ApiResult.Success) deps.tokens.onSuccess(action)
         outcome ?: return
         outcome.disableMillis?.let(gate::start)
@@ -408,7 +423,7 @@ class SensitiveFlow(
             update { it.copy(pendingNotice = notice(SensitiveOutcome.RETRY_LATER_KEY)) }
             return
         }
-        runConfirm(intent, deps.tokens.take(action, intent.account, deps.clock()))
+        runConfirm(intent, deps.tokens.take(action, intent.account, deps.clock(), intent.epoch, deps.env.sessionScope()))
     }
 
     private fun runConfirm(
@@ -416,7 +431,7 @@ class SensitiveFlow(
         token: String?,
     ) {
         // 二次验证之后续发：页面、会话与账号仍是点击时的才发（共性第 14 条）
-        if (!alive() || deps.env.sessionEpoch() != intent.epoch || deps.env.account() != intent.account) return
+        if (!alive() || !deps.env.ownedBy(intent.account, intent.epoch)) return
         val version = s.pendingVersion
         sentViewGen = viewGen
         markInFlight(true)
@@ -786,8 +801,9 @@ class SensitiveFlow(
     fun refreshPending() {
         if (!alive()) return
         // 只把本表单身份的记录放进本表单（共性第 65 条）：当前会话已不是固定身份（令牌已换、清空通知还没执行）时不读，读到别的账号的记录也不放进来
+        // 一份快照（FU-AND-0717 第 3 轮）：身份暂时未知、已换代都不读（不改已显示的待确认状态）；未知期取得的表单等接管（[adoptOwner]）之后再读
         val owner = formOwner
-        if (deps.env.sessionEpoch() != owner.epoch || deps.env.account() != owner.account) return
+        if (owner.verdict(deps.env.identitySnapshot()) != com.couli.core.network.IdentityVerdict.SAME) return
         val record =
             try {
                 deps.api.pendingFor(operationId)
@@ -860,6 +876,29 @@ class SensitiveFlow(
      * 下次提交用新键；按新会话的账号重读未决记录（旧账号的键不发、不展示，原账号再登录时恢复）。
      */
     fun onSessionChanged(owner: FormOwner) {
+        resetFor(owner)
+        if (deps.env.loggedIn()) {
+            runCatching { deps.api.restorePending() }
+            refreshPending()
+        }
+    }
+
+    /**
+     * 身份暂时未知期间取得的表单第一次确认（FU-AND-0717 第 3 轮整体重理，R2-04）：按发起页交来的那份快照换成已确认身份——不清已填内容、不动禁用期与
+     * 在途、不重放提交；只按新身份重读本机未决记录。返回是否换了。
+     */
+    fun adoptOwner(owner: FormOwner): Boolean {
+        if (formOwner.account != null || owner.account == null || owner.epoch != formOwner.epoch) return false
+        formOwner = owner
+        update { it.copy(owner = owner) }
+        if (deps.env.loggedIn()) {
+            runCatching { deps.api.restorePending() }
+            refreshPending()
+        }
+        return true
+    }
+
+    private fun resetFor(owner: FormOwner) {
         formOwner = owner
         reuseKey = null
         lastBody = null
@@ -870,10 +909,6 @@ class SensitiveFlow(
         stepUp.dismiss()
         localBusy = false
         mutable.value = FlowState(pendingVersion = s.pendingVersion + 1, owner = formOwner)
-        if (deps.env.loggedIn()) {
-            runCatching { deps.api.restorePending() }
-            refreshPending()
-        }
     }
 
     fun leave() {

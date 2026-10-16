@@ -104,6 +104,11 @@ class WalletReviewR2Test {
 
         override fun stepUpPhone(account: String) = "13800005678"
 
+        /** 会话作用域（FU-AND-0717 F-AND-37：token 按作用域隔离）。 */
+        var scope = "full"
+
+        override fun sessionScope() = scope
+
         val dirtyFor = mutableListOf<Pair<String, Long>>()
 
         override fun markWalletDirty(
@@ -262,6 +267,50 @@ class WalletReviewR2Test {
             .answer
             .complete(ok("""{"step_up_token":"fixture-step-up-token","expire_at":"2099-01-01T00:00:00+08:00"}"""))
         assertEquals("没有发出重放", 1, api.of(WithdrawController.OPERATION).size)
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0717 F-AND-37
+
+    /** 新建一张提现表单并提交一次，返回这次提交请求带的 step-up token。 */
+    private fun submitOnNewForm(): String? {
+        val before = api.of(WithdrawController.OPERATION).size
+        val body = """{"amount_fen":1000}"""
+        withdraw().flow.submit(body, body)
+        return api
+            .of(WithdrawController.OPERATION)
+            .drop(before)
+            .single()
+            .call.stepUpToken
+    }
+
+    /**
+     * F-AND-37：钱包 SensitiveFlow 的 step-up token 走与 APP-13a 共用的 StepUpTokenCache 按「账号 + 登录世代 + 作用域 + action」核对：验证通过写入时带世代与
+     * 作用域；同世代同作用域的下一张表单照常复用（对照）；同账号换了登录世代（会话通知还没到、缓存没清）或作用域变了，旧 token 不复用。
+     */
+    @Test
+    fun fuand0717_and37_aWalletStepUpTokenIsNotReusedAfterTheEpochOrScopeChanges() {
+        val controller = withdraw()
+        val body = """{"amount_fen":1000}"""
+        controller.flow.submit(body, body)
+        api
+            .of(WithdrawController.OPERATION)
+            .single()
+            .answer
+            .complete(fail(10003))
+        controller.flow.stepUp.onCodeChange("123456")
+        controller.flow.stepUp.verify()
+        val token = "fixture-step-up-token"
+        assertEquals("重放带验证得到的 token", token, api.of(WithdrawController.OPERATION)[1].call.stepUpToken)
+        assertEquals("按世代与作用域写入", token, deps.tokens.take("withdraw", "user-a", now, 1L, "full"))
+        // 对照：同账号、同世代、同作用域的下一张表单复用
+        assertEquals(token, submitOnNewForm())
+        // 作用域变了（同世代 full → deletion_only，缓存没清）：不复用
+        env.scope = "deletion_only"
+        assertNull("换作用域后旧 token 不复用", submitOnNewForm())
+        env.scope = "full"
+        // 同账号重新登录（世代 1 → 2）而会话通知还没执行（缓存没清）：不复用
+        env.epoch = 2L
+        assertNull("换世代后旧 token 不复用", submitOnNewForm())
     }
 
     // ---------------------------------------------------------------- R2-02

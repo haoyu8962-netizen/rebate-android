@@ -143,6 +143,12 @@ interface MeEnv {
 
     /** 「重新显示下单须知」成功：下单须知的已读缓存推进世代（鸿蒙 R1-10）。 */
     fun tipsReset() = Unit
+
+    /**
+     * 当前会话作用域（full / deletion_only；没有会话为空串）。F-X-14（FU-AND-0717）：受限登录（deletion_only）之后「我的」Tab 的自动资料同步（进入 Tab、
+     * 回前台、从子页返回、会话变化后重建）不请求 getMe；页面主动读取（下拉、【重试】、设置页、注销页）不受影响。缺省空串（不受限，旧单测）。
+     */
+    fun sessionScope(): String = ""
 }
 
 /** 写操作结果 → 向量形状的输入（kind ok / transport / error，code、data、headers.Retry-After、traceId、msg），交给 NicknameOutcome / AppealOutcome。 */
@@ -322,6 +328,9 @@ class MeTabEntry {
 
     /** 进入的序号：每次同步离开加 1（页面按它与身份重建执行器）。 */
     val entry: StateFlow<Long> = mutable
+
+    /** 此刻登记的执行器（只读；集成测试经它走页面主动读取的同一入口，FU-AND-0717）。 */
+    val bound: MeTabController? get() = current
 
     /** 页面登记这一次进入的执行器（组合提交之后、读取之前）。 */
     fun bind(controller: MeTabController) {

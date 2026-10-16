@@ -4,6 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +58,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -99,7 +103,9 @@ import com.couli.core.designsystem.MappedProductCard
 import com.couli.core.designsystem.ProductCardKeys
 import com.couli.core.designsystem.ProductCardList
 import com.couli.core.designsystem.ProductCardMapper
+import com.couli.core.designsystem.RestoreLanding
 import com.couli.core.designsystem.SkeletonProductCard
+import com.couli.core.designsystem.awaitLanding
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.ResultSignals
 import com.couli.generated.Sort
@@ -750,7 +756,11 @@ private fun ResultList(
     texts: SearchTexts,
     infoFocus: MutableMap<String, FocusRequester>,
 ) {
-    val listState = rememberLazyListState()
+    // F-X-20 / F-X-18（FU-AND-0717，模拟器实走发现）：进程重建后有待执行的一次性恢复时，列表自己不再按系统保存的旧位置恢复（rememberSaveable 的位置
+    // 在第一页只够几张卡时会被截到末尾，恢复任务把这次截断当成别人的移动而让位，锚点在第一页末尾时停在上一张卡）：从顶部开始，由恢复任务按锚点定位。
+    // 没有待恢复（配置重建、返回本页）照旧沿用保存的位置
+    val restoring = remember { model.pendingScroll != null }
+    val listState = if (restoring) remember { LazyListState() } else rememberLazyListState()
     // 只有开始了新一轮查询才回到顶部；返回本页、配置重建、系统回收后恢复（轮次没变）保留滚动位置（03 §10.4，A-R1-06、A-R2-03）
     LaunchedEffect(state.round) {
         if (model.scrolledRound != state.round) {
@@ -1027,13 +1037,22 @@ private fun RestoreScroll(
 
                     anchor.lastVisible < count - 1 || s.endReached || s.loadMoreError != null || s.blocked -> {
                         val reached = anchor.index < count - 1
-                        expectation.move(
-                            move = {
-                                // 滚动前复核页面实例与锚点（等布局期间出栈、被放弃的不滚）
-                                if (stillMine()) listState.scrollToItem(minOf(anchor.index, count - 1), if (reached) anchor.offset else 0)
-                            },
-                            landed = { listPosition(listState, model.state.value) },
-                        )
+                        val index = minOf(anchor.index, count - 1)
+                        val offset = if (reached) anchor.offset else 0
+                        // F-X-18（FU-AND-0717）：定位之后按真实布局确认落点再结束（布局滞后时等它追上再补发；帧上限内没确认按没确认结束）。确认期间
+                        // 接管判定照常（上面的持续比对）：别人的移动立即放弃，之后不再下发定位
+                        val step =
+                            awaitLanding(RestoreLanding(index, offset), { RestoreLanding.layoutOf(listState) }, ::stillMine) {
+                                expectation.move(
+                                    move = {
+                                        // 滚动前复核页面实例与锚点（等布局期间出栈、被放弃的不滚）
+                                        if (stillMine()) listState.scrollToItem(index, offset)
+                                    },
+                                    landed = { listPosition(listState, model.state.value) },
+                                )
+                            }
+                        val end = if (step == RestoreLanding.Step.CONFIRMED) RESTORE_LANDED else RESTORE_NOT_CONFIRMED
+                        if (step != null) model.restoreEnd = end
                         if (model.pendingScroll === anchor) model.scrollRestored()
                         true
                     }
@@ -1060,7 +1079,18 @@ private fun ColumnScope.ResultItems(
 ) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxWidth().weight(1f).testTag(SearchTags.RESULTS),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .testTag(SearchTags.RESULTS)
+                // 第 1 轮修复 R1-06：恢复期间手指按下即算用户接管（未移动也取消），按此刻视口记位置；不消费事件
+                .pointerInput(model) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        if (model.pendingScroll != null) model.restoreTakenOver(viewportAnchor(listState))
+                    }
+                },
         contentPadding = PaddingValues(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {

@@ -40,9 +40,14 @@ data class OAuthLoginOutcome(
     val provider: String = "",
     val held: Boolean = false,
     val login: LoginOutcome? = null,
+    /** [DEBUG_ONLY] 时要提示的原文（[ThirdPartyAuthAdapter.debugHint]）。 */
+    val hint: String? = null,
 ) {
     companion object {
         const val LOGGED_IN = LoginOutcome.LOGGED_IN
+
+        /** F-X-12：Debug / Staging 的第三方入口没开本机假服务：只提示、不发请求。 */
+        const val DEBUG_ONLY = "debug_only"
         const val CANCELLED = "cancelled"
         const val UNAVAILABLE = "unavailable"
         const val TIMEOUT = "timeout"
@@ -108,7 +113,8 @@ class OAuthLoginService(
         adapters[OAuthProvider.WECHAT]?.let { wechat ->
             // BR-ID-04 细则：检测失败、结果未知时照常显示（再与适配器可用性相与）
             val installed = runCatching { wechat.installed() }.getOrNull() ?: true
-            if (ThirdPartyButtons.wechatVisible(PLATFORM, installed, available(wechat))) out += OAuthProvider.WECHAT
+            // F-X-12：Debug / Staging 的假适配器没开假服务时也显示（点击只提示，[loginWith]）
+            if (ThirdPartyButtons.wechatVisible(PLATFORM, installed, available(wechat) || hint(wechat) != null)) out += OAuthProvider.WECHAT
         }
         adapters[OAuthProvider.APPLE]?.let { apple ->
             if (ThirdPartyButtons.appleVisible(PLATFORM) && available(apple)) out += OAuthProvider.APPLE
@@ -122,6 +128,9 @@ class OAuthLoginService(
         abandon?.complete(Unit)
     }
 
+    /** F-X-12：[provider] 是 Debug / Staging 专用入口且此刻不可用（点击只提示、不发请求）。 */
+    fun debugOnly(provider: String): Boolean = adapters[provider]?.let { !available(it) && hint(it) != null } == true
+
     /** [consentAtMillis]：勾选或确认框同意的时刻（同短信登录，BR-ID-04）。 */
     suspend fun loginWith(
         provider: String,
@@ -129,6 +138,10 @@ class OAuthLoginService(
     ): OAuthLoginOutcome {
         val adapter = adapters[provider]
         val operationId = OAuthProvider.loginOperation(provider)
+        // F-X-12：Debug / Staging 入口此刻不可用（没开本机假服务）——先于协议确认与任何请求，只提示
+        if (adapter != null && !available(adapter)) {
+            hint(adapter)?.let { return OAuthLoginOutcome(OAuthLoginOutcome.DEBUG_ONLY, provider = provider, hint = it) }
+        }
         if (adapter == null || operationId == null || !available(adapter)) {
             return OAuthLoginOutcome(OAuthLoginOutcome.UNAVAILABLE, textKey = OAuthLoginOutcome.UNAVAILABLE_KEY, provider = provider)
         }
@@ -414,6 +427,8 @@ class OAuthLoginService(
         }
 
     private fun available(adapter: ThirdPartyAuthAdapter): Boolean = runCatching { adapter.adapterAvailable() }.getOrDefault(false)
+
+    private fun hint(adapter: ThirdPartyAuthAdapter): String? = runCatching { adapter.debugHint() }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     @Suppress("TooGenericExceptionCaught", "SwallowedException") // 适配器抛错一律按第三方报错
     private suspend fun safeAuthorize(

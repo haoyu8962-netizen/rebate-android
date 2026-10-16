@@ -280,7 +280,10 @@ class LoginViewModel(
     fun onLogin() = requireAgreement(::login)
 
     /** 第三方登录按钮（与短信登录同一个协议确认框，BR-ID-04）。 */
-    fun onThirdParty(provider: String) = requireAgreement { oauthLogin(provider) }
+    fun onThirdParty(provider: String) {
+        // F-X-12（FU-AND-0717）：Debug / Staging 入口没开本机假服务 → 不要求勾选协议、直接只提示（[OAuthLoginService.loginWith] 先于任何请求返回）
+        if (config.oauth?.debugOnly(provider) == true) oauthLogin(provider) else requireAgreement { oauthLogin(provider) }
+    }
 
     val thirdParty: List<String> get() = if (config.oauth == null) emptyList() else config.thirdParty
 
@@ -459,6 +462,11 @@ class LoginViewModel(
 
             OAuthLoginOutcome.CANCELLED, LoginOutcome.STALE, LoginOutcome.BUSY -> {
                 Unit
+            }
+
+            // F-X-12：Debug / Staging 的第三方入口没开本机假服务——只提示（原文来自 Debug 源码集的假适配器），不发请求
+            OAuthLoginOutcome.DEBUG_ONLY -> {
+                outcome.hint?.let(::toast)
             }
 
             else -> {

@@ -1,6 +1,5 @@
 package com.couli.feature.web
 
-import android.os.SystemClock
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -80,46 +79,25 @@ class WebContainersReviewR1Test {
             WebView(activity).also { activity.root.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         }
 
-    /** 在主线程求值并等结果（测试代码读取页面状态用；容器自己从不这样做）。返回 JSON 编码的值。 */
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> onMain { block() } }
+
+    /** 页面已稳定（没有在途导航）时在主线程读一次值（测试代码读取页面状态用；容器自己从不这样做）。返回 JSON 编码的值。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
-
-    private fun waitUntil(
-        message: String,
-        condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    ): String = probe(webView).read(script)
 
     private fun load(
         webView: WebView,
         url: String,
         html: String,
     ) {
-        // 旧文档的 ready 先清掉：等到的一定是新提交的文档（同地址重新加载时不会误判）
+        // 旧文档的 ready 先清掉：等到的一定是新提交的文档（同地址重新加载时不会误判）。
+        // 这里用 read 等回调而不是 fire：页面此时稳定，确认清标记先于下面的加载执行，不会落到新文档上
         evaluate(webView, "window.ready = false; true")
         onMain { webView.loadDataWithBaseURL(url, html, "text/html", "utf-8", url) }
-        runCatching { waitUntil("page $url ready") { evaluate(webView, "window.ready === true") == "true" } }.onFailure {
-            throw AssertionError("page $url not ready: " + evaluate(webView, "location.href + ' ' + document.readyState"), it)
-        }
+        // F-AND-31：等页面交回「新文档的脚本已执行」；没就绪时回答带上地址与 readyState，超时信息里可见
+        probe(webView).await("page $url ready", READY_OR_STATE) { it == "\"ready\"" }
     }
 
     @Suppress("LongParameterList")
@@ -155,11 +133,12 @@ class WebContainersReviewR1Test {
         load(webView, "$THIRD_PARTY/form", formPage("https://taobao.example.test/cart"))
         val historyBefore = evaluate(webView, "history.length")
 
-        evaluate(webView, "document.getElementById('q').value = 'typed'; document.getElementById('f').submit(); true")
+        probe(webView).fire("document.getElementById('q').value = 'typed'; document.getElementById('f').submit()")
 
-        assertTrue("platform POST blocked", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("platform POST blocked", callbacks.blocked)
         assertEquals(NavFrame.MAIN, callbacks.frames.first())
-        Thread.sleep(SETTLE_MS)
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 1 秒：核对原页面没被替换
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertOriginalPageKept(webView, "$THIRD_PARTY/form", historyBefore)
         onMain { controller.destroy() }
     }
@@ -176,10 +155,13 @@ class WebContainersReviewR1Test {
         listOf("https://taobao.example.test/cart", "$TRUSTED/%6fauth2/%61uthorize").forEach { action ->
             load(webView, "$TRUSTED/form", formPage(action))
             val historyBefore = evaluate(webView, "history.length")
-            evaluate(webView, "document.getElementById('q').value = 'typed'; document.getElementById('f').submit(); true")
-            waitUntil("POST to $action reached the container") { recorder.decided.any { it.first == action } }
+            probe(webView).fire("document.getElementById('q').value = 'typed'; document.getElementById('f').submit()")
+            WebWait.until("POST to $action reached the container", detail = { "decided=${recorder.decided.toList()}" }) {
+                recorder.decided.any { it.first == action }
+            }
             assertEquals("POST to $action not sent: answered 204", 204, recorder.decided.first { it.first == action }.second)
-            Thread.sleep(SETTLE_MS)
+            // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 1 秒：核对原页面没被替换
+            Thread.sleep(NEGATIVE_WINDOW_MS)
             assertOriginalPageKept(webView, "$TRUSTED/form", historyBefore)
         }
         assertTrue("a POST is never handed to ExternalWebView", opened.isEmpty())
@@ -206,7 +188,7 @@ class WebContainersReviewR1Test {
         val first = newWebView()
         val initial = Recorder()
         external(first, initial).let { controller -> onMain { controller.open(ENCODED_AUTH) } }
-        assertTrue("encoded auth page refused at the initial URL", initial.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("encoded auth page refused at the initial URL", initial.blocked)
         assertEquals(NavFrame.INITIAL, initial.frames.first())
         assertTrue("never loaded", onMain { first.url }?.contains("login.example.test") != true)
 
@@ -222,11 +204,12 @@ class WebContainersReviewR1Test {
             "window.open('$ENCODED_AUTH_3')" to NavFrame.NEW_WINDOW,
         ).forEach { (script, frame) ->
             callbacks.reset()
-            evaluate(webView, "$script; true")
-            assertTrue("encoded auth page blocked ($frame)", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+            probe(webView).fire(script)
+            WebWait.latch("encoded auth page blocked ($frame)", callbacks.blocked)
             assertEquals(frame, callbacks.frames.first())
             assertEquals(ExternalWebViewController.REASON_AUTH_PAGE, callbacks.reasons.first())
-            Thread.sleep(POLL_MS)
+            // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 200 毫秒：核对原页面没跳走
+            Thread.sleep(SHORT_NEGATIVE_WINDOW_MS)
             assertEquals("original page stays", "\"$THIRD_PARTY/page\"", evaluate(webView, "location.href"))
         }
         onMain { controller.destroy() }
@@ -244,11 +227,15 @@ class WebContainersReviewR1Test {
 
         val recorder = onMain { FrameRecorder(webView.webViewClient).also { webView.webViewClient = it } }
         load(webView, "$TRUSTED/page", framePage("https://foreign.example.test/%6Fauth2/x"))
-        waitUntil("subframe decided") { recorder.cancelled.isNotEmpty() || recorder.passed.isNotEmpty() }
+        WebWait.until("subframe decided", detail = { "cancelled=${recorder.cancelled.toList()} passed=${recorder.passed.toList()}" }) {
+            recorder.cancelled.isNotEmpty() || recorder.passed.isNotEmpty()
+        }
         assertTrue("encoded auth page subframe cancelled: ${recorder.passed}", recorder.cancelled.any { "%6Fauth2" in it })
 
-        evaluate(webView, "location.href = 'https://foreign.example.test/%6Fauth2/authorize'; true")
-        Thread.sleep(SETTLE_MS)
+        probe(webView).fire("location.href = 'https://foreign.example.test/%6Fauth2/authorize'")
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 1 秒：被拦的导航没有可等的正向回调，
+        // 核对的是「没加载、没交给 ExternalWebView」
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertTrue("an auth page is neither loaded nor handed to ExternalWebView: $opened", opened.isEmpty())
         assertEquals("\"$TRUSTED/page\"", evaluate(webView, "location.href"))
         onMain { controller.destroy() }
@@ -265,12 +252,15 @@ class WebContainersReviewR1Test {
         load(webView, "$THIRD_PARTY/page", PLAIN_PAGE)
 
         // iframe.src 自动加载（没有任何用户手势）
-        evaluate(webView, "frameTo('https://embed.other.test/frame'); true")
-        waitUntil("subframe sampled") { samples(events).any { it.second == "subframe" } }
+        probe(webView).fire("frameTo('https://embed.other.test/frame')")
+        WebWait.until("subframe sampled", detail = { "samples=${samples(events)}" }) { samples(events).any { it.second == "subframe" } }
         // 脚本发起的主框架跳转（没有手势）：shouldOverrideUrlLoading 与 shouldInterceptRequest 都会看到它，只报一次
-        evaluate(webView, "location.href = 'https://next.brand.test/x'; true")
-        waitUntil("script navigation sampled") { samples(events).any { it.first == "brand.test" } }
-        Thread.sleep(SETTLE_MS)
+        probe(webView).fire("location.href = 'https://next.brand.test/x'")
+        WebWait.until("script navigation sampled", detail = { "samples=${samples(events)}" }) {
+            samples(events).any { it.first == "brand.test" }
+        }
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 1 秒：核对同一次导航没有多报
+        Thread.sleep(NEGATIVE_WINDOW_MS)
 
         val all = samples(events)
         assertEquals("one sample for the auto-loaded subframe", listOf("other.test" to "subframe"), all.filter { it.first == "other.test" })
@@ -297,11 +287,12 @@ class WebContainersReviewR1Test {
         load(webView, "$THIRD_PARTY/page", PLAIN_PAGE)
 
         rulesOn.set(false)
-        evaluate(webView, "location.href = 'https://brand.example.test/next'; true")
+        probe(webView).fire("location.href = 'https://brand.example.test/next'")
 
-        assertTrue("degraded page shown", callbacks.unavailable.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("degraded page shown", callbacks.unavailable)
         assertEquals("not treated as an ordinary block", 1L, callbacks.blocked.count)
-        Thread.sleep(POLL_MS)
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 200 毫秒：核对导航没提交
+        Thread.sleep(SHORT_NEGATIVE_WINDOW_MS)
         assertEquals("navigation cancelled", "\"$THIRD_PARTY/page\"", evaluate(webView, "location.href"))
         onMain { controller.destroy() }
     }
@@ -328,21 +319,21 @@ class WebContainersReviewR1Test {
             }
         val slow = onMain { SlowNavigation(webView.webViewClient, "$TRUSTED/slow").also { webView.webViewClient = it } }
         load(webView, "$TRUSTED/page", CALLER_PAGE)
-        waitUntil("bridge injected") { evaluate(webView, "typeof window.__REBATE_BRIDGE__") == "\"object\"" }
+        probe(webView).await("bridge injected", "typeof window.__REBATE_BRIDGE__") { it == "\"object\"" }
 
-        evaluate(webView, "call('auth.getUser', 'user'); true")
-        waitUntil("call in flight") { validity.isCompleted }
+        probe(webView).fire("call('auth.getUser', 'user')")
+        WebWait.until("call in flight") { validity.isCompleted }
         val inFlight = validity.getCompleted()
         assertTrue(inFlight.stillValid())
 
-        evaluate(webView, "location.href = '$TRUSTED/slow'; true")
-        assertTrue("navigation request reached the (slow) server", slow.arrived.await(WAIT_S, TimeUnit.SECONDS))
+        probe(webView).fire("location.href = '$TRUSTED/slow'")
+        WebWait.latch("navigation request reached the (slow) server", slow.arrived)
         // 新文档还没提交（服务器还没回）：旧页面的调用已经失效
         assertFalse("old call invalidated before the new document commits", inFlight.stillValid())
         slow.release.countDown()
 
         // 慢导航最终没有提交（204）：旧页面还在，被作废的调用以 90500 回给它
-        waitUntil("old page got its answer") { evaluate(webView, "String(window.results.user)") == "\"90500\"" }
+        probe(webView).await("old page got its answer", "String(window.results && window.results.user)") { it == "\"90500\"" }
         assertEquals("\"$TRUSTED/page\"", evaluate(webView, "location.href"))
         onMain { controller.destroy() }
     }
@@ -470,7 +461,8 @@ class WebContainersReviewR1Test {
             val decided = inner.shouldInterceptRequest(view, request)
             if (decided != null || !request.isForMainFrame || request.url.toString() != url) return decided
             arrived.countDown()
-            release.await(WAIT_S, TimeUnit.SECONDS)
+            // 保险上限（测试放行前一直压着响应）；不是等待后断言
+            release.await(WebWait.CEILING_MS, TimeUnit.MILLISECONDS)
             return ExternalWebViewController.noContentResponse()
         }
 
@@ -563,10 +555,11 @@ class WebContainersReviewR1Test {
         const val TRUSTED = "https://h5.example.test"
         const val THIRD_PARTY = "https://page.example.test"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 200L
-        const val SETTLE_MS = 1_000L
+        const val NEGATIVE_WINDOW_MS = 1_000L
+        const val SHORT_NEGATIVE_WINDOW_MS = 200L
+
+        /** 就绪回答 'ready'；没就绪时回答地址与 readyState（[PageProbe.await] 超时信息里的 last）。 */
+        const val READY_OR_STATE = "window.ready === true ? 'ready' : location.href + ' ' + document.readyState"
         const val FULL_SAMPLE_BP = 10_000
 
         /** 授权路径的编码变体（%6f = o、%61 = a、%4F = O）：规范化后都是 /oauth2/authorize。 */

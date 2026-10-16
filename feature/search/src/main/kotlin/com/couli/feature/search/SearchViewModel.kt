@@ -178,6 +178,10 @@ class SearchViewModel(
     val pendingScrollFlow: StateFlow<ScrollAnchor?> = mutablePendingScroll.asStateFlow()
     val pendingScroll: ScrollAnchor? get() = mutablePendingScroll.value
 
+    /** 一次性恢复是怎么结束的（F-X-18 观测：aligned / not_confirmed / user_took_over）。 */
+    var restoreEnd: String? = null
+        internal set
+
     /** 恢复锚点所属的查询轮次（保存时的轮次）；当前轮次不再是它就放弃恢复。 */
     val pendingScrollRound: Long = saved[K_ROUND] ?: 0L
 
@@ -271,6 +275,14 @@ class SearchViewModel(
     private fun saveConditions(c: SearchConditions) = persist { writeConditions(c) }
 
     private fun writeConditions(c: SearchConditions) {
+        // F-X-18 补充（FU-AND-0717）：开始了新一轮查询 → 同步放弃待执行的恢复、清掉旧锚点，第一次持久化就是「新条件 + 空锚点」（进程此刻被杀，
+        // 重建后也不会把旧锚点套到新一轮的结果上）
+        if (saved.get<Long>(K_ROUND) != c.round && saved.contains(K_ROUND)) {
+            mutablePendingScroll.value = null
+            saved[K_SCROLL_INDEX] = 0
+            saved[K_SCROLL_OFFSET] = 0
+            saved[K_SCROLL_LAST] = 0
+        }
         saved[K_KEYWORD] = c.keyword
         saved[K_PLATFORM] = c.platform
         saved[K_SORT] = c.sort
@@ -310,6 +322,7 @@ class SearchViewModel(
      * APP-06a 共性第 38 条）：放弃恢复，按用户此刻的视口记下位置（页面已出栈、被覆盖时不记）。
      */
     fun restoreTakenOver(anchor: ScrollAnchor?) {
+        if (mutablePendingScroll.value != null) restoreEnd = RESTORE_TAKEN_OVER
         mutablePendingScroll.value = null
         if (anchor != null) onScrolled(anchor)
     }
@@ -498,3 +511,8 @@ object PriceInput {
         return if (cents == 0L) yuan.toString() else "$yuan.${cents.toString().padStart(2, '0').trimEnd('0')}"
     }
 }
+
+/** 一次性滚动恢复的结束原因（[SearchViewModel.restoreEnd]，F-X-18）。 */
+internal const val RESTORE_LANDED = "aligned"
+internal const val RESTORE_NOT_CONFIRMED = "not_confirmed"
+internal const val RESTORE_TAKEN_OVER = "user_took_over"

@@ -21,7 +21,8 @@ internal fun scanJavaSource(source: String): ScannedSource = JavaSourceScanner(s
  * 行终止符（FU-AND-0715 第 2 轮评审 R2-02）：Java（JLS §3.4）与 Kotlin（语法 `NL: '\n' | '\r' '\n'?`）都认 LF、CR、CRLF 三种。词法只按 LF 分行，
  * 所以扫描前把**单独的** CR（后面不是 LF）换成 LF——一对一替换，[ScannedSource.code] 仍与源码等长、偏移不变；CRLF 保留（CR 在 LF 之前当普通字符，
  * 只算一次换行）。这样行注释、普通字符串、字符字面量在单独 CR 处结束，文本块开头三引号后单独 CR 也算换行，行号与编译器一致。
- * 其他字符（U+0085、U+2028、U+2029 等）在两种语言里都不是行终止符，照普通字符处理。
+ * 其他字符（U+0085、U+2028、U+2029 等）在两种语言里都不是行终止符；但它们会让编辑器 / 评审工具 / 正则的分行与编译器不一致，FU-AND-0717
+ * 起出现即按扫不完整（[unicodeLineTerminatorProblems]）。
  */
 internal fun normalizeLineTerminators(source: String): String {
     if (source.indexOf('\r') < 0) return source
@@ -31,6 +32,23 @@ internal fun normalizeLineTerminators(source: String): String {
     }
     return out.toString()
 }
+
+/**
+ * Unicode 行终止符（F-X-07 补充二，FU-AND-0717；鸿蒙 FU-HM-0723 R2-05 同类）：U+2028、U+2029、U+0085 在 Kotlin 与 Java 编译器里都不是换行，
+ * 词法照编译器处理；但编辑器、评审 diff 与正则（MULTILINE 的 `^` / `$`）把它们当换行，人读到的注释 / 字符串边界与编译器不一致，无法确认
+ * 规则判断与评审所见一致。文件里任何位置出现（代码、注释、字符串）都记一处扫不完整（每行一处），要用请写成转义。
+ */
+internal fun unicodeLineTerminatorProblems(source: String): List<ScanProblem> {
+    var line = 1
+    val lines = sortedSetOf<Int>()
+    source.forEach { ch ->
+        if (ch in UNICODE_LINE_TERMINATORS) lines += line
+        if (ch == '\n') line++
+    }
+    return lines.map { ScanProblem(it, "Unicode 行终止符（U+2028 / U+2029 / U+0085）：编译器不当换行、编辑器与评审工具当换行，边界无法确认") }
+}
+
+private val UNICODE_LINE_TERMINATORS = setOf('\u2028', '\u2029', '\u0085')
 
 /**
  * 极简 Java 词法，只区分代码、注释、字符串、文本块与字符字面量（[ScannedSource] 口径与 Kotlin 版相同：[ScannedSource.code] 与源码等长）：
@@ -54,6 +72,7 @@ internal class JavaSourceScanner(
     private var index = 0
 
     fun scan(): ScannedSource {
+        problems += unicodeLineTerminatorProblems(source)
         unicodeEscapes()
         while (index < source.length) {
             when {

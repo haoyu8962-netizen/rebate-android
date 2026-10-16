@@ -86,9 +86,11 @@ internal object CouliSourceRules {
         val cjk =
             // 只管业务页面的源码（BR-TEXT-12）：测试源码（src/test、src/androidTest 的断言说明、Codex 先写的向量测试）不面向用户，不在此列
             if (relative.startsWith("feature/") && file.extension == "kt" && TEST_SOURCE_DIRS.none { it in relative }) {
-                scanned.strings
+                // FU-AND-0717（F-X-07 补充二）：原文与还原转义后的文字都查（`"\u4e2d"` 编译后是中文），字符字面量（`'中'`、`'\u4e2d'`）同样算
+                (scanned.strings + scanned.chars)
+                    .sortedBy { it.line }
                     .asSequence()
-                    .filter { CJK.containsMatchIn(it.text) }
+                    .filter { CJK.containsMatchIn(it.text) || CJK.containsMatchIn(it.decoded) }
                     .map { "$relative:${it.line}: [no-cjk-string-in-feature] $CJK_MESSAGE" }
             } else {
                 emptySequence()

@@ -107,6 +107,7 @@ import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -400,6 +401,7 @@ class AppMeIntegrationTest {
         user: String? = "user-one",
         decision: String = "consented",
         restorer: StateRestorationTester? = null,
+        adapters: List<com.couli.feature.login.ThirdPartyAuthAdapter>? = null,
     ) {
         val gate =
             PrivacyGate(MemoryStore(decision), clock = { clock }, bundledPolicyVersion = "3").apply {
@@ -463,7 +465,20 @@ class AppMeIntegrationTest {
             )
         lateinit var clipboard: AppClipboard
         composeRule.runOnUiThread {
-            login = AppLogin(api, tokens, routing, updateCheck = { update }, markBelow = { forced += 1 }, legal = LegalVersions(3, 2))
+            login =
+                AppLogin(
+                    api,
+                    tokens,
+                    routing,
+                    updateCheck = { update },
+                    markBelow = { forced += 1 },
+                    legal = LegalVersions(3, 2),
+                    adapters =
+                        adapters ?: listOf(
+                            com.couli.feature.login
+                                .UnavailableWechatAdapter(),
+                        ),
+                )
             login.syncSession()
             clipboard =
                 AppClipboard(
@@ -2431,6 +2446,117 @@ class AppMeIntegrationTest {
             com.couli.app.login.LoginDraftTexts
                 .text(key)
         }
+
+    // ---------------------------------------------------------------- FU-AND-0717 F-X-14
+
+    /** 立即带回凭证（state = nonce）的假微信适配器（第三方登录经真实登录页、OAuthLoginService 与 ApiClient）。 */
+    private object InstantWechat : com.couli.feature.login.ThirdPartyAuthAdapter {
+        override val provider: String = com.couli.feature.login.OAuthProvider.WECHAT
+
+        override fun adapterAvailable(): Boolean = true
+
+        override fun installed(): Boolean? = null
+
+        override suspend fun authorize(nonce: String) =
+            com.couli.feature.login.ThirdPartyAuthResult(
+                com.couli.feature.login.ThirdPartyAuthKind.CREDENTIAL,
+                code = "code-placeholder",
+                state = nonce,
+            )
+    }
+
+    private fun waitFor(
+        what: String,
+        condition: () -> Boolean,
+    ) = com.couli.app.FlowWait
+        .until(::settle, { "$what；栈 ${runCatching { stack() }.getOrNull()}，请求 ${lines()}" }, condition = condition)
+
+    private fun tokenPair(
+        user: String,
+        scope: String,
+    ): String =
+        "\"access_token\":\"access-$user\",\"access_expires_at\":\"2099-01-01T00:00:00+08:00\",\"refresh_token\":\"refresh-$user\"," +
+            "\"refresh_expires_at\":\"2099-01-01T00:00:00+08:00\",\"session_scope\":\"$scope\""
+
+    /**
+     * 游客先打开「我的」（预先建好 Tab）→ 点【登录 / 注册】→ 登录页点微信 → 协议确认框【同意并继续】：第三方老用户 [user] 登录，服务端给 [scope]
+     * （受限会话复查的刷新也给 [scope]，BR-ID-01）。等登录响应保存、登录页关闭。
+     */
+    private fun thirdPartyLoginFromMeTab(
+        user: String,
+        scope: String,
+    ) {
+        answers["/v1/auth/oauth-attempts"] = {
+            envelope("""{"attempt_id":"attempt-1","nonce":"nonce-placeholder-0001","expire_at":"2099-01-01T00:00:00+08:00"}""")
+        }
+        answers["/v1/auth/login/wechat"] = { envelope("""{"user_id":"$user","is_new_user":false,"tokens":{${tokenPair(user, scope)}}}""") }
+        answers["/v1/auth/refresh"] = { envelope("{${tokenPair(user, scope)}}") }
+        launch(user = null, adapters = listOf(InstantWechat))
+        open("Me")
+        waitFor("「我的」游客态") { has(MeTags.ME_GUEST) && has(MeTags.ME_LOGIN) }
+        assertEquals("游客不读 getMe", 0, count("GET", "/v1/me"))
+        click(MeTags.ME_LOGIN)
+        waitFor("登录页第三方入口") { top() == "Login" && has(com.couli.feature.login.LoginTags.OAUTH_PREFIX + "wechat") }
+        click(com.couli.feature.login.LoginTags.OAUTH_PREFIX + "wechat")
+        val ok =
+            com.couli.app.login.LoginDraftTexts
+                .text("login.agree_confirm.ok")
+        waitFor("协议确认框") { text(ok) > 0 }
+        clickText(ok)
+        waitFor("第三方登录完成、登录页关闭") { count("POST", "/v1/auth/login/wechat") == 1 && tokens.scope == scope && "Login" !in stack() }
+    }
+
+    /** 完整状态同步（登录与「我的」两处同步出口，同 AppModule 的会话通知），并等「我的」与登录流程起的任务都跑完。 */
+    private fun fullStateSync() {
+        val before = meJobs()
+        composeRule.runOnUiThread {
+            login.syncSession()
+            me.syncIdentity()
+        }
+        meWorkSince(before)
+        waitFor("登录流程的 phone_bound 补查已结束") { login.phoneChecksSettled() }
+    }
+
+    /**
+     * F-X-14（鸿蒙 FU-HM-0721 R1-01 同类）：游客先建好「我的」Tab → 第三方老账号受限登录（deletion_only，复查刷新后仍受限）→ 完整状态同步：
+     * Tab 已按新会话重建（会员身份、账号 = 登录账号、执行器绑定新身份并经过 ON_RESUME），但自动同步不发 getMe（零请求、快照仍空）；页面主动读取
+     * （下拉 / 【重试】同一入口）仍可发一次（契约允许 deletion_only 读 getMe）。
+     */
+    @Test
+    fun fuand0717_x14_aPrecreatedMeTabDoesNotAutoReadGetMeAfterARestrictedThirdPartyLogin() {
+        thirdPartyLoginFromMeTab("user-two", "deletion_only")
+        fullStateSync()
+        waitFor("「我的」按受限会话重建（会员身份、登录账号、执行器已绑新身份）") {
+            has(MeTags.ME_PAGE) && me.identity.value.member && me.identity.value.account == "user-two" &&
+                me.deps.tab.bound
+                    ?.identity == me.identity.value
+        }
+        // 再走一次完整同步：会话变化之后的所有自动同步入口都已经过，结论（执行器、快照）都已交回之后才核对「没发」
+        fullStateSync()
+        val tab = me.deps.tab.bound
+        assertNotNull(tab)
+        composeRule.runOnUiThread { assertFalse("受限会话下自动同步不读", tab!!.autoRefresh()) }
+        assertEquals("deletion_only", tokens.scope)
+        val snapshot = me.deps.repo.state.value
+        assertEquals("自动同步没有起读取", com.couli.feature.me.MeSnapshot.IDLE, snapshot.phase)
+        assertNull("快照没有资料", snapshot.me)
+        assertEquals("受限登录后自动同步不请求 getMe：${lines()}", 0, count("GET", "/v1/me"))
+        // 页面主动读取不拦
+        composeRule.runOnUiThread { assertTrue(tab!!.refresh()) }
+        waitFor("主动读取发出一次 getMe 并落地") { count("GET", "/v1/me") == 1 && me.deps.repo.meOf(me.identity.value) != null }
+    }
+
+    /** F-X-14 对照：同样先建好 Tab，第三方老用户拿到 full：Tab 的自动同步照常读 getMe（加上登录流程补查 phone_bound 那一次），显示登录账号的资料。 */
+    @Test
+    fun fuand0717_x14_control_aFullThirdPartyLoginStillAutoLoadsTheMeTab() {
+        thirdPartyLoginFromMeTab("user-two", "full")
+        fullStateSync()
+        waitFor("「我的」按新会话自动读到资料") {
+            has(MeTags.ME_PAGE) && me.identity.value.account == "user-two" && me.deps.repo.meOf(me.identity.value) != null
+        }
+        assertEquals("full", tokens.scope)
+        assertTrue("登录流程补查 + Tab 自动同步：${lines()}", count("GET", "/v1/me") >= 2)
+    }
 
     private companion object {
         const val KF_URL = "https://example.test/kf?source=config"

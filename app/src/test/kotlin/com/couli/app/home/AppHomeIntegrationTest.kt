@@ -98,6 +98,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -132,6 +133,35 @@ class AppHomeIntegrationTest {
     private lateinit var navController: NavHostController
     private lateinit var privacy: AppPrivacy
     private lateinit var tokens: MemorySessionTokens
+
+    /**
+     * 会话读取可以单次失败的令牌存储（FU-AND-0717 第 3 轮 R2-06）：包住 [tokens]，[failReads] 里的读取序号（从 1 起）读不出（SessionRead.Unreadable），其余照读。
+     * 没给时直接用 [tokens]。
+     */
+    private class FlakyTokens(
+        private val inner: MemorySessionTokens,
+    ) : com.couli.core.network.SessionTokens by inner,
+        com.couli.core.network.PersistedLoginEpochs by inner,
+        com.couli.core.network.SessionReader {
+        @Volatile var reads = 0
+        val failReads = mutableSetOf<Int>()
+
+        override fun readSession(): com.couli.core.network.SessionRead {
+            reads += 1
+            return if (reads in failReads) {
+                com.couli.core.network.SessionRead
+                    .Unreadable(inner.generation)
+            } else {
+                com.couli.core.network.SessionRead
+                    .Present(inner.snapshot())
+            }
+        }
+    }
+
+    private var flaky: FlakyTokens? = null
+
+    /** 下一次 [launch] 用 [FlakyTokens] 包住令牌存储。 */
+    private var flakyReads = false
     private lateinit var api: ApiClient
     lateinit var home: AppHome
     private lateinit var gate: PrivacyGate
@@ -298,6 +328,8 @@ class AppHomeIntegrationTest {
         privacy = AppPrivacy(gate, environmentSettled = { true }, clock = { clock }).also { it.coldStart() }
         val environment = EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED }.also { it.settleAtStartup() }
         tokens = if (user == null) MemorySessionTokens() else MemorySessionTokens("access-$user", "refresh-$user", "full", user)
+        if (flakyReads) flaky = FlakyTokens(tokens)
+        val sessionTokens: com.couli.core.network.SessionTokens = flaky ?: tokens
         routing =
             AppRouting(
                 context,
@@ -329,7 +361,7 @@ class AppHomeIntegrationTest {
                     )
                 },
                 device = Device,
-                tokens = tokens,
+                tokens = sessionTokens,
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { clock },
                 hooks = NetworkHooks(onSessionStored = { main.post { if (::home.isInitialized) home.sync() } }),
                 inFlight = inFlight,
@@ -341,7 +373,7 @@ class AppHomeIntegrationTest {
             home =
                 AppHome(
                     client = api,
-                    tokens = tokens,
+                    tokens = sessionTokens,
                     routing = routing,
                     privacy = privacy,
                     port = port,
@@ -1490,6 +1522,82 @@ class AppHomeIntegrationTest {
             File(dir, "$name.png"),
             roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record),
         )
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0717 第 1 轮修复 R1-04
+
+    /**
+     * 会员 LKG 按「账号 + 持久化登录世代」分区：先有 A/E1 的会员 LKG 文件，同账号重新登录进入 E2 并走真实首页同步——同步里先按已确认的身份快照对账，
+     * 在任何读取之前 E1 的世代目录已被删掉；E2 读不到旧页面。对照：同一世代再同步不删。
+     */
+    @Test
+    fun fuand0717_r1_04_aSameAccountReloginDeletesTheOldEpochMemberLkgOnSyncBeforeAnyRead() {
+        lkg.bindLoginEpoch { tokens.persistedLoginEpoch() }
+        launch(user = "user-a")
+        val member = scope(HomeLevel.MEMBER, "user-a")
+        val e1 = tokens.persistedLoginEpoch()!!
+        assertTrue(lkg.write(lkg.ticket(member), """{"page":"e1"}"""))
+        val e1Dir = File(File(lkgRoot, HomeLkgStore.digest(member)), "e-" + HomeLkgStore.digest(e1))
+        assertTrue("前提：E1 的会员 LKG 在盘上", File(e1Dir, "page.json").exists())
+        restart()
+        assertTrue("同一世代再同步：不删", File(e1Dir, "page.json").exists())
+        composeRule.runOnUiThread {
+            tokens.save("access-user-a-2", "refresh-user-a-2", "full", "user-a")
+            home.sync()
+            // 同一条主线程消息里、控制器读取之前：旧世代目录已删
+            assertFalse("E1 的世代目录已删", e1Dir.exists())
+        }
+        assertFalse(home.lkgReconcilePending)
+        settle()
+        assertNotEquals("""{"page":"e1"}""", lkg.read(member))
+    }
+
+    /**
+     * FU-AND-0717 第 3 轮（第 2 轮评审 R2-06）：首页已有 A/E1 的控制器与会员 LKG；一次真实首页同步里，开头那一份快照确认 A/E1（世代对账保留文件），紧接着的
+     * 读取单次失败——不得当成换号删掉 A 的会员作用域、不重建控制器。之后同步时这份快照本身读不出（未知）也不删。对照：确认换号才删。
+     */
+    @Test
+    fun fuand0717_rework_r2_06_aFailedReadAfterTheSyncSnapshotNeverDeletesTheMemberLkg() {
+        lkg.bindLoginEpoch { tokens.persistedLoginEpoch() }
+        flakyReads = true
+        launch(user = "user-a")
+        val member = scope(HomeLevel.MEMBER, "user-a")
+        assertTrue(lkg.write(lkg.ticket(member), """{"page":"e1"}"""))
+        val memberDir = File(lkgRoot, HomeLkgStore.digest(member))
+        assertTrue("前提：A 的会员 LKG 在盘上", memberDir.exists())
+        val controller = home.controller.value
+        val reads = flaky!!
+        composeRule.runOnUiThread {
+            // 这次同步的快照（下一次读取）成功，紧接着的一次读取失败
+            reads.failReads += reads.reads + 2
+            home.sync()
+        }
+        settle()
+        assertTrue("A 的会员作用域还在", memberDir.exists())
+        assertEquals("""{"page":"e1"}""", lkg.read(member))
+        assertTrue("控制器没被当成换号重建", home.controller.value === controller && controller?.alive == true)
+        assertFalse(home.lkgReconcilePending)
+        composeRule.runOnUiThread {
+            // 同步的那一份快照本身读不出（身份暂时未知）：不决策
+            reads.failReads += reads.reads + 1
+            home.sync()
+        }
+        settle()
+        assertTrue("未知不删", memberDir.exists())
+        assertTrue(home.controller.value === controller)
+        // 同账号重新登录（本进程登录世代变了）而这时读不出身份：本代还没有已确认的账号——不得按「账号未知」把 A 的会员作用域当成换号删掉
+        composeRule.runOnUiThread {
+            (1..8).forEach { reads.failReads += reads.reads + it }
+            tokens.save("access-user-a-2", "refresh-user-a-2", "full", "user-a")
+            home.sync()
+        }
+        settle()
+        assertTrue("换代而身份未知：不删", memberDir.exists())
+        // 对照：读取恢复、确认换号（B）才删 A 的会员作用域
+        reads.failReads.clear()
+        switchUser("user-b")
+        settle()
+        assertFalse("确认换号：A 的会员作用域已删", memberDir.exists())
     }
 
     // ---------------------------------------------------------------- 工具

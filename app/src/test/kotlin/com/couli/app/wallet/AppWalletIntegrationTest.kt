@@ -294,6 +294,8 @@ class AppWalletIntegrationTest {
                     stepUpPhone = phone,
                     track = { synchronized(tracked) { tracked += it } },
                     clock = { now },
+                    // 与 AppModule 同一接线（F-AND-37，FU-AND-0717）
+                    sessionScope = { api.activeSessionScope() ?: "full" },
                 ).also { it.connectSession() }
         }
         composeRule.setContent {
@@ -2125,6 +2127,18 @@ class AppWalletIntegrationTest {
     ) = MockResponse()
         .setHeader("Content-Type", "application/json")
         .setBody("""{"code":$code,"msg":"","data":$data,"trace_id":"$trace"}""")
+
+    /** F-AND-37（FU-AND-0717）：钱包二次验证用的会话作用域取自网络层的有效会话（与 AppModule 同一接线）；同一登录世代里刷新换了作用域即随之变化。 */
+    @Test
+    fun fuand0717_and37_theWalletStepUpEnvFollowsTheActiveSessionScope() {
+        launch()
+        composeRule.runOnUiThread {
+            assertEquals("full", wallet.env.sessionScope())
+            val generation = tokens.generation
+            assertTrue(tokens.replaceIf(generation, "access-one-r", "refresh-one-r", "deletion_only"))
+            assertEquals("同一登录世代刷新成受限会话", "deletion_only", wallet.env.sessionScope())
+        }
+    }
 
     private companion object {
         const val SUMMARY_PATH = "/v1/wallet/summary"

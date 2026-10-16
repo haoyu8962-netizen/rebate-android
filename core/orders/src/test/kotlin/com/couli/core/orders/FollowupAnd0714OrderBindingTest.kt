@@ -55,7 +55,8 @@ class FollowupAnd0714OrderBindingTest {
 
     private fun detail(id: String) = OrderDetail(item(id), "tb:sampleA", emptyList(), emptyList(), null, false, false, false)
 
-    private fun cache(flag: OrderStaleCache.PendingClearFlag) = OrderStaleCache.Store(cacheRoot, flag).apply { bindLoginEpoch(epochSource) }
+    // FU-AND-0717（F-X-17）：存储不再自己读「此刻的世代」，由调用方给出固定世代；这里每次按 [loginEpoch] 的当前值给（等同原来的来源）
+    private fun cache(flag: OrderStaleCache.PendingClearFlag) = OrderStaleCache.Store(cacheRoot, flag).apply { partitionByLoginEpoch() }
 
     private val record = OrderRestoreRecord(owner = "owner-a", platform = "taobao", q = ORDER_NO, input = ORDER_NO, anchorOrderId = "o1")
 
@@ -77,8 +78,8 @@ class FollowupAnd0714OrderBindingTest {
     fun fand25_cache_flag_marker_and_delete_all_fail_relogin_same_account_rebuilt_store_never_reads_back() {
         val flag = Flag(commitOk = false)
         val before = cache(flag)
-        before.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L)
-        before.writeDetail("user-a", detail("d1"), 1L)
+        before.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L, loginEpoch)
+        before.writeDetail("user-a", detail("d1"), 1L, loginEpoch)
         val accountDir = cacheRoot.listFiles()!!.first { it.isDirectory }
         cacheRoot.setWritable(false)
         accountDir.setWritable(false)
@@ -90,44 +91,43 @@ class FollowupAnd0714OrderBindingTest {
             // 同一账号重新登录：令牌存储换新的持久化登录世代；进程重建：新实例，内存里的待清理丢失
             loginEpoch = "login-2"
             val rebuilt = cache(flag)
-            assertNull("不读回旧列表", rebuilt.readList("user-a", "self"))
-            assertNull("不读回旧详情", rebuilt.readDetail("user-a", "d1"))
+            assertNull("不读回旧列表", rebuilt.readList("user-a", "self", loginEpoch))
+            assertNull("不读回旧详情", rebuilt.readDetail("user-a", "d1", loginEpoch))
         } finally {
             accountDir.setWritable(true)
             cacheRoot.setWritable(true)
         }
         // 故障解除：下一次归属核对把旧登录世代的缓存整体删掉
         val healed = cache(Flag())
-        healed.reconcileOwner("user-a")
+        healed.reconcileOwner("user-a", loginEpoch)
         assertTrue("旧登录世代的缓存已删", cacheRoot.walkTopDown().none { it.isFile && it.name == "list_self.json" })
-        assertNull(healed.readList("user-a", "self"))
+        assertNull(healed.readList("user-a", "self", loginEpoch))
     }
 
     @Test
     fun fand25_cache_same_login_epoch_reads_back_and_unknown_epoch_or_flag_reads_nothing() {
         val flag = Flag()
         val store = cache(flag)
-        store.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L)
-        assertNotNull("同一登录世代（重建实例也一样）照常读回", cache(flag).readList("user-a", "self"))
+        store.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L, loginEpoch)
+        assertNotNull("同一登录世代（重建实例也一样）照常读回", cache(flag).readList("user-a", "self", loginEpoch))
         loginEpoch = null
-        assertNull("登录世代读不出：不读", store.readList("user-a", "self"))
-        store.writeList("user-a", "self", OrderListData(listOf(item("o2")), null, null), 2L)
-        store.reconcileOwner("user-a")
+        assertNull("登录世代读不出：不读", store.readList("user-a", "self", loginEpoch))
+        store.writeList("user-a", "self", OrderListData(listOf(item("o2")), null, null), 2L, loginEpoch)
+        store.reconcileOwner("user-a", loginEpoch)
         loginEpoch = "login-1"
         assertEquals(
             "世代未知期间不写、不按归属删",
             listOf("o1"),
             store
-                .readList("user-a", "self")!!
+                .readList("user-a", "self", loginEpoch)!!
                 .data.items
                 .map { it.orderId },
         )
-        val throwing = OrderStaleCache.Store(cacheRoot, flag).apply { bindLoginEpoch { error("token store unreadable") } }
-        assertNull("登录世代读取抛错：不读", throwing.readList("user-a", "self"))
-        val empty = OrderStaleCache.Store(cacheRoot, flag).apply { bindLoginEpoch { "" } }
-        assertNull(empty.readList("user-a", "self"))
+        // 调用方给不出世代（快照未知 → null）、空串：不读
+        assertNull("登录世代未知：不读", cache(flag).readList("user-a", "self", null))
+        assertNull(cache(flag).readList("user-a", "self", ""))
         flag.readFails = true
-        assertNull("目录外标记读不出按待清理：先清理，不读回", cache(flag).readList("user-a", "self"))
+        assertNull("目录外标记读不出按待清理：先清理，不读回", cache(flag).readList("user-a", "self", loginEpoch))
     }
 
     // ---------------------------------------------------------------- 订单页恢复记录（F-AND-29）

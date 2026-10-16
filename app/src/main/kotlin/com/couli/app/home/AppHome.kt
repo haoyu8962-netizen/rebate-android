@@ -24,6 +24,7 @@ import com.couli.core.home.RouteTarget
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.PageApi
+import com.couli.core.network.SessionIdentity
 import com.couli.core.network.SessionTokens
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
@@ -216,22 +217,64 @@ class AppHome(
     private fun account(): String? {
         val epoch = tokens.loginEpoch
         if (epoch != accountEpoch) {
-            // 读不出不缓存（F-AND-28）：下次再读；读到之前按账号未知（LKG 分区 member-unknown）
-            accountCache = client.activeUserId() ?: return null
+            // 这一代还没有已确认的账号：取一份快照（FU-AND-0717 第 3 轮：与 [sync] 同一来源）；读不出不缓存（F-AND-28）：下次再读；读到之前按账号未知
+            // （LKG 分区 member-unknown，只用于比较——控制器的写入因身份不一致被拦下，不删任何作用域）
+            val snapshot = client.sessionIdentity()
+            val account = snapshot.account?.takeIf { snapshot.known && snapshot.loginEpoch == epoch } ?: return null
+            accountCache = account
             accountEpoch = epoch
         }
         return accountCache
     }
 
+    /** 一份身份快照（FU-AND-0717 第 3 轮）：只在隐私已同意、凭据可读时读凭据，否则 null（不读）。 */
+    private fun sessionSnapshot(): SessionIdentity? {
+        if (privacy.conclusion != PrivacyState.CONSENTED || privacy.credentialAccess.cleanupPending) return null
+        return client.sessionIdentity()
+    }
+
+    /**
+     * 按一份快照 [snapshot] 算首页身份（FU-AND-0717 第 3 轮，第 2 轮评审 R2-06）：会员级别时账号与登录世代都取自这一份（并记进本代账号缓存，之后控制器的身份
+     * 比较不再另读）；快照未知时返回 null——调用方不决策（不换控制器、不清任何作用域的 LKG）。非会员级别（基本模式、游客、凭据清理中）不读账号。
+     */
+    private fun identityFrom(snapshot: SessionIdentity?): HomeIdentity? {
+        val level = level()
+        val epochs = client.inFlight.epochs()
+        val known = snapshot?.takeIf { it.known }
+        return when {
+            level != HomeLevel.MEMBER -> {
+                HomeIdentity(level, null, tokens.loginEpoch, epochs, envKey())
+            }
+
+            known == null -> {
+                null
+            }
+
+            else -> {
+                known.account?.let {
+                    accountCache = it
+                    accountEpoch = known.loginEpoch
+                }
+                HomeIdentity(HomeLevel.MEMBER, known.account, known.loginEpoch, epochs, envKey())
+            }
+        }
+    }
+
+    private fun level(): String {
+        val readable = !privacy.credentialAccess.cleanupPending
+        return when {
+            privacy.conclusion != PrivacyState.CONSENTED -> HomeLevel.BASIC
+            !readable || routing.session.value == SessionState.GUEST -> HomeLevel.GUEST
+            else -> HomeLevel.MEMBER
+        }
+    }
+
+    /** 最近一次 [sync] 用的那份快照（[ensure] 建第一个控制器时沿用，不另读）。 */
+    private var syncSnapshot: SessionIdentity? = null
+
     /** 此刻的身份（现算；只用于比较与新控制器的构造）。 */
     fun identity(): HomeIdentity {
-        val readable = !privacy.credentialAccess.cleanupPending
-        val level =
-            when {
-                privacy.conclusion != PrivacyState.CONSENTED -> HomeLevel.BASIC
-                !readable || routing.session.value == SessionState.GUEST -> HomeLevel.GUEST
-                else -> HomeLevel.MEMBER
-            }
+        val level = level()
         val account = if (level == HomeLevel.MEMBER) account() else null
         return HomeIdentity(level, account, tokens.loginEpoch, client.inFlight.epochs(), envKey())
     }
@@ -284,7 +327,8 @@ class AppHome(
         wanted = true
         sync()
         mutableController.value?.let { return it }
-        if (target == null) target = identity()
+        // 第一个控制器按 [sync] 那一份快照的身份（未知时按会员、账号未知：只用于比较，不删任何作用域）
+        if (target == null) target = identityFrom(syncSnapshot) ?: identity()
         return place()
     }
 
@@ -296,8 +340,9 @@ class AppHome(
         scope.launch {
             pending.join()
             if (!wanted || mutableController.value != null || target != next) return@launch
-            accountEpoch = Long.MIN_VALUE
-            if (identity() == next) place() else sync()
+            // 一份快照复核（FU-AND-0717 第 3 轮）：仍是这个身份、或身份暂时未知（不决策，按已确认的目标建）都照建；确认变了按变化处理
+            val now = identityFrom(sessionSnapshot())
+            if (now == null || now == next) place() else sync()
         }
         return null
     }
@@ -354,11 +399,16 @@ class AppHome(
      */
     @Suppress("ReturnCount") // 没有首页、身份未变、仍在等同一身份依次提前返回
     fun sync() {
+        // 一份身份快照（FU-AND-0717 第 3 轮，R2-06）：世代对账、控制器身份比较与作用域删除都只用它，不再二次读账号
+        val snapshot = sessionSnapshot()
+        syncSnapshot = snapshot
+        // 第 1 轮修复 R1-04：先按这份已确认的身份快照对账会员 LKG 的登录世代分区（同账号换代删旧世代；未知、世代缺失不动），在任何控制器读取之前
+        reconcileLkgEpoch(snapshot)
         identityListeners.toList().forEach { it() }
         val current = mutableController.value
         val previous = current?.identity ?: target ?: return
-        accountEpoch = Long.MIN_VALUE
-        val next = identity()
+        // 会员级别而身份暂时未知：不决策——原控制器、目标与各作用域的 LKG 原样保留，等下一次身份已知的同步
+        val next = identityFrom(snapshot) ?: return
         if (current != null && current.alive && current.identity == next) return
         // 还在等旧作用域清理、身份没再变：照旧等
         if (current == null && previous == next) return
@@ -371,6 +421,24 @@ class AppHome(
         }
         target = next
         if (wanted) place()
+    }
+
+    /** 会员 LKG 世代对账没完成（删不掉），下一次同步重试（第 1 轮修复 R1-04）。 */
+    @Volatile var lkgReconcilePending: Boolean = false
+        private set
+
+    /**
+     * 会员 LKG 的登录世代对账（R1-04）：一份身份快照；身份未知、没有会话、持久化世代缺失都不动；已知时删掉该账号会员作用域里不属于当前世代的子目录。
+     * 隐私不是已同意时不读凭据、不动。
+     */
+    @Suppress("ReturnCount") // 没有存储、不读凭据、没有会话、分区未知逐项
+    private fun reconcileLkgEpoch(snapshot: SessionIdentity?) {
+        val store = lkg ?: return
+        val id = snapshot ?: return
+        val account = id.account ?: return
+        if (!id.partitionKnown) return
+        val scope = HomeIdentity(HomeLevel.MEMBER, account, id.loginEpoch, client.inFlight.epochs(), envKey()).scope
+        lkgReconcilePending = !runCatching { store.reconcileEpoch(scope, id.partition) }.getOrDefault(false)
     }
 
     /** 切换环境开始（清理器第一步之前）：作废控制器（之后的同步按新环境重建）。 */

@@ -55,23 +55,23 @@ class FollowupAnd0714LoginEpochWiringTest {
         val orders = orderCacheStore(context, tokens)
         val wallet = walletCacheStore(context, tokens)
         val restore = orderRestoreStore(context, tokens)
-        orders.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L)
-        wallet.write("user-a", summary, 1L)
+        orders.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L, tokens.persistedLoginEpoch())
+        wallet.write("user-a", summary, 1L, tokens.persistedLoginEpoch())
         val ref = restore.newRef()
         val record = OrderRestoreRecord(owner = "owner-a", q = "3741234567890123456", input = "3741234567890123456")
         assertTrue(restore.write(ref, restore.epoch, record, restore.loginEpochNow()))
 
         // 刷新令牌：登录世代沿用，照常读回
         assertTrue(tokens.replaceIf(tokens.generation, "access-2", "refresh-2", SessionScopeRaw.FULL))
-        assertNotNull(orderCacheStore(context).readList("user-a", "self"))
-        assertNotNull(walletCacheStore(context).read("user-a"))
+        assertNotNull(orderCacheStore(context).readList("user-a", "self", tokens.persistedLoginEpoch()))
+        assertNotNull(walletCacheStore(context).read("user-a", tokens.persistedLoginEpoch()))
         assertEquals(record, orderRestoreStore(context).read(ref))
 
         // 同账号退出再登录（缓存本身的清理没跑：只看登录世代）：旧数据读不回
         tokens.clear()
         tokens.save("access-3", "refresh-3", SessionScopeRaw.FULL, "user-a")
-        assertNull(orderCacheStore(context).readList("user-a", "self"))
-        assertNull(walletCacheStore(context).read("user-a"))
+        assertNull(orderCacheStore(context).readList("user-a", "self", tokens.persistedLoginEpoch()))
+        assertNull(walletCacheStore(context).read("user-a", tokens.persistedLoginEpoch()))
         assertNull(orderRestoreStore(context).read(ref))
     }
 }

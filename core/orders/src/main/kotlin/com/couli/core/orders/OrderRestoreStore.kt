@@ -73,6 +73,17 @@ class OrderRestoreStore internal constructor(
      */
     fun loginBindingNow(): LoginBinding = currentEpoch()
 
+    /**
+     * 页面身份快照里的持久化登录世代 → 绑定（F-X-19 补充二，FU-AND-0717：恢复决策与写入只用页面固定时那一份身份快照，不另读一次此刻的世代）：
+     * 存储没接来源 → [LoginBinding.Unbound]（旧口径）；接了来源而快照给不出世代 → [LoginBinding.Unknown]；否则 [LoginBinding.Known]。
+     */
+    fun bindingFor(loginEpoch: String?): LoginBinding =
+        when {
+            this.loginEpoch == null -> LoginBinding.Unbound
+            loginEpoch.isNullOrEmpty() -> LoginBinding.Unknown
+            else -> LoginBinding.Known(loginEpoch)
+        }
+
     /** 登录世代的三种读法：没接来源（旧口径）、读不出（未知）、读到。 */
     sealed interface LoginBinding {
         /** 取的那一刻存储没接登录世代来源（单测、旧用法）。 */
@@ -103,11 +114,20 @@ class OrderRestoreStore internal constructor(
      * 读 [ref] 的记录；没有、引用不合法、待清理没清掉、读不出或损坏都为 null（损坏的删掉）。接上登录世代时：世代读不出不恢复；记录的 `gen` 与
      * 「记录的账号归属 + 此刻的登录世代」不符（旧登录世代、别的账号、升级前没有 `gen` 的记录）不恢复并删掉。
      */
+    fun read(ref: String?): OrderRestoreRecord? = read(ref, currentEpoch())
+
+    /**
+     * 按页面身份快照里的绑定 [binding]（[bindingFor]）读 [ref] 的记录（F-X-19 补充二：核对 `gen` 用这一份，不另读此刻的世代）：绑定未知不恢复；
+     * 记录的 `gen` 与「记录的账号归属 + 绑定的世代」不符不恢复并删掉。
+     */
     @Synchronized
     @Suppress("ReturnCount") // 引用、清理、世代、读取逐项
-    fun read(ref: String?): OrderRestoreRecord? {
+    fun read(
+        ref: String?,
+        binding: LoginBinding,
+    ): OrderRestoreRecord? {
         if (ref == null || !REF_PATTERN.matches(ref) || !cleaned()) return null
-        val current = currentEpoch()
+        val current = if (loginEpoch == null) LoginBinding.Unbound else binding
         if (current == LoginBinding.Unknown) return null
         val file = File(root, ref + SUFFIX)
         val text = runCatching { AtomicTextFile(file).read() }.getOrNull() ?: return null
@@ -166,6 +186,40 @@ class OrderRestoreStore internal constructor(
         if (!ok) OrderLog.warn("orders: restore record not written")
         return ok
     }
+
+    /**
+     * 会话对账（第 1 轮修复 R1-05，FU-AND-0717；与订单缓存同一份身份快照、同一入口，不依赖页面创建或读取）：已确认的身份 [account]（null = 已确认没有会话）
+     * 与持久化登录世代 [loginEpoch] 下，凡是归属（账号哈希）或 `gen`（账号归属 + 世代）不属于这个身份的记录一律删除。接了世代来源而 [loginEpoch] 给不出时
+     * 判不清，不动（返回 true）；没接来源（旧口径）只按账号归属。先完成已登记的待清理。返回是否完成（删不掉为 false，调用方登记、之后重试）。
+     */
+    @Synchronized
+    @Suppress("ReturnCount") // 待清理、判不清、逐条删除
+    fun reconcileOwner(
+        account: String?,
+        loginEpoch: String?,
+    ): Boolean {
+        if (!cleaned()) return false
+        val bound = this.loginEpoch != null
+        if (account != null && bound && loginEpoch.isNullOrEmpty()) return true
+        val owner = account?.let(::ownerHash)
+        val files = runCatching { root.listFiles() }.getOrNull() ?: return !root.exists()
+        val stale =
+            files.filter { it.isFile && it.name.endsWith(SUFFIX) && it.name != PENDING_MARKER }.filter { file ->
+                val text = runCatching { AtomicTextFile(file).read() }.getOrNull() ?: return@filter true
+                val record = decode(text) ?: return@filter true
+                when {
+                    owner == null -> true
+                    record.owner != owner -> true
+                    bound -> decodeGen(text) != bindingHash(record.owner, loginEpoch.orEmpty())
+                    else -> false
+                }
+            }
+        return stale.all { runCatching { deleter(it) }.getOrDefault(false) }
+    }
+
+    /** 只完成已登记的待清理（身份暂时未知时也照常，F-X-19 补充二）；返回此刻是否没有待清理。 */
+    @Synchronized
+    fun completePendingClear(): Boolean = cleaned()
 
     /** 页面创建时只留本页这一份（进程被杀、没被恢复的旧记录删掉）；删不掉不影响页面（清理时再删）。 */
     @Synchronized
@@ -264,6 +318,9 @@ class OrderRestoreStore internal constructor(
     private fun str(value: String?) = value?.let(::JsonPrimitive) ?: JsonNull
 
     private companion object {
+        /** 账号 → 记录里的归属（与页面写入的 owner 同一算法：OrderStaleCache.Store.hash）。 */
+        fun ownerHash(account: String): String = OrderStaleCache.Store.hash(account)
+
         const val PENDING_MARKER = "pending_clear"
         const val SUFFIX = ".json"
         val REF_PATTERN = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

@@ -13,7 +13,9 @@ import kotlinx.coroutines.delay
 /**
  * Debug / Staging 专用的假微信适配器（APP-05b 设计稿比对、冒烟与测试；src/debugFeatures，Release 不编译，release-scan 查
  * [FAKE_WECHAT_ADAPTER_MARKER]）。只在统一闸门（开关文件在 + 当前环境允许 MOCK_DATA + 环境就绪，F-X-02）放行时可用：不调用任何 SDK、不连任何地址，[DELAY_MILLIS] 后带回
- * 演示用的授权码与 state = nonce（客户端自查通过）。假服务关闭时与 Release 一样不可用（按钮不显示）。
+ * 演示用的授权码与 state = nonce（客户端自查通过）。
+ * F-X-12（FU-AND-0717，三端统一口径）：假服务关闭时按钮照常显示（[debugHint] 非空），点击只提示「调试用，需开本机假服务」、不发任何请求；Release 不编译本类
+ * （微信按钮不显示）。
  */
 internal class DebugWechatAdapter(
     /** 统一闸门（F-X-02，[com.couli.app.DebugMockGate]）：每次调用现判，不在构造时判一次。 */
@@ -27,6 +29,8 @@ internal class DebugWechatAdapter(
 
     override fun installed(): Boolean? = if (gate()) true else fallback.installed()
 
+    override fun debugHint(): String? = if (gate()) null else DEBUG_HINT
+
     @Suppress("ReturnCount") // 入口与交付前两次闸门
     override suspend fun authorize(nonce: String): ThirdPartyAuthResult {
         if (!gate()) return fallback.authorize(nonce)
@@ -39,6 +43,9 @@ internal class DebugWechatAdapter(
     private companion object {
         const val DELAY_MILLIS = 600L
         const val DEMO_CODE = "fake-wechat-code"
+
+        /** 调试用提示（只在 Debug / Staging 源码集，不进文案字典与 Release）。 */
+        const val DEBUG_HINT = "调试用，需开本机假服务"
     }
 }
 

@@ -114,8 +114,11 @@ class FollowupAnd0714FixR2EpochTest {
         homeRoot: File,
     ) {
         private val source = persistedLoginEpochOf(tokens)
-        val orders = OrderStaleCache.Store(AppOrders.cacheRoot(context), orderCachePendingFlag(context)).apply { bindLoginEpoch(source) }
-        val wallet = WalletStaleCache.Store(AppWallet.cacheRoot(context), walletCachePendingFlag(context)).apply { bindLoginEpoch(source) }
+
+        // FU-AND-0717（F-X-17）：缓存按调用方给出的固定世代分区（这里取重建那一刻令牌存储的世代，等同原来的来源）
+        val epoch: String? = source()
+        val orders = OrderStaleCache.Store(AppOrders.cacheRoot(context), orderCachePendingFlag(context)).apply { partitionByLoginEpoch() }
+        val wallet = WalletStaleCache.Store(AppWallet.cacheRoot(context), walletCachePendingFlag(context)).apply { partitionByLoginEpoch() }
         val restore = OrderRestoreStore(AppOrders.restoreRoot(context), orderRestorePendingFlag(context)).apply { bindLoginEpoch(source) }
         val home = HomeLkgStore(homeRoot, NoFlag, deleter = { false }).apply { bindLoginEpoch(source) }
     }
@@ -140,8 +143,11 @@ class FollowupAnd0714FixR2EpochTest {
         val homeRoot = File(context.noBackupFilesDir, "fuand0714-r2-03-lkg").apply { deleteRecursively() }
 
         // 四类缓存按当前世代写入（App 取实例处的接线）
-        orderCacheStore(context, tokens).writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L)
-        walletCacheStore(context, tokens).write("user-a", summary, 1L)
+        orderCacheStore(
+            context,
+            tokens,
+        ).writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L, tokens.persistedLoginEpoch())
+        walletCacheStore(context, tokens).write("user-a", summary, 1L, tokens.persistedLoginEpoch())
         val restore = orderRestoreStore(context, tokens)
         val ref = restore.newRef()
         val record = OrderRestoreRecord(owner = "owner-a", q = "3741234567890123456", input = "3741234567890123456")
@@ -149,8 +155,8 @@ class FollowupAnd0714FixR2EpochTest {
         val home = HomeLkgStore(homeRoot, NoFlag, deleter = { false }).apply { bindLoginEpoch(persistedLoginEpochOf(tokens)) }
         assertTrue(home.write(home.ticket(scope), """{"page":"old"}"""))
         val before = Rebuilt(tokens, homeRoot)
-        assertNotNull("前提：同一世代读得回", before.orders.readList("user-a", "self"))
-        assertNotNull(before.wallet.read("user-a"))
+        assertNotNull("前提：同一世代读得回", before.orders.readList("user-a", "self", before.epoch))
+        assertNotNull(before.wallet.read("user-a", before.epoch))
         assertEquals(record, before.restore.read(ref))
         assertEquals("""{"page":"old"}""", before.home.read(scope))
 
@@ -169,8 +175,8 @@ class FollowupAnd0714FixR2EpochTest {
         assertNull("重建后旧会话不交出", rebuiltTokens.accessToken)
         assertNull("重建后世代为 null", rebuiltTokens.persistedLoginEpoch())
         val after = Rebuilt(rebuiltTokens, homeRoot)
-        assertNull("订单缓存读不回", after.orders.readList("user-a", "self"))
-        assertNull("钱包摘要缓存读不回", after.wallet.read("user-a"))
+        assertNull("订单缓存读不回", after.orders.readList("user-a", "self", after.epoch))
+        assertNull("钱包摘要缓存读不回", after.wallet.read("user-a", after.epoch))
         assertNull("订单页恢复记录读不回", after.restore.read(ref))
         assertNull("会员首页 LKG 读不回", after.home.read(scope))
 
@@ -178,8 +184,8 @@ class FollowupAnd0714FixR2EpochTest {
         prefs.failRemovals = false
         rebuiltTokens.save("access-2", "refresh-2", SessionScopeRaw.FULL, "user-a")
         val relogin = Rebuilt(KeystoreSessionTokens(EncryptedPreferences(context, NoCipher, backing = prefs)), homeRoot)
-        assertNull(relogin.orders.readList("user-a", "self"))
-        assertNull(relogin.wallet.read("user-a"))
+        assertNull(relogin.orders.readList("user-a", "self", relogin.epoch))
+        assertNull(relogin.wallet.read("user-a", relogin.epoch))
         assertNull(relogin.restore.read(ref))
         assertNull(relogin.home.read(scope))
         homeRoot.deleteRecursively()

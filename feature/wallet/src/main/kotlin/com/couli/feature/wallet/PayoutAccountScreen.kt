@@ -65,6 +65,8 @@ class PayoutAccountViewModel(
     init {
         config.hooks.bindLeave(controller::leave)
         config.hooks.bindSession(controller::onSessionChanged)
+        // 统一的页面恢复入口（FU-AND-0717 第 3 轮，R2-04）
+        config.hooks.bindIdentity(controller::onIdentity)
         controller.start()
     }
 
@@ -143,7 +145,7 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                 ) {
                     PayoutPending(controller, flow, texts, blocked)
                     state.loadError?.let {
-                        RetryErrorBar(it, texts, WalletTags.PAYOUT_REFRESH_ERROR, retryEnabled = !readBlocked) { controller.load() }
+                        RetryErrorBar(it, texts, WalletTags.PAYOUT_REFRESH_ERROR, retryEnabled = !readBlocked) { controller.retry() }
                     }
                     state.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.PAYOUT_GUIDE) { controller.openGuide() } }
                     flow.error?.let { ErrorBar(it, texts, WalletTags.PAYOUT_ERROR) }
@@ -191,7 +193,7 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                     ErrorState(
                         title = texts.text("payout.load_failed"),
                         message = state.loadError?.message(texts),
-                        retry = StateAction(texts.text("wallet.retry"), enabled = !readBlocked) { controller.load() },
+                        retry = StateAction(texts.text("wallet.retry"), enabled = !readBlocked) { controller.retry() },
                     )
                 }
             }

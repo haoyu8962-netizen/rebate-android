@@ -13,7 +13,8 @@
 #   4. 源码规则扫描器单测（./gradlew -p build-logic :convention:test：字符串模板嵌套、原始字符串、字符字面量、注释）；
 #      lint 违反样例必须报错（tools/ci/lint-fixtures/ 每条规则至少一个；含插值里的中文、插值里的 SDK 初始化、多美元符号插值、
 #      扫不完整的文件与空扫描根——F-X-07 fail-closed；Java 块注释不嵌套——FU-AND-0715 R1-04；Java 单独回车结束行注释——R2-02，
-#      运行前先核对样例里确实有单独回车字节）
+#      运行前先核对样例里确实有单独回车字节；FU-AND-0717 F-X-07 补充 / 补充二：转义写的中文、块注释边界与反引号标识符里的 SDK 初始化、
+#      Unicode 行终止符按扫不完整——运行前同样核对样例里确实有 U+2028 字节）
 #   5. ./gradlew assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
 #   6. ./gradlew testDebugUnitTest（含 Robolectric、ContractConformanceTest 与 DS-01 格式向量 FormatVectorTest）；
 #      ./gradlew :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug（DS-01 组件快照、APP-11 首页 golden 页、
@@ -206,6 +207,23 @@ PY
 step "违反样例含单独回车字节（R2-02）" lone_cr_fixture
 expect_failure "违反样例：Java 行注释后单独回车，回车之后的 SDK 初始化（FU-AND-0715 R2-02）" "LoneCrInit.java:12: .sdk-init-only-in-privacy-gate" \
   $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate-java-lone-cr"
+expect_failure "违反样例：Unicode 转义写的中文与字符字面量（FU-AND-0717 F-X-07 补充二）" "EscapedCjk.kt:7: .no-cjk-string-in-feature" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/no-cjk-string-in-feature-escaped"
+expect_failure "违反样例：块注释边界与反引号标识符里的 SDK 初始化（FU-AND-0717 F-X-07 补充）" "CommentBoundaryInit.kt:11: .sdk-init-only-in-privacy-gate" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/sdk-init-only-in-privacy-gate-comment-boundary"
+# FU-AND-0717：样例文件必须真的含 U+2028 字节（被编辑器改掉的话这条样例就测不到东西，按失败处理）
+line_separator_fixture() {
+  python3 - "$FIXTURES/scan-incomplete-unicode-line-terminator/feature/home/src/main/kotlin/com/couli/feature/home/LineSeparator.kt" <<'PY2'
+import sys
+data = open(sys.argv[1], "rb").read()
+count = data.count("\u2028".encode("utf-8"))
+print(f"U+2028 {count} 处")
+sys.exit(0 if count > 0 else 1)
+PY2
+}
+step "违反样例含 U+2028 字节（FU-AND-0717）" line_separator_fixture
+expect_failure "违反样例：Unicode 行终止符（U+2028，FU-AND-0717 F-X-07 补充二）" "LineSeparator.kt:6: .scan-incomplete" \
+  $GRADLE couliRules "-Pcouli.rules.root=$FIXTURES/scan-incomplete-unicode-line-terminator"
 expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feature-dependency" \
   $GRADLE help "-Pcouli.fixture.featureDependency=$FIXTURES/feature-to-feature-dependency/feature-home-depends-on-search.gradle.kts"
 

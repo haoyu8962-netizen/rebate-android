@@ -544,6 +544,9 @@ class AppMe(
 
         override val identityFlow: StateFlow<MeIdentity> get() = identity
 
+        // F-X-14（FU-AND-0717）：「我的」Tab 的自动同步按会话作用域决定是否读 getMe（与网络层同一份有效会话）
+        override fun sessionScope(): String = client.activeSessionScope().orEmpty()
+
         override fun open(
             route: String,
             params: JsonObject,

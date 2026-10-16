@@ -49,6 +49,11 @@ data class BindOutcome(
      * 页面只在它与发起时的输入一致时才把验证码相关的结果落到输入框。
      */
     val sentCode: String? = null,
+    /**
+     * 这次实际发出的规范化手机号（F-X-15，FU-AND-0717）：held 键沿用原键原体时是原提交的号码。页面只在它与发起时的输入（规范化后）一致时才把号码 / 验证码类反馈
+     * 落到表单；没有发出时为 null。
+     */
+    val sentPhone: String? = null,
 ) {
     companion object {
         const val OPEN_ROUTE = "open_route"
@@ -210,13 +215,15 @@ class BindPhoneService(
         val issued = serial
         // 共性第 15 条：入口固定登录世代；首次派发与每次写出前核对，换了账号就不发出
         val epoch = tokens.loginEpoch
+        // APP-13a 共性 49（FU-AND-0717）：发起时的完整固定身份（账号 + 登录世代 + 作用域 + 隐私 / 环境世代）；42901 写入发码截止前复核
+        val fixed = owner().copy(epoch = epoch)
         val body = JsonObject(mapOf("phone" to JsonPrimitive(phone), "purpose" to JsonPrimitive(PURPOSE_BIND))).toString()
         // 发码按会话归属结算（共性第 21 条、APP-09 第 40 条）：不随页面离开、换号取消
         val owner = CallOwnership(client.inFlight.epochs()) { tokens.loginEpoch == epoch }
         sending = true
         return session {
             try {
-                sent(client.send(ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner)), phone, issued, epoch)
+                sent(client.send(ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner)), phone, issued, epoch, fixed)
             } finally {
                 sending = false
             }
@@ -228,6 +235,7 @@ class BindPhoneService(
         phone: String,
         issued: Long,
         epoch: Long,
+        fixed: BindPhoneOwner,
     ): SendCodeOutcome {
         val stale = issued != serial || tokens.loginEpoch != epoch
         return when (result) {
@@ -244,7 +252,8 @@ class BindPhoneService(
 
             is ApiResult.Failure -> {
                 val countdown = SmsCountdown.fromMillis(result.code, result.effect.disableMillis ?: 0L, result.data)
-                if (countdown.stateRaw == SmsCountdown.STATE_RATE_LIMITED) {
+                // 共性 49：限流写入前复核完整固定身份（同账号同世代作用域刷新后迟到的 42901 不写进新作用域的发码截止）
+                if (countdown.stateRaw == SmsCountdown.STATE_RATE_LIMITED && owns(fixed)) {
                     login.recordSendGate(phone, clock() + countdown.countdownSec * MILLIS, SmsCountdown.STATE_RATE_LIMITED)
                 }
                 if (stale) return SendCodeOutcome(BindOutcome.STALE, 0, null, null, null)
@@ -312,6 +321,8 @@ class BindPhoneService(
         val body = held?.body ?: JsonObject(mapOf("phone" to JsonPrimitive(phone), "code" to JsonPrimitive(code))).toString()
         // 共性第 35 条：held 重发的是原请求体里的码（读不出时按「不是这次的输入」处理，验证码反馈不落到输入框）
         val sentCode = if (held == null) code else heldCode(held.body)
+        // F-X-15：held 重发的是原请求体里的号码（读不出时为空串，与任何输入都不一致）
+        val sentPhone = if (held == null) phone else heldPhone(held.body)
         val summary = held?.summary ?: PhoneNumber.masked(phone)
         val gate = shared?.phoneGate
         // 写请求离开页面不取消（共性第 21 条）：归属只核对会话世代与 42901 截止时间（发送前闸门），不登记进页面的作废列表
@@ -332,12 +343,18 @@ class BindPhoneService(
                             expectedAccount = account,
                         ),
                     )
-                settleBind(result, phone, fixed, epoch, key, summary, issued).copy(sentCode = sentCode)
+                settleBind(result, sentPhone, fixed, epoch, key, summary, issued).copy(sentCode = sentCode, sentPhone = sentPhone)
             } finally {
                 binding = false
             }
         }
     }
+
+    /** held 记录原请求体里的手机号（规范化）；解析不出为空串。 */
+    private fun heldPhone(body: String): String =
+        runCatching {
+            ((Json.parseToJsonElement(body) as? JsonObject)?.get("phone") as? JsonPrimitive)?.takeIf { it.isString }?.content
+        }.getOrNull()?.let { PhoneNumber.normalize(it).normalized }.orEmpty()
 
     /** held 记录原请求体里的验证码；解析不出为空串（与任何输入都不一致）。 */
     private fun heldCode(body: String): String =
@@ -357,7 +374,7 @@ class BindPhoneService(
         issued: Long,
     ): BindOutcome {
         val account = fixed.account
-        settleShared(account, epoch, key, summary, result, AccountRaw.SUBMIT)
+        settleShared(account, epoch, key, summary, result, AccountRaw.SUBMIT, fixed = fixed)
         if (result is ApiResult.Success) {
             // 绑定已在服务端完成：不论页面是否还在，这个会话已绑手机；推进更新世代，绑定前发出的 getMe 回包作废（共性第 12 条）
             if (tokens.loginEpoch == epoch) phoneBinding.bindSucceeded(epoch)
@@ -483,7 +500,7 @@ class BindPhoneService(
                 val input = if (abandon) AccountResult.ofAbandon(result) else AccountResult.of(result)
                 val phase = if (abandon) AccountRaw.ABANDON else AccountRaw.CONFIRM
                 val settled = input?.let { PhoneChangeOutcomePolicy.of(phase, it) }
-                settleShared(account, epoch, key, summary, result, phase, settled)
+                settleShared(account, epoch, key, summary, result, phase, settled, owner)
                 if (settled?.nextStateRaw == PhoneChangeOutcome.DONE && tokens.loginEpoch == epoch) {
                     phoneBinding.bindSucceeded(epoch)
                     refreshMe(epoch)
@@ -512,11 +529,14 @@ class BindPhoneService(
         result: ApiResult,
         phase: String,
         known: PhoneChangeOutcome? = null,
+        /** 发起时的完整固定身份（共性 49）：42901 写闸门前复核。 */
+        fixed: BindPhoneOwner,
     ) {
         val shared = shared ?: return
         account ?: return
         val outcome = known ?: AccountResult.of(result)?.let { PhoneChangeOutcomePolicy.of(phase, it) }
-        if (tokens.loginEpoch == epoch) outcome?.disableMs?.let(shared.phoneGate::start)
+        // 共性 49（FU-AND-0717）：同账号同世代作用域刷新后迟到的旧请求 42901 不写新作用域的闸门（成功 / 未决等网络结算照常）
+        if (tokens.loginEpoch == epoch && owns(fixed)) outcome?.disableMs?.let(shared.phoneGate::start)
         if (outcome?.nextStateRaw == PhoneChangeOutcome.DONE && (result is ApiResult.Success || outcome.alreadyDone)) {
             shared.onBindPhoneSucceeded(account, epoch, key, summary, PhoneChangeOutcome.DONE, outcome.textKey)
         } else {

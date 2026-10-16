@@ -122,18 +122,17 @@ object OrderStaleCache {
         private var pendingClear = false
 
         /**
-         * 持久化登录世代的来源（F-AND-25，[bindLoginEpoch]）：接上之后，缓存目录与归属记录按「账号 + 登录世代」的哈希分区；世代读不出（抛错、null、
-         * 空串）按未知：不读、不写、不按归属清理。没接（单测、core 自用）时按账号分区（原口径）。
+         * 按「账号 + 持久化登录世代」分区（F-AND-25，[partitionByLoginEpoch]）：打开之后，缓存目录与归属记录按这两者的哈希分区，世代由**调用方**给出——
+         * 请求 / 页面绑定时固定的那一份（F-X-17，FU-AND-0717：存储不再在读写时自己去读「此刻的世代」，旧响应在最后一次身份核对之后、写入之前遇到同账号
+         * 重新登录，也只会写进它自己那一代的分区，随后由会话对账删掉）。调用方给不出世代（null、空串）按未知：不读、不写、不按归属清理。
+         * 没打开（单测、core 自用）时按账号分区（原口径），给出的世代不用。
          */
         @Volatile
-        private var loginEpoch: (() -> String?)? = null
+        private var partitioned = false
 
-        /**
-         * 接上令牌存储里的持久化登录世代（App 在每个取得实例的地方接；只能从未接变为接上）。清理标记、目录内标记与删除三者同时失败、残留的旧缓存，
-         * 在同账号重新登录（新世代）之后也读不回、写不进，并在下一次归属核对时整体删除。
-         */
-        fun bindLoginEpoch(source: () -> String?) {
-            if (loginEpoch == null) loginEpoch = source
+        /** 打开按登录世代分区（App 在每个取得实例的地方调；只能从关变为开）。 */
+        fun partitionByLoginEpoch() {
+            partitioned = true
         }
 
         /** 读 [scope] 的列表缓存；没有、坏了、待清理没清掉都为 null。 */
@@ -142,8 +141,10 @@ object OrderStaleCache {
         fun readList(
             account: String?,
             scope: String,
+            /** 页面固定的持久化登录世代（[partitionByLoginEpoch] 打开时用）。 */
+            loginEpoch: String? = null,
         ): CachedOrderList? {
-            val dir = accountDir(account) ?: return null
+            val dir = accountDir(account, loginEpoch) ?: return null
             val root = read(File(dir, listFile(scope))) ?: return null
             val data = OrderJson.listData(root["data"]) ?: return discard(File(dir, listFile(scope)))
             val at = (root["fetched_at"] as? JsonPrimitive)?.longOrNull ?: return discard(File(dir, listFile(scope)))
@@ -157,8 +158,10 @@ object OrderStaleCache {
             scope: String,
             data: OrderListData,
             fetchedAt: Long,
+            /** 请求发起时固定的持久化登录世代（F-X-17：不在写入时读当前世代）。 */
+            loginEpoch: String? = null,
         ) {
-            val dir = ownedDir(account) ?: return
+            val dir = ownedDir(account, loginEpoch) ?: return
             val body =
                 JsonObject(
                     mapOf(
@@ -181,8 +184,9 @@ object OrderStaleCache {
         fun readDetail(
             account: String?,
             orderId: String,
+            loginEpoch: String? = null,
         ): CachedOrderDetail? {
-            val dir = accountDir(account) ?: return null
+            val dir = accountDir(account, loginEpoch) ?: return null
             val entry = details(dir)[orderId] as? JsonObject ?: return null
             val detail = (entry["detail"] as? JsonObject)?.let(OrderJson::detail) ?: return null
             val at = (entry["fetched_at"] as? JsonPrimitive)?.longOrNull ?: return null
@@ -195,8 +199,9 @@ object OrderStaleCache {
             account: String?,
             detail: OrderDetail,
             fetchedAt: Long,
+            loginEpoch: String? = null,
         ) {
-            val dir = ownedDir(account) ?: return
+            val dir = ownedDir(account, loginEpoch) ?: return
             val existing = details(dir)
             val entry = JsonObject(mapOf("fetched_at" to JsonPrimitive(fetchedAt), "detail" to OrderJson.encode(detail)))
             val ordered = LinkedHashMap<String, JsonElement>(existing.filterKeys { it != detail.summary.orderId })
@@ -210,18 +215,28 @@ object OrderStaleCache {
         }
 
         /**
-         * 当前会话的账号（null = 没有会话）与缓存的归属不一致（登出、换账号、会话失效；接上登录世代后还有同账号重新登录）：全部删除。登录世代读不出
-         * 时不知道归属，不删也不读写（F-AND-25）。
+         * 已确认的会话身份（[account] 为 null = 已确认没有会话；[loginEpoch] 是同一份身份快照里的持久化登录世代）与缓存的归属标签不一致（登出、换账号、
+         * 会话失效；分区打开后还有同账号重新登录）：全部删除。直接比较固定的分区标签，不先看会话计数（F-X-17 补充）。登录世代给不出时不知道归属，
+         * 不删也不读写（F-AND-25）。**身份暂时未知时调用方不调本方法**（F-X-19 补充：未知不等于没有会话），只调 [completePendingClear]。
+         * 返回是否完成（待清理没清掉、删除失败为 false：调用方登记、之后重试，F-X-19 补充三）。
          */
         @Synchronized
-        fun reconcileOwner(account: String?) {
+        @Suppress("ReturnCount") // 待清理、身份未知、标签比较逐项
+        fun reconcileOwner(
+            account: String?,
+            loginEpoch: String? = null,
+        ): Boolean {
             // 启动（connectSession）与会话变化时先核验缓存目录之外的待清理状态：上次没清完的先清完（R3-02），清不掉的读写路径同样拦住
-            if (!cleaned()) return
-            val current = if (account == null) null else ownerKey(account) ?: return
+            if (!cleaned()) return false
+            val current = if (account == null) null else ownerKey(account, loginEpoch) ?: return true
             // 归属记录读不出（I/O 故障）不能当成「没有归属」：按归属不一致全部删除（共性第 20 条：清理路径的失败分支）
             val owner = runCatching { AtomicTextFile(File(root, OWNER_FILE)).read() }.getOrElse { UNREADABLE_OWNER }
-            if (owner != null && owner != current) runCatching { clearAll() }
+            return if (owner != null && owner != current) runCatching { clearAll() }.isSuccess else true
         }
+
+        /** 只完成已登记的待清理（身份暂时未知时也照常执行，F-X-19 补充二）；返回此刻是否没有待清理。 */
+        @Synchronized
+        fun completePendingClear(): Boolean = cleaned()
 
         /**
          * 全部删除（撤回同意、切换环境、登出、换账号）：任何一个文件删不掉都保留待清理标记并抛错（调用方保持待完成、之后重试）；
@@ -269,23 +284,35 @@ object OrderStaleCache {
             return runCatching { clearAll() }.isSuccess
         }
 
-        /** 账号 → 分区键：没接登录世代按账号哈希；接上后按「账号 + 登录世代」哈希，世代未知为 null（不读不写）。 */
-        @Suppress("ReturnCount") // 没接、未知、读到三个出口
-        private fun ownerKey(account: String): String? {
-            val source = loginEpoch ?: return hash(account)
-            val epoch = runCatching(source).getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+        /** 账号 → 分区键：没打开分区按账号哈希；打开后按「账号 + 调用方给的登录世代」哈希，世代给不出为 null（不读不写）。 */
+        @Suppress("ReturnCount") // 没打开分区、世代给不出、给出三个出口
+        private fun ownerKey(
+            account: String,
+            loginEpoch: String?,
+        ): String? {
+            if (!partitioned) return hash(account)
+            val epoch = loginEpoch?.takeIf { it.isNotEmpty() } ?: return null
             return hash(account + EPOCH_SEPARATOR + epoch)
         }
 
-        private fun accountDir(account: String?): File? {
+        private fun accountDir(
+            account: String?,
+            loginEpoch: String?,
+        ): File? {
             if (account.isNullOrEmpty() || !cleaned()) return null
-            return ownerKey(account)?.let { File(root, it) }
+            return ownerKey(account, loginEpoch)?.let { File(root, it) }
         }
 
-        /** 写入前确保归属：别的账号（或同账号的旧登录世代）的缓存先全部删掉（删不掉就不写）。 */
-        private fun ownedDir(account: String?): File? {
-            reconcileOwner(account)
-            val dir = accountDir(account) ?: return null
+        /**
+         * 写入前确保归属：别的账号（或同账号的旧登录世代）的缓存先全部删掉（删不掉就不写）。归属只按调用方给的固定身份（F-X-17）：同账号重新登录之后
+         * 迟到的旧写入落进旧世代分区（并把归属标签改回旧世代），新世代读不到，下一次会话对账按标签不一致整体删除。
+         */
+        private fun ownedDir(
+            account: String?,
+            loginEpoch: String?,
+        ): File? {
+            reconcileOwner(account, loginEpoch)
+            val dir = accountDir(account, loginEpoch) ?: return null
             val ok = runCatching { AtomicTextFile(File(root, OWNER_FILE)).write(dir.name) }.isSuccess
             return dir.takeIf { ok }
         }

@@ -15,6 +15,32 @@ interface SessionIdentitySource {
 
     /** 当前有效会话的账号（会话读不出为 null）。 */
     fun account(): String?
+
+    /**
+     * 一份固定的身份快照（F-X-17 / F-X-19 补充二，FU-AND-0717）：已知与否、账号、会话世代与持久化登录世代（缓存 / 草稿分区）同一次取得。缺省（旧单测）
+     * 按 [account] 与 [sessionEpoch] 拼出、没有分区世代。
+     */
+    fun identitySnapshot(): com.couli.core.network.SessionIdentity {
+        // 先取登录世代、再读账号（与 ApiClient.sessionIdentity 的「读取前世代」同一顺序）
+        val epoch = sessionEpoch()
+        return com.couli.core.network
+            .SessionIdentity(known = true, account = account(), loginEpoch = epoch, partition = null)
+    }
+
+    /**
+     * 此刻的会话就是 [account] 在登录世代 [epoch] 的那一次登录（FU-AND-0717 第 3 轮整体重理）：只读**一份**快照（[identitySnapshot]），不分别读世代与账号；
+     * 身份暂时未知按不一致（只拦这次写入 / 展示，不清、不重绑）。
+     */
+    fun ownedBy(
+        account: String?,
+        epoch: Long,
+    ): Boolean = identitySnapshot().isOwnedBy(account, epoch)
+
+    /**
+     * 快照里的持久化登录世代是否接了来源（末轮窄修 R3-02）：true 时分区为 null 即「分区未知」——按分区绑定的本机草稿延后读写、首次确认后再决策；
+     * false（没接来源的旧接线、旧单测）按账号绑定（旧口径，与 OrderRestoreStore 的 Unbound 相同）。
+     */
+    fun partitionTracked(): Boolean = false
 }
 
 /**
@@ -81,13 +107,23 @@ data class FormOwner(
     val epoch: Long,
 ) {
     /** 表单所属的会话仍是当前会话（账号可读且一致、世代相同；同一账号重新登录也算换代）。 */
-    fun current(env: SessionIdentitySource): Boolean = account != null && env.sessionEpoch() == epoch && env.account() == account
+    fun current(env: SessionIdentitySource): Boolean = env.ownedBy(account, epoch)
+
+    /**
+     * 与一份新快照比较（FU-AND-0717 第 3 轮整体重理，[com.couli.core.network.SessionIdentity.verdictFor]，不看分区）：未知 / 同一 / 未知期取得的表单第一次确认
+     * （接管）/ 已确认换代。
+     */
+    fun verdict(identity: com.couli.core.network.SessionIdentity): com.couli.core.network.IdentityVerdict =
+        identity.verdictFor(account, epoch, null, trackPartition = false)
 
     companion object {
         /**
          * 构造（或会话换代通知里重建）表单、页面执行器时**一次性**取得固定身份（APP-09 共性第 65 条，Android RC-06）：只允许在这两个时刻调用。
          */
-        fun of(env: SessionIdentitySource): FormOwner = FormOwner(env.account(), env.sessionEpoch())
+        fun of(env: SessionIdentitySource): FormOwner = of(env.identitySnapshot())
+
+        /** 从一份身份快照取（账号与世代同一次读取，F-X-19 补充二）。 */
+        fun of(identity: com.couli.core.network.SessionIdentity): FormOwner = FormOwner(identity.account, identity.loginEpoch)
     }
 }
 

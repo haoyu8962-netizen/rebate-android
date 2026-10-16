@@ -90,6 +90,12 @@ class MeTabController(
     /** 进入 Tab、下拉、回前台、从子页返回（G36）：读取许可绑定本执行器（这一次进入）。 */
     fun refresh(pull: Boolean = false): Boolean = alive() && deps.repo.refresh(identity, this, pull)
 
+    /**
+     * 自动同步（进入 Tab、回前台、从子页返回、身份变了重建执行器后的那一次读取；F-X-14，FU-AND-0717，鸿蒙 FU-HM-0721 R1-01 同法）：会话是受限登录
+     * （deletion_only）时不读——不发 getMe、不动快照；其余照常 [refresh]。下拉与【重试】是页面主动读取，仍走 [refresh]。
+     */
+    fun autoRefresh(): Boolean = deps.env.sessionScope() != DELETION_ONLY && refresh()
+
     /** 页面显示的规则（MeView）。 */
     fun view(
         snapshot: MeSnapshot,
@@ -181,6 +187,7 @@ class MeTabController(
         const val LOGIN = "Login"
         const val COPIED = "invite.copy_code.done"
         const val COPY_FAILED = "me.copy_failed"
+        const val DELETION_ONLY = "deletion_only"
     }
 }
 
@@ -218,7 +225,7 @@ fun MeTabScreen(
     var resumes by remember { mutableLongStateOf(0L) }
     OnResumed(controller) {
         resumes += 1
-        controller.refresh()
+        controller.autoRefresh()
     }
     val texts = deps.texts
     val view = controller.view(snapshot, masked)

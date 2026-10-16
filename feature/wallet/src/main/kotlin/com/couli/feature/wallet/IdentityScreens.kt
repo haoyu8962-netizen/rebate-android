@@ -48,6 +48,8 @@ class RealNameViewModel(
     init {
         config.hooks.bindLeave(controller::leave)
         config.hooks.bindSession(controller::onSessionChanged)
+        // 统一的页面恢复入口（FU-AND-0717 第 3 轮）
+        config.hooks.bindIdentity(controller::onIdentity)
     }
 
     override fun onCleared() {
@@ -200,6 +202,8 @@ class LaborAgreementViewModel(
     init {
         config.hooks.bindLeave(controller::leave)
         config.hooks.bindSession(controller::onSessionChanged)
+        // 统一的页面恢复入口（FU-AND-0717 第 3 轮）
+        config.hooks.bindIdentity(controller::onIdentity)
         controller.load()
     }
 

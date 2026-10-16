@@ -3,9 +3,11 @@ package com.couli.feature.orders
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
 import com.couli.core.network.LocalRejectReason
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
+import com.couli.core.network.SessionIdentity
 import com.couli.core.orders.OrderActionButton
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderDetailActions
@@ -43,7 +45,14 @@ object OrderDetailPhase {
 data class OrderDetailOwner(
     val epoch: Long,
     val account: String?,
-)
+    /** 同一份身份快照里的持久化登录世代（缓存分区，F-X-17，FU-AND-0717）：写缓存只按它，不在写入时读当前世代。 */
+    val loginEpoch: String? = null,
+) {
+    companion object {
+        /** 一份身份快照（F-X-19 补充二：不拼接两次读取）。 */
+        fun of(identity: SessionIdentity): OrderDetailOwner = OrderDetailOwner(identity.loginEpoch, identity.account, identity.partition)
+    }
+}
 
 /**
  * 进程恢复等待的票据（FU-AND-0710 RC-01，APP-08 共性第 21 条、APP-09 共性第 65 条）：等待前一次性捕获详情的固定身份 [owner]、绑定代次 [binding]
@@ -97,8 +106,15 @@ class OrderDetailController(
      * 本页固定的会话身份（RC-01，APP-09 共性第 65 条）：构造时一次性取（世代与账号同一次读取）；首次加载、恢复等待结束后的加载都只用这一份。
      * 只有清空旧页面的会话换代出口 [onSessionChanged] 重新绑定（[binding] 随之加 1）。
      */
-    private var bound = OrderDetailOwner(env.sessionEpoch(), env.account())
+    private var bound = OrderDetailOwner.of(env.identity())
     private var binding = 0L
+
+    /**
+     * 最近一次加载因身份中止（未知期建的页、本进程登录世代已变而新身份还没确认；FU-AND-0717 第 3 轮，第 2 轮评审 R2-03）：页面停在可重试的错误态，
+     * 身份确认（App 下发 / 【重试】的一份快照）后补取。
+     */
+    var identityAborted: Boolean = false
+        private set
 
     private val mutableState = MutableStateFlow(OrderDetailSnapshot())
     val state: StateFlow<OrderDetailSnapshot> = mutableState.asStateFlow()
@@ -113,9 +129,43 @@ class OrderDetailController(
      * 固定的身份（[retry]），只有清空旧页面的会话换代出口 [onSessionChanged] 重新绑定（R3-02）。固定身份已不是当前会话时不发。
      */
     fun load(): Boolean {
-        if (left || !isCurrent(bound)) return false
+        // 不再在这里另读一次会话判「是不是当前」（R2-03：单次读取失败会让页面永远停在加载中）：构造时刚取得固定身份，身份没建立（未知期建的页）由 [fetch]
+        // 结算成可重试的错误态，身份确认后补取；在途期间本进程登录世代变了由结果核对结算
+        if (left) return false
         fetch(bound)
         return true
+    }
+
+    /** 本页固定身份与一份快照的比较（[SessionIdentity.verdictFor]，FU-AND-0717 第 3 轮唯一的判定）。只比较，不赋值。 */
+    fun verdict(identity: SessionIdentity): IdentityVerdict = identity.verdictFor(bound.account, bound.epoch, bound.loginEpoch)
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮，R2-03）：[identity] 是 App 这次检查的那份已确认快照（或【重试】取的一份）。已确认换代按它清空重取（同
+     * [onSessionChanged]）；第一次确认（未知期建的页）按它接管固定身份、曾因身份中止的加载补取；同一身份而加载曾中止的补取；未知不动。返回结论。
+     */
+    fun onIdentityConfirmed(identity: SessionIdentity): IdentityVerdict {
+        if (left) return IdentityVerdict.UNKNOWN
+        val verdict = verdict(identity)
+        when (verdict) {
+            IdentityVerdict.CHANGED -> {
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                // 等待中的恢复票据仍有效（绑定代次不变）：等待结束后按接管后的身份请求；加载曾中止的此刻补取
+                bound = OrderDetailOwner.of(identity)
+                if (identityAborted) fetch(bound)
+            }
+
+            IdentityVerdict.SAME -> {
+                if (identityAborted) fetch(bound)
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
+        }
+        return verdict
     }
 
     /** 进程恢复等待之前调用：捕获固定身份、绑定代次与状态版本（RC-01）。 */
@@ -127,10 +177,24 @@ class OrderDetailController(
      */
     @Suppress("ReturnCount") // 离开 / 换绑 / 版本、身份失效两个出口
     fun resumeRestore(ticket: OrderDetailRestoreTicket): Boolean {
-        val waiting = OrderDetailRestoreTicket(bound, binding, s.version)
-        if (left || ticket != waiting) return false
-        if (!isCurrent(ticket.owner)) return false
-        fetch(ticket.owner)
+        if (left || ticket.binding != binding || ticket.version != s.version) return false
+        // 等待期间只允许「第一次确认」（接管：未知期取得的账号、或同账号同一登录世代的分区）改动固定身份——按同一判定（verdictFor），接管之后照常完成
+        // 恢复（末轮窄修 R3-01）；确认换代的会话出口已清空重绑（绑定代次变了，上面已拦下）
+        val waited = ticket.owner
+        val adopted =
+            SessionIdentity(known = true, account = bound.account, loginEpoch = bound.epoch, partition = bound.loginEpoch)
+                .verdictFor(waited.account, waited.epoch, waited.loginEpoch) == IdentityVerdict.ADOPT
+        if (ticket.owner != bound && !adopted) {
+            identityAborted = true
+            return false
+        }
+        // 不另读会话判当前（R2-03）。本进程登录世代已变（换号窗口）：零请求、页面状态不改（RC-01），记下中止由会话出口重取；身份没建立由 [fetch]
+        // 结算成可重试的错误态
+        if (env.sessionEpoch() != bound.epoch) {
+            identityAborted = true
+            return false
+        }
+        fetch(bound)
         return true
     }
 
@@ -140,6 +204,7 @@ class OrderDetailController(
         seq += 1
         cancelAll()
         if (heldBeforeSend(owner)) return
+        identityAborted = false
         val request = seq
         val epoch = owner.epoch
         val account = owner.account
@@ -150,8 +215,12 @@ class OrderDetailController(
         scope.launch {
             val result = api.send(ApiCall(GET_OPERATION, pathParams = mapOf("order_id" to orderId), ownership = call))
             owners -= call
-            // 等待之后复核：页面已出栈、又发了新请求、会话已换代，都只丢弃
-            if (left || seq != request || env.sessionEpoch() != epoch) return@launch
+            // 等待之后复核：页面已出栈、又发了新请求，都只丢弃；仍是当前请求而本进程登录世代已变（换代还没确认）：不停在加载中，进可重试的错误态
+            if (left || seq != request) return@launch
+            if (env.sessionEpoch() != epoch) {
+                identityHeld(owner)
+                return@launch
+            }
             onResult(result, owner)
         }
     }
@@ -161,17 +230,8 @@ class OrderDetailController(
     private fun heldBeforeSend(owner: OrderDetailOwner): Boolean {
         if (env.loggedIn() && owner.account == null) {
             // 页面身份没建立（F-AND-28，APP-09 共性第 65 条）：已登录却读不出账号——可恢复的初始化失败。不发请求、不读写缓存、不发布订单数据；
-            // 【重试】时清空并重新取得固定身份（[retry]）
-            update {
-                it.copy(
-                    phase = OrderDetailPhase.ERROR,
-                    detail = null,
-                    version = it.version + 1,
-                    error = OrderErrorAction.of(OrderErrorAction.DETAIL, null, true, 0L, null, false, false),
-                    staleAt = null,
-                    owner = owner,
-                )
-            }
+            // 身份确认（App 下发 / 【重试】的一份快照）后接管并补取（FU-AND-0717 第 3 轮）
+            identityHeld(owner)
             return true
         }
         if (!env.loggedIn()) {
@@ -205,6 +265,21 @@ class OrderDetailController(
         return false
     }
 
+    /** 身份暂时确认不了：可重试的错误态并记下中止（不发布订单数据）。 */
+    private fun identityHeld(owner: OrderDetailOwner) {
+        identityAborted = true
+        update {
+            it.copy(
+                phase = OrderDetailPhase.ERROR,
+                detail = null,
+                version = it.version + 1,
+                error = OrderErrorAction.of(OrderErrorAction.DETAIL, null, true, 0L, null, false, false),
+                staleAt = null,
+                owner = owner,
+            )
+        }
+    }
+
     @Suppress("ReturnCount") // 成功、作废两个提前出口
     private fun onResult(
         result: ApiResult,
@@ -212,7 +287,7 @@ class OrderDetailController(
     ) {
         val detail = (result as? ApiResult.Success)?.data?.let { it as? JsonObject }?.let(OrderJson::detail)
         if (detail != null && detail.summary.orderId == orderId) {
-            cache?.writeDetail(owner.account, detail, clock())
+            cache?.writeDetail(owner.account, detail, clock(), owner.loginEpoch)
             update {
                 it.copy(
                     phase = OrderDetailPhase.CONTENT,
@@ -241,7 +316,7 @@ class OrderDetailController(
         owner: OrderDetailOwner,
     ) {
         val transport = result is ApiResult.TransportFailure
-        val cached = if (transport) cache?.readDetail(owner.account, orderId) else null
+        val cached = if (transport) cache?.readDetail(owner.account, orderId, owner.loginEpoch) else null
         val view = errorView(result, cached != null)
         when (view.actionRaw) {
             OrderErrorKind.EMPTY_30701 -> {
@@ -329,20 +404,21 @@ class OrderDetailController(
     ): Boolean {
         val stale = version != null && version != s.version
         if (left || gate.active || stale) return false
-        if (env.loggedIn() && bound.account == null && (owner ?: s.owner)?.account == null) {
-            // 身份没建立（F-AND-28）：清空后重新一次性取得固定身份（与会话换代出口同一做法），再按新身份请求
-            onSessionChanged()
-            return true
-        }
         val fixed = owner ?: s.owner ?: return false
-        if (fixed != s.owner || !isCurrent(fixed)) return false
-        fetch(fixed)
+        if (fixed != s.owner) return false
+        // 一份快照（FU-AND-0717 第 3 轮）：已确认换代——旧画面上的回调不发请求，交给会话出口（R3-02：通知到达后才按新会话重取）；第一次确认接管并补取；
+        // 同一身份 / 未知按固定身份重取（未知时由网络层结算，不在这里清、不另读）
+        val now = env.identity()
+        when (verdict(now)) {
+            IdentityVerdict.CHANGED -> return false
+            IdentityVerdict.ADOPT -> onIdentityConfirmed(now)
+            else -> fetch(bound.takeIf { identityAborted } ?: fixed)
+        }
         return true
     }
 
-    /** 固定身份仍是此刻的会话（世代与账号都相同）。只比较，不赋值。 */
-    private fun isCurrent(owner: OrderDetailOwner?): Boolean =
-        owner != null && owner.epoch == env.sessionEpoch() && owner.account == env.account()
+    /** 固定身份仍是此刻的会话（一份快照：世代与账号都相同；未知按不一致）。只比较，不赋值。 */
+    private fun isCurrent(owner: OrderDetailOwner?): Boolean = owner != null && env.identity().isOwnedBy(owner.account, owner.epoch)
 
     // ---------------------------------------------------------------- 按钮（回调带渲染时的版本）
 
@@ -419,15 +495,20 @@ class OrderDetailController(
      * 会话换代（登录、退出、换账号、会话失效；App 在会话通知里同步调用）：作废并取消在途请求，同步清掉已显示的详情快照（版本加 1：旧按钮回调失效，
      * 不会再复制旧账号的订单号），再按新会话重新请求；App 只在会话世代变了时调用。这是唯一允许重新绑定固定身份的出口（清空旧页面之后，RC-01）。
      */
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(env.identity())
+
+    /**
+     * 会话换代 / 清理，按调用方那一份快照 [identity] 重新绑定（App 下发的就是它这次检查用的那份，FU-AND-0717 第 3 轮：不另读一次）。
+     */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         seq += 1
         cancelAll()
         update {
             OrderDetailSnapshot(phase = OrderDetailPhase.LOADING, version = it.version + 1, blocked = gate.blocked.value)
         }
-        // 旧页面已清空：此刻重新绑定（世代与账号同一次读取），绑定代次加 1，等待中的旧恢复票据随之失效
-        bound = OrderDetailOwner(env.sessionEpoch(), env.account())
+        // 旧页面已清空：此刻重新绑定（世代与账号同一份快照），绑定代次加 1，等待中的旧恢复票据随之失效
+        bound = OrderDetailOwner.of(identity)
         binding += 1
         fetch(bound)
     }

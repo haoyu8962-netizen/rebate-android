@@ -3,6 +3,8 @@ package com.couli.feature.orders
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.SessionIdentity
 import com.couli.core.orders.OrderConditions
 import com.couli.core.orders.OrderDetail
 import com.couli.core.orders.OrderQuery
@@ -21,6 +23,9 @@ import kotlinx.coroutines.launch
 interface OrderListHandle {
     fun onSessionChanged()
 
+    /** 会话换代，带 App 本次检查已确认的身份快照（第 1 轮修复 R1-03）；缺省同 [onSessionChanged]。 */
+    fun onSessionChanged(identity: SessionIdentity?) = onSessionChanged()
+
     /**
      * 撤回同意、进入基本模式、切换环境（APP-08 共性第 36、38 条）：不论会话通知是否已到，同步清掉页面状态（搜索框与保存状态里可能是完整订单号
      * 的搜索词、半屏、滚动锚点与待执行的恢复）、已显示的结果与待跟单卡，作废在途请求。
@@ -33,6 +38,12 @@ interface OrderListHandle {
 
     /** 下拉刷新（列表与待跟单卡一起）。 */
     fun refresh()
+
+    /**
+     * 会话判据没变、身份已确认（F-X-19 补充三 ②；FU-AND-0717 第 3 轮统一的页面恢复入口）：[identity] 是 AppOrders 这次检查的那份快照。本页按它判定——
+     * 未知期建的 / 分区第一次确认的接管归属并完成尚未被用户接管的恢复，加载因身份中止的补取，已确认换代按它重置。
+     */
+    fun onIdentityConfirmed(identity: SessionIdentity) = Unit
 
     /** 待跟单卡区（只在自购子 Tab 显示）。 */
     val pending: PendingTrackService?
@@ -99,6 +110,9 @@ class OrderListViewModel(
             )
         }
 
+    /** 系统保存状态（只给本模块的测试观察：恢复期间是否改动了条件、锚点与引用）。 */
+    internal val savedState: SavedStateHandle get() = saved
+
     /** 恢复记录的落盘（App 给；没给时个人数据不保存、不恢复）。 */
     private val store = initial.restoreStore
 
@@ -127,10 +141,41 @@ class OrderListViewModel(
     /** 渲染身份（Compose 组合时取出普通值交给回调）。 */
     val ticket: StateFlow<OrderPageTicket> = mutableTicket.asStateFlow()
 
-    /** 恢复记录：属于本页的固定归属、清理之后没被删掉才有（别的账号、没有记录、清理之后的旧引用一律丢弃并清掉保存状态）。 */
-    private val record: OrderRestoreRecord? = ownedRecord()
+    /**
+     * 本页固定身份是在「身份暂时未知」时取得的（F-X-19 补充 / 补充三，FU-AND-0717）：恢复决策延后——不读、不删、不写恢复记录，也不改系统保存状态里的
+     * 条件、锚点与引用；身份已知时由 AppOrders 经 [onIdentityConfirmed] 接管已确认身份再决策（未知不等于没有会话，不按「别的账号」丢掉）。
+     */
+    private var deferred =
+        !controller.ownerKnown ||
+            // 第 1 轮修复 R1-01：账号已确认、持久化世代缺失（合法旧会话）——在线照常加载，恢复记录不读不删不写
+            (
+                controller.ownerAccount != null &&
+                    initial.restoreStore?.bindingFor(controller.ownerLoginEpoch) == OrderRestoreStore.LoginBinding.Unknown
+            )
 
-    val restored: Boolean = record != null
+    /** 恢复等待已结束、但当时身份暂时未知：条件与锚点原样保留，等已确认的身份快照再决策（[finishRestoreWait]）。 */
+    private var awaitingIdentity = false
+
+    /**
+     * 恢复决策延后期间（[deferred]）用户已接管页面（第 2 轮评审 R2-05，FU-AND-0717 第 3 轮）：切子 Tab、筛选、搜索、输入、下拉、触摸、滚动——从延后阶段
+     * 一开始就记。身份确认后只补身份与必要加载，旧记录不再覆盖用户的条件、输入与滚动位置。
+     */
+    private var takenOver = false
+
+    /** 进入延后时的查询轮次（之后轮次变了即算用户已发起新查询）。 */
+    private var deferRound = Long.MIN_VALUE
+
+    /** 测试观察：恢复等待已结束、正等已确认的身份快照（R1-02）。 */
+    internal val restoreAwaitingIdentity: Boolean get() = awaitingIdentity
+
+    /** 恢复决策仍在延后（身份 / 分区还没确认；测试观察）。 */
+    val restoreDeferred: Boolean get() = deferred
+
+    /** 恢复记录：属于本页的固定归属、清理之后没被删掉才有（别的账号、没有记录、清理之后的旧引用一律丢弃并清掉保存状态）。 */
+    private var record: OrderRestoreRecord? = ownedRecord()
+
+    var restored: Boolean = record != null
+        private set
 
     private val mutableInput = MutableStateFlow(record?.input.orEmpty())
     val input: StateFlow<String> = mutableInput.asStateFlow()
@@ -153,6 +198,10 @@ class OrderListViewModel(
     var pendingRestore: String? = if (restored) anchor.orderId else null
         private set
 
+    /** 一次性恢复是怎么结束的（F-X-18 / F-X-20 观测：[RESTORE_LANDED]、[RESTORE_NOT_CONFIRMED]、[RESTORE_TAKEN_OVER]、翻页中 [RESTORE_PAGING]）。 */
+    var restoreEnd: String? = null
+        internal set
+
     /** 已为哪一轮查询滚回过顶部（返回本页、重建、恢复时轮次没变，不滚回顶部）。 */
     var seenRound: Long = -1L
 
@@ -167,35 +216,61 @@ class OrderListViewModel(
             pending?.onSessionChanged()
             if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) refreshPending()
         }
+        // 执行器按一份已确认快照接管了归属（未知期建的页、分区第一次确认）：在这份身份下完成恢复决策（FU-AND-0717 第 3 轮）
+        controller.onAdopted = ::onAdopted
         val conditions = savedConditions()
         // 先把条件备好并显示（等待期间不发请求）；之后条件的每次变化写进保存状态（含等待期间用户的改动）
         controller.prepare(config.scope, conditions)
         seenRound = controller.state.value.round
         persistRecord()
-        viewModelScope.launch { controller.state.collect { persist(it.conditions) } }
+        viewModelScope.launch {
+            var round = controller.state.value.round
+            controller.state.collect {
+                // F-X-18 补充（FU-AND-0717）：开始了新一轮查询（换条件、刷新、切子 Tab）→ 同步放弃待执行的恢复、清掉旧锚点，第一次持久化就是「新条件 + 空锚点」
+                if (it.round != round) {
+                    round = it.round
+                    dropAnchorForNewRound()
+                }
+                persist(it.conditions)
+            }
+        }
         val gate = initial.restoreGate
         if (conditions != null && gate != null) {
             // 进程回收后的自动恢复：等版本检查有结果再取第一页（03 §4.4）。等待结束后再核对：页面还在、用户没有接管、会话没换代
-            // 与恢复记录核对归属时用的是同一份固定归属（构造时一次性取，之后只比较）
-            val epoch = controller.ownerEpoch
+            // 与恢复记录核对归属时用的是同一份固定归属（构造时一次性取，之后只比较）；等待结束时的复核取一份完整身份快照（第 1 轮修复 R1-02）
             restoreJob =
                 viewModelScope.launch {
                     gate()
                     restoreJob = null
-                    if (gone || controller.isOpen) return@launch
-                    if (controller.ownerUnnoticed()) {
-                        // 换号窗口（F-AND-30，FU-AND-0715）：会话存储已换、会话通知还没到——零请求。丢掉旧账号恢复的条件与页面状态，
-                        // 等通知到达（resetForSession 重取归属）后按新会话默认条件打开
-                        controller.openOnSessionNotice(config.scope)
-                        dropPageState()
-                        return@launch
-                    }
-                    if (config.env.sessionEpoch() != epoch) dropAccountState()
-                    start()
+                    finishRestoreWait(config.env.identity())
                 }
         } else {
             start()
         }
+        deferRound = controller.state.value.round
+    }
+
+    /**
+     * 恢复等待结束（第 1 轮修复 R1-02）：按一份完整身份快照 [identity] 复核归属，不分别读账号与世代——
+     * - 快照未知（单次读取失败、屏障未过）：保留条件、输入、锚点与恢复记录，延后决策（[awaitingIdentity]），等 App 交来已确认的快照；
+     * - 确认归属变了（换号窗口，F-AND-30）：零请求，丢掉旧账号恢复的条件与页面状态，等会话通知到达后按新会话默认条件打开；
+     * - 归属没变：按保存的条件打开并回到锚点。
+     */
+    @Suppress("ReturnCount") // 已结束、未知、换号三个出口
+    private fun finishRestoreWait(identity: SessionIdentity) {
+        if (gone || controller.isOpen) return
+        if (!identity.known) {
+            awaitingIdentity = true
+            return
+        }
+        awaitingIdentity = false
+        if (controller.ownerChanged(identity)) {
+            controller.openOnSessionNotice(config.scope)
+            dropPageState()
+            return
+        }
+        // 同一份快照贯穿打开流程（第 2 轮评审 R2-01）：打开时的归属检查不再另读账号
+        start(identity)
     }
 
     /** 待跟单卡拉一次：带本页固定归属的会话世代（F-AND-30：由调用方传入固定世代，不在发送时读当前会话来绑定）。 */
@@ -203,8 +278,8 @@ class OrderListViewModel(
         pending?.refresh(controller.ownerEpoch)
     }
 
-    private fun start() {
-        controller.open(config.scope)
+    private fun start(identity: SessionIdentity? = null) {
+        controller.open(config.scope, identity = identity)
         seenRound = controller.state.value.round
         if (controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
@@ -231,14 +306,115 @@ class OrderListViewModel(
     private fun ownedRecord(): OrderRestoreRecord? {
         LEGACY_KEYS.forEach { saved.remove<Any>(it) }
         val candidate = saved.get<String>(K_REF)
-        val found = if (saved.contains(K_SCOPE)) store?.read(candidate)?.takeIf { it.owner == owner() } else null
+        if (deferred) {
+            // 身份暂时未知（F-X-19 补充）：不读、不删（不 retainOnly）、不写；引用与保存状态原样保留，等身份已知再决策
+            ref = candidate
+            boundEpoch = store?.epoch ?: 0L
+            boundLoginEpoch = OrderRestoreStore.LoginBinding.Unknown
+            lastWritten = null
+            return null
+        }
+        // 绑定取自执行器那一份身份快照（F-X-19 补充二：不另读此刻的世代）
+        val binding = store?.bindingFor(controller.ownerLoginEpoch) ?: OrderRestoreStore.LoginBinding.Unbound
+        val found = if (saved.contains(K_SCOPE)) store?.read(candidate, binding)?.takeIf { it.owner == owner() } else null
         if (found == null) ALL_KEYS.forEach { saved.remove<Any>(it) }
         ref = if (found != null) candidate else store?.newRef()
         store?.retainOnly(ref)
         boundEpoch = store?.epoch ?: 0L
-        boundLoginEpoch = store?.loginBindingNow() ?: OrderRestoreStore.LoginBinding.Unbound
+        boundLoginEpoch = binding
         lastWritten = found
         return found
+    }
+
+    override fun onIdentityConfirmed(identity: SessionIdentity) {
+        if (gone || !identity.known) return
+        when {
+            // 恢复等待结束时身份未知、此刻已确认（R1-02）：按这份快照完成当时延后的决策
+            awaitingIdentity -> finishRestoreWait(identity)
+
+            // 已确认换代：与会话换代同一出口（清本页状态、按这份快照重置）
+            controller.verdict(identity) == IdentityVerdict.CHANGED -> onSessionChanged(identity)
+
+            // 第一次确认（接管 → [onAdopted]）、加载因身份中止的补取都在执行器的统一入口里
+            else -> controller.onIdentityConfirmed(identity)
+        }
+    }
+
+    /**
+     * 执行器按一份已确认快照接管了归属（FU-AND-0717 第 3 轮，R2-02 / R2-05）：恢复决策还在延后时，在这份身份下决策——
+     * - 用户在延后期间没有接管（没有切子 Tab、筛选、搜索、输入、下拉、触摸、滚动，查询轮次没变）：按构造时同一套核对读恢复记录，有就恢复条件、输入与锚点并
+     *   按保存的条件重开；没有就保留当前列表（不清空、不闪回顶部），加载因身份中止的补取；
+     * - 已被接管（含这次接管就发生在用户入口里，[byUser]）：只绑定恢复记录的引用（之后照常保存），不读旧内容覆盖用户的条件、输入与滚动；加载因身份中止的
+     *   补取（用户入口随后自己的加载会作废它）。
+     * 不在延后的（分区已知、只是账号第一次确认等）只做补取。
+     */
+    private fun onAdopted(
+        identity: SessionIdentity,
+        byUser: Boolean,
+    ) {
+        if (gone) return
+        page += 1
+        mutableTicket.value = OrderPageTicket(controller.ownerEpoch, controller.ownerAccount, page)
+        // 不在延后；或分区仍未知（账号刚确认、合法旧会话缺世代）：在线照常补取，恢复决策继续延后（恢复记录不读不删不写）
+        if (!deferred || store?.bindingFor(controller.ownerLoginEpoch) == OrderRestoreStore.LoginBinding.Unknown) {
+            controller.resumeAfterAdopt()
+            return
+        }
+        deferred = false
+        restoreJob?.cancel()
+        restoreJob = null
+        val took = byUser || takenOver || controller.state.value.round != deferRound
+        if (took) {
+            keepUserStateOnAdopt()
+            controller.resumeAfterAdopt()
+        } else {
+            restoreOnAdopt()
+        }
+        persist(controller.state.value.conditions)
+        if (!controller.isOpen) {
+            start(identity)
+        } else {
+            seenRound = controller.state.value.round
+            if (controller.state.value.scope == OrderQuery.SELF) refreshPending()
+        }
+    }
+
+    /** 没被接管：已确认身份下的恢复决策（与构造时同一套核对：引用、清理代次、账号归属与登录世代），有记录就恢复条件、输入与锚点并重开。 */
+    private fun restoreOnAdopt() {
+        record = ownedRecord()
+        restored = record != null
+        mutableInput.value = record?.input.orEmpty()
+        mutableSheet.value = if (restored) saved.get<String>(K_SHEET)?.let { runCatching { OrderSheet.valueOf(it) }.getOrNull() } else null
+        anchor =
+            if (restored) OrderAnchor(saved[K_ANCHOR_INDEX] ?: 0, saved[K_ANCHOR_OFFSET] ?: 0, record?.anchorOrderId) else OrderAnchor(0, 0)
+        pendingRestore = if (restored) anchor.orderId else null
+        if (restored) controller.reopenAdopted(config.scope, savedConditions()) else controller.resumeAfterAdopt()
+    }
+
+    /**
+     * 接管后保留用户的状态（R2-05）：读恢复记录只为绑定引用与清理代次（属于本页归属的沿用原引用，否则换新引用并删掉别的旧记录），内容不用；之后按用户此刻
+     * 的条件、输入、半屏与锚点保存。
+     */
+    private fun keepUserStateOnAdopt() {
+        ownedRecord()
+        record = null
+        restored = false
+        lastWritten = null
+        pendingRestore = null
+        if (gone) return
+        saved[K_SHEET] = mutableSheet.value?.name
+        saved[K_ANCHOR_INDEX] = anchor.index
+        saved[K_ANCHOR_OFFSET] = anchor.offset
+    }
+
+    /** 恢复决策延后期间的用户操作（R2-05）：从延后阶段一开始就记接管。 */
+    private fun noteUserAction() {
+        if (deferred || awaitingIdentity) takenOver = true
+    }
+
+    /** 列表上的触摸按下 / 用户滚动（页面入口；R1-06 的恢复接管之外，延后期间同样记接管，R2-05）。 */
+    fun onUserTouch(t: OrderPageTicket) {
+        if (live(t)) noteUserAction()
     }
 
     /**
@@ -247,7 +423,7 @@ class OrderListViewModel(
      */
     @Suppress("ReturnCount") // 页面已清理、没有落盘、没有引用、内容没变逐项
     private fun persistRecord(conditions: OrderConditions = controller.state.value.conditions) {
-        if (gone) return
+        if (gone || deferred) return
         val target = store ?: return
         val id = ref ?: return
         val next = OrderRestoreRecord(owner(), conditions.platform, conditions.month, conditions.q, mutableInput.value, anchor.orderId)
@@ -262,8 +438,11 @@ class OrderListViewModel(
     }
 
     /** 会话换代：清掉上一账号留下的页面状态（搜索框、半屏、滚动锚点与待执行的恢复），恢复记录改记新账号。 */
-    private fun dropAccountState(cleanup: Boolean = false) {
-        if (cleanup) controller.onCleanup() else controller.onSessionChanged()
+    private fun dropAccountState(
+        cleanup: Boolean = false,
+        identity: SessionIdentity? = null,
+    ) {
+        if (cleanup) controller.onCleanup() else controller.onSessionChanged(identity)
         dropPageState()
     }
 
@@ -278,12 +457,30 @@ class OrderListViewModel(
         closeSheetNow()
         pendingRestore = null
         anchor = OrderAnchor(0, 0)
-        if (!gone) {
+        if (deferred && controller.ownerKnown) {
+            // 未知期间建的页遇到真正的会话换代 / 清理、归属已按新会话重取：旧会话的记录不再恢复（换新引用、删掉旧记录），之后按新归属照常保存
+            deferred = false
+            ALL_KEYS.forEach { saved.remove<Any>(it) }
+            ref = store?.newRef()
+            store?.retainOnly(ref)
+        }
+        if (!gone && !deferred) {
             saved[K_ANCHOR_INDEX] = 0
             saved[K_ANCHOR_OFFSET] = 0
             boundEpoch = store?.epoch ?: 0L
-            boundLoginEpoch = store?.loginBindingNow() ?: OrderRestoreStore.LoginBinding.Unbound
+            // 绑定取自执行器重取的那一份身份快照（F-X-19 补充二）
+            boundLoginEpoch = store?.bindingFor(controller.ownerLoginEpoch) ?: OrderRestoreStore.LoginBinding.Unbound
             persistRecord()
+        }
+    }
+
+    /** 新一轮查询：恢复任务作废、锚点清零（随后的持久化写的是新条件 + 空锚点；进程此刻被杀也不会把旧锚点套到新结果上）。 */
+    private fun dropAnchorForNewRound() {
+        pendingRestore = null
+        anchor = OrderAnchor(0, 0)
+        if (!gone && !deferred) {
+            saved[K_ANCHOR_INDEX] = 0
+            saved[K_ANCHOR_OFFSET] = 0
         }
     }
 
@@ -299,7 +496,7 @@ class OrderListViewModel(
     }
 
     private fun persist(c: OrderConditions) {
-        if (gone) return
+        if (gone || deferred) return
         saved[K_SCOPE] = c.scope
         saved[K_GROUP] = c.group
         persistRecord(c)
@@ -310,24 +507,13 @@ class OrderListViewModel(
     }
 
     /**
-     * 渲染身份 [t] 仍有效：页面还在、仍是当前这份身份、当前会话仍等于它（会话已换代而通知还没到时也不执行）。只比较，不赋值。
+     * 渲染身份 [t] 仍有效：页面还在、仍是当前这份身份、当前会话没有确认换代（会话已换代而通知还没到时也不执行）。只比较，不赋值。
+     * FU-AND-0717 第 3 轮：只取**一份**快照按 [SessionIdentity.verdictFor] 判（不分别读世代与账号）——已确认换代才算失效；身份暂时未知不让用户操作失效
+     * （R2-05：延后期间的操作照常生效并记为接管）；未知期建的页（渲染身份没有账号）第一次确认时仍有效，由执行器入口按同一套判定接管。
      */
     fun live(t: OrderPageTicket): Boolean =
-        !gone && t == mutableTicket.value && t.epoch == config.env.sessionEpoch() && t.account == config.env.account()
-
-    /**
-     * 身份初始化失败后的重建入口（F-AND-28，第 1 轮评审 R1-03）：渲染身份 [t] 仍是本页当前这份、页面实例还在、登录世代仍是它固定的那一代，只差
-     * 「固定时账号读不出（null）、此刻已读得出」——[live] 的旧账号拒绝规则在这里不适用（null != 当前账号不是换号）。别的账号的旧回调（t.account 非空）、
-     * 登录世代已变（重新登录：交给会话通知）一律不算。只比较，不赋值。
-     */
-    private fun rebuildable(t: OrderPageTicket): Boolean =
-        !gone && t == mutableTicket.value && t.account == null && t.epoch == config.env.sessionEpoch() &&
-            config.env.account() != null && controller.identityUnbound
-
-    /**
-     * 重建页面身份：执行器先作废在途、清空结果与条件，经 onInvalidated 同步清掉页面状态并换新的渲染身份（旧回调从此失效），再按新固定归属取第一页。
-     */
-    private fun rebuildIdentity(): Boolean = controller.rebuildIdentity().also { if (it) afterUserAction() }
+        !gone && t == mutableTicket.value &&
+            config.env.identity().verdictFor(t.account, t.epoch, null, trackPartition = false) != IdentityVerdict.CHANGED
 
     // ---------------------------------------------------------------- 页面入口（都带渲染身份）
 
@@ -335,7 +521,9 @@ class OrderListViewModel(
         t: OrderPageTicket,
         scope: String,
     ) {
-        if (!live(t) || !controller.selectScope(scope)) return
+        if (!live(t)) return
+        noteUserAction()
+        if (!controller.selectScope(scope)) return
         afterUserAction()
         // 切子 Tab：搜索框一并清空（BR-TEXT-02 细则）
         setInput("")
@@ -345,22 +533,33 @@ class OrderListViewModel(
     fun selectGroup(
         t: OrderPageTicket,
         group: String,
-    ): Boolean = live(t) && controller.selectGroup(group).also { afterUserAction() }
+    ): Boolean {
+        if (!live(t)) return false
+        noteUserAction()
+        return controller.selectGroup(group).also { afterUserAction() }
+    }
 
     /** 搜索框输入（R2-01：旧页面的输入回调不写进换代后的页面与恢复记录）。 */
     fun onInput(
         t: OrderPageTicket,
         text: String,
     ) {
-        if (live(t)) setInput(OrderQuery.limit(text))
+        if (!live(t)) return
+        noteUserAction()
+        setInput(OrderQuery.limit(text))
     }
 
     /** 键盘「搜索」：提交（不边输边搜，G11）。 */
-    fun submit(t: OrderPageTicket): Boolean = live(t) && controller.submitQuery(mutableInput.value).also { afterUserAction() }
+    fun submit(t: OrderPageTicket): Boolean {
+        if (!live(t)) return false
+        noteUserAction()
+        return controller.submitQuery(mutableInput.value).also { afterUserAction() }
+    }
 
     /** 清空搜索框：清空即发请求（G11）。 */
     fun clearInput(t: OrderPageTicket): Boolean {
         if (!live(t)) return false
+        noteUserAction()
         setInput("")
         return controller.submitQuery(null).also { afterUserAction() }
     }
@@ -375,6 +574,7 @@ class OrderListViewModel(
         sheet: OrderSheet,
     ) {
         if (!live(t) || controller.state.value.blocked) return
+        noteUserAction()
         mutableSheet.value = sheet
         if (!gone) saved[K_SHEET] = sheet.name
     }
@@ -393,6 +593,7 @@ class OrderListViewModel(
         platform: String?,
     ) {
         if (!live(t)) return
+        noteUserAction()
         controller.selectPlatform(platform)
         afterUserAction()
         closeSheetNow()
@@ -403,6 +604,7 @@ class OrderListViewModel(
         month: String?,
     ) {
         if (!live(t)) return
+        noteUserAction()
         controller.selectMonth(month)
         afterUserAction()
         closeSheetNow()
@@ -410,15 +612,15 @@ class OrderListViewModel(
 
     /** 下拉手势（页面入口）：渲染身份有效才刷新。 */
     fun pullRefresh(t: OrderPageTicket) {
-        if (live(t)) {
-            refresh()
-        } else if (rebuildable(t)) {
-            rebuildIdentity()
-        }
+        if (!live(t)) return
+        noteUserAction()
+        // 加载因身份中止（未知期建的页等）：下拉也走【重试】的身份恢复（一份快照）
+        if (controller.identityAborted) controller.retry() else refresh()
     }
 
     /** 下拉刷新：列表与待跟单卡一起刷新（App 入口与页面手势共用）。 */
     override fun refresh() {
+        noteUserAction()
         val waiting = restoreJob != null
         if (!controller.refresh()) return
         afterUserAction()
@@ -427,12 +629,7 @@ class OrderListViewModel(
     }
 
     /** 整页失败 / 翻页失败的【重试】。 */
-    fun retry(t: OrderPageTicket): Boolean =
-        when {
-            live(t) -> controller.retry()
-            rebuildable(t) -> rebuildIdentity()
-            else -> false
-        }
+    fun retry(t: OrderPageTicket): Boolean = live(t) && controller.retry()
 
     /** 上拉加载更多（滚动触发、恢复补页）。 */
     fun loadMore(t: OrderPageTicket): Boolean = live(t) && controller.loadMore()
@@ -462,7 +659,7 @@ class OrderListViewModel(
         t: OrderPageTicket,
         next: OrderAnchor,
     ) {
-        if (!live(t) || pendingRestore != null) return
+        if (!live(t) || pendingRestore != null || deferred) return
         anchor = next
         saved[K_ANCHOR_INDEX] = next.index
         saved[K_ANCHOR_OFFSET] = next.offset
@@ -475,10 +672,23 @@ class OrderListViewModel(
 
     // ---------------------------------------------------------------- App 入口（OrderListHandle）
 
-    override fun onSessionChanged() {
-        // 同步清掉上一账号的搜索框（可能是完整订单号）、半屏、锚点与待执行的恢复；条件回到默认并按新会话重取（共性第 19 条）
-        dropAccountState()
+    override fun onSessionChanged() = onSessionChanged(null)
+
+    /**
+     * 会话换代（[identity] 是 App 本次检查已确认的身份快照，第 1 轮修复 R1-03：控制器按它比较账号 + 持久化世代、换代时重新绑定）：同步清掉上一账号的
+     * 搜索框（可能是完整订单号）、半屏、锚点与待执行的恢复；条件回到默认并按新会话重取（共性第 19 条）。
+     */
+    override fun onSessionChanged(identity: SessionIdentity?) {
+        // 一份快照（没给时本页取一份）；未知不决策——不清本页状态（FU-AND-0717 第 3 轮）
+        val id = identity ?: config.env.identity()
+        if (!id.known) return
+        dropAccountState(identity = id)
         pending?.onSessionChanged()
+        // 恢复等待结束时身份未知、之后确认已换代：不再恢复旧条件，按新会话默认条件打开
+        if (awaitingIdentity) {
+            awaitingIdentity = false
+            start()
+        }
         if (controller.isOpen && controller.state.value.scope == OrderQuery.SELF) refreshPending()
     }
 
@@ -491,6 +701,7 @@ class OrderListViewModel(
     override fun patch(detail: OrderDetail) = controller.patch(detail)
 
     override fun requestScope(scope: String?) {
+        noteUserAction()
         val before = controller.state.value.scope
         controller.requestScope(scope)
         val after = controller.state.value.scope
@@ -508,20 +719,24 @@ class OrderListViewModel(
         super.onCleared()
     }
 
-    private companion object {
-        const val K_SCOPE = "orders.scope"
-        const val K_GROUP = "orders.group"
-        const val K_SHEET = "orders.sheet"
-        const val K_ANCHOR_INDEX = "orders.anchor_index"
-        const val K_ANCHOR_OFFSET = "orders.anchor_offset"
+    companion object {
+        const val RESTORE_LANDED = "aligned"
+        const val RESTORE_NOT_CONFIRMED = "not_confirmed"
+        const val RESTORE_TAKEN_OVER = "user_took_over"
+        const val RESTORE_PAGING = "paging"
+        private const val K_SCOPE = "orders.scope"
+        private const val K_GROUP = "orders.group"
+        private const val K_SHEET = "orders.sheet"
+        private const val K_ANCHOR_INDEX = "orders.anchor_index"
+        private const val K_ANCHOR_OFFSET = "orders.anchor_offset"
 
         /** 恢复记录的引用（随机，不含个人数据）。 */
-        const val K_REF = "orders.restore_ref"
+        private const val K_REF = "orders.restore_ref"
 
-        val ALL_KEYS = listOf(K_SCOPE, K_GROUP, K_SHEET, K_ANCHOR_INDEX, K_ANCHOR_OFFSET, K_REF)
+        private val ALL_KEYS = listOf(K_SCOPE, K_GROUP, K_SHEET, K_ANCHOR_INDEX, K_ANCHOR_OFFSET, K_REF)
 
         /** 旧版本放在系统保存状态里的个人数据与归属键：一律删掉、不恢复。 */
-        val LEGACY_KEYS =
+        private val LEGACY_KEYS =
             listOf(
                 "orders.platform",
                 "orders.month",

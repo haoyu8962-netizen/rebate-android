@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -72,34 +71,13 @@ class WebContainersLessonsTest {
         return value as T
     }
 
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> onMain { block() } }
+
+    /** 页面已稳定（没有在途导航）时读一次值。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
-
-    private fun waitUntil(
-        message: String,
-        timeoutMs: Long = WAIT_S * MILLIS,
-        condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    ): String = probe(webView).read(script)
 
     private fun host(
         services: BridgeServices,
@@ -133,12 +111,13 @@ class WebContainersLessonsTest {
     private fun waitUntilReady(
         webView: WebView,
         url: String,
-    ) = waitUntil("page $url ready") {
-        evaluate(webView, "window.ready === true && !!window.__REBATE_BRIDGE__ && location.href") == "\"$url\""
+    ) = probe(webView).await("page $url ready", "window.ready === true && !!window.__REBATE_BRIDGE__ && location.href") {
+        it == "\"$url\""
     }
 
+    /** 发一条 auth.getUser（桥消息）：不等回调，由随后等 [Recorded.validities] 确认到达原生。 */
     private fun startGetUser(webView: WebView) {
-        evaluate(webView, "window.__REBATE_BRIDGE__.postMessage({v:1,id:'u-' + Date.now(),method:'auth.getUser',params:{}}); true")
+        probe(webView).fire("window.__REBATE_BRIDGE__.postMessage({v:1,id:'u-' + Date.now(),method:'auth.getUser',params:{}})")
     }
 
     // ---------- 第 51 条 ----------
@@ -151,31 +130,34 @@ class WebContainersLessonsTest {
 
         // 片段跳转（同一文档）：在途调用仍有效
         startGetUser(webView)
-        waitUntil("first call in flight") { services.validities.size == 1 }
-        evaluate(webView, "location.hash = 'part'; true")
-        waitUntil("fragment applied") { evaluate(webView, "location.hash") == "\"#part\"" }
-        Thread.sleep(SETTLE_MS)
+        WebWait.until("first call in flight", detail = { "validities=${services.validities.size}" }) { services.validities.size == 1 }
+        probe(webView).fire("location.hash = 'part'")
+        probe(webView).await("fragment applied", "location.hash") { it == "\"#part\"" }
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 800 毫秒：核对片段跳转之后调用没被作废
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertTrue("a fragment jump keeps the call", services.validities[0].stillValid())
 
         // location.reload()：同一地址重新载入，旧调用在放行时就作废——新文档的响应还压着、没有提交（onPageStarted 之前）
         val reload = hold()
-        evaluate(webView, "location.reload(); true")
-        waitUntil("reload request reached the server") { reload.requested.count == 0L }
-        waitUntil("reload invalidates the call before the new document commits", INVALIDATE_MS) {
+        probe(webView).fire("location.reload()")
+        WebWait.latch("reload request reached the server", reload.requested)
+        // 上限是被测语义：作废必须在 INVALIDATE_MS 之内发生（不能放宽到通用上限）
+        WebWait.until("reload invalidates the call before the new document commits", INVALIDATE_MS) {
             !services.validities[0].stillValid()
         }
         reload.release.countDown()
         waitUntilReady(webView, "$PAGE_URL#part")
 
         // 回到没有片段的地址，再对同一地址赋值（location.href = location.href，不带片段）：同样是文档导航
-        evaluate(webView, "location.href = '$PAGE_URL'; true")
+        probe(webView).fire("location.href = '$PAGE_URL'")
         waitUntilReady(webView, PAGE_URL)
         startGetUser(webView)
-        waitUntil("second call in flight") { services.validities.size == 2 }
+        WebWait.until("second call in flight", detail = { "validities=${services.validities.size}" }) { services.validities.size == 2 }
         val again = hold()
-        evaluate(webView, "location.href = location.href; true")
-        waitUntil("the same address was requested again") { again.requested.count == 0L }
-        waitUntil("same-address navigation invalidates the call before it commits", INVALIDATE_MS) {
+        probe(webView).fire("location.href = location.href")
+        WebWait.latch("the same address was requested again", again.requested)
+        // 上限是被测语义：作废必须在 INVALIDATE_MS 之内发生（不能放宽到通用上限）
+        WebWait.until("same-address navigation invalidates the call before it commits", INVALIDATE_MS) {
             !services.validities[1].stillValid()
         }
         again.release.countDown()
@@ -197,13 +179,14 @@ class WebContainersLessonsTest {
                 main.post { controller.destroy() }
             }
         controller = open(webView, host(services, NoUi))
-        evaluate(
-            webView,
+        probe(webView).fire(
             "window.out = {}; window.__REBATE_BRIDGE__.postMessage({v:1,id:'close-1',method:'nav.open',params:{route:'home'}})" +
-                ".then(function (r) { window.out.close = r.code; }); true",
+                ".then(function (r) { window.out.close = r.code; })",
         )
-        waitUntil("the container was torn down") { webView.destroyRequested }
-        waitUntil("the page got the answer of the closing call") { evaluate(webView, "String(window.out.close)") != "\"undefined\"" }
+        WebWait.until("the container was torn down", detail = { "navOpens=${services.navOpens}" }) { webView.destroyRequested }
+        probe(webView).await("the page got the answer of the closing call", "String(window.out && window.out.close)") {
+            it != "\"undefined\""
+        }
         assertEquals("the closing call is answered as success", "\"0\"", evaluate(webView, "String(window.out.close)"))
         assertEquals(1, services.navOpens)
         onMain { webView.reallyDestroy() }
@@ -235,7 +218,8 @@ class WebContainersLessonsTest {
                 held?.let { gate ->
                     held = null
                     gate.requested.countDown()
-                    gate.release.await(WAIT_S, TimeUnit.SECONDS)
+                    // 保险上限（测试放行前一直压着响应）；不是等待后断言
+                    gate.release.await(WebWait.CEILING_MS, TimeUnit.MILLISECONDS)
                 }
             }
             return WebResourceResponse("text/html", "utf-8", ByteArrayInputStream(PAGE.toByteArray()))
@@ -360,10 +344,7 @@ class WebContainersLessonsTest {
         const val TRUSTED = "https://h5.example.test"
         const val PAGE_URL = "$TRUSTED/page"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 100L
-        const val SETTLE_MS = 800L
+        const val NEGATIVE_WINDOW_MS = 800L
 
         /** 作废要在这之内看到：远小于 auth.getUser 的契约超时（10 秒），不会因为调用到期而碰巧满足。 */
         const val INVALIDATE_MS = 1_500L

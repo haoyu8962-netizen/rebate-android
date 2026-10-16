@@ -184,4 +184,57 @@ class CouliSourceRulesTest {
         assertEquals(restored.toString(), 2, restored.count { "[sdk-init-only-in-privacy-gate]" in it })
         assertFalse(restored.any { "[scan-incomplete]" in it })
     }
+
+    // ---------------------------------------------------------------- FU-AND-0717（F-X-07 补充 / 补充二）：规则本体在真实目录上
+
+    private val feature = "feature/home/src/main/kotlin/com/couli/feature/home/Page.kt"
+
+    /** 转义写的中文（`"\u4e2d"`、`'\u4e2d'`、`'中'`）编译后就是中文：no-cjk-string-in-feature 照报。 */
+    @Test
+    fun fuand0717_escapedCjkStringsAndCharLiteralsInFeatureAreReported() {
+        write(feature, "package p\n\nval a = \"\\u4e2d\\u6587\"\nval b = '\\u4e2d'\nval c = '中'\nval d = \"\\u0041\"\n")
+        val result = CouliSourceRules.check(root, scanningRepository = false)
+        assertEquals(result.toString(), listOf(3, 4, 5), result.map { it.substringAfter("Page.kt:").substringBefore(':').toInt() })
+        assertTrue(result.toString(), result.all { "[no-cjk-string-in-feature]" in it })
+    }
+
+    /** 反引号标识符、注释边界（块注释、调用、行注释里再放一个结束符）、后缀运算符之后的斜杠都不能绕过 SDK 规则；注释里的调用不误报。 */
+    @Test
+    fun fuand0717_sdkInitBehindCommentBoundariesBackticksAndPostfixOperatorsIsReported() {
+        write(
+            "core/push/src/main/kotlin/com/couli/core/push/Init.kt",
+            "package p\n\n" +
+                "fun a(c: Any) { /* 记号 */ MobSDK.init(c) // */\n}\n" + // 3
+                "fun b(c: Any) { `MobSDK`.`init`(c) }\n" + // 5
+                "fun d(c: Any?) { val r = c!!.hashCode()/2; SentryAndroid.init(c) }\n" + // 6
+                "fun e(c: Any) { /* /* */ Sentry.init(c) // */ }\n" + // 7：嵌套，整段注释，不报
+                "fun f(c: Any) { val s = \"/*\"; WXAPIFactory.createWXAPI(c) }\n", // 8
+        )
+        val result = CouliSourceRules.check(root, scanningRepository = false)
+        assertTrue(result.toString(), result.all { "[sdk-init-only-in-privacy-gate]" in it })
+        assertEquals(result.toString(), listOf(3, 5, 6, 8), result.map { it.substringAfter("Init.kt:").substringBefore(':').toInt() })
+    }
+
+    /** Java：块注释不嵌套，「块注释、调用、行注释里的结束符」中的调用是代码；后缀运算符之后的块注释照常结束。 */
+    @Test
+    fun fuand0717_javaCommentBoundarySamplesAreReported() {
+        write(
+            "app/src/main/java/com/couli/app/Boot.java",
+            "class Boot {\n  void a(Object c) { /* 记号 */ Sentry.init(c); // */\n  }\n" +
+                "  void b(int x, Object c) { x++/* \" */; MobPush.initialize(c); }\n}\n",
+        )
+        val result = CouliSourceRules.check(root, scanningRepository = false)
+        assertEquals(result.toString(), listOf(2, 4), result.map { it.substringAfter("Boot.java:").substringBefore(':').toInt() }.sorted())
+    }
+
+    /** 判不清一律非零：Unicode 行终止符、无法识别的转义、多于一个字符的字符字面量。 */
+    @Test
+    fun fuand0717_undecidableLexemesAreScanIncomplete() {
+        write(feature, "package p\n\n// note\u2028MobSDK.init(c)\nval a = \"\\q\"\nval b = 'ab'\n")
+        write("app/src/main/java/com/couli/app/Boot.java", "class Boot { // x\u2029 Sentry.init(c);\n}\n")
+        val result = CouliSourceRules.check(root, scanningRepository = false)
+        assertEquals(result.toString(), 4, result.count { "[scan-incomplete]" in it })
+        assertTrue(result.toString(), result.any { it.startsWith("feature/home/src/main/kotlin/com/couli/feature/home/Page.kt:3:") })
+        assertTrue(result.toString(), result.any { it.startsWith("app/src/main/java/com/couli/app/Boot.java:1:") })
+    }
 }

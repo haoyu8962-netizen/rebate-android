@@ -224,7 +224,7 @@ class StepUpController(
             var deadline: Long? = null
             try {
                 val result = deps.api.send(ApiCall(SEND_OPERATION, body = body, ownership = owner, expectedAccount = slot.account))
-                if (deps.env.sessionEpoch() == epoch && deps.env.account() == slot.account) {
+                if (deps.env.ownedBy(slot.account, epoch)) {
                     // 有效发码结果更新共享倒计时与限流截止时间，面板已关闭、页面已出栈也不丢（共性第 6、17、40 条）
                     if (result is ApiResult.Success) {
                         val seconds = WalletJson.sendSmsCode(result.data)?.resendAfterSec?.takeIf { it > 0 } ?: DEFAULT_RESEND_SEC
@@ -339,7 +339,7 @@ class StepUpController(
             val result = deps.api.send(ApiCall(VERIFY_OPERATION, body = body, ownership = callOwner, expectedAccount = account))
             owners -= callOwner
             // 42901 先按归属写入共享禁用期，再看面板是否有效（共性第 27、40 条）
-            if (deps.env.sessionEpoch() == epoch && deps.env.account() == account) settleRetryAfter(result, deps.verifyGate)
+            if (deps.env.ownedBy(account, epoch)) settleRetryAfter(result, deps.verifyGate)
             if (!valid(gen, epoch)) return@launch
             onVerified(result, account, current.action, epoch, probe, tokenGen)
         }
@@ -362,12 +362,8 @@ class StepUpController(
             return
         }
         if (data != null) {
-            if (legacy(action)) {
-                deps.tokens.put(action, account, data.token, data.expireAtMillis)
-            } else {
-                // APP-13a：按账号、会话世代、作用域、action 隔离（StepUpTokenPolicy）
-                deps.tokens.put(action, account, data.token, data.expireAtMillis, epoch, deps.env.sessionScope())
-            }
+            // APP-13a：按账号、会话世代、作用域、action 隔离（StepUpTokenPolicy）；F-AND-37（FU-AND-0717）起钱包 action 同口径，不再走 APP-09 旧入口
+            deps.tokens.put(action, account, data.token, data.expireAtMillis, epoch, deps.env.sessionScope())
             val deliver = onToken
             dismiss()
             deliver?.invoke(data.token)

@@ -1,6 +1,5 @@
 package com.couli.feature.web
 
-import android.os.SystemClock
 import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.test.core.app.ActivityScenario
@@ -21,8 +20,6 @@ import com.couli.feature.web.LoopbackHttpsServer.Companion.LOCALHOST
 import com.couli.feature.web.LoopbackHttpsServer.Companion.LOOPBACK
 import com.couli.feature.web.LoopbackHttpsServer.Recorded
 import com.couli.feature.web.LoopbackHttpsServer.Reply
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -76,33 +73,13 @@ class WebContainersReviewR3Test {
             WebView(activity).also { activity.root.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         }
 
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> onMain { block() } }
+
+    /** 页面已稳定（没有在途导航）时读一次值。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
-
-    private fun waitUntil(
-        message: String,
-        condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    ): String = probe(webView).read(script)
 
     private fun serve(handler: (Recorded) -> Reply): LoopbackHttpsServer =
         LoopbackHttpsServer(instrumentation.context, handler).also { server = it }
@@ -137,9 +114,11 @@ class WebContainersReviewR3Test {
 
         assertTrue(onMain { controller.load("$trusted/page") })
         // 主页面确实经真实 HTTPS 从可信源载入、桥在主框架里可用（测试装置本身成立）
-        waitUntil("trusted page loaded over https") { evaluate(webView, "window.ready === true") == "true" }
+        probe(webView).await("trusted page loaded over https", "window.ready === true") { it == "true" }
         assertEquals("bridge present in the trusted main frame", "true", evaluate(webView, "typeof window.__REBATE_BRIDGE__ === 'object'"))
-        Thread.sleep(SETTLE_MS)
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 3 秒：被取消的子框架第一跳没有可等的正向回调，
+        // 核对的是「跨源与可信子文档都没收到请求、子文档没运行、桥没被调用」
+        Thread.sleep(NEGATIVE_WINDOW_MS)
 
         val requests = https.requests.toList()
         android.util.Log.i(LOG_TAG, "R3-01 requests=$requests h5Token=${services.h5Tokens.get()}")
@@ -189,11 +168,13 @@ class WebContainersReviewR3Test {
                 )
             }
         onMain { controller.open("$allowed/form") }
-        waitUntil("form page loaded over https") { evaluate(webView, "window.ready === true") == "true" }
+        probe(webView).await("form page loaded over https", "window.ready === true") { it == "true" }
         val historyBefore = evaluate(webView, "history.length")
 
-        evaluate(webView, "document.getElementById('q').value = 'typed'; document.getElementById('f').submit(); true")
-        Thread.sleep(SETTLE_MS)
+        probe(webView).fire("document.getElementById('q').value = 'typed'; document.getElementById('f').submit()")
+        // 负向观察窗（不是同步等待：只可能让核对变弱，不会造成偶发失败），保持原 3 秒：第一跳就被取消的 POST 没有可等的正向回调，
+        // 核对的是「平台域没收到请求、POST 没发出、原页面不变」
+        Thread.sleep(NEGATIVE_WINDOW_MS)
 
         val requests = https.requests.toList()
         android.util.Log.i(LOG_TAG, "R3-02 requests=$requests")
@@ -325,10 +306,7 @@ class WebContainersReviewR3Test {
     private companion object {
         const val LOG_TAG = "WebContainersR3"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 100L
-        const val SETTLE_MS = 3_000L
+        const val NEGATIVE_WINDOW_MS = 3_000L
         const val OK = 200
         const val FOUND = 302
         const val TEMPORARY_REDIRECT = 307

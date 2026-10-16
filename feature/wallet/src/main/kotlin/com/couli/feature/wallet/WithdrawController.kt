@@ -3,6 +3,9 @@ package com.couli.feature.wallet
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.EstimateLine
 import com.couli.core.wallet.HelpLink
 import com.couli.core.wallet.PayoutAccountDisplay
@@ -148,10 +151,68 @@ class WithdrawController(
     /** 读请求的共享禁用期（页内【重试】置灰）。 */
     val readBlocked: StateFlow<Boolean> get() = deps.gates.read.blocked
 
+    /**
+     * 最近一次进入 / 回流的读取因身份中止（未知期建的表单、本进程登录世代已变而新身份还没确认；FU-AND-0717 第 3 轮，R2-04）：停在可重试的错误态，身份确认
+     * （App 下发 / 【重试】的一份快照）后接管表单身份并补取只读数据；已填金额、禁用期保留，不重放提交。
+     */
+    var identityAborted: Boolean = false
+        private set
+
+    /** 表单身份按一份已确认快照接管之后（发起页据此重绑金额草稿的归属）。 */
+    var onAdopted: (SessionIdentity) -> Unit = {}
+
+    /** 按一份已确认快照判定换代、清空重建之前（发起页据此清掉旧金额草稿）。 */
+    var onReset: (SessionIdentity) -> Unit = {}
+
+    /** 表单身份没建立（未知期取得）：这时不读取（不以 expectedAccount = null 发）。 */
+    private fun identityPending(): Boolean = flow.owner.account == null
+
+    /** 读取因身份中止：可重试的错误态（没有页头的进加载失败态，已有页头的页内提示）。 */
+    private fun identityHeld() {
+        identityAborted = true
+        val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
+        val notice = Notice(error.textKey, nextId(), null, false)
+        update { if (it.rules == null) it.copy(phase = WithdrawSnapshot.ERROR, loadError = notice) else it.copy(readError = notice) }
+    }
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮，R2-04）：[identity] 是 App 这次检查的那份快照（或【重试】取的一份），不另读。[changed] 或已确认换代按它清空
+     * 重建；未知期取得的表单第一次确认：按它接管表单身份（已填金额、禁用期、在途不动，不重放提交），读取曾中止的补取；同一身份而读取曾中止的补取；未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        when (if (changed) IdentityVerdict.CHANGED else flow.owner.verdict(identity)) {
+            IdentityVerdict.CHANGED -> {
+                onReset(identity)
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                if (flow.adoptOwner(FormOwner.of(identity))) onAdopted(identity)
+                if (identityAborted) start()
+            }
+
+            IdentityVerdict.SAME -> {
+                if (identityAborted) start()
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
+        }
+    }
+
     /** 进入页面：取 rules（带上恢复的合法金额）、收款账号、未决记录。 */
     fun start() {
-        if (left) return
-        if (!deps.env.loggedIn()) return
+        if (left || !deps.env.loggedIn()) return
+        if (identityPending()) {
+            identityHeld()
+            return
+        }
+        identityAborted = false
         val config = deps.env.configData()
         update {
             it.copy(
@@ -168,6 +229,10 @@ class WithdrawController(
     /** 回到前台（被前置页盖住后返回、App 回前台）：同一实例、保留金额，立即重取 rules（G05）与收款账号，重读未决记录。 */
     fun onResume() {
         if (left) return
+        if (identityAborted || identityPending()) {
+            if (deps.env.loggedIn()) identityHeld()
+            return
+        }
         flow.refreshPending()
         fetchRules(s.inputFen, initial = s.rules == null)
         fetchPayout()
@@ -210,8 +275,18 @@ class WithdrawController(
                 )
             val result = deps.api.send(call)
             owners -= owner
-            if (left || deps.env.sessionEpoch() != sendEpoch) return@launch
-            if (bound != null && !bound.current(deps.env)) return@launch
+            if (left) return@launch
+            if (deps.env.sessionEpoch() != sendEpoch) {
+                // 仍是最新一次而本进程登录世代已变（换代还没确认，FU-AND-0717 第 3 轮）：首次加载不停在加载中，进可重试的错误态
+                if (request == seq && s.rules == null) identityHeld()
+                hideStaleEstimate(request, amount)
+                return@launch
+            }
+            if (bound != null && !bound.current(deps.env)) {
+                // 估算所属表单已不是当前会话（或身份暂时确认不了）：这次估算不显示，「计算中」收起（不留没有出口的计算中）
+                hideStaleEstimate(request, amount)
+                return@launch
+            }
             onRules(result, request, account, amount, probe)
         }
     }
@@ -300,10 +375,12 @@ class WithdrawController(
             val line = WithdrawRulesView.estimate(rules, amount)
             update { it.copy(estimate = if (line == EstimateLine.Hidden) EstimateUi.Hidden else EstimateUi.Shown(line, amount)) }
             if (line != EstimateLine.Hidden) announceEstimate(amount, line)
+        } else {
+            hideStaleEstimate(request, amount)
         }
     }
 
-    /** 估算响应的归属四项（BR-WDR-04 细则）。 */
+    /** 估算响应的归属四项（BR-WDR-04 细则）：此刻的账号取一份快照（未知按不一致，不显示）。 */
     private fun estimateOwned(
         request: Long,
         account: String?,
@@ -311,8 +388,17 @@ class WithdrawController(
     ): Boolean =
         WithdrawEstimateGate.shouldApply(
             WithdrawEstimateGate.Request(account, pageInstance, request, amount),
-            WithdrawEstimateGate.Current(deps.env.account(), pageInstance, seq, s.inputFen),
+            WithdrawEstimateGate.Current(deps.env.identitySnapshot().account, pageInstance, seq, s.inputFen),
         )
+
+    /** 仍是这次金额的估算没能显示（归属核对没过）：收起「计算中」。 */
+    private fun hideStaleEstimate(
+        request: Long,
+        amount: Long?,
+    ) {
+        val current = amount != null && request == seq && amount == s.inputFen
+        if (current && s.estimate == EstimateUi.Calculating) update { it.copy(estimate = EstimateUi.Hidden) }
+    }
 
     private var announcePending = false
 
@@ -349,26 +435,30 @@ class WithdrawController(
      * 【全部提现】：只填 max_withdrawable_fen（G18 的写法）。按钮回调带渲染时的版本与表单身份 [owner]（APP-09 共性第 64 条，Android RC-05）：写金额前
      * 核对身份——令牌已换、清空通知还没执行时 rules 版本还没变，版本核对拦不住，靠身份核对拦下；同一身份继续交给估算请求。
      */
+    @Suppress("ReturnCount") // 版本 / 身份、没有可填金额两个拒绝出口
     fun fillAll(
         version: Long,
         owner: FormOwner,
-    ) {
-        val display = current(version)?.takeIf { ownsForm(owner) }?.display() ?: return
-        val fen = display.allFen ?: return
+    ): Boolean {
+        val display = current(version)?.takeIf { ownsForm(owner) }?.display() ?: return false
+        val fen = display.allFen ?: return false
         announcePending = true
         setAmount(WithdrawAmountInput.display(fen), debounce = false, owner)
+        return true
     }
 
     /** 快捷档位：只填服务端给的档位；与【全部提现】同样携带并核对渲染时的表单身份 [owner]（共性第 64 条）。 */
+    @Suppress("ReturnCount") // 版本 / 身份、没有可填金额两个拒绝出口
     fun fillQuick(
         version: Long,
         fen: Long,
         owner: FormOwner,
-    ) {
-        val display = current(version)?.takeIf { ownsForm(owner) }?.display() ?: return
-        if (fen !in display.quick) return
+    ): Boolean {
+        val display = current(version)?.takeIf { ownsForm(owner) }?.display() ?: return false
+        if (fen !in display.quick) return false
         announcePending = true
         setAmount(WithdrawAmountInput.display(fen), debounce = false, owner)
+        return true
     }
 
     /** 写入金额并安排估算；[owner] 是写入这次金额的表单身份，延时估算到点时再核对，并原样交给 [fetchRules]（共性第 64 条）。 */
@@ -486,6 +576,12 @@ class WithdrawController(
 
     fun retry() {
         if (left || deps.gates.read.active) return
+        if (identityAborted || identityPending()) {
+            // 读取因身份中止：取一份快照走统一的恢复入口（第一次确认接管并补取；换代按它重建；仍未知停在可重试的错误态）
+            onIdentity(deps.env.identitySnapshot())
+            if (identityPending()) identityHeld()
+            return
+        }
         fetchRules(s.inputFen, initial = true)
         fetchPayout()
     }
@@ -576,7 +672,10 @@ class WithdrawController(
      * 会话换代（App 在会话通知里同步调用）：同步清空已输入的金额、估算、rules 与收款账号行（不得在登录新账号后看到旧账号的余额或金额），作废在途读请求，
      * 再按新会话重取；未决记录按新账号重读。
      */
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建表单身份（App 下发的就是它这次检查用的那份，FU-AND-0717 第 3 轮：不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         deferredSuccess = null
         seq += 1
@@ -585,8 +684,9 @@ class WithdrawController(
         estimateJob?.cancel()
         cancelAll()
         mutable.value = WithdrawSnapshot(version = s.version + 1)
-        // 新表单（金额已清空）的固定身份在此一次性取得（共性第 65 条）
-        flow.onSessionChanged(FormOwner.of(deps.env))
+        // 新表单（金额已清空）的固定身份：调用方那一份快照（共性第 65 条）
+        identityAborted = false
+        flow.onSessionChanged(FormOwner.of(identity))
         start()
     }
 

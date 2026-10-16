@@ -62,6 +62,8 @@ import com.couli.core.designsystem.PriceTerms
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.couliFocusTarget
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.EstimateLine
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.core.wallet.WalletTexts
@@ -85,21 +87,103 @@ class WithdrawViewModel(
     private val deps = config.deps
     val controller: WithdrawController
 
+    /**
+     * 金额草稿归属的完整身份（账号 + 本进程登录世代 + 持久化登录世代；末轮窄修 R3-02：按 [SessionIdentity.verdictFor] 跟踪，含分区）。构造、接管、换代时
+     * 都取自同一份快照。
+     */
+    private var draftIdentity: SessionIdentity
+
+    /**
+     * 草稿的恢复决策已做（末轮窄修 R3-02 / R3-03）：没做之前（身份或分区未知、或构造时的安全复核读不出）草稿不读不写，保存的金额原样留着，等已确认的
+     * 快照再决策；用户在此期间填的金额保留，决策时不被旧草稿覆盖。
+     */
+    private var draftDecided = false
+
+    /**
+     * 草稿决策还没做时用户已经操作过金额（输入、清空、【全部提现】、快捷档位；末轮窄修二 RC-01）：之后的决策保留用户此刻的值（含空），不回填旧草稿。
+     * 不以金额是否为空判断。
+     */
+    private var userEdited = false
+
     init {
         // 表单身份在构造时一次性取得（APP-09 共性第 65 条，Android RC-06）：恢复的金额按这份身份校验，并与它成对交给控制器与 SensitiveFlow；
-        // 之后不再读取当前会话来建立身份——令牌已在 IO 线程换成 B、清空通知还没执行时，A 的金额不会绑到 B 的表单上。身份此刻已不是当前会话
-        // （读取期间换了号）的不恢复
-        val owner = FormOwner.of(deps.env)
-        val hash = owner.account?.takeIf { owner.current(deps.env) }?.let(WalletStaleCache.Store::hash)
-        val restored = saved.get<String>(K_AMOUNT)?.takeIf { hash != null && saved.get<String>(K_OWNER) == hash }.orEmpty()
+        // F-X-17（FU-AND-0717）：金额草稿按「账号 + 持久化登录世代」绑定，世代与账号取自同一份身份快照（F-X-19 补充二）
+        val identity = deps.env.identitySnapshot()
+        val owner = FormOwner.of(identity)
+        draftIdentity = identity
+        val restored = initialDraft(identity, owner)
         controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner)
         config.hooks.bindLeave(controller::leave)
-        config.hooks.bindSession {
+        // 换代清空重建之前：旧金额草稿删掉，新表单身份与草稿归属取自同一份快照（不拼接两次读取）；新表单没有可恢复的草稿
+        controller.onReset = { next ->
             saved.remove<String>(K_AMOUNT)
             saved.remove<String>(K_OWNER)
-            controller.onSessionChanged()
+            draftIdentity = next
+            draftDecided = draftReady(next)
+            userEdited = false
+        }
+        controller.onAdopted = ::resolveDraft
+        // 旧接线（没有统一入口的 App）：取一份快照按换代处理
+        config.hooks.bindSession { controller.onIdentity(deps.env.identitySnapshot(), changed = true) }
+        // 统一的页面恢复入口（R2-04）：会话换代按 App 那一份快照重建（同账号只换持久化世代时 App 的对账按分区标签判换代，同样走这里）；未知期建的表单第一次
+        // 确认接管并补取；判据相同（含分区第一次确认、FormOwner 不看分区而判为同一身份的情形）时按含分区的判定补做草稿决策（末轮窄修 R3-02 / R3-03）
+        config.hooks.bindIdentity { id, changed ->
+            controller.onIdentity(id, changed)
+            if (!changed) resolveDraft(id)
         }
         controller.start()
+    }
+
+    /** 草稿此刻能按这份快照绑定：已知、有账号，分区给得出（或快照的分区没接来源，旧口径按账号）。 */
+    private fun draftReady(identity: SessionIdentity): Boolean =
+        identity.known && identity.account != null && (identity.partition != null || !deps.env.partitionTracked())
+
+    /**
+     * 构造时的草稿决策（同一份快照 [identity]）：分区未知 / 身份未知延后；有属于这份身份的草稿时再做一次「仍是当前会话」的安全复核（RC-06）——
+     * 确认是同一份才恢复，确认已换代不恢复，读不出（未知）保留待恢复状态、之后确认再决策（末轮窄修 R3-03）。
+     */
+    @Suppress("ReturnCount") // 延后、没有草稿、复核结论三个出口
+    private fun initialDraft(
+        identity: SessionIdentity,
+        owner: FormOwner,
+    ): String {
+        if (!draftReady(identity)) return ""
+        val draft = saved.get<String>(K_AMOUNT)?.takeIf { saved.get<String>(K_OWNER) == draftHash(identity) }
+        if (draft == null) {
+            draftDecided = true
+            return ""
+        }
+        return when (owner.verdict(deps.env.identitySnapshot())) {
+            IdentityVerdict.SAME -> draft.also { draftDecided = true }
+            IdentityVerdict.UNKNOWN -> ""
+            else -> "".also { draftDecided = true }
+        }
+    }
+
+    /**
+     * 用一份已确认的快照补做草稿决策（未知期建的表单接管、分区第一次确认、构造时安全复核读不出之后的确认；末轮窄修 R3-02 / R3-03）：草稿归属换成这份快照；
+     * 还没决策过而本机存着属于这份身份的金额、用户也还没填时按它恢复（经正常输入入口，估算照常）；否则把用户已填的金额按新归属保存。
+     */
+    @Suppress("ReturnCount") // 不是本表单的确认、确认换代、分区仍未知三个出口
+    private fun resolveDraft(identity: SessionIdentity) {
+        if (!identity.known || identity.account == null || FormOwner.of(identity) != controller.flow.owner) return
+        if (identity.verdictFor(draftIdentity) == IdentityVerdict.CHANGED) return
+        draftIdentity = identity
+        if (!draftReady(identity)) return
+        if (draftDecided) return persist()
+        val draft = saved.get<String>(K_AMOUNT)?.takeIf { saved.get<String>(K_OWNER) == draftHash(identity) }
+        if (draft == null || userEdited) {
+            // 没有属于这份身份的草稿，或用户已操作过金额（含清空，RC-01）：决策完成，按新归属保存用户此刻的值
+            draftDecided = true
+            persist()
+            return
+        }
+        // 恢复经正常输入入口（其中还有一次表单归属复核）：真正受理了才结束待决（末轮窄修二 RC-02）；复核读不出时草稿原样保留，下一次确认再决策
+        val owner = controller.flow.owner
+        if (controller.onAmountChange(draft, owner)) {
+            draftDecided = true
+            persist(owner)
+        }
     }
 
     /**
@@ -109,23 +193,52 @@ class WithdrawViewModel(
         text: String,
         owner: FormOwner = controller.flow.owner,
     ) {
-        if (controller.onAmountChange(text, owner)) persist(owner)
+        if (!controller.onAmountChange(text, owner)) return
+        if (!draftDecided) userEdited = true
+        persist(owner)
+    }
+
+    /** 【全部提现】（用户操作；草稿待决期间记为已操作金额，RC-01；保存口径不变）。 */
+    fun fillAll(
+        version: Long,
+        owner: FormOwner,
+    ) {
+        // 控制器实际受理了才记用户已操作（末轮窄修三 RC-03：被拒的旧回调 / 身份复核读不出不算）
+        if (controller.fillAll(version, owner) && !draftDecided) userEdited = true
+    }
+
+    /** 快捷档位（同 [fillAll]）。 */
+    fun fillQuick(
+        version: Long,
+        fen: Long,
+        owner: FormOwner,
+    ) {
+        if (controller.fillQuick(version, fen, owner) && !draftDecided) userEdited = true
     }
 
     /**
-     * 金额的本机保存（SavedStateHandle）：按渲染时固定的表单身份 [owner] 保存与绑定账号哈希，写入前核对它仍是本表单的身份、且仍是当前会话；不按执行时
-     * 读到的账号保存（会话已换、清空通知还没执行时，旧金额不得绑到新账号名下）。
+     * 金额的本机保存（SavedStateHandle）：按渲染时固定的表单身份 [owner] 保存，归属标签取草稿的完整身份（账号 + 持久化世代，不在写入时读当前世代）；写入前
+     * 核对它仍是本表单的身份、且仍是当前会话。草稿决策还没做（身份 / 分区未知）时不写（末轮窄修 R3-02：不按账号回退）。
      */
     fun persist(owner: FormOwner = controller.flow.owner) {
-        if (owner != controller.flow.owner || !owner.current(deps.env)) return
-        val hash = owner.account?.let(WalletStaleCache.Store::hash) ?: return
+        val target = draftIdentity
+        val bound = draftDecided && draftReady(target)
+        if (!bound || owner != controller.flow.owner || owner != FormOwner.of(target)) return
+        if (!owner.current(deps.env)) return
         saved[K_AMOUNT] = controller.state.value.amountText
-        saved[K_OWNER] = hash
+        saved[K_OWNER] = draftHash(target)
     }
 
     override fun onCleared() {
         controller.leave()
         super.onCleared()
+    }
+
+    /** 草稿归属标签：账号 + 持久化登录世代（分区没接来源时按账号，旧口径；接了来源而分区未知时根本不读写，见 [draftReady]）。 */
+    private fun draftHash(identity: SessionIdentity): String {
+        val account = identity.account.orEmpty()
+        val partition = identity.partition
+        return WalletStaleCache.Store.hash(if (partition == null) account else account + "\u0000login_epoch:" + partition)
     }
 
     private companion object {
@@ -483,7 +596,7 @@ private fun AmountField(
         )
         CouliButton(
             text = texts.text("withdraw.all"),
-            onClick = { controller.fillAll(version, owner) }.tapped(WalletTags.WITHDRAW_ALL),
+            onClick = { model.fillAll(version, owner) }.tapped(WalletTags.WITHDRAW_ALL),
             enabled = display.allEnabled && editable,
             variant = CouliButtonVariant.TEXT,
             size = CouliButtonSize.COMPACT,
@@ -506,7 +619,7 @@ private fun AmountField(
             display.quick.forEach { fen ->
                 CouliButton(
                     text = CouliFormat.money(fen),
-                    onClick = { controller.fillQuick(version, fen, owner) }.tapped(WalletTags.WITHDRAW_QUICK_PREFIX + fen),
+                    onClick = { model.fillQuick(version, fen, owner) }.tapped(WalletTags.WITHDRAW_QUICK_PREFIX + fen),
                     enabled = editable,
                     variant = CouliButtonVariant.SECONDARY,
                     size = CouliButtonSize.COMPACT,

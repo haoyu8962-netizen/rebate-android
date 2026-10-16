@@ -114,12 +114,12 @@ class FollowupAnd0714FixR1EpochTest {
         val orders = orderCacheStore(context, tokens)
         val wallet = walletCacheStore(context, tokens)
         val restore = orderRestoreStore(context, tokens)
-        orders.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L)
-        wallet.write("user-a", summary, 1L)
+        orders.writeList("user-a", "self", OrderListData(listOf(item("o1")), null, null), 1L, tokens.persistedLoginEpoch())
+        wallet.write("user-a", summary, 1L, tokens.persistedLoginEpoch())
         val ref = restore.newRef()
         val record = OrderRestoreRecord(owner = "owner-a", q = "3741234567890123456", input = "3741234567890123456")
         assertTrue(restore.write(ref, restore.epoch, record, restore.loginEpochNow()))
-        assertNotNull(orders.readList("user-a", "self"))
+        assertNotNull(orders.readList("user-a", "self", tokens.persistedLoginEpoch()))
 
         // 真实 ApiClient 清会话：删除提交失败 → 会话隔离（加密存储里仍是旧令牌与旧世代）
         prefs.failing = true
@@ -127,8 +127,8 @@ class FollowupAnd0714FixR1EpochTest {
         assertEquals("存储里旧值仍在（删除没落盘）", "access-1", tokens.accessToken)
         assertNull("ApiClient 按隔离：不再交出旧会话", api.activeUserId())
         assertNull("登录世代与会话可用性同步：隔离期间为 null", tokens.persistedLoginEpoch())
-        assertNull("订单缓存隔离期间禁止读", orderCacheStore(context).readList("user-a", "self"))
-        assertNull("钱包摘要缓存隔离期间禁止读", walletCacheStore(context).read("user-a"))
+        assertNull("订单缓存隔离期间禁止读", orderCacheStore(context).readList("user-a", "self", tokens.persistedLoginEpoch()))
+        assertNull("钱包摘要缓存隔离期间禁止读", walletCacheStore(context).read("user-a", tokens.persistedLoginEpoch()))
         assertNull("订单页恢复记录隔离期间禁止读", orderRestoreStore(context).read(ref))
         assertNull(persistedLoginEpochOf(tokens)())
 
@@ -138,11 +138,13 @@ class FollowupAnd0714FixR1EpochTest {
         val second = tokens.persistedLoginEpoch()
         assertNotNull("新会话成功建立后恢复", second)
         assertNotEquals(first, second)
-        assertNull(orderCacheStore(context).readList("user-a", "self"))
-        assertNull(walletCacheStore(context).read("user-a"))
+        assertNull(orderCacheStore(context).readList("user-a", "self", tokens.persistedLoginEpoch()))
+        assertNull(walletCacheStore(context).read("user-a", tokens.persistedLoginEpoch()))
         assertNull(orderRestoreStore(context).read(ref))
-        orderCacheStore(context).writeList("user-a", "self", OrderListData(listOf(item("o2")), null, null), 2L)
-        assertNotNull("新世代照常读写", orderCacheStore(context).readList("user-a", "self"))
+        orderCacheStore(
+            context,
+        ).writeList("user-a", "self", OrderListData(listOf(item("o2")), null, null), 2L, tokens.persistedLoginEpoch())
+        assertNotNull("新世代照常读写", orderCacheStore(context).readList("user-a", "self", tokens.persistedLoginEpoch()))
     }
 
     @Test

@@ -73,6 +73,7 @@ class WalletViewModel(
     init {
         config.hooks.bindLeave(controller::leave)
         config.hooks.bindSession(controller::onSessionChanged)
+        config.hooks.bindIdentity(controller::onIdentity)
         controller.load()
     }
 

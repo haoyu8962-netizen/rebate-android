@@ -166,7 +166,10 @@ class AppOAuthBindPhoneTest {
     fun tearDown() = server.shutdown()
 
     @Suppress("LongMethod") // 与 AppModule 同一套接线逐项组装
-    private fun launch(session: String?) {
+    private fun launch(
+        session: String?,
+        adapters: List<ThirdPartyAuthAdapter> = listOf(InstantWechat),
+    ) {
         session?.let { tokens.save("access-zero", "refresh-zero", it, "user-zero") }
         val gate =
             PrivacyGate(MemoryStore(), clock = { now }, bundledPolicyVersion = "1").apply {
@@ -214,7 +217,7 @@ class AppOAuthBindPhoneTest {
                     updateCheck = { UpdateCheck.OK },
                     markBelow = {},
                     legal = LegalVersions(1, 1),
-                    adapters = listOf(InstantWechat),
+                    adapters = adapters,
                 )
         }
         composeRule.setContent {
@@ -271,6 +274,59 @@ class AppOAuthBindPhoneTest {
             assertEquals("受限登录不用邀请码来源", null, restricted.invite)
             assertEquals("与正常登录同一组第三方入口", login.pageConfig(restricted = false).thirdParty, restricted.thirdParty)
         }
+    }
+
+    /**
+     * F-X-12（FU-AND-0717，三端统一口径）：Debug / Staging 的假微信适配器在没开本机假服务时按钮照常显示；点击只提示「调试用，需开本机假服务」，不弹协议确认框、
+     * 不发任何请求（不取授权尝试、不登录）。Release 的不可用适配器不显示按钮（对照）。
+     */
+    @Test
+    fun fuand0717_x12_aDebugWechatButtonWithoutTheFakeServerOnlyHintsAndSendsNothing() {
+        val closed =
+            com.couli.app.login
+                .DebugWechatAdapter(
+                    { false },
+                    com.couli.feature.login
+                        .UnavailableWechatAdapter(),
+                    delayMillis = 1,
+                )
+        launch(session = null, adapters = listOf(closed))
+        composeRule.runOnUiThread { assertEquals("默认显示", listOf(OAuthProvider.WECHAT), login.pageConfig(restricted = false).thirdParty) }
+        open("OrderList")
+        idleUntil { routes().lastOrNull() == RouteNames.LOGIN }
+        val hint = "调试用，需开本机假服务"
+        composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).performScrollTo()
+        // 轻提示只停留约 2 秒（Compose 时钟上的 delay）：停住自动推进，逐帧推进直到提示出现，避免等待期间被自动推进的时钟收起
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).performClick()
+        FlowWait.until({
+            org.robolectric.Shadows
+                .shadowOf(Looper.getMainLooper())
+                .idle()
+            composeRule.mainClock.advanceTimeByFrame()
+        }, { "提示没有出现；请求 ${server.requestCount}" }) {
+            composeRule.onAllNodesWithText(hint, substring = true, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.mainClock.autoAdvance = true
+        assertTrue(
+            "不弹协议确认框",
+            composeRule.onAllNodesWithText(LoginDraftTexts.text("login.agree_confirm.ok")).fetchSemanticsNodes().isEmpty(),
+        )
+        assertEquals("不发任何请求", 0, server.requestCount)
+        assertEquals("仍在登录页", RouteNames.LOGIN, routes().last())
+    }
+
+    @Test
+    fun fuand0717_x12_control_theReleaseWechatAdapterShowsNoButton() {
+        launch(
+            session = null,
+            adapters =
+                listOf(
+                    com.couli.feature.login
+                        .UnavailableWechatAdapter(),
+                ),
+        )
+        composeRule.runOnUiThread { assertEquals("Release 微信不显示", emptyList<String>(), login.pageConfig(restricted = false).thirdParty) }
     }
 
     @Test

@@ -3,6 +3,9 @@ package com.couli.feature.wallet
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.PayoutAccountDisplay
 import com.couli.core.wallet.PayoutAccountForm
 import com.couli.core.wallet.PayoutAccountView
@@ -86,8 +89,58 @@ class PayoutAccountController(
 
     val alive: Boolean get() = !left
 
+    /**
+     * 最近一次读取因身份中止（未知期建的表单、本进程登录世代已变而新身份还没确认；FU-AND-0717 第 3 轮，R2-04）：停在可重试的错误态，身份确认（App 下发 /
+     * 【重试】的一份快照）后接管表单身份并补取；已填内容、禁用期保留，不重放保存。
+     */
+    var identityAborted: Boolean = false
+        private set
+
+    /** 表单身份没建立（未知期取得）：这时不读取（不以 expectedAccount = null 发）。 */
+    private fun identityPending(): Boolean = flow.owner.account == null
+
+    private fun identityHeld() {
+        identityAborted = true
+        val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
+        val notice = Notice(error.textKey, ++ids, null, false)
+        update { if (it.account == null) it.copy(phase = PayoutSnapshot.ERROR, loadError = notice) else it.copy(loadError = notice) }
+    }
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮，R2-04）：[identity] 是 App 这次检查的那份快照（或【重试】取的一份），不另读。[changed] 或已确认换代按它清空
+     * 重建；未知期取得的表单第一次确认按它接管表单身份（已填内容、禁用期、在途不动），读取曾中止的补取；同一身份而读取曾中止的补取；未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        when (if (changed) IdentityVerdict.CHANGED else flow.owner.verdict(identity)) {
+            IdentityVerdict.CHANGED -> {
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                flow.adoptOwner(FormOwner.of(identity))
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.SAME -> {
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
+        }
+    }
+
     fun start() {
         if (left || !deps.env.loggedIn()) return
+        if (identityPending()) {
+            identityHeld()
+            return
+        }
         runCatching { deps.api.restorePending() }
         flow.refreshPending()
         load()
@@ -100,8 +153,25 @@ class PayoutAccountController(
         load()
     }
 
+    /** 【重试】：读取因身份中止时先取一份快照走统一的恢复入口（第一次确认接管并补取；仍未知停在可重试的错误态），否则重读。 */
+    fun retry() {
+        if (left) return
+        if (identityAborted || identityPending()) {
+            onIdentity(deps.env.identitySnapshot())
+            if (identityPending()) identityHeld()
+            return
+        }
+        load()
+    }
+
+    @Suppress("ReturnCount") // 离开 / 未登录、身份没建立、限流三个出口
     fun load() {
         if (left || !deps.env.loggedIn()) return
+        if (identityPending()) {
+            identityHeld()
+            return
+        }
+        identityAborted = false
         if (deps.gates.read.active) {
             gatedLoad()
             return
@@ -122,7 +192,12 @@ class PayoutAccountController(
         scope.launch {
             val result = deps.api.send(ApiCall(GET_OPERATION, ownership = owner, expectedAccount = form.account))
             owners -= owner
-            if (left || seq != request || deps.env.sessionEpoch() != epoch) return@launch
+            if (left || seq != request) return@launch
+            // 仍是最新一次而本进程登录世代已变（换代还没确认，FU-AND-0717 第 3 轮）：不停在加载中，进可重试的错误态
+            if (deps.env.sessionEpoch() != epoch) {
+                identityHeld()
+                return@launch
+            }
             onLoaded(result, navGen, probe)
         }
     }
@@ -352,15 +427,19 @@ class PayoutAccountController(
     // ---------------------------------------------------------------- 会话、离页
 
     /** 会话换代：同步清空已填内容（含姓名、卡号、登录号）与已显示的账号，作废在途请求，再按新会话重取。 */
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建表单身份（App 下发的就是它这次检查用的那份，FU-AND-0717 第 3 轮：不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
+        identityAborted = false
         seq += 1
         deferredSaved = null
         cancelAll()
         mutable.value = PayoutSnapshot(version = s.version + 1)
         guideOwner = null
         // 新表单（已清空）的固定身份在此一次性取得（共性第 65 条）
-        flow.onSessionChanged(FormOwner.of(deps.env))
+        flow.onSessionChanged(FormOwner.of(identity))
         start()
     }
 

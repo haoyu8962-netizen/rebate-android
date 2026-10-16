@@ -310,3 +310,89 @@ enum class RestrictedRecheck {
     /** 调用方已作废（取消、换号、登录页出栈）或截止时间已到。 */
     CANCELLED,
 }
+
+/**
+ * 一份固定的会话身份快照（F-X-17 / F-X-19 补充二、补充三，FU-AND-0717；iOS FU-IOS-0712 R1-01 / R2-01 / R3-01 同法）：「身份是否已知」、账号、登录世代
+ * 与持久化登录世代（分区标签）在同一次读取里取得，调用方只拿这一份做归属与恢复决策，不拼接两次读取。
+ * - [known] = false：身份**暂时未知**（凭据此刻不可读：隐私 / 撤回清理 / 环境未就绪 / 读取屏障竖着；会话存储读取失败；有令牌却读不出持久化世代）。
+ *   调用方延后归属对账与恢复决策：不删、不读、不写分区数据（已登记的待清理照常执行）。
+ * - [known] = true 且 [account] 为 null：**已确认没有会话**（游客、登出、隔离 / 待清理）。
+ * - [known] = true 且 [account] 非空：已知会话；[partition] 是它的持久化登录世代（分区用：账号 + 它）；世代缺失时为 null（[partitionKnown] 为 false，
+ *   在线请求照常，缓存与恢复记录不读不写）。
+ */
+data class SessionIdentity(
+    val known: Boolean,
+    val account: String?,
+    /** 本进程内的登录世代（[SessionTokens.loginEpoch]）。 */
+    val loginEpoch: Long,
+    /** 持久化登录世代（[PersistedLoginEpochs.persistedLoginEpoch]）；没有会话或未知为 null。 */
+    val partition: String?,
+) {
+    /**
+     * 缓存分区是否可用（第 1 轮修复 R1-01）：没有会话，或有会话且读得出持久化登录世代。有会话而世代缺失（升级前登录的合法旧会话、世代读取失败）时为 false：
+     * 账号照常用于在线请求，但订单 / 钱包缓存、恢复记录与草稿分区一律不读不写、不按分区对账（沿用 FU-AND-0714 裁定）。
+     */
+    val partitionKnown: Boolean get() = known && (account == null || partition != null)
+
+    /** 分区标签（账号 + 持久化登录世代）：只在已知且有会话时非空。 */
+    val tag: Pair<String, String>? get() = if (known && account != null && partition != null) account to partition else null
+
+    /**
+     * 把这份**新**快照与页面 / 表单固定的归属（[account]、本进程登录世代 [loginEpoch]、持久化登录世代 [partition]）比较，给出唯一的结论
+     * （FU-AND-0717 第 3 轮整体重理：订单列表 / 详情、钱包摘要、提现、收款账号、实名、劳务协议、提现记录与 App 的会话下发都只用这一个判定）：
+     * - [IdentityVerdict.UNKNOWN]：这份快照未知——什么都不决策（不清、不删、不重绑；写入 / 展示类核对按「不一致」拦下）；
+     * - [IdentityVerdict.CHANGED]：已确认换代（本进程登录世代变了、账号不同，或两边都给得出而持久化世代不同）；
+     * - [IdentityVerdict.ADOPT]：同一登录世代里第一次确认——归属是身份未知时取得的（账号为空）而这份已有账号，或 [trackPartition] 时归属的分区未知而这份
+     *   给得出（第 2 轮评审 R2-02）。调用方按这份快照接管归属、补取只读数据，保留有效输入；
+     * - [IdentityVerdict.SAME]：同一份身份。
+     * [trackPartition] 为 false 时不看持久化世代（不按分区读写的页面）。
+     */
+    @Suppress("ReturnCount") // 逐项判定
+    fun verdictFor(
+        account: String?,
+        loginEpoch: Long,
+        partition: String?,
+        trackPartition: Boolean = true,
+    ): IdentityVerdict {
+        if (!known) return IdentityVerdict.UNKNOWN
+        if (this.loginEpoch != loginEpoch) return IdentityVerdict.CHANGED
+        if (account == null) return if (this.account == null) IdentityVerdict.SAME else IdentityVerdict.ADOPT
+        if (this.account != account) return IdentityVerdict.CHANGED
+        if (!trackPartition || this.partition == null) return IdentityVerdict.SAME
+        if (partition == null) return IdentityVerdict.ADOPT
+        return if (partition == this.partition) IdentityVerdict.SAME else IdentityVerdict.CHANGED
+    }
+
+    /** 同 [verdictFor]，归属是另一份快照 [owner]（页面构造或上次接管时取得的那一份）。 */
+    fun verdictFor(
+        owner: SessionIdentity,
+        trackPartition: Boolean = true,
+    ): IdentityVerdict = verdictFor(owner.account, owner.loginEpoch, owner.partition, trackPartition)
+
+    /** 这份快照已知、有会话，且就是 [account] 在本进程登录世代 [loginEpoch] 的那一次登录（写入 / 按钮核对用：未知按不一致拦下）。 */
+    fun isOwnedBy(
+        account: String?,
+        loginEpoch: Long,
+    ): Boolean = known && account != null && this.account == account && this.loginEpoch == loginEpoch
+
+    companion object {
+        /** 暂时未知（不读凭据时给出）。 */
+        fun unknown(loginEpoch: Long): SessionIdentity =
+            SessionIdentity(known = false, account = null, loginEpoch = loginEpoch, partition = null)
+    }
+}
+
+/** [SessionIdentity.verdictFor] 的结论（FU-AND-0717 第 3 轮整体重理）。 */
+enum class IdentityVerdict {
+    /** 快照未知：不决策。 */
+    UNKNOWN,
+
+    /** 同一份身份。 */
+    SAME,
+
+    /** 同一登录世代里第一次确认（账号或分区）：接管归属、补取。 */
+    ADOPT,
+
+    /** 已确认换代：按这份快照重置。 */
+    CHANGED,
+}

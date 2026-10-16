@@ -522,6 +522,58 @@ class ApiClient(
     }
 
     /**
+     * 一份固定的会话身份快照（[SessionIdentity]，F-X-17 / F-X-19 补充二、补充三，FU-AND-0717）：账号、登录世代、持久化登录世代与「是否已知」在同一次
+     * 读取里取得——读取前后各取一次登录世代，期间有登录 / 清除（世代变了）就重读，重读几次仍在变按暂时未知。订单 / 钱包的归属与恢复决策只用这一份。
+     */
+    @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount") // 状态取不到按未知
+    fun sessionIdentity(): SessionIdentity {
+        repeat(IDENTITY_READ_ATTEMPTS) {
+            val before = tokens.loginEpoch
+            val state =
+                try {
+                    context()
+                } catch (error: Exception) {
+                    return SessionIdentity.unknown(before)
+                }
+            val read =
+                try {
+                    rawRead(state)
+                } catch (error: Exception) {
+                    RawRead.Unreadable(tokens.generation)
+                }
+            val identity =
+                when (read) {
+                    RawRead.NotReadable, is RawRead.Unreadable -> {
+                        SessionIdentity.unknown(before)
+                    }
+
+                    is RawRead.Quarantined -> {
+                        SessionIdentity(known = true, account = null, loginEpoch = before, partition = null)
+                    }
+
+                    is RawRead.Present -> {
+                        val session = live(read)
+                        val account = session?.userId?.takeIf { it.isNotEmpty() }
+                        if (session == null) {
+                            SessionIdentity(known = true, account = null, loginEpoch = before, partition = null)
+                        } else {
+                            val partition = (tokens as? PersistedLoginEpochs)?.persistedLoginEpoch()?.takeIf { it.isNotEmpty() }
+                            // 有会话而账号读不出：身份未知。账号已确认、只是持久化世代缺失（升级前登录的合法旧会话、禁用中）：在线身份已知，
+                            // 分区未知（partition = null，缓存与恢复记录不读不写；第 1 轮修复 R1-01）
+                            if (account == null) {
+                                SessionIdentity.unknown(before)
+                            } else {
+                                SessionIdentity(known = true, account = account, loginEpoch = before, partition = partition)
+                            }
+                        }
+                    }
+                }
+            if (tokens.loginEpoch == before) return identity
+        }
+        return SessionIdentity.unknown(tokens.loginEpoch)
+    }
+
+    /**
      * 当前有效会话的账号（APP-03b R1-09，Tracker 的 user_id 来源）：经过与请求相同的会话读取——凭据不可读、会话隔离中（F-AND-10：
      * 删除失败的旧会话只在确认删除或被成功保存的新会话替换后才解除）、读取失败、没有令牌都为 null（游客只带 device_id）。
      */
@@ -2358,6 +2410,8 @@ class ApiClient(
         (get(key)?.takeIf { it != JsonNull } as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     companion object {
+        /** [sessionIdentity] 读取期间登录世代在变时最多重读几次。 */
+        private const val IDENTITY_READ_ATTEMPTS = 3
         private const val REFRESH = "refreshToken"
 
         /** 单次发送的 Effect 一律按「旧调用」交付（不导航、不登记待办、不进 10006 落点，APP-10b G64）。 */

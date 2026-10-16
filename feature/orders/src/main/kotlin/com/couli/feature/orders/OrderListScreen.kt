@@ -3,6 +3,8 @@ package com.couli.feature.orders
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,11 +40,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -84,8 +89,10 @@ import com.couli.core.designsystem.ErrorAnnouncement
 import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.PlatformBadge
 import com.couli.core.designsystem.ProductThumbnail
+import com.couli.core.designsystem.RestoreLanding
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
+import com.couli.core.designsystem.awaitLanding
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.orders.CreditPeriodText
@@ -520,7 +527,22 @@ private fun OrderListBody(
 ) {
     val texts = config.texts
     val listState = rememberLazyListState(model.anchor.index, model.anchor.offset)
-    ScrollKeeping(model, actions, state, listState, leading = if (state.scope == OrderQuery.SELF && model.pending != null) 1 else 0)
+    val restoreGuard = remember(model) { RestoreGuard() }
+    ScrollKeeping(
+        model,
+        actions,
+        state,
+        listState,
+        leading =
+            if (state.scope == OrderQuery.SELF &&
+                model.pending != null
+            ) {
+                1
+            } else {
+                0
+            },
+        restoreGuard,
+    )
     val pullState = rememberPullToRefreshState()
     // 下拉刷新：42901 禁用期内手势不可用（enabled = false；执行层也拦）
     Box(
@@ -536,7 +558,17 @@ private fun OrderListBody(
     ) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().testTag(OrderTags.LIST),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .testTag(OrderTags.LIST)
+                    // 第 1 轮修复 R1-06：恢复期间手指按下即算用户接管（未移动也取消），不消费事件
+                    .pointerInput(restoreGuard) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            restoreGuard.touched()
+                        }
+                    },
             contentPadding =
                 androidx.compose.foundation.layout
                     .PaddingValues(CouliSpacing.space4),
@@ -621,11 +653,47 @@ private fun ScrollKeeping(
     state: OrderListSnapshot,
     listState: LazyListState,
     leading: Int,
+    guard: RestoreGuard,
 ) {
     // 放弃恢复（换条件、列表变空或失败、被挪动、翻到底仍找不到）：恢复期间冻结的锚点立即改记当前位置，不留旧目标（共性第 17、24 条）
     val giveUp = {
         model.restoreDone()
         actions.onScrolled(anchorOf(listState, model))
+    }
+    // 第 1 轮修复 R1-06：恢复全过程（含等翻页的网络等待期）持续记录用户接管——触摸按下、不是本任务的滚动（拖动、惯性、读屏、键盘 / 焦点）、
+    // 项数没变而位置变了；一旦接管就放弃并按当前位置记录，之后即使回到原位置也不再恢复（pendingRestore 已清）
+    val takeOver = {
+        if (model.pendingRestore != null) {
+            model.restoreEnd = OrderListViewModel.RESTORE_TAKEN_OVER
+            giveUp()
+        }
+    }
+    // FU-AND-0717 第 3 轮（R2-05）：恢复决策还在延后（身份 / 分区没确认）时，触摸与用户滚动同样记为接管，身份确认后不再用旧记录覆盖。
+    // 末轮窄修 R3-04：常驻的滚动监听不随 actions 重启，经最新渲染身份的引用调用（分阶段确认身份换了票据之后，旧票据不会让接管被拒）
+    val currentActions by rememberUpdatedState(actions)
+    guard.onTouch = {
+        model.onUserTouch(currentActions.ticket)
+        takeOver()
+    }
+    LaunchedEffect(listState, guard) {
+        var last: Pair<Pair<Int, Int>, Int>? = null
+        snapshotFlow { Triple(listState.isScrollInProgress, listState.position(), listState.layoutInfo.totalItemsCount) }
+            .collect { (scrolling, position, count) ->
+                // 延后期间：不是本页自己挪的滚动、或项数没变而位置变了（读屏 / 键盘 / 焦点移动，没有触摸按下）都记为接管
+                val moved = last?.let { (p, c) -> c == count && p != position } == true
+                last = position to count
+                if ((scrolling || moved) && !guard.moving) model.onUserTouch(currentActions.ticket)
+                if (model.pendingRestore == null || guard.moving) return@collect
+                val expected = guard.expected ?: return@collect
+                when {
+                    scrolling -> takeOver()
+
+                    count == guard.expectedCount && position != expected -> takeOver()
+
+                    // 项数变了（翻页到达、布局追上）而没有滚动在进行：按此刻位置重设基准
+                    count != guard.expectedCount -> guard.rebase(position, count)
+                }
+            }
     }
     LaunchedEffect(state.round) {
         if (model.seenRound != state.round) {
@@ -641,7 +709,7 @@ private fun ScrollKeeping(
         val target = model.pendingRestore ?: return@LaunchedEffect
         // 每次挂起（滚动）之后复核：恢复任务仍是这一个、查询轮次没变（会话换代、换条件都会清掉恢复或换轮次），失效后不滚动、不持久化（共性第 24 条）
         val round = state.round
-        val valid = { model.pendingRestore == target && model.controller.state.value.round == round && model.live(actions.ticket) }
+        val valid = { model.pendingRestore == target && model.controller.state.value.round == round && model.live(currentActions.ticket) }
         when (state.phase) {
             OrderListPhase.CONTENT -> Unit
             OrderListPhase.EMPTY, OrderListPhase.ERROR -> return@LaunchedEffect giveUp()
@@ -650,7 +718,7 @@ private fun ScrollKeeping(
         val base =
             restoreBase.value ?: run {
                 // 基准在列表首次可交互时建立：先回到顶部（列表自己保存的旧下标会被第一页的条数截断，不能当基准）
-                listState.scrollToItem(0)
+                guard.own(listState) { listState.scrollToItem(0) }
                 listState.position().also { restoreBase.value = it }
             }
         if (!valid()) return@LaunchedEffect
@@ -658,11 +726,8 @@ private fun ScrollKeeping(
         val row = state.items.indexOfFirst { it.orderId == target }
         when {
             row >= 0 -> {
-                listState.scrollToItem(leading + row)
-                if (!valid()) return@LaunchedEffect
-                model.restoreDone()
-                // 对齐完成才更新持久化锚点（恢复期间的滚动记录被冻结，这里补记一次落点）
-                actions.onScrolled(OrderAnchor(leading + row, 0, target))
+                // 自己的每次定位之后按实际位置重设基准（之后状态变化再进来时，基准比对只抓别人的移动）
+                alignRestoreTarget(model, actions, state, listState, leading + row, valid, giveUp, guard) { restoreBase.value = it }
             }
 
             state.loadMoreError != null || state.endReached -> {
@@ -691,6 +756,84 @@ private fun ScrollKeeping(
                 ?.index ?: 0
         }.distinctUntilChanged()
             .collect { last -> if (last >= listState.layoutInfo.totalItemsCount - LOAD_AHEAD) actions.onLoadMore() }
+    }
+}
+
+/**
+ * 目标卡已加载：顶对齐并按真实布局确认落点（F-X-18 / 补充，FU-AND-0717：不在 scrollToItem 返回后就算完成；[awaitLanding] 逐帧看布局，布局滞后时等它追上
+ * 再补发，帧上限内没确认按没确认结束）。确认期间持续判接管：不是本任务造成的滚动（拖动、惯性、读屏滚动、键盘 / 焦点移动）或项数没变而位置变了（同卡片内
+ * 小幅滚动）→ 立即放弃并按当前位置记录，之后不再定位。
+ * 目标在已加载内容末尾、被列表底部截住（F-X-20：顶不上去）：还能翻页就先翻页、等新的一页到了再对齐（恢复任务保留）；正在翻页时等它结束（不重复发请求）；
+ * 翻页失败、到底或翻不动时停在已能到的最近位置结束，不挂死。完成时按实际布局记锚点（不记假设的落点）。
+ */
+@Suppress("LongParameterList", "ReturnCount", "CyclomaticComplexMethod") // 接管 / 确认 / 截住翻页 / 结束逐步判定
+private suspend fun alignRestoreTarget(
+    model: OrderListViewModel,
+    actions: OrderListActions,
+    state: OrderListSnapshot,
+    listState: LazyListState,
+    index: Int,
+    valid: () -> Boolean,
+    giveUp: () -> Unit,
+    guard: RestoreGuard,
+    onMoved: (Pair<Int, Int>) -> Unit,
+) {
+    val landing = RestoreLanding(index, 0)
+    // 接管由持续的监视（[RestoreGuard]，触摸 / 滚动 / 位置变化）判定并清掉恢复任务；这里每帧复核任务仍有效
+    val step =
+        awaitLanding(landing, { RestoreLanding.layoutOf(listState) }, valid) {
+            guard.own(listState) { listState.scrollToItem(index) }
+            onMoved(listState.position())
+        }
+    // 接管 / 失效（step 为 null）：结束原因已由接管处记下，这里什么都不做
+    step ?: return
+    model.restoreEnd =
+        if (step == RestoreLanding.Step.CONFIRMED) OrderListViewModel.RESTORE_LANDED else OrderListViewModel.RESTORE_NOT_CONFIRMED
+    if (step != RestoreLanding.Step.CONFIRMED) return giveUp()
+    val clamped = listState.firstVisibleItemIndex != index && !listState.canScrollForward
+    if (clamped && state.loadMoreError == null && !state.endReached) {
+        // 目标之后不够一屏：先翻页再对齐（翻页中就等它结束，状态变化会再进来）
+        model.restoreEnd = OrderListViewModel.RESTORE_PAGING
+        if (state.loadingMore || actions.onLoadMore()) return
+    }
+    model.restoreDone()
+    // 对齐完成才更新持久化锚点（恢复期间的滚动记录被冻结）：按真实布局记落点
+    actions.onScrolled(anchorOf(listState, model))
+}
+
+/**
+ * 一次性恢复的接管判定状态（第 1 轮修复 R1-06）：本任务自己挪动列表期间（[own]）不判接管，挪完按实际位置记基准；触摸按下（[touched]）交给 [onTouch]。
+ */
+internal class RestoreGuard {
+    var moving: Boolean = false
+        private set
+    var expected: Pair<Int, Int>? = null
+        private set
+    var expectedCount: Int = -1
+        private set
+    var onTouch: () -> Unit = {}
+
+    fun touched() = onTouch()
+
+    fun rebase(
+        position: Pair<Int, Int>,
+        count: Int,
+    ) {
+        expected = position
+        expectedCount = count
+    }
+
+    suspend fun own(
+        listState: LazyListState,
+        move: suspend () -> Unit,
+    ) {
+        moving = true
+        try {
+            move()
+        } finally {
+            moving = false
+            rebase(listState.position(), listState.layoutInfo.totalItemsCount)
+        }
     }
 }
 

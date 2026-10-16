@@ -438,7 +438,9 @@ class DeleteAccountController(
     ) {
         if (deps.env.sessionEpoch() != epoch || deps.env.account() != account) return
         outcome ?: return
-        outcome.disableMs?.let(deps.shared.deletionGate::start)
+        // APP-13a 共性 49（FU-AND-0717）：42901 写闸门前复核完整固定身份（含作用域）；同账号同世代作用域刷新后迟到的旧请求不写新作用域的闸门，
+        // 成功等网络结算照常
+        if (ownsWrite()) outcome.disableMs?.let(deps.shared.deletionGate::start)
         if (result is ApiResult.Success && outcome.nextStateRaw == DeletionOutcome.COOLING) {
             deps.stepUp.tokens.onSuccess(AccountRaw.ACCOUNT_DELETION)
             deps.env.deletionChanged()
@@ -789,7 +791,8 @@ class DeleteAccountController(
             val input = AccountResult.of(result)
             val outcome = input?.let { DeletionCancelPolicy.of(it, source) }
             if (deps.env.sessionEpoch() == epoch && deps.env.account() == account) {
-                outcome?.disableMs?.let(deps.shared.cancelGate::start)
+                // 共性 49：限流写入前复核完整固定身份（含作用域）
+                if (ownsWrite()) outcome?.disableMs?.let(deps.shared.cancelGate::start)
                 if (result is ApiResult.Success) deps.env.deletionChanged()
             }
             if (!alive()) return@launch

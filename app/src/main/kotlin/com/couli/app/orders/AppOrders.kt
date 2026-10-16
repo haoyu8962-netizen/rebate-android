@@ -94,6 +94,16 @@ class AppOrders(
      * 负责落盘的清理，只清已创建页面的内存状态。没给时恢复记录不保存。
      */
     val restoreStore: OrderRestoreStore? = null,
+    /**
+     * 一份固定的身份快照（F-X-17 / F-X-19 补充二，FU-AND-0717；AppModule 接 ApiClient.sessionIdentity）：页面、请求的归属与会话对账只用它。
+     * 缺省（旧单测）按 [sessionEpoch] 与 [account] 拼出、已知、没有分区世代。
+     */
+    private val identity: () -> com.couli.core.network.SessionIdentity = {
+        // 先取登录世代、再读账号（与 ApiClient.sessionIdentity 的「读取前世代」同一顺序）
+        val epoch = sessionEpoch()
+        com.couli.core.network
+            .SessionIdentity(known = true, account = account(), loginEpoch = epoch, partition = null)
+    },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -115,6 +125,9 @@ class AppOrders(
     /** 回退栈条目 id → 详情页的会话换代入口（清掉已显示的详情并按新会话重取）。 */
     private val detailSessions = mutableMapOf<String, () -> Unit>()
 
+    /** 回退栈条目 id → 详情页的统一恢复入口（FU-AND-0717 第 3 轮：每次身份已知的检查都交那一份快照；登记了它的不再调 [detailSessions]）。 */
+    private val detailIdentities = mutableMapOf<String, (com.couli.core.network.SessionIdentity, Boolean) -> Unit>()
+
     /** 订单请求的 42901 禁用期（会话级共享一份；会话换代时重置）。 */
     val rateGate = OrderRateGate(scope, clock)
 
@@ -124,7 +137,21 @@ class AppOrders(
     /** 回退栈条目 id → 发起购买的页面的待跟单卡（外跳回前台后拉一次）。 */
     private val pages = mutableMapOf<String, PendingPage>()
 
-    private var lastEpoch: Long = sessionEpoch()
+    /** 会话变化对账（F-X-17 补充、F-X-19 及补充二、三）：一份快照、先完成待清理、未知只延后、已知按固定标签对账，对账没完成登记重试。 */
+    private val reconciler =
+        com.couli.app.SessionCacheReconciler(
+            identity = { identity() },
+            initialEpoch = sessionEpoch(),
+            // 订单缓存与订单页恢复记录都在这里对账（第 1 轮修复 R1-05：恢复记录不依赖页面创建或读取）
+            completePendingClear = { (cache?.completePendingClear() ?: true) and (restoreStore?.completePendingClear() ?: true) },
+            reconcile = { id ->
+                (cache?.reconcileOwner(id.account, id.partition) ?: true) and
+                    (restoreStore?.reconcileOwner(id.account, id.partition) ?: true)
+            },
+        )
+
+    /** 测试观察：对账没完成、等重试。 */
+    internal val reconcilePending: Boolean get() = reconciler.reconcilePending
 
     val env: OrderEnv =
         object : OrderEnv {
@@ -133,6 +160,8 @@ class AppOrders(
             override fun sessionEpoch(): Long = this@AppOrders.sessionEpoch()
 
             override fun account(): String? = this@AppOrders.account()
+
+            override fun identity(): com.couli.core.network.SessionIdentity = this@AppOrders.identity()
 
             override fun helpLinks(): JsonObject? =
                 store
@@ -247,6 +276,7 @@ class AppOrders(
             restoreGate = ::awaitUpdateCheck,
             rateGate = rateGate,
             bindSession = { handler -> if (entryId != null) detailSessions[entryId] = handler },
+            bindIdentity = { handler -> if (entryId != null) detailIdentities[entryId] = handler },
             askAi = agent?.askEntry(askSources, entryId, { entryId in leaves }, JsonObject(mapOf(ORDER_ID to JsonPrimitive(orderId)))),
             // 入口开关运行中变化随之更新（R1-04、G56）
             askAiVisible = agent?.askVisibleState,
@@ -277,6 +307,7 @@ class AppOrders(
         leaves.keys.filter { it !in ids }.forEach { id -> leaves.remove(id)?.invoke() }
         askSources.keys.retainAll(ids)
         detailSessions.keys.retainAll(ids)
+        detailIdentities.keys.retainAll(ids)
         pages.keys.filter { it !in ids }.forEach { id -> pages.remove(id)?.release() }
     }
 
@@ -285,16 +316,29 @@ class AppOrders(
      * 列表与各页的待跟单卡作废在途请求、清掉旧账号的结果后按新会话重取（不把旧账号的结果或缓存显示给新账号）。
      */
     fun onSessionChanged() {
-        val epoch = sessionEpoch()
-        if (epoch == lastEpoch) return
-        lastEpoch = epoch
-        cache?.reconcileOwner(account())
+        // F-X-19 补充二 / 三：判据、对账与页面替换只用这一次检查里的那份身份快照（FU-AND-0717 第 3 轮：下发给每个页面的也是它，页面不另读）
+        val decision = reconciler.check()
+        val known = reconciler.snapshot?.takeIf { it.known && decision != com.couli.app.SessionCacheReconciler.Decision.UNKNOWN } ?: return
+        if (decision != com.couli.app.SessionCacheReconciler.Decision.CHANGED) {
+            // 判据相同（含冷启动的未知 → 已知、分区第一次确认）：提前返回前，每个页面按这份已确认快照走统一的恢复入口——未知期建的页接管并补取、
+            // 加载因身份中止的补取（否则恢复后一直停在加载 / 错误态，R2-02 / R2-03）
+            list?.onIdentityConfirmed(known)
+            detailIdentities.values.toList().forEach { it(known, false) }
+            return
+        }
         // 旧会话的禁用期不带给新会话（先重置，后面的重取才发得出去）
         rateGate.reset()
         closedAttempts.clear()
-        list?.onSessionChanged()
-        // 栈里的详情页（含被别的页盖住的）：同步清掉旧账号的详情快照、按新会话重取（不能返回后仍看到旧账号的订单号和金额）
-        detailSessions.values.toList().forEach { it() }
+        // 第 1 轮修复 R1-03：把本次检查已确认的身份快照交给列表（控制器按账号 + 持久化世代比较，计数不变的同账号换代也重新绑定）
+        list?.onSessionChanged(known)
+        // 栈里的详情页（含被别的页盖住的）：同步清掉旧账号的详情快照、按新会话重取（不能返回后仍看到旧账号的订单号和金额）；按这份快照重新绑定
+        val identified = detailIdentities.toMap()
+        identified.values.forEach { it(known, true) }
+        detailSessions
+            .filterKeys { it !in identified }
+            .values
+            .toList()
+            .forEach { it() }
         // 发起页的待跟单卡：清掉旧账号的卡、作废在途请求与旧会话里的外跳记录（旧会话点的购买，回来不替新会话拉卡）
         pages.values.forEach { it.reset() }
     }
@@ -321,7 +365,8 @@ class AppOrders(
             // 冷启动：缓存的归属与当前会话不一致（上次退出后没清掉、换了账号）就全部删掉，不读回旧数据。放在依赖注入之后的下一条主线程消息
             // 里读会话（读会话要经网络核心，不在对象构造期间做）
             yield()
-            cache?.reconcileOwner(account())
+            // F-X-19：冷启动的首次对账与之后的会话变化同一个入口——身份暂时未知只延后（不以 null 账号清缓存）、待清理照常、已知按固定标签对账
+            onSessionChanged()
             routing.session.drop(1).collect { onSessionChanged() }
         }
     }

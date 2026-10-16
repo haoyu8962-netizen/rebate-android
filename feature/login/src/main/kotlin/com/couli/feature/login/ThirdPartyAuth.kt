@@ -56,6 +56,12 @@ interface ThirdPartyAuthAdapter {
     fun installed(): Boolean?
 
     suspend fun authorize(nonce: String): ThirdPartyAuthResult
+
+    /**
+     * Debug / Staging 专用入口此刻不可用时给的提示原文（F-X-12，FU-AND-0717，三端统一口径）：非空 → 登录页照常显示按钮，点击只提示这段文字、不发任何请求
+     * （不取授权尝试、不拉起授权、不要求勾选协议）。只有 Debug / Staging 源码集里的假适配器实现；Release 与正式适配器恒为 null（不显示 / 按开关）。
+     */
+    fun debugHint(): String? = null
 }
 
 /**

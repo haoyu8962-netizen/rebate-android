@@ -3,7 +3,9 @@ package com.couli.feature.wallet
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
 import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.EarningsEntry
 import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.WalletError
@@ -61,7 +63,18 @@ class WalletController(
      * 本页的固定身份（APP-09 共性第 65 条）：构造时一次性取得，只在会话换代通知里随清空一起重建；摘要请求、缓存的读写都只用它，当前会话只用于和它
      * 比较——令牌已在 IO 线程换成别的账号、清空通知还没执行时，不以新账号的身份读取，也不把摘要写进 / 读出别的账号的缓存。
      */
-    private var pageOwner = FormOwner.of(deps.env)
+    private var pageIdentity = deps.env.identitySnapshot()
+    private var pageOwner = FormOwner.of(pageIdentity)
+
+    /** 与 [pageOwner] 同一份快照里的持久化登录世代（缓存分区，F-X-17，FU-AND-0717）：读写缓存只按它，不在写入时读当前世代。 */
+    private val pagePartition: String? get() = pageIdentity.partition
+
+    /**
+     * 最近一次加载因身份中止（未知期建的页、本进程登录世代已变而新身份还没确认；FU-AND-0717 第 3 轮）：停在可重试的错误态，身份确认（App 下发 /
+     * 【重试】的一份快照）后补取。
+     */
+    var identityAborted: Boolean = false
+        private set
 
     /** 当前显示的摘要属于哪个会话世代（按钮执行前核对）。 */
     private var shownEpoch = Long.MIN_VALUE
@@ -83,7 +96,9 @@ class WalletController(
             deps.walletDirty.dirty.collect { (account, epoch) ->
                 // 与本页固定身份比较（共性第 65 条），并核对它仍是当前会话
                 val owner = pageOwner
-                if (!left && epoch == owner.epoch && account == owner.account && owner.current(deps.env)) invalidate()
+                // F-X-22（窄修三核对）：本会话的提现成功通知在身份暂时读不出时也收（同一登录世代、快照没有确认换代），不因一次读取失败漏刷新余额
+                val same = deps.env.sessionEpoch() == owner.epoch && owner.verdict(deps.env.identitySnapshot()) != IdentityVerdict.CHANGED
+                if (!left && epoch == owner.epoch && account == owner.account && owner.account != null && same) invalidate()
             }
         }
     }
@@ -108,6 +123,7 @@ class WalletController(
             identityFailed()
             return
         }
+        identityAborted = false
         if (deps.gates.read.active) {
             gated()
             return
@@ -126,7 +142,12 @@ class WalletController(
             // 网络层按 expectedAccount 在读取凭据前核对账号仍是本页身份（共性第 65 条）
             val result = deps.api.send(ApiCall(OPERATION, ownership = owner, expectedAccount = page.account))
             owners -= owner
-            if (left || seq != request || deps.env.sessionEpoch() != epoch || pageOwner != page) return@launch
+            if (left || seq != request || pageOwner != page) return@launch
+            // 仍是当前请求而本进程登录世代已变（换代还没确认，FU-AND-0717 第 3 轮）：不停在加载中，进可重试的错误态（旧摘要不显示）
+            if (deps.env.sessionEpoch() != epoch) {
+                identityFailed()
+                return@launch
+            }
             onResult(result, epoch, probe)
         }
     }
@@ -140,7 +161,7 @@ class WalletController(
         val summary = (result as? ApiResult.Success)?.let { WalletJson.summary(it.data) }
         if (summary != null) {
             // 按本页固定身份写缓存（共性第 65 条），不按响应到达时读到的账号
-            deps.cache?.write(pageOwner.account, summary, deps.clock())
+            deps.cache?.write(pageOwner.account, summary, deps.clock(), pagePartition)
             lastSuccessAt = deps.clock()
             shownEpoch = epoch
             update { WalletSnapshot(WalletSnapshot.CONTENT, summary, version = it.version + 1) }
@@ -166,7 +187,7 @@ class WalletController(
         val shown = s.summary?.takeIf { shownEpoch == epoch }
         val transport = error.kind == WalletError.TRANSPORT
         // 只有传输层失败才用缓存（G22）；5xxxx 不用缓存、不伪装成余额为 0
-        val cached = if (transport && shown == null) deps.cache?.read(pageOwner.account) else null
+        val cached = if (transport && shown == null) deps.cache?.read(pageOwner.account, pagePartition) else null
         when {
             transport && shown != null -> {
                 // 断网保留旧摘要一律进 stale（共性第 32 条）：更新时间取内存里最近一次成功（或之前已显示的缓存时间），【提现】置灰
@@ -208,24 +229,59 @@ class WalletController(
 
     /** 身份没建立：显示错误态与【重试】（不发请求）。 */
     private fun identityFailed() {
+        identityAborted = true
+        shownEpoch = Long.MIN_VALUE
         val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
         update { WalletSnapshot(WalletSnapshot.ERROR, error = Notice(error.textKey, ++ids, null, false), version = it.version + 1) }
     }
 
-    /** 【重试】、回到本页时身份仍没建立：先清空（作废在途、清掉已显示的状态），再重新一次性取得页面身份（共性第 65 条：只在重建时取）。 */
-    private fun rebuildIdentity() {
-        seq += 1
-        cancelAll()
-        shownEpoch = Long.MIN_VALUE
-        lastSuccessAt = null
-        update { WalletSnapshot(version = it.version + 1) }
-        pageOwner = FormOwner.of(deps.env)
+    /** 本页固定身份与一份快照的比较（[SessionIdentity.verdictFor]，含持久化世代；FU-AND-0717 第 3 轮唯一的判定）。只比较，不赋值。 */
+    fun verdict(identity: SessionIdentity): IdentityVerdict = identity.verdictFor(pageIdentity)
+
+    /**
+     * 统一的页面恢复入口（F-X-19 补充三 ②；FU-AND-0717 第 3 轮）：[identity] 是 App 这次检查的那份快照（或【重试】取的一份），不另读。[changed] 或已确认换代
+     * 按它清空重取（同 [onSessionChanged]）；第一次确认（未知期建的页、分区第一次确认）按它接管页面身份，加载曾因身份中止的补取；同一身份而加载曾中止的
+     * 补取；未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        val verdict = if (changed) IdentityVerdict.CHANGED else verdict(identity)
+        when (verdict) {
+            IdentityVerdict.CHANGED -> {
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                pageIdentity = identity
+                pageOwner = FormOwner.of(identity)
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.SAME -> {
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
+        }
     }
 
     /** 下拉刷新、【重试】与回到本页（禁用期内不发，但按限流结算显示）。 */
     fun refresh(): Boolean {
         if (left) return false
-        if (identityMissing()) rebuildIdentity()
+        // 加载因身份中止：先取一份快照走统一的恢复入口（第一次确认接管、换代按它重建；仍未知停在可重试的错误态）
+        if (identityAborted) {
+            onIdentity(deps.env.identitySnapshot())
+            if (identityAborted) {
+                identityFailed()
+                return false
+            }
+            if (!deps.gates.read.active) return true
+        }
         if (deps.gates.read.active) {
             if (deps.env.loggedIn()) gated()
             return false
@@ -274,10 +330,14 @@ class WalletController(
         s.summary?.takeIf { !left && s.version == version && shownEpoch == deps.env.sessionEpoch() }
 
     /** 会话换代：作废在途请求，同步清掉已显示的摘要（版本加 1，旧按钮回调失效），再按新会话重取。 */
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建页面身份（App 下发的就是它这次检查用的那份，FU-AND-0717 第 3 轮：不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         // 新页面状态（已清空）的固定身份在此一次性取得（共性第 65 条）
-        pageOwner = FormOwner.of(deps.env)
+        pageIdentity = identity
+        pageOwner = FormOwner.of(identity)
         shownEpoch = Long.MIN_VALUE
         seq += 1
         cancelAll()

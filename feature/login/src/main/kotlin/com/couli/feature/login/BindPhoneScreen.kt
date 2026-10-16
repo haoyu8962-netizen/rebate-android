@@ -663,12 +663,12 @@ class BindPhoneViewModel(
                 val outcome = service.bind(current.phone, current.code, b.owner)
                 if (!live(b)) return@settling
                 mutableState.update { it.copy(submitting = false) }
-                onBound(outcome, b, permit, revision, current.code)
+                onBound(outcome, b, permit, revision, current.code, current.phone)
             }
         }
     }
 
-    @Suppress("CyclomaticComplexMethod")
+    @Suppress("CyclomaticComplexMethod", "LongParameterList") // 结局逐项落地；发起时捕获的许可、修订号与输入逐项交回
     private fun onBound(
         outcome: BindOutcome,
         b: BindPhoneBinding,
@@ -676,7 +676,16 @@ class BindPhoneViewModel(
         revision: Long = codeRevision,
         /** 发起时输入框里的码；与 [BindOutcome.sentCode] 不一致（held 重发了原提交的码）时验证码反馈不落到输入框（共性第 35 条）。 */
         typed: String? = null,
+        /** 发起时输入框里的号码（F-X-15）：与 [BindOutcome.sentPhone] 规范化后不一致（held 重发了原提交的号码）时号码 / 验证码类反馈不落地。 */
+        typedPhone: String? = null,
     ) {
+        // F-X-15（FU-AND-0717）：held 重发原请求体时，号码 / 验证码类反馈按实际发出的号码归属；改了号码的不落到当前表单（输入保留、共享结算照常），
+        // 并号凭据一并作废。非字段结局（5xxxx、42901 等）照常提示（APP-05b 共性 36）
+        val foreign = typedPhone != null && outcome.sentPhone != null && outcome.sentPhone != PhoneNumber.normalize(typedPhone).normalized
+        if (foreign && fieldClass(outcome)) {
+            if (outcome.actionRaw == BindPhoneAction.MERGE_CONFIRM) service.decideMerge(MergeDecision.CANCEL)
+            return
+        }
         when (outcome.actionRaw) {
             // R1-05：绑定成功的出栈与恢复待办只在原页面许可仍有效时做
             BindPhoneAction.DONE -> {
@@ -741,6 +750,19 @@ class BindPhoneViewModel(
                 }
             }
         }
+    }
+
+    /** 号码 / 验证码类反馈（F-X-15）：字段错误、本地号码无效、并号（30411）、风控弹窗（44001）、其余 3xxxx。 */
+    @Suppress("ReturnCount") // 逐类提前返回
+    private fun fieldClass(outcome: BindOutcome): Boolean {
+        if (outcome.field != null || outcome.actionRaw == BindOutcome.PHONE_INVALID ||
+            outcome.actionRaw == BindPhoneAction.MERGE_CONFIRM
+        ) {
+            return true
+        }
+        if (outcome.textKey == RISK_KEY) return true
+        val code = outcome.textKey?.removePrefix("error.")?.toIntOrNull() ?: return false
+        return code / CODE_CLASS == BUSINESS_CLASS
     }
 
     /** 并号确认框【并入】：锁定契约没有并号接口——不发请求、不并号，给明确的「暂不可用」（TODO(N-29) MERGE-SUCCESS）。 */
@@ -836,6 +858,8 @@ class BindPhoneViewModel(
         const val TICK_MILLIS = 1000L
         const val DEFAULT_LIMIT_MILLIS = 5_000L
         const val RISK_KEY = "error.44001"
+        const val CODE_CLASS = 10_000
+        const val BUSINESS_CLASS = 3
     }
 }
 

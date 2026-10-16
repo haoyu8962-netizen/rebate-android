@@ -244,6 +244,12 @@ class SmsDeadlines : com.couli.core.wallet.stepup.SmsDeadlines() {
 class PageHooks(
     val bindLeave: (leave: () -> Unit) -> Unit = {},
     val bindSession: (onSessionChanged: () -> Unit) -> Unit = {},
+    /**
+     * 统一的页面恢复入口（F-X-19 补充三 ②；FU-AND-0717 第 3 轮整体重理，R2-04）：App 每次身份已知的检查都把那一份快照交来（[changed] 为 App 判定会话换代）。
+     * 页面按 [com.couli.core.network.SessionIdentity.verdictFor] 判定——换代按它清空重建、未知期建的页第一次确认接管归属并补取只读数据（保留有效输入与
+     * 禁用期、不重放提交）、加载因身份中止的补取。登记了它的页面由 App 只经它通知（不再调 [bindSession] 的入口）。
+     */
+    val bindIdentity: (onIdentity: (identity: com.couli.core.network.SessionIdentity, changed: Boolean) -> Unit) -> Unit = {},
     /** 自动恢复页面（进程被回收后重开）先等本轮版本检查结果。 */
     val restoreGate: (suspend () -> Unit)? = null,
 )

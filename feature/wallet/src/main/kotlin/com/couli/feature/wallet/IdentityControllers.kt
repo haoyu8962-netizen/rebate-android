@@ -4,6 +4,9 @@
 package com.couli.feature.wallet
 
 import com.couli.core.network.ApiResult
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.RealNameForm
 import com.couli.core.wallet.SensitiveOutcome
 import com.couli.core.wallet.WalletError
@@ -118,7 +121,8 @@ class RealNameController(
         mutable.value = s.copy(consentOpen = false, submitting = true, error = null)
         deps.env.sensitiveOverlay(false)
         scope.launch {
-            if (deps.env.sessionEpoch() != sendEpoch || deps.env.account() != account) {
+            // 一份快照核对（FU-AND-0717 第 3 轮）：会话已换或身份暂时确认不了都不发
+            if (!deps.env.ownedBy(account, sendEpoch)) {
                 if (!left) mutable.value = s.copy(submitting = false)
                 return@launch
             }
@@ -179,11 +183,30 @@ class RealNameController(
     }
 
     /** 会话换代：同步清空已填的姓名与身份证号。 */
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建表单身份（FU-AND-0717 第 3 轮：App 下发的那份，不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         deferredBack = false
         if (s.consentOpen) deps.env.sensitiveOverlay(false)
-        mutable.value = RealNameSnapshot(owner = FormOwner.of(deps.env))
+        mutable.value = RealNameSnapshot(owner = FormOwner.of(identity))
+    }
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮）：[changed] 或已确认换代按这份快照清空重建；未知期取得的表单第一次确认按它接管表单身份——已填的姓名、
+     * 身份证号、当日锁定与禁用期都保留，不重放提交；同一身份、未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        when (if (changed) IdentityVerdict.CHANGED else s.owner.verdict(identity)) {
+            IdentityVerdict.CHANGED -> onSessionChanged(identity)
+            IdentityVerdict.ADOPT -> mutable.value = s.copy(owner = FormOwner.of(identity))
+            else -> Unit
+        }
     }
 
     fun leave() {
@@ -232,6 +255,7 @@ data class LaborSnapshot(
  * 【同意并签署】可用；签署成功后出栈回 Withdraw（不重放、由用户再点【提交】）。接口契约没有（G02）：只由 Debug 假服务实现（[LaborBackend]）；
  * Release 全文区显示「协议正文暂未提供」，【同意并签署】置灰，不发请求。sha256 取服务端返回的值原样回传。只在主线程使用。
  */
+@Suppress("TooManyFunctions") // 页面每个入口一个函数（含统一的身份恢复入口）
 class LaborAgreementController(
     private val deps: WalletDeps,
     private val scope: CoroutineScope,
@@ -265,39 +289,96 @@ class LaborAgreementController(
 
     val signEnabled: Boolean get() = s.phase == LaborSnapshot.CONTENT && s.checked && !s.signing && !deps.gates.labor.active
 
-    @Suppress("ReturnCount") // 没有后端、已离页、当前会话已不是本页身份三个出口
+    /**
+     * 读取（进入、【重试】、会话换代后）。FU-AND-0717 第 3 轮：先取**一份**快照与本页固定身份比较——已确认换代不读（交给清空通知按新身份重读）；未知期
+     * 取得的身份第一次确认按它接管；本页身份没建立（仍未知）：不读，进可重试的错误态（不再停在没有出口的加载中）；只是这次读不出（未知）而本页身份已知：照常
+     * 按本页身份读。结果到达后只比较本进程登录世代与序号（账号变化在本进程一定伴随登录世代变化），不再另读账号。
+     */
+    @Suppress("ReturnCount") // 没有后端、已离页、身份三个出口
     fun load() {
         val backend = deps.labor ?: return
         if (left) return
+        val now = deps.env.identitySnapshot()
+        when (pageOwner.verdict(now)) {
+            // 已确认换代（令牌已换、清空通知还没执行）：不读，内容不绑到别的账号；清空通知到达后按新身份重读
+            IdentityVerdict.CHANGED -> return
+
+            IdentityVerdict.ADOPT -> pageOwner = FormOwner.of(now)
+
+            else -> Unit
+        }
         val loadOwner = pageOwner
         val sendEpoch = loadOwner.epoch
-        // 当前会话已不是本页身份（令牌已换、清空通知还没执行）：不读，内容不绑到别的账号；清空通知到达后按新身份重读
-        if (deps.env.sessionEpoch() != sendEpoch || deps.env.account() != loadOwner.account) return
+        if (loadOwner.account == null) return identityHeld(loadOwner)
         // 读取请求序号（APP-09 共性第 19 条同类）：重试、会话换代各发一次时，只收最新一次
         val request = ++loadSeq
         mutable.value = s.copy(phase = LaborSnapshot.LOADING, error = null)
         scope.launch {
             val result = backend.current()
-            val moved = deps.env.sessionEpoch() != sendEpoch || deps.env.account() != loadOwner.account
-            if (left || moved || loadSeq != request) return@launch
-            val data = (result as? ApiResult.Success)?.data as? JsonObject
-            val version = data.text("version")
-            val text = data.text("text")
-            val sha = data.text("text_sha256")
-            mutable.value =
-                if (version != null && text != null && sha != null) {
-                    LaborSnapshot(LaborSnapshot.CONTENT, version, text, sha, owner = loadOwner)
-                } else {
-                    // 读取错误统一处理（共性第 3 条）：42901 更新共享截止时间、10405 进强更、5xxxx 带 trace6
-                    val error = WalletErrors.of(result)
-                    if (error.kind == WalletError.RETRY_AFTER) deps.gates.read.start(error.disableMillis)
-                    if (error.kind == WalletError.FORCE_UPDATE) deps.env.forceUpdate()
-                    LaborSnapshot(
-                        LaborSnapshot.ERROR,
-                        error = Notice(error.textKey, ++serial, error.traceId, error.showTrace6),
-                        owner = loadOwner,
-                    )
-                }
+            if (left || loadSeq != request) return@launch
+            // 仍是最新一次而本进程登录世代已变（换代还没确认）：不停在加载中
+            if (deps.env.sessionEpoch() != sendEpoch) return@launch identityHeld(loadOwner)
+            onLoaded(result, loadOwner)
+        }
+    }
+
+    /** 协议读取的结果（已核对序号与本进程登录世代）：内容绑定读取时的身份 [loadOwner]。 */
+    private fun onLoaded(
+        result: ApiResult,
+        loadOwner: FormOwner,
+    ) {
+        val data = (result as? ApiResult.Success)?.data as? JsonObject
+        val version = data.text("version")
+        val text = data.text("text")
+        val sha = data.text("text_sha256")
+        mutable.value =
+            if (version != null && text != null && sha != null) {
+                LaborSnapshot(LaborSnapshot.CONTENT, version, text, sha, owner = loadOwner)
+            } else {
+                // 读取错误统一处理（共性第 3 条）：42901 更新共享截止时间、10405 进强更、5xxxx 带 trace6
+                val error = WalletErrors.of(result)
+                if (error.kind == WalletError.RETRY_AFTER) deps.gates.read.start(error.disableMillis)
+                if (error.kind == WalletError.FORCE_UPDATE) deps.env.forceUpdate()
+                LaborSnapshot(
+                    LaborSnapshot.ERROR,
+                    error = Notice(error.textKey, ++serial, error.traceId, error.showTrace6),
+                    owner = loadOwner,
+                )
+            }
+    }
+
+    /** 身份暂时确认不了：可重试的错误态（不发布协议内容）。 */
+    private fun identityHeld(owner: FormOwner) {
+        val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
+        mutable.value = LaborSnapshot(LaborSnapshot.ERROR, error = Notice(error.textKey, ++serial, null, false), owner = owner)
+    }
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮）：[changed] 或已确认换代按这份快照清空重读；未知期取得的身份第一次确认按它接管，读取曾中止（错误态）的补读；
+     * 同一身份而读取曾中止的补读；未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        when (if (changed) IdentityVerdict.CHANGED else pageOwner.verdict(identity)) {
+            IdentityVerdict.CHANGED -> {
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                pageOwner = FormOwner.of(identity)
+                if (s.phase == LaborSnapshot.ERROR) load()
+            }
+
+            IdentityVerdict.SAME -> {
+                if (s.phase == LaborSnapshot.ERROR && s.owner == pageOwner) load()
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
         }
     }
 
@@ -320,7 +401,8 @@ class LaborAgreementController(
         val sendEpoch = owner.epoch
         mutable.value = s.copy(signing = true, error = null)
         scope.launch {
-            if (deps.env.sessionEpoch() != sendEpoch || deps.env.account() != account) {
+            // 一份快照核对（FU-AND-0717 第 3 轮）：会话已换或身份暂时确认不了都不发
+            if (!deps.env.ownedBy(account, sendEpoch)) {
                 if (!left) mutable.value = s.copy(signing = false)
                 return@launch
             }
@@ -356,10 +438,13 @@ class LaborAgreementController(
         onBack()
     }
 
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建页面身份（FU-AND-0717 第 3 轮：App 下发的那份，不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         deferredBack = false
-        pageOwner = FormOwner.of(deps.env)
+        pageOwner = FormOwner.of(identity)
         mutable.value = LaborSnapshot(phase = if (deps.labor == null) LaborSnapshot.UNAVAILABLE else LaborSnapshot.LOADING)
         load()
     }

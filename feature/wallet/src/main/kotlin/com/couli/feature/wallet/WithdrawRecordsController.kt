@@ -3,6 +3,9 @@ package com.couli.feature.wallet
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.IdentityVerdict
+import com.couli.core.network.LocalRejectReason
+import com.couli.core.network.SessionIdentity
 import com.couli.core.network.percentEncode
 import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.TradeNoRow
@@ -92,10 +95,71 @@ class WithdrawRecordsController(
 
     val alive: Boolean get() = !left
 
+    /**
+     * 最近一次读取因身份中止（未知期建的页、本进程登录世代已变而新身份还没确认；FU-AND-0717 第 3 轮，鸿蒙 F-HM-39 同类）：停在可重试的错误态，身份确认
+     * （App 下发 / 【重试】的一份快照）后接管页面身份并补取。
+     */
+    var identityAborted: Boolean = false
+        private set
+
+    /** 页面身份没建立（未知期取得）：这时不读取（不以 expectedAccount = null 发）。 */
+    private fun identityPending(): Boolean = pageOwner.account == null
+
+    private fun identityHeld() {
+        identityAborted = true
+        firstPagePending = false
+        val error = WalletErrors.of(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE))
+        val message = Notice(error.textKey, ++serial, null, false)
+        update {
+            if (it.items.isEmpty()) {
+                it.copy(
+                    phase = RecordsSnapshot.ERROR,
+                    error = message,
+                )
+            } else {
+                it.copy(error = message, refreshing = false)
+            }
+        }
+    }
+
+    /**
+     * 统一的页面恢复入口（FU-AND-0717 第 3 轮）：[identity] 是 App 这次检查的那份快照（或【重试】取的一份），不另读。[changed] 或已确认换代按它清空重取；
+     * 未知期取得的身份第一次确认按它接管，读取曾中止的补取；同一身份而读取曾中止的补取；未知不动。
+     */
+    fun onIdentity(
+        identity: SessionIdentity,
+        changed: Boolean = false,
+    ) {
+        if (left) return
+        when (if (changed) IdentityVerdict.CHANGED else pageOwner.verdict(identity)) {
+            IdentityVerdict.CHANGED -> {
+                onSessionChanged(identity)
+            }
+
+            IdentityVerdict.ADOPT -> {
+                pageOwner = FormOwner.of(identity)
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.SAME -> {
+                if (identityAborted) load()
+            }
+
+            IdentityVerdict.UNKNOWN -> {
+                Unit
+            }
+        }
+    }
+
     /** 新一轮（进入、下拉、回到本页）：第一页 + 带 withdrawal_id 时的那张单。 */
     @Suppress("CyclomaticComplexMethod") // 列表、定位读取的每单序号与归属逐项
     fun load(refresh: Boolean = false) {
         if (left || !deps.env.loggedIn()) return
+        if (identityPending()) {
+            identityHeld()
+            return
+        }
+        identityAborted = false
         if (deps.gates.read.active) {
             gated()
             return
@@ -137,7 +201,9 @@ class WithdrawRecordsController(
                     FocusRead(id, request, deps.api.send(call).also { settleShared(it, epoch) })
                 }
             owners -= owner
-            if (left || round != current || deps.env.sessionEpoch() != epoch) return@launch
+            if (left || round != current) return@launch
+            // 仍是本轮而本进程登录世代已变（换代还没确认，FU-AND-0717 第 3 轮）：结束「刷新在途」（否则之后的刷新永远不受理），进可重试的错误态
+            if (deps.env.sessionEpoch() != epoch) return@launch identityHeld()
             firstPagePending = false
             onFirstPage(list, focus, epoch, probe)
         }
@@ -284,7 +350,9 @@ class WithdrawRecordsController(
                 )
             owners -= owner
             settleShared(result, epoch)
-            if (left || round != current || deps.env.sessionEpoch() != epoch) return@launch
+            if (left || round != current) return@launch
+            // 仍是本轮而本进程登录世代已变（换代还没确认）：结束翻页的加载中（FU-AND-0717 第 3 轮：不停在没有出口的加载）
+            if (deps.env.sessionEpoch() != epoch) return@launch update { it.copy(loadingMore = false) }
             val data = (result as? ApiResult.Success)?.let { WalletJson.withdrawalList(it.data) }
             if (data == null) {
                 val error = WalletErrors.of(result)
@@ -316,6 +384,12 @@ class WithdrawRecordsController(
     /** 下拉、【重试】与回到本页（OnReturn）。共享限流中也按限流结算（APP-09 共性第 55 条，Android R3-04）：保留列表、显示 42901 与受限的【重试】。 */
     fun refresh(): Boolean {
         if (left || firstPagePending) return false
+        if (identityAborted || identityPending()) {
+            // 读取因身份中止：取一份快照走统一的恢复入口（第一次确认接管并补取；仍未知停在可重试的错误态）
+            onIdentity(deps.env.identitySnapshot())
+            if (identityPending()) identityHeld()
+            return !identityAborted
+        }
         if (deps.gates.read.active) {
             if (deps.env.loggedIn()) gated()
             return false
@@ -429,10 +503,13 @@ class WithdrawRecordsController(
 
     private fun valid(version: Long): Boolean = !left && s.version == version && shownEpoch == deps.env.sessionEpoch()
 
-    fun onSessionChanged() {
+    fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
+
+    /** 会话换代，按调用方那一份快照 [identity] 重建页面身份（FU-AND-0717 第 3 轮：App 下发的那份，不另读一次）。 */
+    fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
-        // 新页面状态（已清空）的固定身份在此一次性取得（共性第 65 条）
-        pageOwner = FormOwner.of(deps.env)
+        // 新页面状态（已清空）的固定身份：调用方那一份快照（共性第 65 条）
+        pageOwner = FormOwner.of(identity)
         round += 1
         shownEpoch = Long.MIN_VALUE
         cancelAll()

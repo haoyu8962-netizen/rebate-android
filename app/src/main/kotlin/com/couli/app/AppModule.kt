@@ -782,6 +782,8 @@ object AppModule {
             displayClock = client::serverNow,
             // 订单页恢复记录（R1-03、R2-02）：个人数据存 noBackupFilesDir 下的原子文件，系统保存状态只存随机引用；两个清理器直接删除
             restoreStore = orderRestoreStore(context, tokens),
+            // F-X-17 / F-X-19 补充二（FU-AND-0717）：归属、分区与会话对账只用一份身份快照
+            identity = client::sessionIdentity,
         ).also { orders ->
             orders.connectSession()
             // 撤回同意、基本模式、切换环境：同步清空各显示位置的待跟单卡（APP-08 共性第 38、43 条）
@@ -1038,6 +1040,12 @@ object AppModule {
             onOverlay = clipboard::onSensitiveOverlay,
             // 实名查询的 getMe 与登录校验、「我的」、桥 auth.getUser 共用一份 Me 读取截止时间（APP-12 Android R3-01）
             meRead = { login.get().meReadGate },
+            // F-AND-37（FU-AND-0717）：钱包二次验证 token 按会话作用域隔离（取不到按 full）
+            sessionScope = { client.activeSessionScope() ?: com.couli.core.wallet.stepup.StepUpEnv.SCOPE_FULL },
+            // F-X-17 / F-X-19 补充二（FU-AND-0717）
+            identity = client::sessionIdentity,
+            // 末轮窄修 R3-02：令牌存储带持久化登录世代——分区读不出时金额草稿延后读写，不按账号回退
+            partitionTracked = true,
         ).also { wallet -> wallet.connectSession() }
 
     /**
@@ -1239,7 +1247,7 @@ internal fun orderCacheStore(
     val root = AppOrders.cacheRoot(context)
     return synchronized(OrderCacheStores) {
         OrderCacheStores.instances.getOrPut(root.absolutePath) { OrderStaleCache.Store(root, orderCachePendingFlag(context)) }
-    }.also { store -> tokens?.let { store.bindLoginEpoch(persistedLoginEpochOf(it)) } }
+    }.also { store -> if (tokens != null) store.partitionByLoginEpoch() }
 }
 
 /**
@@ -1302,7 +1310,7 @@ internal fun walletCacheStore(
     val root = AppWallet.cacheRoot(context)
     return synchronized(WalletCacheStores) {
         WalletCacheStores.instances.getOrPut(root.absolutePath) { WalletStaleCache.Store(root, walletCachePendingFlag(context)) }
-    }.also { store -> tokens?.let { store.bindLoginEpoch(persistedLoginEpochOf(it)) } }
+    }.also { store -> if (tokens != null) store.partitionByLoginEpoch() }
 }
 
 /** 钱包缓存的「待清理」状态：缓存目录之外的 SharedPreferences，commit 确认写入（APP-08 共性第 28 条）。 */

@@ -37,8 +37,20 @@ class FollowupAnd0714FixR2OrderRestoreTest {
 
     private val store = OrderRestoreStore(root, OrderStaleCache.SiblingFileFlag(root)).apply { bindLoginEpoch { loginEpoch } }
 
-    private class Session : OrderEnv {
+    private inner class Session : OrderEnv {
         override fun loggedIn() = true
+
+        // FU-AND-0717（F-X-19 补充二）：页面固定身份取自一份快照，持久化世代随快照一起给（与 ApiClient.sessionIdentity 同口径：读不出 = 身份暂时未知）
+        override fun identity(): com.couli.core.network.SessionIdentity =
+            loginEpoch.let { epoch ->
+                if (epoch == null) {
+                    com.couli.core.network.SessionIdentity
+                        .unknown(1L)
+                } else {
+                    com.couli.core.network
+                        .SessionIdentity(known = true, account = "user-a", loginEpoch = 1L, partition = epoch)
+                }
+            }
 
         override fun sessionEpoch() = 1L
 

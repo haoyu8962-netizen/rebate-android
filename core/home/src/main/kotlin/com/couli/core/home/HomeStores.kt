@@ -167,6 +167,25 @@ class HomeLkgStore(
         return if (epoch == null) UNKNOWN_EPOCH else EPOCH_PREFIX + digest(epoch)
     }
 
+    /**
+     * 会员作用域的登录世代对账（第 1 轮修复 R1-04，FU-AND-0717）：已确认的身份（[scope] 的账号 + 持久化登录世代 [loginEpoch]）下，删掉这个作用域里
+     * 不属于当前世代的全部世代子目录（同账号重新登录后留下的旧世代 LKG）；当前世代的不动（未知 → 已知、同一世代都保留）。非会员作用域、没打开世代分区、
+     * [loginEpoch] 给不出时不动。返回是否完成（删不掉 / 列不出为 false：调用方登记、下一次同步重试）。
+     */
+    @Synchronized
+    @Suppress("ReturnCount") // 不适用、目录不在、列不出三个出口
+    fun reconcileEpoch(
+        scope: String,
+        loginEpoch: String?,
+    ): Boolean {
+        if (!HomeLkgScope.isMember(scope) || this.loginEpoch == null || loginEpoch.isNullOrEmpty()) return true
+        val dir = File(root, digest(scope))
+        if (!dir.exists()) return true
+        val keep = EPOCH_PREFIX + digest(loginEpoch)
+        val children = lister(dir) ?: return false
+        return children.filter { it.name.startsWith(EPOCH_PREFIX) && it.name != keep }.all { deleter(it) }
+    }
+
     /** 清一个作用域（登出、换账号、会话失效时的旧作用域）：删不掉保留待清理并抛错。 */
     @Synchronized
     fun clearScope(scope: String) {

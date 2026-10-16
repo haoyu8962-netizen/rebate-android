@@ -98,6 +98,23 @@ class AppWallet(
      * 与登录校验、「我的」、桥 auth.getUser 共用这一份——每次实际写出前核对、收到 42901 按 Retry-After 写入，双向生效。没有接（更早任务的单测）时为 null。
      */
     private val meRead: () -> WalletRateGate? = { null },
+    /**
+     * 当前会话作用域（F-AND-37，FU-AND-0717；AppModule 接 ApiClient 的有效会话作用域）：钱包二次验证 token 按「账号 + 登录世代 + 作用域」写入与复用。
+     * 取不到按 full（StepUpEnv 口径）。
+     */
+    private val sessionScope: () -> String = { com.couli.core.wallet.stepup.StepUpEnv.SCOPE_FULL },
+    /** 身份快照的持久化登录世代接了来源（AppModule 接 ApiClient 时为 true；末轮窄修 R3-02）。 */
+    private val partitionTracked: Boolean = false,
+    /**
+     * 一份固定的身份快照（F-X-17 / F-X-19 补充二，FU-AND-0717；AppModule 接 ApiClient.sessionIdentity）：页面身份、缓存分区与会话对账只用它。
+     * 缺省（旧单测）按 [sessionEpoch] 与 [account] 拼出、已知、没有分区世代。
+     */
+    private val identity: () -> com.couli.core.network.SessionIdentity = {
+        // 先取登录世代、再读账号（与 ApiClient.sessionIdentity 的「读取前世代」同一顺序）
+        val epoch = sessionEpoch()
+        com.couli.core.network
+            .SessionIdentity(known = true, account = account(), loginEpoch = epoch, partition = null)
+    },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val gates = WalletGates(scope, clock)
@@ -121,7 +138,20 @@ class AppWallet(
     /** 回退栈条目 id → 该页的会话换代入口。 */
     private val sessions = mutableMapOf<String, () -> Unit>()
 
-    private var lastEpoch: Long = sessionEpoch()
+    /** 回退栈条目 id → 该页的统一恢复入口（F-X-19 补充三；FU-AND-0717 第 3 轮：每次身份已知的检查都交那一份快照，登记了它的不再调 [sessions]）。 */
+    private val identities = mutableMapOf<String, (com.couli.core.network.SessionIdentity, Boolean) -> Unit>()
+
+    /** 会话变化对账（F-X-17 补充、F-X-19 及补充二、三；与订单同一实现）。 */
+    private val reconciler =
+        com.couli.app.SessionCacheReconciler(
+            identity = { identity() },
+            initialEpoch = sessionEpoch(),
+            completePendingClear = { cache?.completePendingClear() ?: true },
+            reconcile = { id -> cache?.reconcileOwner(id.account, id.partition) ?: true },
+        )
+
+    /** 测试观察：对账没完成、等重试。 */
+    internal val reconcilePending: Boolean get() = reconciler.reconcilePending
 
     /** 实名状态：(会话世代, 已实名)；不是当前世代的按「不知道」。 */
     private var realnameState: Pair<Long, Boolean>? = null
@@ -133,6 +163,12 @@ class AppWallet(
             override fun sessionEpoch(): Long = this@AppWallet.sessionEpoch()
 
             override fun account(): String? = this@AppWallet.account()
+
+            override fun identitySnapshot(): com.couli.core.network.SessionIdentity = this@AppWallet.identity()
+
+            override fun partitionTracked(): Boolean = this@AppWallet.partitionTracked
+
+            override fun sessionScope(): String = this@AppWallet.sessionScope()
 
             override fun configData(): JsonObject? = store?.snapshots?.value?.data
 
@@ -403,6 +439,7 @@ class AppWallet(
                 PageHooks(
                     bindLeave = { leave -> if (entryId != null) leaves[entryId] = leave },
                     bindSession = { handler -> if (entryId != null) sessions[entryId] = handler },
+                    bindIdentity = { handler -> if (entryId != null) identities[entryId] = handler },
                 ),
             params = params(destination),
         )
@@ -420,6 +457,7 @@ class AppWallet(
         }
         leaves.keys.filter { it !in ids }.forEach { id -> leaves.remove(id)?.invoke() }
         sessions.keys.retainAll(ids)
+        identities.keys.retainAll(ids)
         if (openErrors.value.keys.any { it !in ids }) openErrors.value = openErrors.value.filterKeys { it in ids }
     }
 
@@ -427,16 +465,28 @@ class AppWallet(
      * 会话变了（登录、退出、换账号、会话失效；AppModule 接 Router 的会话状态与网络层的会话通知）：会话世代变了才处理（APP-08 共性第 1、19 条）。
      */
     fun onSessionChanged() {
-        val epoch = sessionEpoch()
-        if (epoch == lastEpoch) return
-        lastEpoch = epoch
+        // F-X-19 补充二 / 三：一份身份快照；未知只延后（待清理照做）；已知按固定标签对账、没完成登记重试；判据没变不重置页面
+        val decision = reconciler.check()
+        val known = reconciler.snapshot?.takeIf { it.known && decision != com.couli.app.SessionCacheReconciler.Decision.UNKNOWN } ?: return
+        if (decision != com.couli.app.SessionCacheReconciler.Decision.CHANGED) {
+            // 判据相同：提前返回前，栈里每个钱包类页面按这份已确认快照走统一的恢复入口（补充三 ②；FU-AND-0717 第 3 轮：钱包摘要、提现、收款账号、实名、
+            // 劳务协议、提现记录一套机制，R2-04）
+            identities.values.toList().forEach { it(known, false) }
+            return
+        }
         gates.reset()
         tokens.onSessionChanged()
         deps.sms.clear()
         realnameState = null
         openErrors.value = emptyMap()
-        cache?.reconcileOwner(account())
-        sessions.values.toList().forEach { it() }
+        // 按这份快照重新绑定（页面不另读一次身份）；没登记统一入口的页面（旧接线）走原会话入口
+        val identified = identities.toMap()
+        identified.values.forEach { it(known, true) }
+        sessions
+            .filterKeys { it !in identified }
+            .values
+            .toList()
+            .forEach { it() }
         if (routing.session.value.loggedIn()) {
             runCatching { api.restorePending() }
             refreshRealname()
@@ -448,7 +498,8 @@ class AppWallet(
         routing.realnameSource = ::realnameVerified
         scope.launch {
             yield()
-            cache?.reconcileOwner(account())
+            // F-X-19：冷启动首次对账走同一入口（身份暂时未知不以 null 账号清缓存；待清理照常）
+            reconciler.check()
             if (routing.session.value.loggedIn()) refreshRealname()
             routing.session.drop(1).collect { onSessionChanged() }
         }

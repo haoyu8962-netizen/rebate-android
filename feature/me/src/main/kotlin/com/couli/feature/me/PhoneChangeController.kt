@@ -130,6 +130,13 @@ class PhoneChangeController(
     private var viewGen = 0L
     private var sentViewGen = 0L
 
+    /**
+     * 第 2 步新号的修订号（F-X-13 / APP-05b 共性 34，FU-AND-0717；鸿蒙 FU-HM-0722 phoneRev 同法）：新号输入的规范化号码每变一次加 1（清空再粘回算两次，
+     * 等价写法不变）。发码时捕获；结果回来时修订号变了 → 只丢弃旧表单的提示 / 字段错误 / 播报 / 风控弹窗，共享倒计时与限流照常按发送的规范化号码记下，
+     * 页面每秒按当前新号重算（[step2ResendLeft]）。
+     */
+    private var phoneRev = 0L
+
     fun alive(): Boolean = !left && identity.current(deps.env)
 
     private val onScreen: Boolean get() = shown(sentViewGen)
@@ -216,7 +223,8 @@ class PhoneChangeController(
                         val sec = WalletJson.sendSmsCode(result.data)?.resendAfterSec?.takeIf { it > 0 } ?: DEFAULT_RESEND_SEC
                         sms.start(slot, deps.clock() + sec * MILLIS)
                     }
-                    outcome.disableMs?.let { sms.rateLimit(slot, deps.clock() + it) }
+                    // APP-13a 共性 49（FU-AND-0717）：限流写入前复核完整固定身份（含作用域）——同世代作用域刷新后迟到的 42901 不写进新作用域的闸门
+                    if (ownsWrite()) outcome.disableMs?.let { sms.rateLimit(slot, deps.clock() + it) }
                 }
                 if (!alive()) return@launch
                 update { it.copy(sending1 = false) }
@@ -263,7 +271,8 @@ class PhoneChangeController(
         deps.service.launch {
             val result = deps.api.send(ApiCall(VERIFY, body = body, ownership = owner, expectedAccount = account))
             val outcome = PhoneChangeStep1Policy.of(PhoneChangeStep1Policy.VERIFY, AccountResult.of(result), phoneKnown = true)
-            if (deps.env.sessionEpoch() == epoch && deps.env.account() == account) outcome.disableMs?.let(gate::start)
+            // 共性 49：验证限流写入前复核完整固定身份（含作用域）
+            if (deps.env.sessionEpoch() == epoch && deps.env.account() == account && ownsWrite()) outcome.disableMs?.let(gate::start)
             if (!alive()) return@launch
             update { it.copy(verifying = false) }
             val data = outcome.token
@@ -319,6 +328,9 @@ class PhoneChangeController(
         return KeyedDeadlines.bindKey(account, phone, PURPOSE_BIND)
     }
 
+    /** 新号的规范化形式（与 [KeyedDeadlines.bindKey] 同一口径）：判断输入是否换了号码（[phoneRev]）。 */
+    private fun phoneForm(raw: String): String = raw.trim().let { PhoneMask.normalized(it) ?: it.filter(Char::isDigit) }
+
     /** 第 2 步发码还要等几秒（成功倒计时与 42901 同一把键）。 */
     fun step2ResendLeft(): Long = bindKey()?.let { ceilSec(deps.shared.bindSms.remaining(it)) } ?: 0L
 
@@ -328,6 +340,7 @@ class PhoneChangeController(
         formGen: Long,
     ) {
         if (!boundForm(version, formGen) || s.submitting) return
+        if (phoneForm(text) != phoneForm(s.newPhone)) phoneRev += 1
         update { it.copy(newPhone = text, fieldErrorRaw = PhoneChangeOutcome.FIELD_NONE, fieldError = null) }
     }
 
@@ -358,6 +371,7 @@ class PhoneChangeController(
             CallOwnership(deps.api.epochs(), sendAllowed = { shared.remaining(key) == 0L }) { deps.env.sessionEpoch() == epoch }
         // R2-06：本次发码单独捕获页面许可（发起时的可见世代），不复用提交请求的 sentViewGen
         val permit = viewGen
+        val rev = phoneRev
         update { it.copy(sending2 = true, error = null) }
         deps.service.launch {
             val result = deps.api.send(ApiCall(SEND_SMS, body = body, ownership = owner, expectedAccount = account))
@@ -366,12 +380,15 @@ class PhoneChangeController(
                 if (result is ApiResult.Success) {
                     val sec = WalletJson.sendSmsCode(result.data)?.resendAfterSec?.takeIf { it > 0 } ?: DEFAULT_RESEND_SEC
                     shared.start(key, sec * MILLIS)
-                } else if (input?.code == RATE_LIMITED) {
+                } else if (input?.code == RATE_LIMITED && ownsWrite()) {
+                    // 共性 49：发码限流写入前复核完整固定身份（含作用域）
                     shared.start(key, input.retryAfterMillis ?: DEFAULT_RETRY_MS)
                 }
             }
             if (!alive() || s.formGen != formGen) return@launch
             update { it.copy(sending2 = false) }
+            // F-X-13：发码在途时改过号码（含清空再粘回）→ 旧表单的反馈全部丢弃；倒计时 / 限流已在上面按发送的号码记下，页面按当前号码重算
+            if (phoneRev != rev) return@launch
             when {
                 result is ApiResult.Success -> {
                     update { it.copy(sentNotice = MeNotice(CODE_SENT_KEY, ++ids, assertive = false)) }
@@ -476,8 +493,30 @@ class PhoneChangeController(
                 localRejected(result, probe)
                 return@launch
             }
-            applyOutcome(outcome, result, AccountRaw.SUBMIT, summary, null, formGen)
+            applyOutcome(outcome, result, AccountRaw.SUBMIT, summary, null, formGen, sentPhone = sentPhoneOf(body))
         }
+    }
+
+    /** 这次实际发出的新号（请求体里的 phone；held 重发时是原提交的号码）。解析不出为空串（与任何输入都不一致）。 */
+    private fun sentPhoneOf(body: String): String =
+        runCatching {
+            (
+                (
+                    kotlinx.serialization.json.Json
+                        .parseToJsonElement(body) as? JsonObject
+                )?.get("phone") as? JsonPrimitive
+            )?.takeIf { it.isString }
+                ?.content
+        }.getOrNull().orEmpty()
+
+    /**
+     * 号码 / 验证码类的字段反馈（F-X-15 / APP-05b 共性 36、37）：字段错误（20001 / 20002 / 20003）、44001 风控弹窗、3xxxx（30411 / 30414 等）。5xxxx、42901、
+     * 未完成等非字段结局不在此列（照常显示提示与 trace6）。
+     */
+    private fun fieldClass(outcome: PhoneChangeOutcome): Boolean {
+        if (outcome.fieldErrorRaw != PhoneChangeOutcome.FIELD_NONE || outcome.nextStateRaw == PhoneChangeOutcome.BLOCKED_DIALOG) return true
+        val code = outcome.textKey?.removePrefix("error.")?.toIntOrNull() ?: return false
+        return code in FIELD_CODES || code / CODE_CLASS == BUSINESS_CLASS
     }
 
     /** 共享结算（只按点击时的会话归属）：禁用期、token、强更、成功的共享结算（清全部 token、刷新 getMe）、未决通知。 */
@@ -492,7 +531,9 @@ class PhoneChangeController(
     ) {
         val current = deps.env.sessionEpoch() == epoch && deps.env.account() == account
         if (current && outcome != null) {
-            outcome.disableMs?.let(deps.shared.phoneGate::start)
+            // 共性 49（FU-AND-0717）：42901 写闸门前复核完整固定身份（账号 + 登录世代 + 作用域 + 隐私 / 环境世代）；同账号同世代作用域刷新后迟到的
+            // 旧请求只做下面的网络结算，不写新作用域的闸门
+            if (ownsWrite()) outcome.disableMs?.let(deps.shared.phoneGate::start)
             if (outcome.stepUpAction != null) deps.stepUp.tokens.on10003(AccountRaw.PHONE_CHANGE)
             if (outcome.nextStateRaw == PhoneChangeOutcome.FORCE_UPDATE) deps.env.forceUpdate()
         }
@@ -538,6 +579,8 @@ class PhoneChangeController(
         summary: String?,
         intent: Intent?,
         formGen: Long,
+        /** 第 2 步提交实际发出的新号（[sentPhoneOf]）；确认 / 放弃为 null（不按输入框归属）。 */
+        sentPhone: String? = null,
     ) {
         if (outcome.nextKeyRaw != AccountRaw.SAME) reuseKey = null
         if (!outcome.keepsToken) {
@@ -549,6 +592,10 @@ class PhoneChangeController(
             outcome.textKey?.let { MeNotice(it, ++ids, traceId, outcome.trace6 != null, serverMsg = outcome.serverMsg) }
                 ?: outcome.serverMsg?.let { MeNotice(MeNotice.UNFINISHED_KEY, ++ids, serverMsg = it) }
         refreshPending()
+        // F-X-15（FU-AND-0717，鸿蒙 FU-HM-0722 R1-05 / R2-02 同法）：held 重发的是原提交的号码；用户已改成别的号码时，号码 / 验证码类反馈按实际发出的号码归属，
+        // 不落到当前输入（输入保留、共享结算已在上面照常完成）；非字段结局（5xxxx、42901 等）照常显示
+        val foreign = sentPhone != null && phoneForm(sentPhone) != phoneForm(s.newPhone)
+        if (foreign && outcome.nextStateRaw != PhoneChangeOutcome.DONE && fieldClass(outcome)) return
         when (outcome.nextStateRaw) {
             PhoneChangeOutcome.DONE -> {
                 toDone(summary)
@@ -1106,6 +1153,11 @@ class PhoneChangeController(
         const val RATE_KEY = "error.42901"
         const val NO_PHONE_KEY = "step_up.no_phone"
         const val CODE_SENT_KEY = "phone_change.code_sent"
+
+        /** 号码 / 验证码类字段错误码（F-X-15）。 */
+        private val FIELD_CODES = setOf(20001, 20002, 20003, 44001)
+        private const val CODE_CLASS = 10_000
+        private const val BUSINESS_CLASS = 3
         const val PHONE_INVALID_KEY = "error.20001.phone_invalid"
         const val ALREADY_DONE_KEY = "pending_confirm.already_done"
         const val NETWORK_KEY = com.couli.core.me.MeDraftTexts.NETWORK_KEY
