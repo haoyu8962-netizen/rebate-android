@@ -298,10 +298,9 @@ private fun PhoneStep(
             }
         }
     }
-    if (!config.restricted) {
-        if (model.thirdParty.isNotEmpty()) ThirdPartySlot(model, state, texts)
-        HelpEntry(model, texts)
-    }
+    // 共性第 28 条：受限登录保留第三方入口（只隐藏帮助等业务入口）
+    if (model.thirdParty.isNotEmpty()) ThirdPartySlot(model, state, texts)
+    if (!config.restricted) HelpEntry(model, texts)
 }
 
 @Composable

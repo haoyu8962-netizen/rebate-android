@@ -1,6 +1,7 @@
 package com.couli.app.login
 
 import android.annotation.SuppressLint
+import androidx.lifecycle.Lifecycle
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -21,6 +22,7 @@ import com.couli.core.router.UpdateCheck
 import com.couli.core.wallet.WalletRateGate
 import com.couli.feature.login.AfterLoginUpdate
 import com.couli.feature.login.BindPhoneHost
+import com.couli.feature.login.BindPhoneOwner
 import com.couli.feature.login.BindPhonePageActions
 import com.couli.feature.login.BindPhonePageConfig
 import com.couli.feature.login.BindPhoneService
@@ -39,9 +41,12 @@ import com.couli.feature.login.OAuthProvider
 import com.couli.feature.login.PhoneBindingState
 import com.couli.feature.login.ThirdPartyAuthAdapter
 import com.couli.feature.login.UnavailableWechatAdapter
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -151,6 +156,26 @@ class AppLogin(
     /** 登录页关闭之后在外壳上显示的提示（邀请绑定结果、回到强更页的原因；显示后 [consumeNotice]）。 */
     val notice: StateFlow<LoginNotice?> = mutableNotice.asStateFlow()
 
+    /** phone_bound 补查任务（[verifyPhoneBinding]、[recheckOnBindPage]）：查询连同收尾（守卫同步、出栈、恢复待办）都在任务里。只在主线程读写。须在 init 之前初始化（init 里就会发起冷启动补查）。 */
+    private val phoneChecks = mutableListOf<Job>()
+
+    /** 已发起的补查次数（F-AND-36 测试观察点：等「查询连同收尾都已结束」，不猜网络层何时空闲）。 */
+    internal var phoneChecksStarted = 0
+        private set
+
+    /** 已发起的补查任务都已结束（含查询返回后的收尾）。 */
+    internal fun phoneChecksSettled(): Boolean = phoneChecks.all { it.isCompleted }
+
+    /** 在会话作用域里发起一次补查并登记；[context] 照各入口原来的调度（冷启动补查投递到下一轮主线程消息，进页补查沿用作用域的 immediate）。 */
+    private fun trackPhoneCheck(
+        context: CoroutineContext = EmptyCoroutineContext,
+        block: suspend CoroutineScope.() -> Unit,
+    ) {
+        phoneChecks.removeAll { it.isCompleted }
+        phoneChecksStarted += 1
+        phoneChecks += sessionScope.launch(context, block = block)
+    }
+
     init {
         // APP-05a 共性第 25 条：pending_action 登记时记下此刻的登录世代，会话结束的清理只清原会话归属的待办
         routing.router.sessionTag = { tokens.loginEpoch }
@@ -179,7 +204,7 @@ class AppLogin(
             client.activeSessionScope() == SessionScopeRaw.FULL && phoneBinding.get(epoch) == null && meCheckEpoch != epoch && !oauth.busy
         if (!needed) return
         meCheckEpoch = epoch
-        sessionScope.launch(Dispatchers.Main) {
+        trackPhoneCheck(Dispatchers.Main) {
             val known =
                 try {
                     oauth.refreshMe(epoch)
@@ -221,6 +246,7 @@ class AppLogin(
     fun syncSession() {
         val state = sessionState()
         if (state != routing.session.value) publish(state, resumePending = false)
+        dropStaleBoundWhileAway()
         // APP-13a R2-01：绑手机页的同步换代出口（撤回同意、强更状态变化后的会话同步）
         bindPhone.syncSession()
         verifyPhoneBinding()
@@ -243,6 +269,7 @@ class AppLogin(
                 epoch == restrictedEpoch &&
                 !service.ownsSession(epoch)
         if (state != previous || upgraded) publish(state, resumePending = upgraded)
+        dropStaleBoundWhileAway()
         // APP-13a R2-01：会话保存、刷新（作用域变化）、清理的同步出口——打开着的绑手机页在这条消息里按完整固定身份换代、清空敏感状态
         bindPhone.syncSession()
         verifyPhoneBinding()
@@ -293,6 +320,7 @@ class AppLogin(
             recheckOnBindPage(entries.lastOrNull { isRoute(it, RouteNames.BIND_PHONE) }?.id)
         }
         if (bindInStack && !binding) {
+            boundWhileAway = null
             bindPhone.invalidate()
             if (phoneBinding.get(tokens.loginEpoch) != true) bindPhone.leftUnbound()
         }
@@ -302,27 +330,38 @@ class AppLogin(
     private var bindInStack = false
 
     /**
-     * 进绑手机页时 phone_bound 未知的补查（APP-13a R2-03，共性第 25、38 条）：发起时捕获刚出现的这一个绑手机页条目 [entryId] 与导航票据（导航次数、栈顶、Tab、
-     * 进后台次数，即页面可见性与导航世代）。查清已绑：绑定状态共享结算（守卫重算、释放暂缓）照常；只有原条目仍是栈顶且票据没变（发起后没有被覆盖、没有进后台、
-     * 没有再导航）才出栈这一个页面并恢复待办，不按路由名关页（不会连带关掉覆盖页或后来打开的同名页）。
+     * 进绑手机页时 phone_bound 未知的补查（APP-13a R2-03，共性第 25、38 条）：发起时捕获刚出现的这一个绑手机页条目 [entryId]、导航票据（导航次数、栈顶、Tab、
+     * 进后台次数，即页面可见性与导航世代）与完整固定身份。查清已绑：绑定状态共享结算（守卫重算、释放暂缓）照常；出栈只针对这一个页面并恢复待办，不按路由名关页
+     * （不会连带关掉覆盖页或后来打开的同名页）。查询返回时分三种（FU-AND-0716 R1-04，APP-05b 共性第 25 条两种顺序）：
+     * - 票据没变（发起后没有被覆盖、没有进后台、没有再导航）→ 出栈；
+     * - 票据变了，但原条目此刻已重新是栈顶且处于前台（「页面先恢复、查询后完成」：onPageVisible 已经跑过、不会再来）→ 核对固定身份、原条目、共享已绑后立即收尾；
+     * - 原条目此刻仍不可见 → 记下绑原身份的延后记录，原条目重新有效时由页面经 [bindPageAlreadyBound] 补处理；换会话即清除（共性第 26 条）。
      */
     private fun recheckOnBindPage(entryId: String?) {
         val epoch = tokens.loginEpoch
+        val owner = bindPhone.owner()
         val ticket = routing.navTickets.ticket()
-        sessionScope.launch {
-            if (oauth.refreshMe(epoch) && tokens.loginEpoch == epoch && phoneBinding.get(epoch) == true) {
+        trackPhoneCheck {
+            if (oauth.refreshMe(epoch) && bindPhone.owns(owner) && phoneBinding.get(epoch) == true) {
                 val controller = navController
-                val here = entryId != null && controller?.currentBackStackEntry?.id == entryId && routing.navTickets.ticket() == ticket
-                if (controller == null || !here) {
+                val top = controller?.currentBackStackEntry
+                val here = entryId != null && top?.id == entryId && routing.navTickets.ticket() == ticket
+                if (controller != null && here) {
+                    bindInStack = false
+                    controller.popBackStack()
                     publish(sessionState(), resumePending = false)
                     routing.router.releaseHeldPending()
-                    return@launch
+                    routing.router.resumePending(enterPrerequisite = false)
+                    return@trackPhoneCheck
                 }
-                bindInStack = false
-                controller.popBackStack()
+                // 那次结果不按发起时的票据导航；原条目已重新可见就当场收尾，否则延后到它重新有效（FU-AND-0716，iOS R1-08 / R1-04）
+                boundWhileAway = entryId?.let { BoundWhileAway(it, owner) }
+                if (entryId != null && top?.id == entryId && top.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    bindPageAlreadyBound(entryId)
+                    return@trackPhoneCheck
+                }
                 publish(sessionState(), resumePending = false)
                 routing.router.releaseHeldPending()
-                routing.router.resumePending(enterPrerequisite = false)
             }
         }
     }
@@ -380,7 +419,8 @@ class AppLogin(
             sessionExpired = expired,
             // 第三方登录（APP-05b）：Android 只有微信；适配器不可用（正式包恒为不可用）或本机确知没装时不显示（任务书 §2.2）
             oauth = oauth,
-            thirdParty = if (restricted) emptyList() else oauth.visibleProviders(),
+            // 共性第 28 条（FU-AND-0716 第 2 轮）：受限登录也保留第三方入口——仅第三方身份的已有账号要能登进 deletion_only 去注销（BR-ID-01）
+            thirdParty = oauth.visibleProviders(),
             // 邀请码的剪贴板来源（APP-07：游客邀请预填、邀请码行【粘贴】）；受限登录不用
             invite = if (restricted) null else invite,
             actions =
@@ -418,6 +458,8 @@ class AppLogin(
                     onOpenRoute = ::open,
                     // 绑定成功且页面许可仍有效（APP-13a R1-05）：只出栈发起的这一个绑手机页，再完成前置、恢复待办
                     onBound = { bindPageCompleted(entryId) },
+                    // 回到页面时已是已绑手机（FU-AND-0716，iOS R1-08）：只出栈这一个绑手机页，按 resumeOnly 恢复待办
+                    onAlreadyBound = { bindPageAlreadyBound(entryId) },
                 ),
         )
 
@@ -545,7 +587,10 @@ class AppLogin(
      * 绑定成功、getMe 已刷新（会话侧共享结算，APP-13a R1-05、G66）：守卫变为已绑手机、释放暂缓。不按路由名关页、不恢复待办——那两件只由持有原页面
      * 许可的绑手机页经 [bindPageCompleted] 做；原页面已离开或被覆盖时不导航，之后的入口由守卫按已绑手机判定。
      */
-    override fun phoneBound() {
+    override fun phoneBound(owner: BindPhoneOwner) {
+        // FU-AND-0716 R1-01：发起绑定 / 确认的固定身份（账号、登录世代、作用域、隐私 / 环境世代）已不是当前会话——getMe 等待期间退出、
+        // 另一账号登录且待办正暂缓，或同账号同世代作用域变成 deletion_only——不同步、不释放暂缓
+        if (!bindPhone.owns(owner)) return
         publish(sessionState(), resumePending = false)
         routing.router.releaseHeldPending()
     }
@@ -560,6 +605,48 @@ class AppLogin(
         controller.popBackStack()
         mutableNotice.value = LoginNotice.Message(LoginDraftTexts.text("bind_phone.done"))
         routing.router.onPrerequisiteCompleted()
+    }
+
+    /** 进页补查查明已绑、那次没有导航的绑手机页条目与发起补查时的完整固定身份（FU-AND-0716，iOS R1-08，共性第 26 条）。 */
+    private class BoundWhileAway(
+        val entryId: String,
+        val owner: BindPhoneOwner,
+    )
+
+    /** 延后记录（[recheckOnBindPage] 在原条目失去许可期间查明已绑）；条目出栈、换会话即失效。 */
+    private var boundWhileAway: BoundWhileAway? = null
+
+    /** 会话同步出口（保存、刷新、清理、撤回同意、切换环境）：延后记录的固定身份已不是当前会话就清除（共性第 26 条）。 */
+    private fun dropStaleBoundWhileAway() {
+        val away = boundWhileAway ?: return
+        if (!bindPhone.owns(away.owner)) boundWhileAway = null
+    }
+
+    /**
+     * 绑手机页重新有效时共享状态已是已绑手机（FU-AND-0716，iOS R1-08；进页补查 [recheckOnBindPage] 在页面被覆盖 / 进后台期间查明已绑、
+     * 那次不导航的补处理）：只对那一个条目、同一登录世代、且它此刻是栈顶时出栈它，同步守卫、释放暂缓、按 resumeOnly 恢复待办（不算完成前置、
+     * 不重置计时）。返回是否已退出。
+     */
+    @Suppress("ReturnCount") // 没有导航、不是那次补查的条目、换了会话或未知已绑、不是栈顶四个出口
+    fun bindPageAlreadyBound(entryId: String?): Boolean {
+        val controller = navController ?: return false
+        val away = boundWhileAway ?: return false
+        if (entryId == null || away.entryId != entryId) return false
+        if (!bindPhone.owns(away.owner) || phoneBinding.get(away.owner.epoch) != true) {
+            // 换了会话（共性第 26 条）：旧会话的延后记录作废
+            boundWhileAway = null
+            return false
+        }
+        if (controller.currentBackStackEntry?.id != entryId) return false
+        boundWhileAway = null
+        // 出栈同步出口照常作废在途请求与并号凭据；已绑离开不算「未绑定离开」（不走 leftUnbound）
+        bindPhone.invalidate()
+        bindInStack = false
+        controller.popBackStack()
+        publish(sessionState(), resumePending = false)
+        routing.router.releaseHeldPending()
+        routing.router.resumePending(enterPrerequisite = false)
+        return true
     }
 
     /** 没有绑定就离开绑手机页：暂缓的待办经守卫恢复（只恢复、不重置；仍需手机号的保留，不再拉起绑手机页）。 */

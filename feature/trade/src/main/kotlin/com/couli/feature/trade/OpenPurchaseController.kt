@@ -1410,12 +1410,14 @@ class OpenPurchaseController(
     // ---------------------------------------------------------------- 登录 / 同意恢复、生命周期
 
     /**
-     * 登录完成后（App 在会话由游客变为已登录、待办没有被暂缓时调）：本页登记的购买待办仍有效 → 删除并自动重放一次原尝试（原路径、原请求体、
+     * 登录完成后（App 在会话由游客变为已登录、待办没有被暂缓时调；暂缓明确释放后再调一次，FU-AND-0716 ①）：本页登记的购买待办仍有效 → 删除并自动重放一次原尝试（原路径、原请求体、
      * 原键：10001 不写幂等记录，BR-ID-10 细则）。外跳类动作恢复执行仍视为用户点击触发；页面不在前台（登录页还盖着）时等回到前台再执行。
      */
-    @Suppress("ReturnCount") // 已离开、不在前台、没有待办、不是本页的出口
+    @Suppress("ReturnCount") // 已离开、暂缓、不在前台、没有待办、不是本页的出口
     fun resumeAfterLogin() {
         if (left) return
+        // FU-AND-0716 ①（iOS R1-01）：待办暂缓期间不读、不清、不重放（含延后到回前台的续执行）；释放后 App 再通知一次
+        if (pending.held) return
         if (!foreground) return defer(DeferredResume.LOGIN, ::resumeAfterLogin)
         if (busy()) return
         val record = pending.peek() ?: return

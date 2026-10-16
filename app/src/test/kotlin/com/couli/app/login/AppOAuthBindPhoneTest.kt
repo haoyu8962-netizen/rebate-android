@@ -21,6 +21,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowWait
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
@@ -32,6 +33,7 @@ import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ClientIdentity
 import com.couli.core.network.DeviceCredentials
+import com.couli.core.network.InFlightCalls
 import com.couli.core.network.MemoryPendingKeyBackend
 import com.couli.core.network.MemorySessionTokens
 import com.couli.core.network.NetworkContext
@@ -101,6 +103,12 @@ class AppOAuthBindPhoneTest {
     private lateinit var navController: NavHostController
     private val tokens = MemorySessionTokens()
 
+    /** 网络层在途调用（接给 ApiClient；R1-02 起不再拿它推测流程结论）。 */
+    private val inFlight = InFlightCalls()
+
+    /** 主线程已处理完的网络层 Effect 数（F-AND-36：等清会话通知真正被处理，不靠固定轮次）。 */
+    private val effectsHandled = AtomicInteger(0)
+
     @Volatile
     private var answer: (RecordedRequest) -> MockResponse = ::defaultAnswer
 
@@ -157,6 +165,7 @@ class AppOAuthBindPhoneTest {
     @After
     fun tearDown() = server.shutdown()
 
+    @Suppress("LongMethod") // 与 AppModule 同一套接线逐项组装
     private fun launch(session: String?) {
         session?.let { tokens.save("access-zero", "refresh-zero", it, "user-zero") }
         val gate =
@@ -183,9 +192,15 @@ class AppOAuthBindPhoneTest {
                 device = FixtureDevice,
                 tokens = tokens,
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
+                inFlight = inFlight,
                 hooks =
                     NetworkHooks(
-                        onEffect = { effect -> main.post { login.onNetworkEffect(effect) } },
+                        onEffect = { effect ->
+                            main.post {
+                                login.onNetworkEffect(effect)
+                                effectsHandled.incrementAndGet()
+                            }
+                        },
                         onSessionStored = { generation -> main.post { login.onSessionStored(generation) } },
                     ),
                 sleeper = {},
@@ -243,6 +258,19 @@ class AppOAuthBindPhoneTest {
     private fun resumedPending(route: String): Boolean {
         val last = routing.router.lastOutcome.value ?: return false
         return last.request.route == route && last.request.source == RouteSource.PENDING_ACTION.raw && last.decision.opensPage
+    }
+
+    /** 共性第 28 条（FU-AND-0716 第 2 轮）：App 给受限登录（强更页进入）的页面配置同样带上可显示的第三方入口；邀请码来源仍不给。 */
+    @Test
+    fun fuand0716_28_theRestrictedLoginPageConfigKeepsTheVisibleThirdPartyProviders() {
+        launch(session = null)
+        composeRule.runOnUiThread {
+            val restricted = login.pageConfig(restricted = true)
+            assertEquals(listOf(OAuthProvider.WECHAT), restricted.thirdParty)
+            assertTrue(restricted.restricted)
+            assertEquals("受限登录不用邀请码来源", null, restricted.invite)
+            assertEquals("与正常登录同一组第三方入口", login.pageConfig(restricted = false).thirdParty, restricted.thirdParty)
+        }
     }
 
     @Test
@@ -340,7 +368,7 @@ class AppOAuthBindPhoneTest {
     fun coldStartOpeningAPhoneLevelPageBeforePhoneBoundIsKnownGoesThroughBindPhone() {
         val release = CountDownLatch(1)
         meAnswer = {
-            release.await(WAIT_S, TimeUnit.SECONDS)
+            release.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
             envelope("""{"user_id":"user-zero","phone_bound":true}""")
         }
         try {
@@ -365,7 +393,12 @@ class AppOAuthBindPhoneTest {
         launch(SessionScopeRaw.FULL)
         idleUntil { login.phoneBinding.get(tokens.loginEpoch) == false }
         open(PHONE_ROUTE)
-        idleUntil { true }
+        // F-AND-36：原为空转一轮；改为等守卫对这次打开交回结论
+        idleUntil {
+            routing.router.lastOutcome.value
+                ?.request
+                ?.route == PHONE_ROUTE
+        }
         assertEquals(SessionState.LOGGED_IN, routing.session.value)
         assertEquals(RouteNames.BIND_PHONE, routes().last())
         assertFalse(PHONE_ROUTE in routes())
@@ -376,10 +409,12 @@ class AppOAuthBindPhoneTest {
     fun coldStartWhosePhoneBoundCannotBeReadKeepsPhoneLevelPagesBehindBindPhone() {
         meAnswer = { code(50001) }
         launch(SessionScopeRaw.FULL)
-        idleUntil { true }
+        // F-AND-36（R1-02）：原为空转一轮；改为等冷启动那次补查任务（getMe 失败连同收尾）结束
+        phoneChecksSettled(1)
         open(PHONE_ROUTE)
+        // 进页补查（第二次 getMe）的任务连同收尾都已结束
         idleUntil { meRequests.get() >= 2 }
-        idleUntil { true }
+        phoneChecksSettled(2)
         assertEquals(SessionState.LOGGED_IN, routing.session.value)
         assertEquals(RouteNames.BIND_PHONE, routes().last())
         assertFalse(PHONE_ROUTE in routes())
@@ -416,7 +451,8 @@ class AppOAuthBindPhoneTest {
         assertTrue(store.save(com.couli.core.router.PendingActionStore.OPEN_ROUTE, params, now))
         composeRule.runOnUiThread { routing.router.resumePending(enterPrerequisite = false) }
         idleUntil { ME in requested && routing.session.value == SessionState.LOGGED_IN }
-        idleUntil { true }
+        // F-AND-36（R1-02）：原为空转一轮；改为等发起的补查任务（getMe 连同守卫同步、恢复判定）都结束，再核对「不恢复」
+        idleUntil { login.phoneChecksStarted >= 1 && login.phoneChecksSettled() }
         assertFalse("未绑：不恢复手机号级路由", resumedPending(PHONE_ROUTE))
         assertTrue("待办保留", routing.router.hasPendingAction)
     }
@@ -426,15 +462,18 @@ class AppOAuthBindPhoneTest {
     fun aClearEffectOfAnEarlierSessionDoesNotOpenLoginOverANewerOne() {
         launch(SessionScopeRaw.FULL)
         answer = { request -> if (request.path == "/v1/me") code(10404) else defaultAnswer(request) }
+        val handledBefore = effectsHandled.get()
         val call = Thread { api.execute(ApiCall("getMe")) }.apply { start() }
-        call.join(TimeUnit.SECONDS.toMillis(WAIT_S))
+        // F-AND-36：原为最多等 5 秒（到时不判失败）；改为等这次调用交回结论，上限内没回判失败
+        call.join(FlowWait.CEILING_MS)
+        assertFalse("getMe 调用在上限内交回结论", call.isAlive)
         assertNull(tokens.accessToken)
         // 新会话随后的 phone_bound 查询（R1-01）照常应答：只验证旧会话的失效通知不作用到新会话
         answer = ::defaultAnswer
         // 主线程还没处理网络层的通知：此时另一处保存了新登录
         tokens.save("access-new", "refresh-new", SessionScopeRaw.FULL, "user-new")
-        idleUntil { true }
-        repeat(IDLE_ROUNDS) { idleUntil { true } }
+        // F-AND-36：原为空转 6 轮；改为等主线程真正处理完这次清会话通知，再等新会话的补查任务（若有）连同收尾结束（R1-02）
+        idleUntil { effectsHandled.get() > handledBefore && login.phoneChecksSettled() }
         assertFalse("不跳登录", RouteNames.LOGIN in routes())
         assertTrue(composeRule.onAllNodesWithText(LoginDraftTexts.text("error.10404")).fetchSemanticsNodes().isEmpty())
     }
@@ -449,7 +488,7 @@ class AppOAuthBindPhoneTest {
             when (request.path) {
                 LOGOUT -> {
                     arrived.countDown()
-                    release.await(WAIT_S, TimeUnit.SECONDS)
+                    release.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
                     envelope("{}")
                 }
 
@@ -464,9 +503,11 @@ class AppOAuthBindPhoneTest {
         }
         var done: Boolean? = null
         composeRule.runOnUiThread { CoroutineScope(Dispatchers.Main.immediate).launch { done = login.logout() } }
-        assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
+        assertTrue(arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
 
-        Thread { api.execute(ApiCall("getMe")) }.apply { start() }.join(TimeUnit.SECONDS.toMillis(WAIT_S))
+        val me = Thread { api.execute(ApiCall("getMe")) }.apply { start() }
+        me.join(FlowWait.CEILING_MS)
+        assertFalse("getMe 调用在上限内交回结论", me.isAlive)
         idleUntil { routing.session.value == SessionState.GUEST }
         open("OrderList")
         assertTrue(routing.router.hasPendingAction)
@@ -498,22 +539,28 @@ class AppOAuthBindPhoneTest {
         override val installSecret: String = "install-fixture"
     }
 
-    private fun idleUntil(condition: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_S)
-        do {
-            org.robolectric.Shadows
-                .shadowOf(android.os.Looper.getMainLooper())
-                .idle()
-            composeRule.waitForIdle()
-            if (condition()) return
-            Thread.sleep(IDLE_POLL_MS)
-        } while (System.nanoTime() < deadline)
-        assertTrue(
-            "routes=${routes()} last=${routing.router.lastOutcome.value} pending=${routing.router.hasPendingAction} " +
-                "held=${routing.router.pendingHeld} session=${routing.session.value}",
-            condition(),
-        )
+    private fun pump() {
+        org.robolectric.Shadows
+            .shadowOf(android.os.Looper.getMainLooper())
+            .idle()
+        composeRule.waitForIdle()
     }
+
+    private fun state(): String =
+        "routes=${routes()} last=${routing.router.lastOutcome.value} pending=${routing.router.hasPendingAction} " +
+            "held=${routing.router.pendingHeld} session=${routing.session.value} me=${meRequests.get()}"
+
+    /** F-AND-36：等流程交回结论（原为最多 5 秒的轮询），见 [FlowWait]。 */
+    private fun idleUntil(condition: () -> Boolean) = FlowWait.until(::pump, ::state, condition = condition)
+
+    /**
+     * F-AND-36（R1-02）：至少发起过 [count] 次 phone_bound 补查，且它们连同查询返回后的收尾（守卫同步、出栈、恢复待办）都已结束——等的是 AppLogin
+     * 的补查任务本身，不是网络层空闲。
+     */
+    private fun phoneChecksSettled(count: Int) =
+        FlowWait.until(::pump, { "${state()} checks=${login.phoneChecksStarted}" }) {
+            login.phoneChecksStarted >= count && login.phoneChecksSettled()
+        }
 
     private companion object {
         const val ATTEMPTS = "/v1/auth/oauth-attempts"
@@ -521,8 +568,5 @@ class AppOAuthBindPhoneTest {
         const val ME = "/v1/me"
         const val LOGOUT = "/v1/auth/logout"
         const val PHONE_ROUTE = "InviteShare"
-        const val WAIT_S = 5L
-        const val IDLE_POLL_MS = 10L
-        const val IDLE_ROUNDS = 5
     }
 }

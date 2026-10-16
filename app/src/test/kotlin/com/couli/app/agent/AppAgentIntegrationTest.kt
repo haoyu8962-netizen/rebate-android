@@ -27,6 +27,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowWait
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
@@ -733,11 +734,29 @@ class AppAgentIntegrationTest {
         settle()
     }
 
-    private fun quiet() {
-        settle()
+    /**
+     * 「不应再发请求」的核对之前：先等这次操作自己交回的结论 [decided]（F-AND-36 R1-02：拒绝已落定、或重放的那次响应已被执行器处理完——不看网络层
+     * 是否空闲），再留原来的 100 毫秒负向观察窗（观察窗只可能让「没发出」的核对变弱，不会造成偶发失败）。
+     */
+    private fun quiet(decided: () -> Boolean) {
+        idleUntil(decided)
         Thread.sleep(POLL_MS * 5)
         settle()
     }
+
+    /** 购买执行器已处理完最近一次 open 的响应（离开加载态）。 */
+    private fun replayAnswered(): Boolean {
+        val phase =
+            agent
+                .purchaseController()
+                ?.state
+                ?.value
+                ?.phase
+        return phase != null && phase != PurchasePhase.LOADING
+    }
+
+    /** 撤回同意这次确认已落定：确认框实例已作废、没有在途的撤回流程。 */
+    private fun withdrawDecided(): Boolean = agent.withdrawConfirm.value == null && !agent.withdrawing.value
 
     @Test
     fun r1_01_withdrawConfirmIsFixedAtOpenAndDestroyedWhenIdentityChanges() {
@@ -751,7 +770,7 @@ class AppAgentIntegrationTest {
         assertFalse("身份变化后旧确认框不得仍在", has(AgentTags.WITHDRAW_CONFIRM))
         // 旧确认实例的回调（保留下来再执行）：提交前比较，失效直接拒绝，不发 recordConsent
         composeRule.runOnUiThread { agent.withdrawConsent(stale, { true }) {} }
-        quiet()
+        quiet(::withdrawDecided)
         assertTrue(consentBodies.isEmpty())
         // 登录 B 后重新打开、确认：按 B 打开时固定的身份发出一次
         composeRule.runOnUiThread {
@@ -767,7 +786,7 @@ class AppAgentIntegrationTest {
         assertEquals(1, consentBodies.size)
         // 已用过的实例再提交：一次性编号已作废
         composeRule.runOnUiThread { agent.withdrawConsent(fresh, { true }) {} }
-        quiet()
+        quiet(::withdrawDecided)
         assertEquals(1, consentBodies.size)
     }
 
@@ -779,7 +798,7 @@ class AppAgentIntegrationTest {
         // 此刻身份已变（环境不同），但还没经过任何同步出口（确认框实例仍是当前那一个）：提交前比较固定身份，不重新绑定、直接拒绝
         env = "staging"
         click(AgentTags.WITHDRAW_CONFIRM)
-        quiet()
+        quiet(::withdrawDecided)
         assertTrue("旧身份打开的确认框不得以新身份发出撤回", consentBodies.isEmpty())
         assertNull(agent.withdrawConfirm.value)
     }
@@ -834,7 +853,8 @@ class AppAgentIntegrationTest {
             old.retryPurchase()
             old.buy(old.currentCard, "AgentChat.card.buy")
         }
-        quiet()
+        // 已释放的执行器在入口同步拒绝（不进加载态）
+        quiet { old.state.value.phase != PurchasePhase.LOADING }
         assertEquals(before, openRequests.size)
     }
 
@@ -873,7 +893,8 @@ class AppAgentIntegrationTest {
         settle()
         open("AgentChat")
         idleUntil { openRequests.size >= 2 }
-        quiet()
+        // 重放的那次响应已被执行器处理完（离开加载态）
+        quiet { replayAnswered() }
         assertEquals(2, openRequests.size)
         assertEquals(key, openRequests.last().second)
         assertTrue(agent.purchaseController() === executor)
@@ -1085,18 +1106,14 @@ class AppAgentIntegrationTest {
         assertTrue("切 Tab 回来不得被跟随拉到底", has(first))
     }
 
-    private fun idleUntil(condition: () -> Boolean) {
-        repeat(POLLS) {
-            if (condition()) return
-            settle()
-            Thread.sleep(POLL_MS)
-        }
-        assertTrue("等待超时", condition())
-    }
+    /** F-AND-36：等流程交回结论（原为固定 100 轮、约 2 秒的轮询，高负载下不够），见 [FlowWait]。 */
+    private fun idleUntil(condition: () -> Boolean) =
+        FlowWait.until(::settle, {
+            "栈顶 ${runCatching { topRoute() }.getOrNull()}，打开 ${openRequests.size}，同意 ${consentBodies.size}"
+        }, condition = condition)
 
     private companion object {
         const val ROUNDS = 4
-        const val POLLS = 100
         const val POLL_MS = 20L
         const val SWIPES = 30
 

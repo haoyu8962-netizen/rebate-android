@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
@@ -62,6 +63,7 @@ import com.couli.core.router.UpdateCheck
 import com.couli.core.update.MemoryUpdateStore
 import com.couli.core.update.UpdateCheckOutcome
 import com.couli.core.update.UpdateGate
+import com.couli.feature.login.BindPhoneViewModel
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
@@ -71,6 +73,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -82,7 +85,6 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.robolectric.Shadows.shadowOf
@@ -233,7 +235,7 @@ abstract class AccountHarness {
         return when {
             request.path == "/v1/me" -> {
                 // 第 2 轮 R2-03：需要时让 getMe 停在服务端，放行后按那时的 phoneBound 回答
-                meHold?.await(WAIT_S, TimeUnit.SECONDS)
+                meHold?.await(com.couli.app.FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
                 envelope(meJson(user, st.phoneBound, st.risk))
             }
 
@@ -347,7 +349,7 @@ abstract class AccountHarness {
             """"cancelled_at":$cancelledAt,"cancel_reason":${reason?.let { "\"$it\"" } ?: "null"},"processed_at":null}"""
     }
 
-    private fun walletJson(negative: Long): String {
+    protected fun walletJson(negative: Long): String {
         val withdrawable = if (negative > 0) 0 else 1234
         return """{"available_fen":${if (negative > 0) -negative else 1234},"withdrawable_fen":$withdrawable,"negative_fen":$negative,""" +
             """"frozen_fen":0,"estimated_total_fen":5678,"estimated_fen":2222,"pending_credit_fen":0,"pending_credit_paused_fen":0,""" +
@@ -529,6 +531,8 @@ abstract class AccountHarness {
                     updateCheck = { update.routerUpdate },
                     markBelow = { update.onServerForced() },
                     legal = LegalVersions(3, 2),
+                    // FU-AND-0716 窄修四：与缺省值同一种作用域（SupervisorJob + Main.immediate），只是由测试持有，用来等会话级任务（绑定 / 确认）结束
+                    sessionScope = loginSessionScope,
                 )
             login.syncSession()
             me =
@@ -642,9 +646,9 @@ abstract class AccountHarness {
         message: String = "",
         condition: () -> Boolean,
     ) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_S)
-        while (!condition() && System.nanoTime() < deadline) settle()
-        assertTrue("$message 栈 ${stack()}，请求 ${all()}", condition())
+        // F-AND-36（FU-AND-0716）：等流程交回结论，上限见 FlowWait（原为 10 秒，负载约 70 时 lesson19 等到期重取超时一次）
+        com.couli.app.FlowWait
+            .until(::settle, { "$message 栈 ${stack()}，请求 ${all()}" }, condition = condition)
     }
 
     protected fun has(tag: String): Boolean = composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
@@ -727,6 +731,85 @@ abstract class AccountHarness {
         }
     }
 
+    /** AppLogin 的会话级作用域（与生产缺省同构）：绑手机的绑定 / 确认等会话级任务在这里执行。 */
+    protected val loginSessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** [loginSessionScope] 里此刻在跑的协程。 */
+    protected fun loginJobs(): Set<Job> =
+        loginSessionScope.coroutineContext[Job]!!
+            .children
+            .filter { it.isActive }
+            .toSet()
+
+    /** [before] 之后在 [loginSessionScope] 里起的协程都已结束（会话级任务连同收尾跑完）。 */
+    protected fun loginWorkSince(
+        before: Set<Job>,
+        message: String,
+    ) = idleUntil(message) {
+        loginSessionScope.coroutineContext[Job]!!
+            .children
+            .none { it.isActive && it !in before }
+    }
+
+    /** 三个会话级作用域（AppLogin 会话、AppAccount、AppMe）在某一刻在跑的协程（含常驻订阅）。 */
+    protected data class WorkSnapshot(
+        val login: Set<Job>,
+        val account: Set<Job>,
+        val me: Set<Job>,
+    )
+
+    private fun active(scope: CoroutineScope): Set<Job> =
+        scope.coroutineContext[Job]!!
+            .children
+            .filter { it.isActive }
+            .toSet()
+
+    /** FU-AND-0716 窄修五：动作前一刻的快照（绑定 / 确认 / 读取与其后的 getMe、共享收尾分别落在这三个作用域里）。 */
+    protected fun workSnapshot(): WorkSnapshot =
+        WorkSnapshot(
+            login = active(loginSessionScope),
+            account = active(account.deps.service),
+            me = active(me.deps.service),
+        )
+
+    /** [before] 之后在三个作用域里起的协程是否还有在跑的。 */
+    protected fun workPendingSince(before: WorkSnapshot): Boolean =
+        (active(loginSessionScope) - before.login).isNotEmpty() ||
+            (active(account.deps.service) - before.account).isNotEmpty() ||
+            (active(me.deps.service) - before.me).isNotEmpty()
+
+    /** [before] 之后在三个作用域里起的协程都已结束（含它们引起的后续读取与共享收尾）。[onPoll] 每轮核对前调用（测试用它显式放行挂住的应答）。 */
+    protected fun workSince(
+        before: WorkSnapshot,
+        message: String,
+        onPoll: () -> Unit = {},
+    ) = idleUntil(message) {
+        onPoll()
+        !workPendingSince(before)
+    }
+
+    /** 账号服务作用域（AppAccount 的会话级作用域，Main.immediate）里此刻在跑的协程（含常驻订阅）。 */
+    protected fun accountJobs(): Set<Job> =
+        account.deps.service.coroutineContext[Job]!!
+            .children
+            .filter { it.isActive }
+            .toSet()
+
+    /**
+     * FU-AND-0716 窄修三：[before] 之后在账号服务作用域里起的协程都已结束（提交 / 确认 / 读取的续体跑完结论才结束；常驻订阅在 [before] 里，不算）。
+     * 只用在动作前一刻取的快照上（进页会起常驻协程，不能跨进页使用）。[onPoll] 每轮核对前调用。
+     */
+    protected fun accountWorkSince(
+        before: Set<Job>,
+        message: String,
+        onPoll: () -> Unit = {},
+    ) = idleUntil(message) {
+        onPoll()
+        account.deps.service.coroutineContext[Job]!!
+            .children
+            .none { it.isActive && it !in before }
+    }
+
     /** 从设置页进换号子页（经真实手机号行）。 */
     protected fun openPhoneChange() {
         open(SETTINGS)
@@ -751,12 +834,74 @@ abstract class AccountHarness {
     ) {
         type(AccountTags.PHONE_NEW, phone)
         click(AccountTags.PHONE_STEP2_SEND)
+        // FU-AND-0716 窄修二：发码请求、应答与页面结算都在后台；原写法点完固定轮次就输码，随后直接读「最后一次发码请求」，发码晚到时读到的是第 1 步那次。
+        // 等页面离开「发送中」（点击即同步进入发送中、按钮置灰；结论落地后【获取验证码】进入倒计时，或失败后恢复可点）。同号仍在倒计时时点击不发码，
+        // 这里立即成立
+        idleUntil("第 2 步发码结算") { hasText(STEP2_COUNTDOWN_TEXT) || enabled(AccountTags.PHONE_STEP2_SEND) }
         type(AccountTags.PHONE_STEP2_CODE, code)
+    }
+
+    /**
+     * FU-AND-0716 窄修二：二次验证面板已出现、且这次发码已有结论（离开 SENDING：「正在发送验证码…」不在）。面板一出现就在 SENDING，【验证】要 READY 才受理；
+     * 原写法只等面板出现就输码点【验证】，发码晚到时点击白点、流程停住。
+     */
+    protected fun stepUpReady(): Boolean = has(STEP_UP_SHEET) && has(STEP_UP_CODE) && !hasText(STEP_UP_SENDING_TEXT)
+
+    /**
+     * FU-AND-0716 窄修二：勾选确认框并点【申请注销】。确认框与【申请注销】可点都要注销页的进度 / 资金 / 手机号读取已落地（waiverEnabled、
+     * applyEnabledWhenChecked），读取在后台；原写法进页后固定轮次就勾选、点击，读取晚到时两次点击都落在置灰控件上，申请根本没发出。先等各自可点再点。
+     */
+    protected fun checkWaiverAndSubmit() {
+        checkWaiver()
+        idleUntil("【申请注销】可点") { enabled(AccountTags.DELETE_SUBMIT) }
+        tap(AccountTags.DELETE_SUBMIT)
+    }
+
+    /** FU-AND-0716 窄修六：勾选确认框。它要注销页的进度 / 资金 / 手机号读取已落地才可点；原写法进页后固定轮次就点，读取晚到时点在置灰控件上。先等可点。 */
+    protected fun checkWaiver() {
+        idleUntil("确认框可勾选（注销页读取已落地）") { enabled(AccountTags.DELETE_WAIVER) }
+        tap(AccountTags.DELETE_WAIVER)
+    }
+
+    /** 栈里最上面那个绑手机页的 ViewModel（与页面同一个实例）。 */
+    protected fun bindPhonePage(): BindPhoneViewModel {
+        lateinit var model: BindPhoneViewModel
+        composeRule.runOnUiThread {
+            val entry =
+                navController.currentBackStack.value.last {
+                    it.destination.hasRoute(RouteDestination::class) && it.toRoute<RouteDestination>().name == "BindPhone"
+                }
+            model = ViewModelProvider.create(entry)[BindPhoneViewModel::class]
+        }
+        return model
+    }
+
+    /**
+     * FU-AND-0716 窄修二：绑手机页点【获取验证码】并等这次发码在页面结算（[com.couli.feature.login.BindPhoneUiState.resultSeq] 推进）。原写法点完固定轮次就输码，
+     * 发码晚到时输满 6 位不自动提交、【提交】也未就绪，随后「假服务没收到绑定就点【提交】」白点，流程停住。
+     */
+    protected fun sendBindCode() {
+        val model = bindPhonePage()
+        val seq = model.state.value.resultSeq
+        tap(com.couli.feature.login.BindPhoneTags.GET_CODE)
+        idleUntil("绑手机发码结算") { model.state.value.resultSeq > seq }
+    }
+
+    /**
+     * 绑手机页输满验证码后：没有自动提交时才点【提交】。FU-AND-0716 窄修二：「有没有在提交」看页面同步状态（submitting）与【提交】是否可点，
+     * [requireNoRequest] 为 true 时另保留原条件「假服务还没收到绑定请求」；不再只凭固定轮次后假服务的记录决定（请求晚到会误判、多点一次）。
+     */
+    protected fun submitBindIfNotStarted(requireNoRequest: Boolean) {
+        val submit = com.couli.feature.login.BindPhoneTags.SUBMIT
+        val noRequest = !requireNoRequest || all("POST", BIND).isEmpty()
+        val idle = !bindPhonePage().state.value.submitting
+        val clickable = has(submit) && enabled(submit)
+        if (noRequest && idle && clickable) tap(submit)
     }
 
     /** 二次验证面板：输入验证码并验证。 */
     protected fun passStepUpSheet(code: String = CODE_OK) {
-        idleUntil("二次验证面板") { has(STEP_UP_SHEET) }
+        idleUntil("二次验证面板（发码已有结论）") { stepUpReady() }
         type(STEP_UP_CODE, code)
         tap(STEP_UP_SUBMIT)
     }
@@ -773,9 +918,11 @@ abstract class AccountHarness {
         idleUntil("验证码输入") { has(com.couli.feature.login.LoginTags.CODE) }
         type(com.couli.feature.login.LoginTags.CODE, "222222")
         settle()
-        // 输满 6 位自动登录；没有自动发出时才点【登录】（再点会作废在途的那一次）
-        if (all("POST", "/v1/auth/login/sms").isEmpty() && has(com.couli.feature.login.LoginTags.SUBMIT)) {
-            tap(com.couli.feature.login.LoginTags.SUBMIT)
+        // 输满 6 位自动登录；没有自动发出时才点【登录】（再点会作废在途的那一次）。FU-AND-0716 R3-01 残留：「有没有发出」看页面同步状态——登录已发起时
+        // 【登录】进 loading、不可点（或页面已关），不再只看固定空转后假服务是否已收到请求（请求经 IO 线程到达，晚于固定轮次时会误判为没发、多点一次）
+        val submit = com.couli.feature.login.LoginTags.SUBMIT
+        if (all("POST", "/v1/auth/login/sms").isEmpty() && has(submit) && enabled(submit)) {
+            tap(submit)
         }
         idleUntil("登录完成") { all("POST", "/v1/auth/login/sms").isNotEmpty() && tokens.accessToken != null }
     }
@@ -835,6 +982,8 @@ abstract class AccountHarness {
         const val PHONE_ROW = MeTags.SETTINGS_ROW_PREFIX + "settings.phone"
         const val STEP_UP_SHEET = "step_up_sheet"
         const val STEP_UP_CODE = "step_up_code"
+        const val STEP_UP_SENDING_TEXT = "正在发送验证码…"
+        const val STEP2_COUNTDOWN_TEXT = "秒后重新获取"
         const val STEP_UP_SUBMIT = "step_up_submit"
         const val STEP_UP_CLOSE = "step_up_close"
         const val WAIT_S = 10L

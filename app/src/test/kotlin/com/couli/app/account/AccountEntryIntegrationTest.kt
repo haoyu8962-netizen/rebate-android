@@ -4,6 +4,7 @@ package com.couli.app.account
 
 import android.app.Application
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowWait
 import com.couli.app.shell.DELETION_PROMPT_TAG
 import com.couli.app.update.FORCE_UPDATE_DELETE_TAG
 import com.couli.app.update.FORCE_UPDATE_PRIVACY_TAG
@@ -14,6 +15,8 @@ import com.couli.core.router.RouteSource
 import com.couli.feature.login.LoginTags
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -66,8 +69,7 @@ class AccountEntryIntegrationTest : AccountHarness() {
         idleUntil("登录后打开 DeleteAccount 一次") { top() == DELETE_ACCOUNT && has(AccountTags.DELETE_SUBMIT) }
         assertEquals("deletion_only", tokens.scope)
         assertFalse("受限会话无【去提现】（G12）", has(AccountTags.DELETE_GO_WITHDRAW))
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         passStepUpSheet()
         idleUntil("申请成功回强更页") { top() == FORCE_UPDATE }
         idleUntil("标签变「撤销注销」") { hasText(t("app_update.cancel_deletion")) }
@@ -210,11 +212,55 @@ class AccountEntryIntegrationTest : AccountHarness() {
         passStep1()
         fillStep2()
         enqueueCode("POST", BIND, 10007, """{"stage":"cooling"}""")
+        val jobs = accountJobs()
         tap(AccountTags.PHONE_SUBMIT)
         idleUntil { all("POST", BIND).size == 1 }
         settle()
+        // FU-AND-0716 RC-03：请求记下时 10007 还没回来（记录仍是发送前写的 in_flight）；等这次提交连同页面续体结束（onResponse 写 held）再核对
+        accountWorkSince(jobs, "换号提交结算")
         assertFalse("不导航到注销页", top() == DELETE_ACCOUNT)
         assertEquals("10007 不结束键（held）", PendingKeyStore.HELD, records().single().stateRaw)
+    }
+
+    /**
+     * FU-AND-0716 RC-03：换号提交的 10007 被服务端挂住（请求已记下、应答未出）。先跑一遍原写法（等请求记下 → 固定轮次），断言此时记录仍是 in_flight
+     * （原写法在这里就断言 held 了）；再在 [accountWorkSince] 第一次核对时放行（显式握手），返回后断言不导航、记录为 held。
+     */
+    @Test
+    fun fuand0716_rc03_aHeld10007IsAwaitedBeforeAssertingTheHeldRecord() {
+        override = emptySet()
+        launch()
+        openPhoneChange()
+        passStep1()
+        fillStep2()
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        enqueue("POST", BIND) {
+            arrived.countDown()
+            held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
+            envelope("""{"stage":"cooling"}""", 10007)
+        }
+        try {
+            val jobs = accountJobs()
+            tap(AccountTags.PHONE_SUBMIT)
+            assertTrue("提交已到服务端、应答挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
+            // 原写法
+            idleUntil { all("POST", BIND).size == 1 }
+            settle()
+            assertEquals("挂住期间固定等待之后记录仍是 in_flight", PendingKeyStore.IN_FLIGHT, records().single().stateRaw)
+            var released = false
+            accountWorkSince(jobs, "换号提交结算") {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertFalse("不导航到注销页", top() == DELETE_ACCOUNT)
+            assertEquals("10007 不结束键（held）", PendingKeyStore.HELD, records().single().stateRaw)
+        } finally {
+            held.countDown()
+        }
     }
 
     @Test

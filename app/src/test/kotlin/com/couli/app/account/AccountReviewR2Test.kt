@@ -87,10 +87,10 @@ class AccountReviewR2Test : AccountHarness() {
     private fun bindPhoneTimesOut() {
         openBindPhone()
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         enqueueTimeout("POST", BIND)
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = true)
         idleUntil("待确认卡") { has(BindPhonePendingTags.CARD) }
     }
 
@@ -282,8 +282,7 @@ class AccountReviewR2Test : AccountHarness() {
         serverState.negativeFen = 200
         enqueueCode("POST", DELETION, 30416, """{"amount_fen":200}""")
         enqueueCode("GET", WALLET, 50001)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("30416 后的自动重取失败：资金区重试") { has(AccountTags.DELETE_FUNDS_RETRY) }
         serverState.negativeFen = 0
         click(AccountTags.DELETE_FUNDS_RETRY)

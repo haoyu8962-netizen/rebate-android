@@ -95,12 +95,20 @@ class AppTrade(
         }
         scope.launch {
             routing.session.drop(1).collect { state ->
-                // 登录完成：待办暂缓期间（绑手机引导、phone_bound 未查清）不恢复，由用户再点（保守，TODO(N-28)）
+                // 登录完成：待办暂缓期间（绑手机引导、phone_bound 未查清）不恢复；执行入口 resumeAfterLogin 本身也查暂缓（投递之后才开始的暂缓、
+                // 延后到回前台的续执行同样挡住）
                 if (state.loggedIn() &&
                     !routing.router.pendingHeld
                 ) {
                     main.post { live.forEach(OpenPurchaseController::resumeAfterLogin) }
                 }
+            }
+        }
+        scope.launch {
+            // FU-AND-0716 ①（iOS R1-01、APP-05b 共性第 19 条）：暂缓明确释放后通知活着的发起页，各自重新核对归属、前置与可购状态，再恢复一次
+            // （待办执行前即删除，重复通知不会重放第二次）
+            routing.router.heldReleases.drop(1).collect {
+                if (routing.session.value.loggedIn()) main.post { live.forEach(OpenPurchaseController::resumeAfterLogin) }
             }
         }
     }
@@ -233,6 +241,8 @@ class AppTrade(
         }
 
         override fun clear() = routing.router.clearAction(PurchasePending.ACTION)
+
+        override val held: Boolean get() = routing.router.pendingHeld
     }
 
     companion object {

@@ -22,7 +22,7 @@ import java.io.File
  *   （rule-gaps A 段）；debug / staging 可用状态文件覆盖（[variantWechatInstalled]，只给截图）；
  * - 清除缓存：WebView 的内存与磁盘资源缓存（主线程经 [WebViewCaches] 调 WebView.clearCache(true)，对本进程所有 WebView 生效，R1-10）+ 内存图片缓存 +
  *   应用缓存目录（WebView 的 HTTP 缓存在 cacheDir 下）；会话、设备注册、配置 LKG、未决记录、pending_action、本机偏好都在 filesDir / noBackupFilesDir /
- *   SharedPreferences，不受影响（AC-S1-137，03 §4.3）。删后再枚举核对，枚举失败按失败。
+ *   SharedPreferences，不受影响（AC-S1-137，03 §4.3）。成功口径见 [clearCacheDirectory]（清理动作无错即成功，不按清后是否为空判，APP-12 共性第 39 条）。
  */
 @Suppress("TooManyFunctions") // MeSystemPorts 的每项能力一个入口
 class AndroidMeSystem(
@@ -83,14 +83,13 @@ class AndroidMeSystem(
 
     override fun clearWebCache(): Boolean = WebViewCaches.clear(app)
 
-    @Suppress("ReturnCount") // 没有目录、枚举失败、核对三个出口
+    /** 每清完一项的观察点（只给测试模拟「清理途中 WebView 重建缓存文件」，生产不设）。 */
+    internal var afterEachCleared: (File) -> Unit = {}
+
     override fun clearCache(): Boolean {
         images?.clearMemory()
         val dir = app.cacheDir ?: return false
-        val children = dir.listFiles() ?: return !dir.exists()
-        children.forEach { it.deleteRecursively() }
-        // 删后再枚举核对：读不出按失败
-        return dir.listFiles()?.isEmpty() == true
+        return clearCacheDirectory(dir, afterEachCleared)
     }
 
     override fun deviceId(): String? = device.deviceId
@@ -111,4 +110,37 @@ class AndroidMeSystem(
         const val DENIED = "denied"
         const val UNAVAILABLE = "unavailable"
     }
+}
+
+/**
+ * 清缓存目录的成功口径（APP-12 共性第 39 条，FU-AND-0716）：清理动作完成且没有 I/O 错误即成功——开始时枚举到的每个文件都删掉了（或删时已不在），
+ * 每个目录都枚举得出；不拿清后目录是否为空判成败（活着的 WebView、图片 / 网络磁盘缓存会马上在 cacheDir 里重建文件，那不是清理失败；
+ * 因新写入而删不掉的目录本身也不算失败）。显示的大小由调用方之后重算。[afterEach]：每处理完一项（测试模拟并发重建用）。
+ */
+internal fun clearCacheDirectory(
+    dir: File,
+    afterEach: (File) -> Unit = {},
+): Boolean {
+    val children = dir.listFiles() ?: return !dir.exists()
+    return children.fold(true) { ok, child -> clearCacheEntry(child, afterEach) && ok }
+}
+
+private fun clearCacheEntry(
+    entry: File,
+    afterEach: (File) -> Unit,
+): Boolean {
+    val ok =
+        if (entry.isDirectory) {
+            val children = entry.listFiles()
+            if (children == null) {
+                // 枚举不出：已不在算删掉，还在按失败
+                !entry.exists()
+            } else {
+                children.fold(true) { all, child -> clearCacheEntry(child, afterEach) && all }.also { entry.delete() }
+            }
+        } else {
+            entry.delete() || !entry.exists()
+        }
+    afterEach(entry)
+    return ok
 }

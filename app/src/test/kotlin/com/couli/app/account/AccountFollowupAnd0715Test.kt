@@ -58,7 +58,7 @@ class AccountFollowupAnd0715Test : AccountHarness() {
         idleUntil("冷启动的屏障刷新已结束") { all("POST", REFRESH).isNotEmpty() }
         click(FORCE_UPDATE_DELETE_TAG)
         idleUntil("受限注销页") { top() == DELETE_ACCOUNT && has(AccountTags.DELETE_SUBMIT) }
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         val epoch = tokens.loginEpoch
         val cooling = deletionJson("cooling", canCancel = true)
         val arrived = CountDownLatch(1)

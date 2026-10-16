@@ -61,8 +61,9 @@ class LoginPageActions(
 )
 
 /**
- * 登录页的配置。[restricted]：从强更页进入的受限登录（APP-02c 已有的来源标记）——不显示设置、邀请码、第三方登录与帮助等业务入口
- * （BR-ID-01 细则）。[sessionExpired]：刷新失败清会话后跳来的登录（LoginSessionExpired，进页提示一次）。[oauth]：第三方登录执行器
+ * 登录页的配置。[restricted]：从强更页进入的受限登录（APP-02c 已有的来源标记）——不显示设置、邀请码与帮助等业务入口
+ * （BR-ID-01 细则）；第三方登录入口保留（共性第 28 条：仅第三方身份的已有账号要能登进 deletion_only 去注销），协议校验与 deletion_only
+ * 分流照常。[sessionExpired]：刷新失败清会话后跳来的登录（LoginSessionExpired，进页提示一次）。[oauth]：第三方登录执行器
  * （APP-05b）；[thirdParty] 要显示的第三方按钮（provider 名，[OAuthLoginService.visibleProviders]：适配器可用且本机已装 / 未知；
  * Android 正式包的微信适配器恒为不可用 → 空，整块不显示）。
  */
@@ -159,6 +160,12 @@ class LoginViewModel(
     /** 上一次发起尝试时的规范化号码（换号时作废在途请求）。 */
     private var attemptPhone: String? = null
 
+    /**
+     * 共性第 29 条（FU-AND-0716 第 2 轮）：验证码修订号。输入框里的验证码每变一次（输入、发码成功清空）加 1；登录提交时捕获，迟到的
+     * 20002 / 20003 等验证码字段结果只在修订号未变时落到输入框（显示错误、清空），同号码换码后不显示在新码上、不清空新码。
+     */
+    private var codeRevision = 0L
+
     private val mutableState = MutableStateFlow(LoginUiState())
     val state: StateFlow<LoginUiState> = mutableState.asStateFlow()
 
@@ -244,7 +251,11 @@ class LoginViewModel(
         mutableState.update { if (it.invite.isEmpty()) it.copy(invite = code, inviteExpanded = true) else it }
     }
 
-    fun onCodeChange(raw: String) = mutableState.update { it.copy(code = CodeInput.sanitize(raw), codeError = null) }
+    fun onCodeChange(raw: String) {
+        val code = CodeInput.sanitize(raw)
+        if (code != mutableState.value.code) codeRevision += 1
+        mutableState.update { it.copy(code = code, codeError = null) }
+    }
 
     /** 手机号页【获取验证码】与验证码页【重新获取】：都是发码（同号码倒计时内不再发出，直接回验证码步）。 */
     fun onGetCode() = requireAgreement { send(fromCodePage = false) }
@@ -271,7 +282,7 @@ class LoginViewModel(
     /** 第三方登录按钮（与短信登录同一个协议确认框，BR-ID-04）。 */
     fun onThirdParty(provider: String) = requireAgreement { oauthLogin(provider) }
 
-    val thirdParty: List<String> get() = if (config.restricted || config.oauth == null) emptyList() else config.thirdParty
+    val thirdParty: List<String> get() = if (config.oauth == null) emptyList() else config.thirdParty
 
     /** 验证码页返回手机号页：作废在途的登录（共性第 1 条）；已收到的码仍可在同号码下继续输入（共性第 12 条）。 */
     fun onBackToPhone() {
@@ -348,6 +359,8 @@ class LoginViewModel(
         when (outcome.stateRaw) {
             SmsCountdown.STATE_SENT, LoginService.STATE_COUNTDOWN -> {
                 val masked = outcome.phone?.let(PhoneNumber::masked).orEmpty()
+                // 共性第 29 条：发码成功会清空输入框，算一次换码
+                if (outcome.stateRaw == SmsCountdown.STATE_SENT && mutableState.value.code.isNotEmpty()) codeRevision += 1
                 // 共性第 11 条：真正发出的那次播报一次脱敏的发送对象（倒计时内不再发出的不播报）
                 if (outcome.stateRaw == SmsCountdown.STATE_SENT && masked.isNotEmpty()) {
                     announce(texts.format("login.code.sent_to", mapOf("phone" to masked)))
@@ -397,10 +410,11 @@ class LoginViewModel(
         if (service.busy || limits.loginBlocked(config.clock())) return
         attemptPhone = PhoneNumber.normalize(current.phone).normalized
         mutableState.update { it.copy(loggingIn = true, codeError = null) }
+        val revision = codeRevision
         viewModelScope.launch {
             val outcome = service.login(current.phone, current.code, agreement.consentAtMillis, current.invite, config.restricted)
             mutableState.update { it.copy(loggingIn = false) }
-            onLoginOutcome(outcome)
+            onLoginOutcome(outcome, revision == codeRevision)
         }
     }
 
@@ -456,27 +470,31 @@ class LoginViewModel(
     }
 
     @Suppress("CyclomaticComplexMethod") // 按 BR-TEXT-14 逐个页面状态
-    private fun onLoginOutcome(outcome: LoginOutcome) {
+    private fun onLoginOutcome(
+        outcome: LoginOutcome,
+        sameCode: Boolean = true,
+    ) {
         when (outcome.stateRaw) {
             LoginOutcome.LOGGED_IN -> {
                 config.actions.onLoggedIn(outcome)
             }
 
+            // 共性第 29 条：验证码字段的结果只落到提交时的那个验证码上（[sameCode]）；换码后的迟到结果不显示、不清空
             "code_error" -> {
-                mutableState.update { it.copy(codeError = text(outcome.textKey)) }
+                if (sameCode) mutableState.update { it.copy(codeError = text(outcome.textKey)) }
             }
 
             LoginErrorMapper.STATE_CODE_EXPIRED -> {
-                mutableState.update { it.copy(code = "", codeError = text(outcome.textKey)) }
+                if (sameCode) mutableState.update { it.copy(code = "", codeError = text(outcome.textKey)) }
             }
 
             LoginErrorMapper.STATE_REGISTRATION_BLOCKED -> {
                 // 账号没有创建：手机号保留、验证码清空（需要重新获取，BR-TEXT-14 login.risk_blocked.desc）
-                mutableState.update { it.copy(code = "", dialog = LoginDialog.BLOCKED) }
+                mutableState.update { it.copy(code = if (sameCode) "" else it.code, dialog = LoginDialog.BLOCKED) }
             }
 
             LoginErrorMapper.STATE_DELETION_PROCESSING -> {
-                mutableState.update { it.copy(code = "", dialog = LoginDialog.DELETION_PROCESSING) }
+                mutableState.update { it.copy(code = if (sameCode) "" else it.code, dialog = LoginDialog.DELETION_PROCESSING) }
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {
@@ -492,7 +510,7 @@ class LoginViewModel(
             "field_error" -> {
                 val message = text(outcome.textKey)
                 if (outcome.field == LoginErrorMapper.FIELD_CODE) {
-                    mutableState.update { it.copy(codeError = message) }
+                    if (sameCode) mutableState.update { it.copy(codeError = message) }
                 } else {
                     mutableState.update { it.copy(step = LoginStep.PHONE, phoneError = message) }
                 }

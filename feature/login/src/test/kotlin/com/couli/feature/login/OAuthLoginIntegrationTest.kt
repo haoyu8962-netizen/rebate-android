@@ -109,6 +109,26 @@ class OAuthLoginIntegrationTest {
 
     // ---- 第三方登录
 
+    /**
+     * 共性第 28 条（FU-AND-0716 第 2 轮，iOS APP-05b R2-01）：从强更页进入的受限登录里，仅第三方身份的已有账号经第三方登录拿到 deletion_only
+     * 会话——按 deletion_only 分流（不进绑手机引导、回强更页走注销），不当作正常登录。
+     */
+    @Test
+    fun fuand0716_28_aThirdPartyOnlyAccountLogsIntoDeletionOnlyFromTheRestrictedLogin() =
+        runBlocking {
+            host.update = AfterLoginUpdate.BELOW
+            adapter.immediate = credential(NONCE)
+            val restricted = loggedIn(isNew = false).replace("\"full\"", "\"deletion_only\"")
+            answer = { request -> if (request.path == WECHAT) envelope(0, restricted) else defaultAnswer(request) }
+            val outcome = oauth.loginWith(OAuthProvider.WECHAT, now)
+
+            assertEquals(OAuthLoginOutcome.LOGGED_IN, outcome.stateRaw)
+            assertEquals("不进绑手机引导", OAuthLoginRoute.DONE, outcome.routeRaw)
+            assertEquals(SessionScopeRaw.DELETION_ONLY, memory.scope)
+            assertTrue("按 deletion_only 回强更页（走注销）", "enter_force_update" in host.events)
+            assertFalse("不恢复待办", "resume_pending" in host.events)
+        }
+
     @Test
     fun anExistingUserLogsInWithOnlyTheCredentialAndResumesAfterPhoneBoundIsKnown() =
         runBlocking {
@@ -573,8 +593,9 @@ class OAuthLoginIntegrationTest {
         BindPhoneHost {
         val events: MutableList<String> = Collections.synchronizedList(mutableListOf())
         var pending = false
+        var update = AfterLoginUpdate.SUPPORTED
 
-        override fun updateState() = AfterLoginUpdate.SUPPORTED
+        override fun updateState() = update
 
         override fun hasPendingAction() = pending
 
@@ -622,7 +643,7 @@ class OAuthLoginIntegrationTest {
             events += "held_unverified"
         }
 
-        override fun phoneBound() {
+        override fun phoneBound(owner: BindPhoneOwner) {
             events += "phone_bound"
         }
     }

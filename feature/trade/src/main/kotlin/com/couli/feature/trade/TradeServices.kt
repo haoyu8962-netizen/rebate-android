@@ -35,6 +35,12 @@ interface PurchasePending {
     /** 删除（执行前、放弃、页面出栈）。 */
     fun clear()
 
+    /**
+     * 待办此刻被暂缓（APP-05b 共性第 3、9 条：第三方新号登录后、phone_bound 查清前）：自动恢复入口只保留记录、不读不清不重放，
+     * 等明确释放后再核对恢复（FU-AND-0716 ①，iOS R1-01）。没有暂缓概念的实现恒为 false。
+     */
+    val held: Boolean get() = false
+
     companion object {
         const val ACTION = "open_link"
     }

@@ -528,7 +528,22 @@ class AgentTransportIntegrationTest {
 
     private fun controller(): AgentController = agent.controller.value!!
 
+    /** 「我的」服务作用域（AppMe 的会话级作用域）里此刻在跑的协程（含常驻订阅）。 */
+    private fun meServiceJobs(): Set<kotlinx.coroutines.Job> =
+        me.deps.service.coroutineContext[kotlinx.coroutines.Job]!!
+            .children
+            .filter { it.isActive }
+            .toSet()
+
+    /** 会话页控制器已建好、且这次历史 / 会话读取已有结论（不在 IDLE、LOADING）。 */
+    private fun loadSettled(): Boolean {
+        val phase = agent.controller.value?.currentPhase ?: return false
+        return phase != AgentPhase.LOADING && phase != AgentPhase.IDLE
+    }
+
     private fun send(text: String = "帮我找纯牛奶") {
+        // FU-AND-0716 窄修二：进会话页后历史读取在后台（LOADING 时不受理发送）；先等这次加载有结论，原写法 open + 固定轮次后直接发，历史晚到即「没有受理」
+        idleUntil("会话加载结束") { loadSettled() }
         composeRule.runOnUiThread {
             val c = controller()
             check(c.send(c.snapshot.value.page, text)) { "没有受理：${c.currentPhase}" }
@@ -671,9 +686,12 @@ class AgentTransportIntegrationTest {
         open("AgentChat")
         send()
         idleUntil("meta 已到") { controller().activeRun != null && controller().streamStates.single().runId != null }
+        val meJobs = meServiceJobs()
         composeRule.runOnUiThread { me.logout(me.identity.value) { true } }
         idleUntil("logout 已发") { index("/v1/auth/logout") >= 0 }
         settle()
+        // FU-AND-0716 窄修四：logout 记下时应答还没回来，身份变更仍在途；等 me.logout 起的协程（cancel → logout → 收尾）都结束再核对
+        idleUntil("退出结算") { meServiceJobs().none { it !in meJobs } }
         assertEquals(1, count("/v1/agent/runs/"))
         val cancel = requests.first { it.path.startsWith("/v1/agent/runs/") }
         assertEquals("/v1/agent/runs/019a0000-0000-7000-8000-000000000121/cancel", cancel.path)
@@ -1047,6 +1065,8 @@ class AgentTransportIntegrationTest {
         }
         open("AgentChat")
         idleUntil("新归属取会话") { count("/v1/agent/sessions/current") == 2 }
+        // FU-AND-0716 窄修二：请求到了假服务不等于页面已处理应答；等这次会话读取有结论（离开 LOADING）再核对
+        idleUntil("新归属的会话读取结算") { controller().currentPhase != AgentPhase.LOADING }
         assertFalse(agent.gates.read.active)
         assertEquals(AgentPhase.READY, controller().currentPhase)
     }
@@ -1128,6 +1148,8 @@ class AgentTransportIntegrationTest {
             logoutHold?.countDown()
         }
         settle()
+        // FU-AND-0716 窄修六：放行后 logout 应答还在后台；等身份变更收尾（迟到的 cancel 若会写出，只能在这之前）再核对
+        idleUntil("身份变更收尾") { !agent.identityChange.active }
         assertEquals(0, count("/v1/agent/runs/"))
     }
 
@@ -1142,6 +1164,8 @@ class AgentTransportIntegrationTest {
             consentsHold?.countDown()
         }
         settle()
+        // FU-AND-0716 窄修六：放行后同意记录应答还在后台；等身份变更收尾再核对
+        idleUntil("身份变更收尾") { !agent.identityChange.active }
         assertEquals(0, count("/v1/agent/runs/"))
     }
 
@@ -1154,6 +1178,8 @@ class AgentTransportIntegrationTest {
             consentsHold?.countDown()
         }
         settle()
+        // FU-AND-0716 窄修六：放行后同意记录应答还在后台；等身份变更收尾再核对
+        idleUntil("身份变更收尾") { !agent.identityChange.active }
         assertEquals(0, count("/v1/agent/runs/"))
     }
 

@@ -33,6 +33,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowWait
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardPreferences
 import com.couli.app.clipboard.ClipboardScreens
@@ -89,6 +90,7 @@ import java.net.URLDecoder
 import java.time.OffsetDateTime
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -629,6 +631,30 @@ class AppMeIntegrationTest {
         assertTrue("栈 ${runCatching { stack() }.getOrNull()}，请求 ${lines()}", condition())
     }
 
+    /**
+     * FU-AND-0716 窄修二：「我的」资料已为当前身份读到。设置页的昵称行先于 getMe 结算渲染出来，但点它要 meOf(当前身份) 有值才进昵称子页；原写法只等行出现，
+     * getMe 晚到时点击不受理，随后输入找不到输入框。
+     */
+    private fun meLoaded(): Boolean = me.deps.repo.meOf(me.identity.value) != null
+
+    /** Me 服务作用域（AppMe 的会话级作用域，Main.immediate）里此刻在跑的协程（含常驻的订阅）。 */
+    private fun meJobs(): Set<Job> =
+        me.deps.service.coroutineContext[Job]!!
+            .children
+            .filter { it.isActive }
+            .toSet()
+
+    /**
+     * FU-AND-0716 窄修二：[before] 之后在 Me 服务作用域里起的协程都已结束——读取 / 保存的续体在协程里跑完结论（落地、按序号丢弃）才结束；常驻订阅在 [before]
+     * 里，不算。不看网络层是否空闲。
+     */
+    private fun meWorkSince(before: Set<Job>) =
+        FlowWait.until(::settle, { "Me 作用域仍有新起的协程在跑；请求 ${lines()}" }) {
+            me.deps.service.coroutineContext[Job]!!
+                .children
+                .none { it.isActive && it !in before }
+        }
+
     private fun lines(): List<String> = synchronized(requests) { requests.map { it.method + " " + it.path } }
 
     private fun has(tag: String): Boolean = composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
@@ -751,8 +777,10 @@ class AppMeIntegrationTest {
         assertEquals("3", consent["version"]!!.jsonPrimitive.content)
         assertFalse("本机先保存", local.personalizationOn.value)
         // 关闭之后的请求带 X-Personalization: off
+        // FU-AND-0716 窄修二：冷启动那次 getMe 已经满足「≥ 1」，原写法会读到关闭之前的那次请求；改等进「我的」之后新发的那次
+        val mesBefore = count("GET", "/v1/me")
         open("Me")
-        idleUntil { count("GET", "/v1/me") >= 1 }
+        idleUntil { count("GET", "/v1/me") > mesBefore }
         assertEquals("off", all("GET", "/v1/me").last().header("X-Personalization"))
     }
 
@@ -979,7 +1007,7 @@ class AppMeIntegrationTest {
         open("Me")
         idleUntil { has(MeTags.ME_NICKNAME) }
         open("Settings")
-        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") }
+        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") && meLoaded() }
         listOf("小狸爱买买", "小狸二号", "小狸三号").forEach { name ->
             click(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname")
             idleUntil { has(MeTags.NICKNAME_INPUT) }
@@ -1019,7 +1047,7 @@ class AppMeIntegrationTest {
     fun ac61_rateLimitedSaveDisablesTheButtonAndTheExecutionLayerBlocks() {
         launch()
         open("Settings")
-        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") }
+        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") && meLoaded() }
         click(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname")
         input(MeTags.NICKNAME_INPUT, "限流测试")
         click(MeTags.NICKNAME_SAVE)
@@ -1038,7 +1066,7 @@ class AppMeIntegrationTest {
     fun ac61_aMeReadSentBeforeTheSaveDoesNotOverwriteTheNewNickname() {
         launch()
         open("Settings")
-        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") }
+        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") && meLoaded() }
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)
         // 保存之前发出的读取：服务端当时的昵称还是旧的（应答内容在发出时就定下）
@@ -1048,6 +1076,7 @@ class AppMeIntegrationTest {
             release.await(WAIT_S, TimeUnit.SECONDS)
             envelope(stale)
         }
+        val jobsBefore = meJobs()
         composeRule.runOnUiThread { me.deps.repo.refresh(me.identity.value, { true }) }
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         answers.remove("/v1/me")
@@ -1061,6 +1090,8 @@ class AppMeIntegrationTest {
         release.countDown()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：放行的旧读取要等它连同业务续体跑完（它在 Me 服务作用域里的协程结束：按序号判为被取代、不写出），才核对「不覆盖」
+        meWorkSince(jobsBefore)
         assertEquals(
             "旧读取晚到不覆盖",
             "小狸爱买买",
@@ -1285,9 +1316,12 @@ class AppMeIntegrationTest {
         click(MeTags.ME_GUIDE_CLOSE)
         assertFalse(has(MeTags.ME_GUIDE_BAR))
         clock += 6 * DAY_MS
+        val sixDays = meJobs()
         open("Settings")
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
+        // FU-AND-0716 窄修六：回到「我的」时的读取在后台，引导条要等资料与通知状态落地才决定；等它结束再核对「不显示」
+        meWorkSince(sixDays)
         assertFalse("关闭后 6 天不显示", has(MeTags.ME_GUIDE_BAR))
         clock += DAY_MS
         open("Settings")
@@ -1295,9 +1329,11 @@ class AppMeIntegrationTest {
         settle()
         idleUntil { has(MeTags.ME_GUIDE_BAR) }
         ports.status = "granted"
+        val granted = meJobs()
         open("Settings")
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
+        meWorkSince(granted)
         assertFalse("系统已允许时不显示", has(MeTags.ME_GUIDE_BAR))
     }
 
@@ -1766,7 +1802,7 @@ class AppMeIntegrationTest {
         val restorer = StateRestorationTester(composeRule)
         launch(restorer = restorer)
         open("Settings")
-        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") }
+        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") && meLoaded() }
         click(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname")
         input(MeTags.NICKNAME_INPUT, "小狸草稿")
         restorer.emulateSavedInstanceStateRestore()
@@ -1804,7 +1840,7 @@ class AppMeIntegrationTest {
         risk = "frozen"
         launch()
         open("Settings")
-        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") }
+        idleUntil { has(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname") && meLoaded() }
         click(MeTags.SETTINGS_ROW_PREFIX + "settings.nickname")
         input(MeTags.NICKNAME_INPUT, "敏感词测试")
         click(MeTags.NICKNAME_SAVE)
@@ -2084,6 +2120,8 @@ class AppMeIntegrationTest {
         idleUntil { count("GET", "/v1/me") >= 1 }
         Thread.sleep(LATE_MS)
         settle()
+        // RC-02：请求记下不等于 42901 已结算；等冷启动补查连同限流结算结束
+        coldStartCheckSettled()
         assertEquals(1, count("GET", "/v1/me"))
         assertTrue("登录校验的 42901 启动 Me 读取禁用期", me.gates.read.active)
         answers.remove("/v1/me")
@@ -2091,6 +2129,49 @@ class AppMeIntegrationTest {
         idleUntil { has(MeTags.ME_ERROR) }
         assertTrue(text(dict("error.42901")) >= 1)
         assertEquals("同一截止时间内「我的」不再请求", 1, count("GET", "/v1/me"))
+    }
+
+    /**
+     * FU-AND-0716 RC-02：冷启动补查的 42901 被服务端挂住（请求已记下、应答未出）。先跑一遍原写法（等请求记下 → 睡 LATE_MS → 固定轮次），断言此时禁用期
+     * 还没启动（原写法在这里就断言 active 了）；再在 [coldStartCheckSettled] 第一次核对时放行（显式握手），返回后断言禁用期已启动、「我的」不再请求。
+     */
+    @Test
+    fun fuand0716_rc02_aHeldColdStart42901IsAwaitedBeforeAssertingTheMeReadGate() {
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        answers["/v1/me"] = {
+            arrived.countDown()
+            held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
+            rate()
+        }
+        try {
+            launch()
+            assertTrue("冷启动补查已到服务端、应答挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
+            // 原写法
+            idleUntil { count("GET", "/v1/me") >= 1 }
+            Thread.sleep(LATE_MS)
+            settle()
+            assertEquals(1, count("GET", "/v1/me"))
+            assertFalse("挂住期间固定等待之后禁用期还没启动", me.gates.read.active)
+            assertFalse("挂住期间补查还没结束", login.phoneChecksSettled())
+            var released = false
+            coldStartCheckSettled {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertEquals(1, count("GET", "/v1/me"))
+            assertTrue("登录校验的 42901 启动 Me 读取禁用期", me.gates.read.active)
+            answers.remove("/v1/me")
+            open("Me")
+            idleUntil { has(MeTags.ME_ERROR) }
+            assertTrue(text(dict("error.42901")) >= 1)
+            assertEquals("同一截止时间内「我的」不再请求", 1, count("GET", "/v1/me"))
+        } finally {
+            held.countDown()
+        }
     }
 
     /** R2-05 反方向：「我的」读取的禁用期内，登录侧的 phone_bound 校验在发送前被同一截止时间拦下。 */
@@ -2218,10 +2299,12 @@ class AppMeIntegrationTest {
         loginCheckDone()
         answers["/v1/me"] = { rate() }
         val before = count("GET", "/v1/me")
+        lateinit var stale: Job
         composeRule.runOnUiThread {
-            kotlinx.coroutines
-                .CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate)
-                .launch { login.oauth.refreshMe() }
+            stale =
+                kotlinx.coroutines
+                    .CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate)
+                    .launch { login.oauth.refreshMe() }
         }
         // 只等网络结果返回（IO 线程），不推进主线程：续体停在结算之前
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_S)
@@ -2233,6 +2316,8 @@ class AppMeIntegrationTest {
         switchSession("user-two")
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：旧会话那次 refreshMe 的续体（42901 结算）要真的跑完，「不写入」才有意义；原写法固定时长 + 固定轮次后就核对，续体晚到时核对的是它之前
+        FlowWait.until(::settle, { "旧会话的 refreshMe 还没跑完；请求 ${lines()}" }) { stale.isCompleted }
         assertFalse("旧会话的 42901 不写入新会话的截止时间", me.gates.read.active)
         val n = count("GET", "/v1/me")
         open("Me")
@@ -2291,8 +2376,20 @@ class AppMeIntegrationTest {
         idleUntil { count("GET", "/v1/me") >= 1 }
         Thread.sleep(LATE_MS)
         settle()
+        coldStartCheckSettled()
         return count("GET", "/v1/me")
     }
+
+    /**
+     * FU-AND-0716 RC-02：冷启动的 phone_bound 补查已发起、且连同收尾（应答回来后的限流结算、守卫同步）都已结束（AppLogin 补查任务）。原写法只等假服务记下
+     * GET /v1/me 再睡固定时长 + 固定轮次：请求计数在生成应答之前就加了，应答或业务续体晚到时，限流 / 页面状态还没结算就断言。[onPoll] 每轮核对前调用
+     * （测试用它显式放行挂住的应答）。
+     */
+    private fun coldStartCheckSettled(onPoll: () -> Unit = {}) =
+        FlowWait.until(::settle, { "冷启动补查未结束：started=${login.phoneChecksStarted}；请求 ${lines()}" }) {
+            onPoll()
+            login.phoneChecksStarted > 0 && login.phoneChecksSettled()
+        }
 
     private fun scrollValue(): Float =
         composeRule

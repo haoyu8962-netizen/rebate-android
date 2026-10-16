@@ -107,6 +107,12 @@ class BindPhonePageActions(
     val onOpenRoute: (route: String) -> Unit = {},
     /** 绑定成功、原页面许可仍有效（APP-13a R1-05）：App 只出栈这一个绑手机页，再完成前置、恢复待办。 */
     val onBound: () -> Unit = {},
+    /**
+     * 页面重新有效（回到前台、覆盖页出栈）时共享状态已是已绑手机（FU-AND-0716，iOS R1-08）：进页补查在页面被覆盖 / 进后台期间查明已绑、
+     * 那次没有导航的，App 只出栈这一个绑手机页（它须是栈顶），按 resumeOnly 恢复待办（不算完成前置、不重置计时）。返回是否已退出本页
+     * （不是那种情况——如已绑账号经 10005 引导或待确认卡进来——返回 false，页面照常）。
+     */
+    val onAlreadyBound: () -> Boolean = { false },
 )
 
 /**
@@ -181,6 +187,11 @@ data class BindPhoneUiState(
     val abandonDialog: Int = 0,
     /** 未决记录读不出（安全存储故障）：【绑定】置灰（lessons 38）。 */
     val pendingUnreadable: Boolean = false,
+    /**
+     * 写请求结果的页面结算序号：发码、绑定、确认、放弃的等待结束、页面按许可落地或丢弃之后加 1（不论结果、不论实例是否已换代）。
+     * 不参与渲染；集成测试据此等「流程已交回结论」（F-AND-36，FU-AND-0716 R1-02），不靠网络层空闲推测。
+     */
+    val resultSeq: Int = 0,
 )
 
 /** 绑手机页的状态机（BindPhone / BindPhoneMerge；APP-05b）。网络与会话都经 [BindPhoneService]。 */
@@ -196,7 +207,9 @@ class BindPhoneViewModel(
 
     private val service: BindPhoneService get() = config.service
     private val texts: LoginTexts get() = config.texts
-    private val bindLimit = LoginRateLimits()
+
+    /** 页面级绑定限流（Retry-After）：按表单实例的会话归属隔离，会话换代时换新（FU-AND-0716，iOS R1-09 / APP-05b 共性第 23 条）。 */
+    private var bindLimit = LoginRateLimits()
 
     private var instances = 0L
 
@@ -212,6 +225,9 @@ class BindPhoneViewModel(
     /** 页面可见性与可见世代（页面许可，共性第 11、23 条）：异步结果导航前核对仍可见、且发起后没有被覆盖或进后台。 */
     private var visible = false
     private var viewGen = 0L
+
+    /** 共性第 29 条（FU-AND-0716 第 2 轮）：验证码修订号，输入框里的验证码每变一次加 1；提交时捕获，迟到的验证码字段错误只在未变时显示。 */
+    private var codeRevision = 0L
     private var cleared = false
 
     /** 按固定身份订阅的共享未决通知（R1-04）；换代时换订阅，页面清除时随 viewModelScope 取消。 */
@@ -240,6 +256,7 @@ class BindPhoneViewModel(
 
     override fun onCleared() {
         cleared = true
+        doneWhileHidden = null
         pendingWatch = null
         sessionWatch()
     }
@@ -250,6 +267,29 @@ class BindPhoneViewModel(
 
     /** 渲染时捕获的实例仍是本页当前实例、页面没被清除、固定身份仍是当前会话（只比较，不赋值）。 */
     private fun live(b: BindPhoneBinding): Boolean = !cleared && b === binding && service.owns(b.owner)
+
+    /**
+     * 隐藏期间绑定成功的延后完成记录（FU-AND-0716，APP-05b 共性第 25、26 条）：发起时的表单实例（含固定身份）。只在同一实例、身份仍是当前会话、
+     * 共享状态已绑时消费；会话换代（[syncOwner] 换实例）与页面清除时作废。
+     */
+    private var doneWhileHidden: BindPhoneBinding? = null
+
+    /**
+     * 绑定（或确认上一次提交）成功后的页面收尾。原页面许可有效 → 出栈完成；许可已失效（发起后被覆盖 / 进后台）但原实例此刻已重新可见
+     * （「页面先恢复、成功后到」）→ 按原实例 + 固定身份 + 共享已绑状态立即完成一次；页面仍不可见（「成功先到」）→ 记下延后完成，
+     * 页面重新有效时消费（共性第 25 条）。共享结算（守卫已绑、释放暂缓、getMe）此前已在服务里做完。
+     */
+    private fun completeBound(
+        b: BindPhoneBinding,
+        permit: Long,
+    ) {
+        when {
+            navigable(b, permit) -> config.actions.onBound()
+            !live(b) -> Unit
+            visible && service.knownBound() -> config.actions.onBound()
+            else -> doneWhileHidden = b
+        }
+    }
 
     /** 页面许可（导航、打开别的页面）：[live] 且页面可见、发起后没有被覆盖或进后台（[permit] 是发起时的可见世代）。 */
     private fun navigable(
@@ -277,6 +317,7 @@ class BindPhoneViewModel(
     ) {
         if (!live(b)) return
         val code = CodeInput.sanitize(raw)
+        if (code != mutableState.value.code) codeRevision += 1
         mutableState.update { it.copy(code = code, codeError = null) }
     }
 
@@ -284,6 +325,17 @@ class BindPhoneViewModel(
         if (!visible) viewGen += 1
         visible = true
         syncOwner()
+        // 共性第 25、26 条：隐藏期间本页绑定成功（成功先到）→ 回来时核对原实例与固定身份、共享已绑，完成一次出栈
+        val done = doneWhileHidden
+        doneWhileHidden = null
+        val doneHere = done != null && done === binding && live(done)
+        if (doneHere && service.knownBound()) {
+            config.actions.onBound()
+            return
+        }
+        // FU-AND-0716（iOS R1-08）：每次页面重新有效先看共享已绑状态——进页补查在页面被覆盖 / 进后台期间查明已绑时，那次结果不导航，
+        // 回来由这里只退出当前这一个页面并恢复待办
+        if (live(binding) && service.knownBound() && config.actions.onAlreadyBound()) return
         tick()
         refreshPending()
     }
@@ -303,6 +355,8 @@ class BindPhoneViewModel(
         if (now == binding.owner || cleared) return
         service.invalidate()
         binding = BindPhoneBinding(++instances, now)
+        bindLimit = LoginRateLimits()
+        doneWhileHidden = null
         pendingBusyLocal = false
         watched = null
         val previous = mutableState.value
@@ -311,6 +365,7 @@ class BindPhoneViewModel(
                 binding = binding,
                 toastId = previous.toastId,
                 announceId = previous.announceId,
+                resultSeq = previous.resultSeq,
                 errorSeq = previous.errorSeq,
                 pendingLimited = service.shared?.phoneGate?.active == true,
             )
@@ -373,6 +428,15 @@ class BindPhoneViewModel(
 
     private fun gateActive(): Boolean = service.shared?.phoneGate?.active == true
 
+    /** 一次写请求的页面结算：[block] 结束（落地、丢弃或被取消）后推进 [BindPhoneUiState.resultSeq]。 */
+    private suspend fun settling(block: suspend () -> Unit) {
+        try {
+            block()
+        } finally {
+            mutableState.update { it.copy(resultSeq = it.resultSeq + 1) }
+        }
+    }
+
     /** 【确认上一次提交】（渲染时的键与表单实例）。 */
     fun onConfirmPending(
         key: String,
@@ -424,11 +488,13 @@ class BindPhoneViewModel(
         mutableState.update { it.copy(pendingBusy = true, pendingNotice = null, pendingGuide = null) }
         // 结果与共享结算在会话级任务里（离页不截断，R1-03、共性第 21 条）；页面只在原实例仍有效时落地，导航另核对页面许可（共性第 23 条）
         viewModelScope.launch {
-            val outcome = service.resolvePending(key, b.owner, abandon)
-            if (!live(b)) return@launch
-            pendingBusyLocal = false
-            mutableState.update { it.copy(pendingBusy = false) }
-            onResolved(outcome, b, permit)
+            settling {
+                val outcome = service.resolvePending(key, b.owner, abandon)
+                if (!live(b)) return@settling
+                pendingBusyLocal = false
+                mutableState.update { it.copy(pendingBusy = false) }
+                onResolved(outcome, b, permit)
+            }
         }
     }
 
@@ -439,36 +505,54 @@ class BindPhoneViewModel(
     ) {
         refreshPending()
         if (outcome == null) {
-            mutableState.update { it.copy(pendingNotice = accountText(RETRY_LATER_KEY)) }
+            // FU-AND-0716 R1-03（共性第 22 条）：「没有发出」的提示同样只在发起时的页面许可仍有效时落地；记录保持待确认（上面已按共享状态刷新）
+            if (navigable(b, permit)) mutableState.update { it.copy(pendingNotice = accountText(RETRY_LATER_KEY)) }
             return
         }
         when (outcome.nextStateRaw) {
             com.couli.core.me.account.PhoneChangeOutcome.DONE -> {
-                if (outcome.alreadyDone) toast(accountText(com.couli.core.me.account.AccountRaw.ALREADY_DONE_KEY))
-                // R1-05：出栈与恢复待办只在原页面许可仍有效时做（只出栈这一个页面，不按路由名找）
-                if (navigable(b, permit)) config.actions.onBound()
+                if (outcome.alreadyDone && navigable(b, permit)) toast(accountText(com.couli.core.me.account.AccountRaw.ALREADY_DONE_KEY))
+                // R1-05：出栈与恢复待办只在原页面许可仍有效时做（只出栈这一个页面，不按路由名找）；失效时见 [completeBound]
+                completeBound(b, permit)
             }
 
             com.couli.core.me.account.PhoneChangeOutcome.STEP1 -> {
-                // 已放弃 / 20903：清空验证码，可以重新绑定
-                mutableState.update { it.copy(code = "") }
-                toast(accountText(outcome.textKey ?: com.couli.core.me.account.AccountRaw.ABANDONED_KEY))
+                // 已放弃 / 20903：清空验证码，可以重新绑定（页面更新与提示只在发起时的页面许可仍有效时落地，FU-AND-0716 ④）
+                if (navigable(b, permit)) {
+                    mutableState.update { it.copy(code = "") }
+                    toast(accountText(outcome.textKey ?: com.couli.core.me.account.AccountRaw.ABANDONED_KEY))
+                }
             }
 
             com.couli.core.me.account.PhoneChangeOutcome.STEP2 -> {
-                // 键结束的业务错误（30411 等）：mergeable 沿用 APP-05b 并号确认，其余提示原错误
-                if (outcome.reason == "mergeable") {
-                    mutableState.update { it.copy(dialog = BindPhoneDialog.MERGE) }
-                } else {
-                    toast(accountText(outcome.errorKey ?: outcome.textKey ?: LoginService.GENERIC_KEY))
-                }
+                onResolvedEnded(outcome, navigable(b, permit))
             }
 
             else -> {
                 // R2-08：待确认提示用统一错误格式化（正文 + 独立附加的 trace6），不只读 textKey
-                mutableState.update { it.copy(pendingNotice = outcome.textKey?.let { key -> pendingMessage(key, outcome.trace6) }) }
+                // FU-AND-0716 R1-03（共性第 22 条）：42901、5xxxx、无法确认等非终结结果的提示只在发起时的页面许可仍有效时落地；失效时只做共享结算
+                // （未决记录、phoneGate 截止时间已在服务里记下），补办入口照 R2-07 保留
+                if (navigable(b, permit)) {
+                    mutableState.update { it.copy(pendingNotice = outcome.textKey?.let { key -> pendingMessage(key, outcome.trace6) }) }
+                }
                 outcome.guideRoute?.let { route -> guidePending(route, b, permit) }
             }
+        }
+    }
+
+    /**
+     * 待确认的确认 / 放弃以键结束的业务错误收尾（30411 等）：mergeable 沿用 APP-05b 并号确认，其余提示原错误。[permitted]：发起时的页面许可
+     * 仍有效；失效时丢掉并号凭据、不留着等页面回来补弹（FU-AND-0716 ④，iOS R1-04）。
+     */
+    private fun onResolvedEnded(
+        outcome: com.couli.core.me.account.PhoneChangeOutcome,
+        permitted: Boolean,
+    ) {
+        when {
+            outcome.reason == "mergeable" && permitted -> mutableState.update { it.copy(dialog = BindPhoneDialog.MERGE) }
+            outcome.reason == "mergeable" -> service.decideMerge(MergeDecision.CANCEL)
+            permitted -> toast(accountText(outcome.errorKey ?: outcome.textKey ?: LoginService.GENERIC_KEY))
+            else -> Unit
         }
     }
 
@@ -518,10 +602,12 @@ class BindPhoneViewModel(
         val permit = viewGen
         mutableState.update { it.copy(sending = true) }
         viewModelScope.launch {
-            val outcome = service.sendCode(phone)
-            if (!live(b)) return@launch
-            mutableState.update { it.copy(sending = false) }
-            onSent(outcome, b, permit)
+            settling {
+                val outcome = service.sendCode(phone)
+                if (!live(b)) return@settling
+                mutableState.update { it.copy(sending = false) }
+                onSent(outcome, b, permit)
+            }
         }
     }
 
@@ -531,6 +617,9 @@ class BindPhoneViewModel(
         permit: Long,
     ) {
         tick()
+        // FU-AND-0716 ④（iOS R1-04、APP-13a 共性第 23 条）：播报、弹窗、提示与字段错误只在发起时的页面许可仍有效时落地；
+        // 失效时只留共享结算（倒计时、限流已在服务里记下），不存着等页面回来补弹
+        if (!navigable(b, permit)) return
         when (outcome.stateRaw) {
             SmsCountdown.STATE_SENT -> {
                 // 共性第 11 条：发码成功播报一次脱敏的发送对象（换号、离页后的旧结果是 stale，不播报）
@@ -541,9 +630,9 @@ class BindPhoneViewModel(
                 Unit
             }
 
-            // 共性第 10、16 条：发码收到 10007 stage=cooling → 经 Router 打开注销进度页（不弹提示）；只在页面许可仍有效时
+            // 共性第 10、16 条：发码收到 10007 stage=cooling → 经 Router 打开注销进度页（不弹提示）；页面许可已在上面核对
             BindOutcome.OPEN_ROUTE -> {
-                if (navigable(b, permit)) outcome.route?.let(config.actions.onOpenRoute)
+                outcome.route?.let(config.actions.onOpenRoute)
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {
@@ -566,13 +655,16 @@ class BindPhoneViewModel(
         if (!live(b) || current.pendingKey != null || current.pendingUnreadable) return
         if (service.busy || bindLimit.loginBlocked(config.clock()) || gateActive()) return
         val permit = viewGen
+        val revision = codeRevision
         mutableState.update { it.copy(submitting = true, codeError = null, phoneError = null) }
         viewModelScope.launch {
-            // 只用渲染时实例的固定身份发出（R1-02）；发送与共享结算在会话级任务里（R1-03）
-            val outcome = service.bind(current.phone, current.code, b.owner)
-            if (!live(b)) return@launch
-            mutableState.update { it.copy(submitting = false) }
-            onBound(outcome, b, permit)
+            settling {
+                // 只用渲染时实例的固定身份发出（R1-02）；发送与共享结算在会话级任务里（R1-03）
+                val outcome = service.bind(current.phone, current.code, b.owner)
+                if (!live(b)) return@settling
+                mutableState.update { it.copy(submitting = false) }
+                onBound(outcome, b, permit, revision, current.code)
+            }
         }
     }
 
@@ -581,11 +673,14 @@ class BindPhoneViewModel(
         outcome: BindOutcome,
         b: BindPhoneBinding,
         permit: Long,
+        revision: Long = codeRevision,
+        /** 发起时输入框里的码；与 [BindOutcome.sentCode] 不一致（held 重发了原提交的码）时验证码反馈不落到输入框（共性第 35 条）。 */
+        typed: String? = null,
     ) {
         when (outcome.actionRaw) {
             // R1-05：绑定成功的出栈与恢复待办只在原页面许可仍有效时做
             BindPhoneAction.DONE -> {
-                if (navigable(b, permit)) config.actions.onBound()
+                completeBound(b, permit)
             }
 
             BindOutcome.STALE, BindOutcome.BUSY, BindOutcome.CODE_INCOMPLETE -> {
@@ -601,17 +696,26 @@ class BindPhoneViewModel(
                 if (navigable(b, permit)) outcome.route?.let(config.actions.onOpenRoute)
             }
 
+            // FU-AND-0716 ④（iOS R1-04）：并号框只在发起时的页面许可仍有效时弹；失效（进后台、被覆盖）时丢掉这次的并号凭据，
+            // 不留着等页面回来补弹已失效请求的并号框
             BindPhoneAction.MERGE_CONFIRM -> {
-                mutableState.update { it.copy(dialog = BindPhoneDialog.MERGE, mergeMasked = outcome.maskedPhone) }
+                if (navigable(b, permit)) {
+                    mutableState.update { it.copy(dialog = BindPhoneDialog.MERGE, mergeMasked = outcome.maskedPhone) }
+                } else {
+                    service.decideMerge(MergeDecision.CANCEL)
+                }
             }
 
             BindPhoneAction.RETRY_AFTER -> {
+                // 限流截止时间是本会话表单的结算，照记；提示只在页面许可有效时
                 bindLimit.limitLogin(config.clock(), outcome.disableMillis.takeIf { it > 0 } ?: DEFAULT_LIMIT_MILLIS)
                 tick()
-                toast(text(outcome.textKey))
+                if (navigable(b, permit)) toast(text(outcome.textKey))
             }
 
             else -> {
+                // 弹窗、字段错误与提示同样只在页面许可有效时落地（FU-AND-0716 ④）
+                if (!navigable(b, permit)) return
                 // 字段错误不附追踪编号；轻提示正文与追踪编号统一生成
                 when {
                     outcome.textKey == RISK_KEY -> {
@@ -624,8 +728,11 @@ class BindPhoneViewModel(
                         )
                     }
 
+                    // 共性第 29 条：换码后迟到的 20002 / 20003 不显示在新码上
+                    // 共性第 35 条：修订号绑定实际发出的提交——held 沿用原请求体时发出的是原提交的码，与发起时的输入不同就不落地
                     outcome.field == LoginErrorMapper.FIELD_CODE -> {
-                        fieldError(code = text(outcome.textKey))
+                        val sentTyped = typed == null || outcome.sentCode == null || outcome.sentCode == typed
+                        if (revision == codeRevision && sentTyped) fieldError(code = text(outcome.textKey))
                     }
 
                     else -> {

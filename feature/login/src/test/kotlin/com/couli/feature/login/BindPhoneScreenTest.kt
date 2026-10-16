@@ -4,11 +4,13 @@ import android.app.Application
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -23,6 +25,9 @@ import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.SessionScopeRaw
 import com.couli.core.network.UpdateRaw
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -30,6 +35,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -56,10 +62,16 @@ class BindPhoneScreenTest {
     private lateinit var api: ApiClient
     private val tokens = MemorySessionTokens("access-one", "refresh-one", SessionScopeRaw.FULL, "user-one")
     private val paths: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    /** 绑定请求实际发出的请求体（共性第 35 条：held 重发沿用原请求体）。 */
+    private val bindBodies: MutableList<String> = Collections.synchronizedList(mutableListOf())
     private val opened = mutableListOf<String>()
 
     @Volatile
     private var bindAnswer: () -> MockResponse = { envelope(0, "{}") }
+
+    @Volatile
+    private var loginAnswer: () -> MockResponse = { envelope(0, "{}") }
 
     @Volatile
     private var smsAnswer: () -> MockResponse = { envelope(0, """{"resend_after_sec":60,"expires_in_sec":300}""") }
@@ -71,9 +83,11 @@ class BindPhoneScreenTest {
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     paths += request.path.orEmpty()
+                    if (request.path == "/v1/me/phone") bindBodies += request.body.readUtf8()
                     return when (request.path) {
                         "/v1/me/phone" -> bindAnswer()
                         "/v1/auth/sms-codes" -> smsAnswer()
+                        "/v1/auth/login/sms" -> loginAnswer()
                         else -> envelope(0, """{"phone_bound":true}""")
                     }
                 }
@@ -245,6 +259,165 @@ class BindPhoneScreenTest {
         composeRule.onNodeWithText("login.other_methods").assertExists()
     }
 
+    /**
+     * 共性第 28 条（FU-AND-0716 第 2 轮，iOS APP-05b R2-01）：受限登录（强更页进入）保留第三方登录入口——仅第三方身份的已有账号要能登进
+     * deletion_only 去注销；设置、邀请码、帮助仍隐藏；点第三方按钮照样先过协议确认（不发请求）。
+     */
+    @Test
+    fun fuand0716_28_theRestrictedLoginKeepsTheThirdPartyEntryAndItsAgreementCheck() {
+        val login = LoginService(api, tokens, NoHost)
+        val oauth = OAuthLoginService(api, tokens, login, emptyList(), PhoneBindingState())
+        composeRule.setContent {
+            LoginScreen(
+                LoginPageConfig(
+                    service = login,
+                    texts = KeyTexts,
+                    restricted = true,
+                    oauth = oauth,
+                    thirdParty = listOf(OAuthProvider.WECHAT),
+                ),
+            )
+        }
+        assertTrue("受限登录", composeRule.onAllNodesWithTag(LoginTags.RESTRICTED, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
+        composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).assertExists()
+        listOf(LoginTags.SETTINGS, LoginTags.INVITE_ENTRY, LoginTags.HELP).forEach { tag ->
+            assertTrue("$tag 不显示", composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+        }
+        composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).performScrollTo().performClick()
+        composeRule.waitForIdle()
+        assertTrue("未勾协议：先弹确认框", composeRule.onAllNodesWithText("login.agree_confirm.ok").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("确认之前不发请求", paths.isEmpty())
+    }
+
+    /**
+     * 共性第 29 条（FU-AND-0716 第 2 轮，iOS APP-05b R2-03）：登录提交后同号码换了验证码，迟到的 20002 / 20003 不显示在新码上、不清空新码；
+     * 对照：没换码时照常显示 / 清空。服务端挂住登录响应，换码后才放行（显式握手）。
+     */
+    @Test
+    fun fuand0716_29_aLateCodeErrorOfTheLoginDoesNotLandOnANewlyTypedCode() {
+        ROUNDS.forEach { (code, retype) -> loginRound(code, retype) }
+    }
+
+    private fun loginRound(
+        code: Int,
+        retype: Boolean,
+    ) {
+        val held = CountDownLatch(1)
+        val arrived = CountDownLatch(1)
+        loginAnswer = {
+            arrived.countDown()
+            held.await(WAIT_NS, TimeUnit.NANOSECONDS)
+            envelope(code, "null")
+        }
+        val model = LoginViewModel(LoginPageConfig(LoginService(api, tokens, NoHost), KeyTexts, restricted = false))
+        model.onToggleAgreement()
+        model.onPhoneChange(PHONE)
+        model.onGetCode()
+        waitUntil { pumpMain().let { model.state.value.step == LoginStep.CODE } }
+        model.onCodeChange("123456")
+        model.onLogin()
+        try {
+            assertTrue(arrived.await(WAIT_NS, TimeUnit.NANOSECONDS))
+            if (retype) model.onCodeChange("654321")
+        } finally {
+            held.countDown()
+        }
+        waitUntil { pumpMain().let { !model.state.value.loggingIn } }
+        val state = model.state.value
+        if (retype) {
+            assertNull("$code：不显示在新码上", state.codeError)
+            assertEquals("$code：不清空新码", "654321", state.code)
+        } else {
+            assertNotNull("$code 对照：显示错误", state.codeError)
+            assertEquals("$code 对照：20003 清空、20002 保留", if (code == 20003) "" else "123456", state.code)
+        }
+    }
+
+    /** 共性第 29 条：绑手机提交后换了验证码，迟到的 20002 / 20003 不显示在新码上、新码保留；对照：没换码时照常显示。 */
+    @Test
+    fun fuand0716_29_aLateCodeErrorOfTheBindDoesNotLandOnANewlyTypedCode() {
+        ROUNDS.forEach { (code, retype) -> bindRound(code, retype) }
+    }
+
+    private fun bindRound(
+        code: Int,
+        retype: Boolean,
+    ) {
+        val held = CountDownLatch(1)
+        val arrived = CountDownLatch(1)
+        bindAnswer = {
+            arrived.countDown()
+            held.await(WAIT_NS, TimeUnit.NANOSECONDS)
+            envelope(code, "null")
+        }
+        val login = LoginService(api, tokens, NoHost)
+        val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost)
+        val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat"), SavedStateHandle())
+        model.onPageVisible()
+        model.onPhoneChange(PHONE)
+        model.onCodeChange("123456")
+        val seq = model.state.value.resultSeq
+        model.onSubmit()
+        try {
+            assertTrue(arrived.await(WAIT_NS, TimeUnit.NANOSECONDS))
+            if (retype) model.onCodeChange("654321")
+        } finally {
+            held.countDown()
+        }
+        waitUntil { pumpMain().let { model.state.value.resultSeq > seq } }
+        val state = model.state.value
+        if (retype) {
+            assertNull("$code：不显示在新码上", state.codeError)
+            assertEquals("$code：新码保留", "654321", state.code)
+        } else {
+            assertNotNull("$code 对照：显示错误", state.codeError)
+        }
+    }
+
+    /**
+     * APP-05b 共性第 35 条（鸿蒙同类）：同号码提交验证码 A → 50001（bindPhone 是严格操作，键与原请求体保留为 held）→ 改成 B 再提交，held 沿用原键原体
+     * 重发的是 A；这次的 20002 不落到 B 上、B 保留。对照：没改码时照常显示。两轮都核对第二次请求体与第一次相同（确实走了 held 重发）。
+     */
+    @Test
+    fun fuand0716_35_aHeldBindReplaysTheOriginalCodeAndItsCodeErrorDoesNotLandOnTheNewInput() {
+        listOf(true, false).forEach { retype -> heldBindRound(retype) }
+    }
+
+    private fun heldBindRound(retype: Boolean) {
+        bindBodies.clear()
+        val replay = AtomicBoolean(false)
+        bindAnswer = { if (replay.get()) envelope(20002, "null") else envelope(50001, "null") }
+        val login = LoginService(api, tokens, NoHost)
+        val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost)
+        val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat"), SavedStateHandle())
+        model.onPageVisible()
+        model.onPhoneChange(PHONE)
+        model.onCodeChange("123456")
+        val first = model.state.value.resultSeq
+        model.onSubmit()
+        waitUntil { pumpMain().let { model.state.value.resultSeq > first } }
+        assertNull("50001 不是字段错误", model.state.value.codeError)
+        replay.set(true)
+        if (retype) model.onCodeChange("654321")
+        val second = model.state.value.resultSeq
+        model.onSubmit()
+        waitUntil { pumpMain().let { model.state.value.resultSeq > second } }
+        val state = model.state.value
+        assertEquals("两次提交都已发出", 2, bindBodies.size)
+        assertEquals("held 沿用原请求体（发出的是原码）", bindBodies[0], bindBodies[1])
+        if (retype) {
+            assertNull("retype：原码的 20002 不显示在新码上", state.codeError)
+            assertEquals("retype：新码保留", "654321", state.code)
+        } else {
+            assertNotNull("对照：没改码时照常显示", state.codeError)
+        }
+    }
+
+    private fun pumpMain() =
+        org.robolectric.Shadows
+            .shadowOf(android.os.Looper.getMainLooper())
+            .idle()
+
     /** 共性第 11 条：发码成功播报一次脱敏的发送对象；同一号码倒计时走完、可以重发时播报一次；不逐秒播报。 */
     @Test
     fun sendingAnnouncesTheMaskedTargetOnceAndTheEndOfTheCountdownOnce() {
@@ -252,6 +425,8 @@ class BindPhoneScreenTest {
         val login = LoginService(api, tokens, NoHost) { now }
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
+        // 页面已显示（生产里用户能点【获取验证码】时页面必已 RESUMED；FU-AND-0716 ④ 起发码结果的播报核对发起时的页面许可）
+        model.onPageVisible()
         model.onPhoneChange(PHONE)
         model.onGetCode()
         waitUntil {
@@ -273,11 +448,79 @@ class BindPhoneScreenTest {
         assertEquals("只播报一次", 2, model.state.value.announceId)
     }
 
+    /**
+     * FU-AND-0716 ④（iOS R1-04、APP-13a 共性第 23 条）：点【获取验证码】后页面进后台 / 被覆盖，发码成功的结果回来——共享结算照常（倒计时
+     * 记在服务里），页面不播报、不留着等回来补播。
+     */
+    @Test
+    fun fuand0716_04_aCodeSentAnswerAfterThePageWasHiddenIsSettledButNotAnnounced() {
+        val now = 1_000_000L
+        val login = LoginService(api, tokens, NoHost) { now }
+        val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
+        val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
+        model.onPageVisible()
+        model.onPhoneChange(PHONE)
+        model.onGetCode()
+        // 发码在途时页面失去许可（主线程消息在回包之前）
+        model.onPageHidden()
+        waitUntil {
+            org.robolectric.Shadows
+                .shadowOf(android.os.Looper.getMainLooper())
+                .idle()
+            "/v1/auth/sms-codes" in paths && !model.state.value.sending
+        }
+        assertEquals("许可失效：不播报", 0, model.state.value.announceId)
+        assertTrue("共享结算照常：倒计时已记下", service.resendRemainingSec(PHONE) > 0)
+        model.onPageVisible()
+        assertEquals("回到页面不补播", 0, model.state.value.announceId)
+        assertTrue("倒计时照常显示", model.state.value.resendSec > 0)
+    }
+
+    /**
+     * FU-AND-0716 共性第 27 条（鸿蒙 FU-HM-0720 R1-03）：发码在途时页面失去许可，迟到的 44001 不弹风控框、42901 不提示也不改字段；
+     * 42901 的限流照常记在服务里（回到页面后按共享限流显示）。两种迟到结果各走一遍。
+     */
+    @Test
+    fun fuand0716_27_lateRiskAndRateLimitAnswersToAHiddenCodeRequestShowNothingButStillSettle() {
+        listOf(
+            { envelope(44001, "null") },
+            { envelope(42901, "null").setHeader("Retry-After", "120") },
+        ).forEachIndexed { round, answer ->
+            smsAnswer = answer
+            paths.clear()
+            val now = 1_000_000L
+            val login = LoginService(api, tokens, NoHost) { now }
+            val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
+            val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
+            model.onPageVisible()
+            model.onPhoneChange(PHONE)
+            model.onGetCode()
+            model.onPageHidden()
+            waitUntil {
+                org.robolectric.Shadows
+                    .shadowOf(android.os.Looper.getMainLooper())
+                    .idle()
+                "/v1/auth/sms-codes" in paths && !model.state.value.sending
+            }
+            val hidden = model.state.value
+            assertNull("第 $round 轮：不弹风控框", hidden.dialog)
+            assertNull("第 $round 轮：不提示", hidden.toast)
+            assertNull("第 $round 轮：不改字段", hidden.phoneError)
+            assertEquals("第 $round 轮：不播报", 0, hidden.announceId)
+            model.onPageVisible()
+            assertNull("第 $round 轮：回来不补弹", model.state.value.dialog)
+            assertNull(model.state.value.toast)
+            if (round == 1) assertTrue("42901 的限流照常结算", service.sendLimitedRemainingSec(PHONE) > 0)
+        }
+    }
+
     /** 发码成功（号码 [PHONE]）并等到发码播报；返回 ViewModel 与可调的时钟。 */
     private fun sentModel(clock: LongArray): BindPhoneViewModel {
         val login = LoginService(api, tokens, NoHost) { clock[0] }
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { clock[0] }
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { clock[0] }), SavedStateHandle())
+        // 页面已显示（生产里用户能点【获取验证码】时页面必已 RESUMED；FU-AND-0716 ④ 起发码结果的播报核对发起时的页面许可）
+        model.onPageVisible()
         model.onPhoneChange(PHONE)
         model.onGetCode()
         waitUntil {
@@ -392,7 +635,7 @@ class BindPhoneScreenTest {
 
         override fun sessionEnded() = Unit
 
-        override fun phoneBound() = Unit
+        override fun phoneBound(owner: BindPhoneOwner) = Unit
     }
 
     private object FixtureDevice : DeviceCredentials {
@@ -402,6 +645,9 @@ class BindPhoneScreenTest {
 
     private companion object {
         const val PHONE = "13800138000"
+
+        /** 共性第 29 条用例的轮次：验证码错误 / 过期 × 提交后换码 / 不换码（对照）。 */
+        val ROUNDS = listOf(20002 to true, 20002 to false, 20003 to true, 20003 to false)
         const val OTHER_PHONE = "13900139000"
         const val WAIT_NS = 5_000_000_000L
         const val POLL_MS = 20L

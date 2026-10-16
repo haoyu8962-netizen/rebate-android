@@ -187,9 +187,12 @@ class PhoneChangeIntegrationTest : AccountHarness() {
         launch()
         openPhoneChange()
         enqueueCode("POST", SMS, 42901, headers = mapOf("Retry-After" to "30"))
+        val work = workSnapshot()
         click(AccountTags.PHONE_STEP1_SEND)
         idleUntil { all("POST", SMS).size == 1 }
         settle()
+        // FU-AND-0716 窄修六：发送中本身就让按钮置灰；等 42901 应答与限流结算结束再核对「限流置灰」
+        workSince(work, "第 1 步发码 42901 结算")
         assertFalse("发码限流", enabled(AccountTags.PHONE_STEP1_SEND))
         type(AccountTags.PHONE_STEP1_CODE, CODE_OK)
         assertTrue("【下一步】只看验证限制", enabled(AccountTags.PHONE_STEP1_NEXT))
@@ -235,6 +238,7 @@ class PhoneChangeIntegrationTest : AccountHarness() {
             release.await(WAIT_S, java.util.concurrent.TimeUnit.SECONDS)
             envelope("null", 20001)
         }
+        val lateSend = workSnapshot()
         click(AccountTags.PHONE_STEP2_SEND)
         assertTrue(arrived.await(WAIT_S, java.util.concurrent.TimeUnit.SECONDS))
         androidx.test.espresso.Espresso
@@ -245,6 +249,8 @@ class PhoneChangeIntegrationTest : AccountHarness() {
         release.countDown()
         settle()
         settle()
+        // FU-AND-0716 窄修六：迟到的发码结果放行后还在后台；等它连同页面续体结束再现读
+        workSince(lateSend, "迟到的第 2 步发码结算")
         assertFalse("迟到的发码结果不在新表单上标错", has(AccountTags.PHONE_FIELD_ERROR))
     }
 
@@ -290,10 +296,10 @@ class PhoneChangeIntegrationTest : AccountHarness() {
 
     private fun bindTimeout() {
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         type(BindPhoneTags.CODE, CODE_OK)
         enqueueTimeout("POST", BIND)
-        if (has(BindPhoneTags.SUBMIT) && enabled(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = false)
         idleUntil("BindPhone 待确认卡") { has(BindPhonePendingTags.CARD) }
     }
 
@@ -343,6 +349,11 @@ class PhoneChangeIntegrationTest : AccountHarness() {
             )
         }
         settle()
+        // FU-AND-0716 窄修二：这次 getMe 在后台；原写法固定轮次后就点手机号行，读取晚到时行仍按「未绑定」进绑手机页。等新快照（已绑定）落地再点
+        idleUntil("getMe 落地：已绑定") {
+            me.deps.repo.state.value.me
+                ?.phoneBound == true
+        }
         idleUntil { has(PHONE_ROW) && enabled(PHONE_ROW) }
         click(PHONE_ROW)
         idleUntil("换号子页直接显示待确认（跳过第 1 步）") { has(AccountTags.PENDING_CARD) }

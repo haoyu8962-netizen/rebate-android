@@ -79,10 +79,10 @@ class AccountReviewR1Test : AccountHarness() {
     private fun bindPhoneTimesOut() {
         openBindPhone()
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         enqueueTimeout("POST", BIND)
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = true)
         idleUntil("待确认卡") { has(BindPhonePendingTags.CARD) }
     }
 
@@ -166,7 +166,7 @@ class AccountReviewR1Test : AccountHarness() {
         val job = collectSignals { seen += it }
         composeRule.runOnUiThread { account.tokensCache.put("withdraw", USER_A, "tok-test-w", now + 300_000L) }
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)
         enqueue("POST", BIND) {
@@ -176,7 +176,7 @@ class AccountReviewR1Test : AccountHarness() {
             envelope("{}")
         }
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = true)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -277,7 +277,7 @@ class AccountReviewR1Test : AccountHarness() {
         idleUntil { top() == FORCE_UPDATE && has(com.couli.app.update.FORCE_UPDATE_DELETE_TAG) }
         click(com.couli.app.update.FORCE_UPDATE_DELETE_TAG)
         idleUntil("注销页") { top() == DELETE_ACCOUNT && has(AccountTags.DELETE_SUBMIT) }
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         // 服务端回 10405 但本机版本不低于 min_supported_version：网络层对遗留的 deletion_only 只刷新（REFRESH_ONLY）
         enqueueCode("POST", DELETION, 10405, """{"min_supported_version":"0.0.1"}""")
         val forced = accountForcedCalls
@@ -299,8 +299,7 @@ class AccountReviewR1Test : AccountHarness() {
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 30416, """{"amount_fen":200}""")
         serverState.negativeFen = 200
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("本次 30416") { has(AccountTags.DELETE_NEGATIVE_NOTICE) }
         serverState.negativeFen = 0
         coverAndReturn()
@@ -355,12 +354,15 @@ class AccountReviewR1Test : AccountHarness() {
             release.await(WAIT_S, TimeUnit.SECONDS)
             envelope("{}", 44001)
         }
+        val jobs = accountJobs()
         tap(AccountTags.PHONE_SUBMIT)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         coverAndReturn {
             release.countDown()
             settle()
             settle()
+            // FU-AND-0716 窄修三：放行后应答与续体仍在后台；等这次提交在被盖住期间结算完，再核对「不弹」、回到页面
+            accountWorkSince(jobs, "被盖住期间提交结算")
             assertFalse("盖住时不弹", has(AccountTags.PHONE_RISK_APPEAL))
         }
         idleUntil("回到页面展示风控弹窗") { has(AccountTags.PHONE_RISK_APPEAL) }
@@ -448,7 +450,7 @@ class AccountReviewR1Test : AccountHarness() {
         fillStep2()
         enqueueCode("POST", BIND, 10003)
         tap(AccountTags.PHONE_SUBMIT)
-        idleUntil("二次验证面板") { has(STEP_UP_SHEET) }
+        idleUntil("二次验证面板（发码已有结论）") { stepUpReady() }
         enqueueCode("POST", STEP_UP, 42901, headers = mapOf("Retry-After" to "30"))
         type(STEP_UP_CODE, CODE_OK)
         tap(STEP_UP_SUBMIT)

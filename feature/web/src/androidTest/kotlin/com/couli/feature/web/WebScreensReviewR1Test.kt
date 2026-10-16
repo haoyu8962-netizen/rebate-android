@@ -1,7 +1,6 @@
 package com.couli.feature.web
 
 import android.content.Context
-import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -28,8 +27,6 @@ import com.couli.core.bridge.BridgeUi
 import com.couli.core.bridge.BridgeUpdateState
 import com.couli.core.bridge.ExternalNavPolicy
 import java.util.Collections
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -98,41 +95,27 @@ class WebScreensReviewR1Test {
                 .toList()
         }
 
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> compose.runOnUiThread { block() } }
+
+    /** 页面已交回结论之后读一次值。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        compose.runOnUiThread {
-            webView.evaluateJavascript(script) {
-                result = it
-                latch.countDown()
-            }
-        }
-        assertTrue(latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
+    ): String = probe(webView).read(script)
 
     private fun waitUntil(
         message: String,
         condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    ) = WebWait.until(message, condition = condition)
 
+    /**
+     * 以页面里已提交的文档为准（webView.url 在新文档提交前就会变）。F-AND-31：原来在导航进行中逐次求值、单次回调 10 秒没回就判失败
+     * （FU-AND-0715 编排复验 r3 的失败栈）；改为等页面交回「已是 [url] 这份文档且脚本已执行」，探测不挂在导航上（[PageProbe.await]）。
+     */
     private fun ready(
         webView: WebView,
         url: String,
-    ) = waitUntil("$url ready") {
-        // 以页面里已提交的文档为准（webView.url 在新文档提交前就会变）
-        evaluate(webView, "window.ready === true && location.href") == "\"$url\""
-    }
+    ) = probe(webView).await("$url ready", "window.ready === true && location.href") { it == "\"$url\"" }
 
     /** 可信容器：宿主是真实 BridgeHost（auth.getUser 挂着，交出调用有效性），作用域是容器实例自己的。 */
     private inner class TrustedFixture {
@@ -287,6 +270,8 @@ class WebScreensReviewR1Test {
         assertEquals("back button on the left of the title bar", 1, count(BACK_TAG))
         compose.onNodeWithTag(BACK_TAG).performClick()
         waitUntil("went back") { onUi { webView.url } == EXTERNAL_A }
+        // 原来只等 webView.url（新文档提交前就会变）就点第二次返回：改为再等返回后的文档真正提交（历史随之更新）
+        ready(webView, EXTERNAL_A)
         assertEquals("going back in history does not close", 0, closes.get())
 
         compose.onNodeWithTag(BACK_TAG).performClick()
@@ -321,7 +306,7 @@ class WebScreensReviewR1Test {
         ready(webView, EXTERNAL_A)
 
         evaluate(webView, "document.getElementById('slot').src = 'https://shop.taobao.example.test/frame'; true")
-        compose.waitUntil(WAIT_S * MILLIS) { count(EXTERNAL_SEARCH_TAG) > 0 }
+        compose.waitUntil(WebWait.CEILING_MS) { count(EXTERNAL_SEARCH_TAG) > 0 }
         assertEquals("original page stays", EXTERNAL_A, onUi { webView.url })
         compose.onNodeWithTag(EXTERNAL_SEARCH_TAG).performClick()
         compose.waitForIdle()
@@ -387,9 +372,6 @@ class WebScreensReviewR1Test {
     }
 
     private companion object {
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 200L
         const val TRUSTED = "https://h5.example.test"
         const val PAGE_A = "$TRUSTED/a"
         const val PAGE_B = "$TRUSTED/b"

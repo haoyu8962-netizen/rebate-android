@@ -24,7 +24,6 @@ import com.couli.core.bridge.ExternalNavPolicy
 import com.couli.core.clientcore.ClientEvent
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -92,42 +91,32 @@ class WebContainersInstrumentedTest {
             WebView(activity).also { activity.root.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         }
 
-    /** 在主线程求值并等结果（测试代码读取页面状态用；容器自己从不这样做）。 */
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> onMain { block() } }
+
+    /** 在主线程求值并等结果（测试代码读取页面状态用；容器自己从不这样做）。只在页面已交回结论之后读。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
+    ): String = probe(webView).read(script)
 
-    private fun results(webView: WebView): JsonObject {
-        val raw = evaluate(webView, "JSON.stringify(window.results || null)")
-        val text = Json.parseToJsonElement(raw).jsonPrimitive.content
-        return Json.parseToJsonElement(text).jsonObject
-    }
-
+    /** F-AND-31：等页面的 window.results 交回满足 [condition] 的结论（探测不挂在导航上，见 [PageProbe.await]）。 */
     private fun waitFor(
         webView: WebView,
+        message: String,
         condition: (JsonObject) -> Boolean,
     ): JsonObject {
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (SystemClock.uptimeMillis() < deadline) {
-            val current = runCatching { results(webView) }.getOrNull()
-            if (current != null && condition(current)) return current
-            Thread.sleep(POLL_MS)
-        }
-        val state = evaluate(webView, "location.href + ' ' + document.readyState + ' ' + typeof window.results")
-        return runCatching { results(webView) }.getOrElse { throw AssertionError("page state: $state", it) }
+        val answer =
+            probe(webView).await(message, RESULTS_SCRIPT) { raw ->
+                parseResults(raw)?.let(condition) == true
+            }
+        return checkNotNull(parseResults(answer))
     }
+
+    private fun parseResults(raw: String): JsonObject? =
+        runCatching {
+            val text = Json.parseToJsonElement(raw).jsonPrimitive.content
+            Json.parseToJsonElement(text).jsonObject
+        }.getOrNull()
 
     private fun tap(webView: WebView) =
         onMain {
@@ -173,12 +162,9 @@ class WebContainersInstrumentedTest {
     fun trustedPageCallsFromTheMainFrameButSubframeAndMissingGestureAreRejected() {
         assumeTrue("system WebView supports the transport", BridgeTransport.isSupported())
         val webView = newWebView()
-        // F-AND-31（FU-AND-0714）：注入手势时钟。点击到桥消息到达之间的调度延迟（负载约 60 时可超过 1 秒）不属于被测逻辑；点击与这次调用
-        // 定格在同一时刻（frozen），验证的仍是「系统派发的真实触摸之后同一调用放行」。没定格时与生产相同（uptimeMillis）
-        val frozen =
-            java.util.concurrent.atomic
-                .AtomicLong(-1L)
-        val gestureNow = { frozen.get().takeIf { it >= 0 } ?: SystemClock.uptimeMillis() }
+        // F-AND-31（FU-AND-0714 定格、FU-AND-0716 改为全程注入）：手势时钟只在测试推进时走动。点击到桥消息到达之间的调度延迟（负载约 60
+        // 时可超过 1 秒）不属于被测逻辑；点击与这次调用读到同一时刻，验证的仍是「系统派发的真实触摸之后同一调用放行」，窗口判定照生产执行
+        val clock = ManualClock()
         val controller =
             onMain {
                 TrustedWebViewController(
@@ -186,7 +172,7 @@ class WebContainersInstrumentedTest {
                     TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"),
                     trustedHost(),
                     NoTrustedCallbacks,
-                    gestureNow,
+                    clock::now,
                 )
             }
         assertTrue(controller.bridgeInstalled)
@@ -195,12 +181,15 @@ class WebContainersInstrumentedTest {
         onMain { webView.loadDataWithBaseURL("$TRUSTED/test", asset("bridge-trusted.html"), "text/html", "utf-8", null) }
 
         val results =
-            waitFor(webView) {
+            waitFor(webView, "trusted page done with both subframes reported") {
                 it["done"]?.jsonPrimitive?.content == "true" &&
                     it.containsKey("subframe") &&
                     it.containsKey("sandboxed")
             }
-        Thread.sleep(POLL_MS)
+        // 原为固定 200 毫秒：改为等容器对同地址子框架文档交回判定
+        WebWait.until("same-URL subframe document decided", detail = { "cancelled=${server.cancelled} passed=${server.passed}" }) {
+            "$TRUSTED/test" in server.cancelled || "$TRUSTED/test" in server.passed
+        }
         assertTrue("container cancelled the same-URL subframe document", "$TRUSTED/test" in server.cancelled)
         assertTrue("the test double never had to serve it", server.served.isEmpty())
 
@@ -223,12 +212,10 @@ class WebContainersInstrumentedTest {
         )
         assertSubframesRejected(results)
 
-        // 真实触摸（系统派发的 MotionEvent）之后 1 秒内，同一调用放行（点击与调用定格在同一时刻，见上）
-        frozen.set(SystemClock.uptimeMillis())
+        // 真实触摸（系统派发的 MotionEvent）之后 1 秒内，同一调用放行（点击与调用读同一注入时刻，见上）
         tap(webView)
-        onMain { webView.evaluateJavascript("callForTest('clipboard.write', {text: 'x'}, 'withGesture')", null) }
-        val after = waitFor(webView) { it.containsKey("withGesture") }
-        frozen.set(-1L)
+        probe(webView).fire("callForTest('clipboard.write', {text: 'x'}, 'withGesture')")
+        val after = waitFor(webView, "clipboard.write after a tap answered") { it.containsKey("withGesture") }
         assertEquals(
             0,
             after
@@ -238,8 +225,8 @@ class WebContainersInstrumentedTest {
         )
 
         // 第 19 条：在途 id 重复——后来的那次由桥层直接 90002、不发送，也不覆盖原来那条待回应的调用
-        onMain { webView.evaluateJavascript(DUPLICATE_ID_SCRIPT, null) }
-        val duplicate = waitFor(webView) { it.containsKey("dupFirst") && it.containsKey("dupSecond") }
+        probe(webView).fire(DUPLICATE_ID_SCRIPT)
+        val duplicate = waitFor(webView, "both duplicate-id calls answered") { it.containsKey("dupFirst") && it.containsKey("dupSecond") }
         assertEquals(
             BRIDGE_INVALID_PARAMS,
             duplicate
@@ -273,9 +260,13 @@ class WebContainersInstrumentedTest {
         val server =
             onMain { SameUrlFrameServer(webView.webViewClient, "$TRUSTED/test", SAME_URL_FRAME).also { webView.webViewClient = it } }
         onMain { webView.loadDataWithBaseURL("$TRUSTED/test", FRAMES_PAGE, "text/html", "utf-8", null) }
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (server.cancelled.size < 3 && SystemClock.uptimeMillis() < deadline) Thread.sleep(POLL_MS)
-        Thread.sleep(POLL_MS)
+        // 原为「最多 10 秒等取消数到 3 + 固定 200 毫秒」（到时不判失败）：改为等三个子框架文档都由容器交回判定
+        WebWait.until("all three subframe documents decided", detail = { "cancelled=${server.cancelled} passed=${server.passed}" }) {
+            val decided = server.cancelled + server.passed
+            decided.any { it == "$TRUSTED/other" } &&
+                decided.any { it.startsWith("https://appleid.apple.com/") } &&
+                decided.any { it.startsWith(FOREIGN) }
+        }
         android.util.Log.i(LOG_TAG, "trusted subframes cancelled=${server.cancelled} passed=${server.passed}")
         assertTrue("same-origin subframe (other path) cancelled", "$TRUSTED/other" in server.cancelled)
         assertTrue("auth page subframe cancelled", server.cancelled.any { it.startsWith("https://appleid.apple.com/") })
@@ -297,7 +288,7 @@ class WebContainersInstrumentedTest {
             }
         onMain { webView.loadDataWithBaseURL("$FOREIGN/test", asset("bridge-trusted.html"), "text/html", "utf-8", null) }
 
-        val results = waitFor(webView) { it["done"]?.jsonPrimitive?.content == "true" }
+        val results = waitFor(webView, "untrusted page done") { it["done"]?.jsonPrimitive?.content == "true" }
 
         assertEquals("no __REBATE_BRIDGE__ on an untrusted origin", "false", results.getValue("present").jsonPrimitive.content)
         assertEquals("no transport channel either", "\"undefined\"", evaluate(webView, "typeof window.__couliBridgeChannel"))
@@ -333,33 +324,34 @@ class WebContainersInstrumentedTest {
             }
         assertTrue(controller.available)
         onMain { webView.loadDataWithBaseURL("$THIRD_PARTY/page", asset("external-page.html"), "text/html", "utf-8", null) }
-        val page = waitFor(webView) { it.containsKey("bridge") }
+        val page = waitFor(webView, "external page reported") { it.containsKey("bridge") }
         assertEquals("no bridge object in a third-party page", "undefined", page.getValue("bridge").jsonPrimitive.content)
         assertEquals("no transport channel either", "undefined", page.getValue("channel").jsonPrimitive.content)
 
         // 子框架去平台域：文档请求在发出前被拦
         onMain { webView.evaluateJavascript("frameTo('https://shop.taobao.example.test/frame')", null) }
-        assertTrue("platform document in a subframe blocked", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("platform document in a subframe blocked", callbacks.blocked)
         assertEquals(NavFrame.SUBFRAME, callbacks.frames.first())
 
         // 主框架去平台域：取消导航、原页面不动
         callbacks.reset()
         onMain { webView.evaluateJavascript("go('https://taobao.example.test/help')", null) }
-        assertTrue("main-frame platform navigation blocked", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("main-frame platform navigation blocked", callbacks.blocked)
         assertEquals(NavFrame.MAIN, callbacks.frames.first())
-        Thread.sleep(POLL_MS)
+        // 负向观察窗（不是同步等待：只可能让「没跳走」的核对变弱，不会造成偶发失败），保持原 200 毫秒
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertEquals("original page stays", "\"$THIRD_PARTY/page\"", evaluate(webView, "location.href"))
 
         // 商品页交识别：意图带去掉片段的 URL 与命中平台（APP-04 三端共性第 8 条）
         onMain { webView.evaluateJavascript("go('https://item.taobao.example.test/item?id=1#sku')", null) }
-        assertTrue("product page handed to native recognition", callbacks.product.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("product page handed to native recognition", callbacks.product)
         assertEquals("https://item.taobao.example.test/item?id=1" to "taobao", callbacks.productIntent)
 
         // intent:// 取消并上报（只记类别）
         val before = events.size
         onMain { webView.evaluateJavascript("go('intent://item#Intent;scheme=example;end')", null) }
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (events.none { it.name == "external_page_blocked_nav" } && SystemClock.uptimeMillis() < deadline) Thread.sleep(POLL_MS)
+        // 原为最多 10 秒的轮询（到时不判失败，靠下一行 first 抛错）：改为等容器交回上报
+        WebWait.until("intent:// navigation reported") { events.drop(before).any { it.name == "external_page_blocked_nav" } }
         val reported = events.drop(before).first { it.name == "external_page_blocked_nav" }
         assertEquals("intent", reported.fields.getValue("kind").content)
         assertTrue("platform hit tracked as external_page_union_host", events.any { it.name == "external_page_union_host" })
@@ -388,17 +380,17 @@ class WebContainersInstrumentedTest {
         // 测试里用脚本代替用户点击发起新窗口（容器默认只让用户手势打开新窗口）
         onMain { webView.settings.javaScriptCanOpenWindowsAutomatically = true }
         onMain { webView.loadDataWithBaseURL("$THIRD_PARTY/page", asset("external-page.html"), "text/html", "utf-8", null) }
-        waitFor(webView) { it.containsKey("bridge") }
+        waitFor(webView, "external page reported") { it.containsKey("bridge") }
 
         onMain { webView.evaluateJavascript("window.open('https://shop.taobao.example.test/cart')", null) }
-        assertTrue("platform new window blocked", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("platform new window blocked", callbacks.blocked)
         assertEquals(NavFrame.NEW_WINDOW, callbacks.frames.first())
         val tracked = events.first { it.name == "external_page_union_host" }
         assertEquals("new_window", tracked.fields.getValue("frame").content)
         assertEquals("original page stays", "\"$THIRD_PARTY/page\"", evaluate(webView, "location.href"))
 
         onMain { webView.evaluateJavascript("window.open('https://item.taobao.example.test/item?id=2#x')", null) }
-        assertTrue("product new window handed to native recognition", callbacks.product.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("product new window handed to native recognition", callbacks.product)
         assertEquals("https://item.taobao.example.test/item?id=2" to "taobao", callbacks.productIntent)
         onMain { controller.destroy() }
     }
@@ -420,7 +412,7 @@ class WebContainersInstrumentedTest {
                 appVersion = "1.0.0",
             ).open("https://example.com/")
         }
-        assertTrue("no third-party page opens in the app without rules", callbacks.unavailable.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("no third-party page opens in the app without rules", callbacks.unavailable)
     }
 
     /** APP-04 三端共性第 7、12 条：授权页（初始地址）被拦下、不加载；用户触发的文档导航按采样率上报 external_page_nav_host。 */
@@ -442,9 +434,10 @@ class WebContainersInstrumentedTest {
                 roll = { 0 },
             ).open("https://appleid.apple.com/auth/authorize?client_id=x")
         }
-        assertTrue("auth page blocked at the initial URL", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        WebWait.latch("auth page blocked at the initial URL", callbacks.blocked)
         assertEquals(NavFrame.INITIAL, callbacks.frames.first())
-        Thread.sleep(POLL_MS)
+        // 负向观察窗（同上），保持原 200 毫秒
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertTrue("auth page never loaded", onMain { webView.url }?.contains("apple.com") != true)
         val sample = events.single { it.name == "external_page_nav_host" }
         assertEquals("apple.com", sample.fields.getValue("registered_domain").content)
@@ -619,9 +612,8 @@ class WebContainersInstrumentedTest {
         const val FOREIGN = "https://foreign.example.test"
         const val THIRD_PARTY = "https://page.example.test"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 200L
+        const val NEGATIVE_WINDOW_MS = 200L
+        const val RESULTS_SCRIPT = "JSON.stringify(window.results || null)"
         const val BRIDGE_GESTURE_MISSING = 90404
         const val BRIDGE_INVALID_PARAMS = 90002
         const val BRIDGE_NOT_LOGGED_IN = 90401

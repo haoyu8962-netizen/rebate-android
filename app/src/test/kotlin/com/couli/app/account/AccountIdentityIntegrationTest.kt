@@ -77,7 +77,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         val toggle = clickOf(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         val apply = clickOf(AccountTags.DELETE_SUBMIT)
         switchSession(USER_B)
         idleUntil("按新身份重建") { has(AccountTags.DELETE_SUBMIT) }
@@ -96,8 +96,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueTimeout("POST", DELETION)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.PENDING_CARD) }
         val confirm = clickOf(AccountTags.PENDING_CONFIRM)
         val abandon = clickOf(AccountTags.PENDING_ABANDON)
@@ -191,8 +190,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
                 .MockResponse()
                 .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST)
         }
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -209,8 +207,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueTimeout("POST", DELETION)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.PENDING_CARD) }
         switchSession(null)
         switchSession(USER_B)
@@ -242,7 +239,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         click(com.couli.app.update.FORCE_UPDATE_DELETE_TAG)
         idleUntil { top() == DELETE_ACCOUNT && has(AccountTags.DELETE_SUBMIT) }
         assertFalse("受限会话无【去提现】", has(AccountTags.DELETE_GO_WITHDRAW))
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         assertTrue(enabled(AccountTags.DELETE_SUBMIT))
         val identity = account.identity.value
         composeRule.runOnUiThread {
@@ -259,7 +256,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         serverState.requireStepUp = false
         launch()
         openDeleteFromSettings()
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         val apply = clickOf(AccountTags.DELETE_SUBMIT)
         enqueueCode("POST", DELETION, 42901, headers = mapOf("Retry-After" to "30"))
         apply()
@@ -309,7 +306,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         click(PHONE_ROW)
         idleUntil { has(BindPhoneTags.PAGE) }
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         type(BindPhoneTags.CODE, CODE_OK)
         val submit = runCatching { clickOf(BindPhoneTags.SUBMIT) }.getOrNull()
         switchSession(USER_B)
@@ -341,14 +338,57 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 30416, """{"amount_fen":200}""")
         serverState.negativeFen = 567
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        val work = workSnapshot()
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_NEGATIVE_NOTICE) }
         idleUntil("钱包已重取") { all("GET", WALLET).size >= 2 }
         settle()
+        // RC-04：请求记下≠重取结果已落地；等申请与重取的续体都结束（重取到的 negative_fen 已有机会写进页面），再重新读提示核对
+        workSince(work, "申请与钱包重取结算")
         val notice = textOf(AccountTags.DELETE_NEGATIVE_NOTICE)
         assertTrue("提示用本次的金额：$notice", notice.contains(CouliFormat.money(200)))
         assertFalse("不被重取到的 negative_fen 替换：$notice", notice.contains(CouliFormat.money(567)))
+    }
+
+    /**
+     * FU-AND-0716 RC-04：30416 之后的钱包重取被服务端挂住（请求已记下、应答未出）。挂住期间这次重取的续体仍在跑（断言点不可达）；在 [workSince] 第一次核对时
+     * 放行（显式握手），返回后重新读提示，断言金额仍是本次 30416 的、没有被重取到的 negative_fen 替换。
+     */
+    @Test
+    fun fuand0716_rc04_aHeldWalletRefetchIsAwaitedBeforeReadingThe30416Prompt() {
+        serverState.requireStepUp = false
+        launch()
+        openDeleteFromSettings()
+        enqueueCode("POST", DELETION, 30416, """{"amount_fen":200}""")
+        serverState.negativeFen = 567
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        enqueue("GET", WALLET) {
+            arrived.countDown()
+            held.await(WAIT_S, TimeUnit.SECONDS)
+            envelope(walletJson(567))
+        }
+        try {
+            val work = workSnapshot()
+            checkWaiverAndSubmit()
+            idleUntil { has(AccountTags.DELETE_NEGATIVE_NOTICE) }
+            assertTrue("重取已到服务端、应答挂住", arrived.await(WAIT_S, TimeUnit.SECONDS))
+            settle()
+            assertTrue("挂住期间重取的续体仍在跑（原写法在这里就读提示断言了）", workPendingSince(work))
+            var released = false
+            workSince(work, "申请与钱包重取结算") {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            val notice = textOf(AccountTags.DELETE_NEGATIVE_NOTICE)
+            assertTrue("提示用本次的金额：$notice", notice.contains(CouliFormat.money(200)))
+            assertFalse("不被重取到的 negative_fen 替换：$notice", notice.contains(CouliFormat.money(567)))
+        } finally {
+            held.countDown()
+        }
     }
 
     @Test
@@ -364,6 +404,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
             release.await(WAIT_S, TimeUnit.SECONDS)
             envelope("{}", 44001)
         }
+        val work = workSnapshot()
         tap(AccountTags.PHONE_SUBMIT)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         open("Help")
@@ -371,7 +412,47 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         release.countDown()
         settle()
         settle()
+        // RC-05：放行后 44001 应答与换号页回调仍在后台；等它们结束再现读弹窗
+        workSince(work, "被覆盖期间 44001 结算")
         assertFalse("被覆盖时不弹 44001 弹窗", has(AccountTags.PHONE_RISK_APPEAL))
+    }
+
+    /**
+     * FU-AND-0716 RC-05：lesson11 的握手对照。被覆盖期间提交的 44001 被服务端挂住时，[workSince] 不返回（提交任务仍在跑，断言点不可达）；第一次核对时才放行，
+     * 返回后现读，断言被覆盖时不弹 44001 弹窗。
+     */
+    @Test
+    fun fuand0716_rc05_aHeld44001WhileCoveredIsAwaitedBeforeCheckingTheDialog() {
+        launch()
+        openPhoneChange()
+        passStep1()
+        fillStep2()
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        enqueue("POST", BIND) {
+            arrived.countDown()
+            release.await(WAIT_S, TimeUnit.SECONDS)
+            envelope("{}", 44001)
+        }
+        try {
+            val work = workSnapshot()
+            tap(AccountTags.PHONE_SUBMIT)
+            assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
+            open("Help")
+            settle()
+            assertTrue("挂住期间提交任务仍在跑（原写法放行后两轮 settle 就断言）", workPendingSince(work))
+            var released = false
+            workSince(work, "被覆盖期间 44001 结算") {
+                if (!released) {
+                    released = true
+                    release.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertFalse("被覆盖时不弹 44001 弹窗", has(AccountTags.PHONE_RISK_APPEAL))
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test
@@ -402,8 +483,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         settle()
         serverState.requireStepUp = true
         openDeleteFromSettings()
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("account_deletion 面板照常发码") { all("POST", SMS).size == 2 }
         assertEquals("account_deletion", body(all("POST", SMS).last())["action"].toString().trim('"'))
     }
@@ -435,15 +515,59 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         launch()
         openPhoneChange()
         enqueueCode("POST", SMS, 42901, headers = mapOf("Retry-After" to "2"))
+        val work = workSnapshot()
         click(AccountTags.PHONE_STEP1_SEND)
         idleUntil { all("POST", SMS).size == 1 }
         settle()
+        // RC-05：发送中本身就让按钮置灰，证明不了 42901 已结算；推进时钟前先等发码应答与限流结算结束（截止时间按推进前的时钟起算）
+        workSince(work, "第 1 步发码 42901 结算")
         assertFalse(enabled(AccountTags.PHONE_STEP1_SEND))
         now += 3_000L
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
         composeRule.mainClock.advanceTimeBy(3_000L)
         settle()
         idleUntil("到期后自动解除") { enabled(AccountTags.PHONE_STEP1_SEND) }
+    }
+
+    /**
+     * FU-AND-0716 RC-05：lesson20 的握手对照。第 1 步发码的 42901 被服务端挂住时，按钮因「发送中」置灰，但限流还没结算；[workSince] 不返回，
+     * 第一次核对时才放行；返回后再推进时钟，到期自动解除（截止时间按推进前的时钟起算）。
+     */
+    @Test
+    fun fuand0716_rc05_aHeldStep1Send42901IsSettledBeforeTheClockMoves() {
+        launch()
+        openPhoneChange()
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        enqueue("POST", SMS) {
+            arrived.countDown()
+            release.await(WAIT_S, TimeUnit.SECONDS)
+            envelope("null", 42901).setHeader("Retry-After", "2")
+        }
+        try {
+            val work = workSnapshot()
+            click(AccountTags.PHONE_STEP1_SEND)
+            assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
+            settle()
+            assertFalse("发送中按钮置灰", enabled(AccountTags.PHONE_STEP1_SEND))
+            assertTrue("挂住期间发码任务仍在跑（置灰来自发送中，不是限流）", workPendingSince(work))
+            var released = false
+            workSince(work, "第 1 步发码 42901 结算") {
+                if (!released) {
+                    released = true
+                    release.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertFalse(enabled(AccountTags.PHONE_STEP1_SEND))
+            now += 3_000L
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+            composeRule.mainClock.advanceTimeBy(3_000L)
+            settle()
+            idleUntil("到期后自动解除") { enabled(AccountTags.PHONE_STEP1_SEND) }
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test
@@ -455,7 +579,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         click(PHONE_ROW)
         idleUntil { has(BindPhoneTags.PAGE) }
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)
         enqueue("POST", BIND) {
@@ -465,7 +589,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
             envelope("{}")
         }
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = true)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -483,10 +607,10 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         click(PHONE_ROW)
         idleUntil { has(BindPhoneTags.PAGE) }
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         enqueueTimeout("POST", BIND)
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        submitBindIfNotStarted(requireNoRequest = true)
         idleUntil { has(BindPhonePendingTags.CARD) }
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -495,6 +619,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
             release.await(WAIT_S, TimeUnit.SECONDS)
             envelope("null", 10005)
         }
+        val jobs = loginJobs()
         tap(BindPhonePendingTags.CONFIRM)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         composeRule.runOnUiThread { navController.popBackStack() }
@@ -503,8 +628,59 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         release.countDown()
         settle()
         settle()
+        // FU-AND-0716 窄修四：确认是会话级任务（离页不截断），放行后应答与记录结算仍在后台；等它在 AppLogin 会话作用域里结束再核对
+        loginWorkSince(jobs, "离页后确认结算")
         assertEquals("离页后的补办结果不导航", stackBefore, stack())
         assertEquals(PendingKeyStore.UNKNOWN, records().single().stateRaw)
+    }
+
+    /**
+     * FU-AND-0716 RC-04：lesson25 的握手对照。绑定成功被服务端挂住时，[workSince] 不会返回（绑定任务仍在跑，断言点不可达）；它第一次核对时才放行，
+     * 返回后重新读导航栈，断言迟到的成功没有按路由名移除后来打开的页面。
+     */
+    @Test
+    fun fuand0716_rc04_aHeldLateBindSuccessIsAwaitedBeforeReadingTheBackStack() {
+        serverState.phoneBound = false
+        launch()
+        open(SETTINGS)
+        idleUntil { has(PHONE_ROW) && enabled(PHONE_ROW) }
+        click(PHONE_ROW)
+        idleUntil { has(BindPhoneTags.PAGE) }
+        type(BindPhoneTags.PHONE, PHONE_NEW)
+        sendBindCode()
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        enqueue("POST", BIND) {
+            arrived.countDown()
+            release.await(WAIT_S, TimeUnit.SECONDS)
+            serverState.phoneBound = true
+            envelope("{}")
+        }
+        try {
+            type(BindPhoneTags.CODE, CODE_OK)
+            val bindWork = workSnapshot()
+            submitBindIfNotStarted(requireNoRequest = true)
+            assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
+            composeRule.runOnUiThread { navController.popBackStack() }
+            settle()
+            assertEquals(SETTINGS, top())
+            open("Help")
+            settle()
+            val stackBefore = stack()
+            assertTrue("挂住期间绑定任务仍在跑（原写法放行后两轮 settle 就断言）", workPendingSince(bindWork))
+            var released = false
+            workSince(bindWork, "迟到绑定成功与收尾结算") {
+                if (!released) {
+                    released = true
+                    release.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertEquals("迟到的绑定成功不按路由名移除后来打开的页面", stackBefore, stack())
+            assertTrue(has(MeTags.SETTINGS_PAGE) || top() == "Help")
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test
@@ -516,7 +692,7 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         click(PHONE_ROW)
         idleUntil { has(BindPhoneTags.PAGE) }
         type(BindPhoneTags.PHONE, PHONE_NEW)
-        tap(BindPhoneTags.GET_CODE)
+        sendBindCode()
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)
         enqueue("POST", BIND) {
@@ -526,7 +702,8 @@ class AccountIdentityIntegrationTest : AccountHarness() {
             envelope("{}")
         }
         type(BindPhoneTags.CODE, CODE_OK)
-        if (all("POST", BIND).isEmpty() && has(BindPhoneTags.SUBMIT)) tap(BindPhoneTags.SUBMIT)
+        val bindWork = workSnapshot()
+        submitBindIfNotStarted(requireNoRequest = true)
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -537,6 +714,8 @@ class AccountIdentityIntegrationTest : AccountHarness() {
         release.countDown()
         settle()
         settle()
+        // RC-04：等迟到的绑定成功连同其后的 getMe、共享收尾都结束，再重新读导航栈核对
+        workSince(bindWork, "迟到绑定成功与收尾结算")
         assertEquals("迟到的绑定成功不按路由名移除后来打开的页面", stackBefore, stack())
         assertTrue(has(MeTags.SETTINGS_PAGE) || top() == "Help")
     }

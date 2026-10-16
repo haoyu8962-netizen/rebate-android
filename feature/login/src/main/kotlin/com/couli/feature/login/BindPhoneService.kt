@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -43,6 +44,11 @@ data class BindOutcome(
     val maskedPhone: String = "",
     /** [OPEN_ROUTE] 时要经 Router 打开的页面（10007 stage=cooling → DeleteAccount，APP-05b 共性第 10 条）。 */
     val route: String? = null,
+    /**
+     * 这次实际发出的验证码（APP-05b 共性第 35 条）：held 键沿用原键原体时是原提交的码，不是调用方这次传入的输入；没有发出时为 null。
+     * 页面只在它与发起时的输入一致时才把验证码相关的结果落到输入框。
+     */
+    val sentCode: String? = null,
 ) {
     companion object {
         const val OPEN_ROUTE = "open_route"
@@ -72,8 +78,10 @@ interface BindPhoneHost {
     /**
      * 绑定成功、getMe 已刷新（APP-13a R1-05：只做共享结算，不导航）：守卫的会话状态变为已绑手机、释放暂缓。出栈、提示与「完成前置」恢复待办
      * 由持有原页面许可的页面经 [BindPhonePageActions.onBound] 做，不按路由名关页（共性第 25 条，G66）。
+     * [owner] 是发起绑定 / 确认时固定的完整身份（FU-AND-0716 R1-01）：服务在 getMe 返回后已核对过一次；App 收尾时须再核对它仍是当前会话，
+     * 已换代（退出、另一账号登录）就什么都不做——不能解除新会话的暂缓。
      */
-    fun phoneBound()
+    fun phoneBound(owner: BindPhoneOwner)
 
     /** 没有绑定就离开绑手机页：暂缓的待办经守卫恢复（只恢复、不重置计时；仍需手机号的保留，不再自动拉起绑手机页）。 */
     fun leftUnbound() = Unit
@@ -290,7 +298,9 @@ class BindPhoneService(
         // 绑定结果只记到发起时的那个会话（另一账号的会话在等待中保存 → 不记到别人身上）
         // 共性第 15 条：首次派发与每次写出前都核对仍是这个会话（另一账号的会话已保存 → 不发出，不能用别人的令牌绑定）
         val epoch = owner?.epoch ?: tokens.loginEpoch
-        val account = owner?.account ?: client.activeUserId()
+        // R1-01：发起时的完整固定身份（页面给的，或此刻的当前会话；登录世代先于其余各项取得，同原来的顺序）；成功后的共享收尾在 getMe 返回后按它再核对
+        val fixed = owner ?: owner().copy(epoch = epoch)
+        val account = fixed.account
         // G58：本账号保留着（held）的键沿用原键原体（不重新生成）；结果未知的键只能确认或放弃（页面显示待确认卡）
         val record = readPending()
         if (record?.stateRaw == PendingKeyStore.UNKNOWN) return BindOutcome(BindOutcome.PENDING)
@@ -300,6 +310,8 @@ class BindPhoneService(
                 .randomUUID()
                 .toString()
         val body = held?.body ?: JsonObject(mapOf("phone" to JsonPrimitive(phone), "code" to JsonPrimitive(code))).toString()
+        // 共性第 35 条：held 重发的是原请求体里的码（读不出时按「不是这次的输入」处理，验证码反馈不落到输入框）
+        val sentCode = if (held == null) code else heldCode(held.body)
         val summary = held?.summary ?: PhoneNumber.masked(phone)
         val gate = shared?.phoneGate
         // 写请求离开页面不取消（共性第 21 条）：归属只核对会话世代与 42901 截止时间（发送前闸门），不登记进页面的作废列表
@@ -320,31 +332,39 @@ class BindPhoneService(
                             expectedAccount = account,
                         ),
                     )
-                settleBind(result, phone, account, epoch, key, summary, issued)
+                settleBind(result, phone, fixed, epoch, key, summary, issued).copy(sentCode = sentCode)
             } finally {
                 binding = false
             }
         }
     }
 
+    /** held 记录原请求体里的验证码；解析不出为空串（与任何输入都不一致）。 */
+    private fun heldCode(body: String): String =
+        runCatching {
+            ((Json.parseToJsonElement(body) as? JsonObject)?.get("code") as? JsonPrimitive)?.takeIf { it.isString }?.content
+        }.getOrNull().orEmpty()
+
     /** 绑定的结算（会话级任务里执行）：共享部分只按发起时的会话，页面部分（返回值）按 [issued] 判作废。 */
     @Suppress("LongMethod", "CyclomaticComplexMethod", "LongParameterList")
     private suspend fun settleBind(
         result: ApiResult,
         phone: String,
-        account: String?,
+        fixed: BindPhoneOwner,
         epoch: Long,
         key: String,
         summary: String,
         issued: Long,
     ): BindOutcome {
+        val account = fixed.account
         settleShared(account, epoch, key, summary, result, AccountRaw.SUBMIT)
         if (result is ApiResult.Success) {
             // 绑定已在服务端完成：不论页面是否还在，这个会话已绑手机；推进更新世代，绑定前发出的 getMe 回包作废（共性第 12 条）
             if (tokens.loginEpoch == epoch) phoneBinding.bindSucceeded(epoch)
             refreshMe(epoch)
             // R1-05：会话侧的共享结算（守卫状态、释放暂缓）照常；出栈与恢复待办交给持有原页面许可的页面
-            if (tokens.loginEpoch == epoch) host.phoneBound()
+            // FU-AND-0716 R1-01：getMe 等待期间可能已退出、另一账号登录（新会话的待办正暂缓）——返回后重新核对发起时的完整身份
+            if (stillFixed(fixed)) host.phoneBound(fixed)
             if (issued != serial || tokens.loginEpoch != epoch) return BindOutcome(BindOutcome.STALE)
             return BindOutcome(BindPhoneAction.DONE)
         }
@@ -426,6 +446,9 @@ class BindPhoneService(
     /** [owner] 仍是当前会话（账号、登录世代、作用域、隐私 / 环境世代都没变）。 */
     fun owns(owner: BindPhoneOwner): Boolean = owner.account != null && owner() == owner
 
+    /** 绑定发起时固定的身份仍是此刻的会话（没有页面固定身份的 APP-05b 调用方也按发起时取得的那一份比较）。 */
+    private fun stillFixed(fixed: BindPhoneOwner): Boolean = owner() == fixed
+
     /**
      * 【确认上一次提交】（原键原体重发）/【放弃上一次提交】（作废接口，action=phone_change）：在会话级作用域执行，离开页面不取消；结局按 PhoneChangeOutcomePolicy
      * （首次绑定确认得 10003 按 retry_later，G53）。成功走 APP-05b 绑定成功的后续与共享结算。返回 null = 本地没有发出（记录保持待确认）。
@@ -465,7 +488,9 @@ class BindPhoneService(
                     phoneBinding.bindSucceeded(epoch)
                     refreshMe(epoch)
                     // R1-05：只做会话侧共享结算；出栈、恢复待办由持有原页面许可的页面做
-                    host.phoneBound()
+                    // FU-AND-0716 R1-01：refreshMe 等待期间退出 A、B 第三方新号登录并暂缓了待办——返回后重新核对发起时的完整身份（账号、
+                    // 登录世代、作用域、隐私 / 环境世代），失效就不做共享收尾，免得解除 B 的暂缓、让购买页重放外跳
+                    if (owns(owner)) host.phoneBound(owner)
                 }
                 settled
             }

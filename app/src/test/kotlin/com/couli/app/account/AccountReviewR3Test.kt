@@ -122,9 +122,8 @@ class AccountReviewR3Test : AccountHarness() {
     fun r3_01_aSheetVerifySuccessArrivingAfterTheTokensWereInvalidatedIsDiscarded() {
         launch()
         openDeleteFromSettings()
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
-        idleUntil("10003 → 二次验证面板") { has(STEP_UP_SHEET) }
+        checkWaiverAndSubmit()
+        idleUntil("10003 → 二次验证面板（发码已有结论）") { stepUpReady() }
         type(STEP_UP_CODE, CODE_OK)
         val arrived = CountDownLatch(1)
         val release = CountDownLatch(1)

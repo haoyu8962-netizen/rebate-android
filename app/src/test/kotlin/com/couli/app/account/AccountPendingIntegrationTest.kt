@@ -32,8 +32,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueTimeout("POST", DELETION)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("待确认卡") { has(AccountTags.PENDING_CARD) }
         val record = records().single()
         assertEquals(PendingKeyStore.UNKNOWN, record.stateRaw)
@@ -121,9 +120,12 @@ class AccountPendingIntegrationTest : AccountHarness() {
         confirmDeletion()
         idleUntil { hasText(t("pending_confirm.retry_later")) }
         enqueueCode("POST", DELETION, 50001, trace = "trace-abc123")
+        val jobs = accountJobs()
         confirmDeletion()
         idleUntil { all("POST", DELETION).size == 3 }
         settle()
+        // FU-AND-0716 窄修三：请求记下时应答还没出；等这次确认连同页面续体结束再核对提示
+        accountWorkSince(jobs, "第二次确认结算")
         assertTrue(hasText(t("pending_confirm.retry_later")))
         assertEquals(key, records().single().key)
     }
@@ -173,8 +175,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
         val abandon = all("POST", ABANDON).single()
         assertEquals("account_deletion", body(abandon)["action"].toString().trim('"'))
         assertEquals(key, body(abandon)["idempotency_key"].toString().trim('"'))
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_COOLING) }
         assertFalse(all("POST", DELETION).last().key == key)
     }
@@ -238,8 +239,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
         switchSession(USER_B)
         openDeleteFromSettings()
         assertFalse("B 看不到 A 的待确认卡", has(AccountTags.PENDING_CARD))
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_COOLING) }
         assertTrue("B 的申请不带 A 的键", all("POST", DELETION).last().key != key)
         assertTrue("A 的键不随 B 发出", all("POST", DELETION).filter { it.user == USER_B }.none { it.key == key })
@@ -275,8 +275,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
                 .MockResponse()
                 .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST)
         }
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.PENDING_CARD) }
         abandonPending()
         idleUntil("作废得 completed，进冷静期") { has(AccountTags.DELETE_COOLING) }
@@ -300,8 +299,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 50401, trace = "trace-654321")
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_ERROR) }
         assertFalse("held 不进待确认卡", has(AccountTags.PENDING_CARD))
         val held = records().single()
@@ -320,8 +318,7 @@ class AccountPendingIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 10007, """{"stage":"cooling"}""")
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { records().isNotEmpty() && records().single().stateRaw == PendingKeyStore.HELD }
         assertFalse(has(AccountTags.PENDING_CARD))
     }

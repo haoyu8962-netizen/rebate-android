@@ -30,6 +30,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowLedger
+import com.couli.app.FlowWait
 import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -77,7 +79,9 @@ import com.couli.feature.wallet.WithdrawViewModel
 import java.net.URLDecoder
 import java.time.Duration
 import java.time.OffsetDateTime
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -129,6 +133,9 @@ class AppWalletIntegrationTest {
     private lateinit var mask: AmountMaskStore
     private val pendingBackend = MemoryPendingKeyBackend()
     private val inFlight = InFlightCalls()
+
+    /** 钱包端口上每次调用连同调用方回调处理的结算记录（F-AND-36 R1-02：迟到响应的核对等它，不看网络层空闲）。 */
+    private val flows = FlowLedger()
     private val system = FakeClipboard()
     private val ledger = ClipboardWriteLedger(store = LedgerStore())
     private val tracked = mutableListOf<ClientEvent>()
@@ -273,7 +280,7 @@ class AppWalletIntegrationTest {
             login.syncSession()
             wallet =
                 AppWallet(
-                    api = wrapApi(ApiClientWalletApi(api)),
+                    api = flows.wallet(wrapApi(ApiClientWalletApi(api))),
                     store = store,
                     routing = routing,
                     sessionEpoch = { tokens.loginEpoch },
@@ -307,8 +314,9 @@ class AppWalletIntegrationTest {
             }
         }
         composeRule.waitForIdle()
-        // 冷启动查清 phone_bound 与 realname_status（AppLogin、AppWallet 各取一次 /v1/me）
-        idleUntil { wallet.realnameVerified() }
+        // 冷启动查清 phone_bound 与 realname_status（AppLogin、AppWallet 各取一次 /v1/me）。FU-AND-0716 窄修二：两次都要等到——原来只等 AppWallet 那次，
+        // AppLogin 那次（补查任务）晚到时会话还停在 LOGGED_IN，随后打开手机号级页面被守卫拦下（延迟注入下栈为空）
+        idleUntil { wallet.realnameVerified() && login.phoneChecksStarted > 0 && login.phoneChecksSettled() }
     }
 
     private fun apiClient(): ApiClient =
@@ -351,21 +359,91 @@ class AppWalletIntegrationTest {
         settle()
     }
 
+    private fun pump() {
+        shadowOf(Looper.getMainLooper()).idle()
+        composeRule.waitForIdle()
+    }
+
+    /** F-AND-36：等流程交回结论（原为最多 8 秒的轮询，负载 >50 时冷启动页面等待超时），见 [FlowWait]；超时打印页面树与现场。 */
     private fun idleUntil(condition: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_S)
-        while (!condition() && System.nanoTime() < deadline) {
-            shadowOf(Looper.getMainLooper()).idle()
-            composeRule.waitForIdle()
-            Thread.sleep(POLL_MS)
-        }
-        if (!condition()) {
+        try {
+            FlowWait.until(::pump, { "栈顶 ${runCatching { stack() }.getOrNull()}，请求 ${requestLines()}" }, condition = condition)
+        } catch (timeout: AssertionError) {
             val tree = runCatching { composeRule.onRoot(useUnmergedTree = true).printToString(maxDepth = Int.MAX_VALUE) }.getOrNull()
             println("DEBUG-TREE\n$tree")
+            throw timeout
         }
-        assertTrue(
-            "栈顶 ${runCatching { stack() }.getOrNull()}，请求 ${requestLines()}",
-            condition(),
-        )
+    }
+
+    private fun isMe(call: ApiCall): Boolean = call.operationId == GET_ME_OPERATION
+
+    /**
+     * 迟到响应的核对之前：等满足 [matches] 的钱包调用至少 [count] 次连同调用方的回调处理都已结束（[FlowLedger]，F-AND-36 R1-02），代替原来的
+     * 「睡 LATE_MS + 300 毫秒」与 r0 的「网络层空闲」——高负载下迟到的那次可能晚于固定时长才到；网络层注销在途记录时业务回调可能还没执行。
+     */
+    private fun lateResponsesSettled(
+        count: Int,
+        matches: (ApiCall) -> Boolean,
+    ) {
+        FlowWait.settled(flows, count, ::pump, { "请求 ${requestLines()}" }, matches)
+        settle()
+    }
+
+    private fun isRules(call: ApiCall): Boolean = call.operationId == RULES_OPERATION
+
+    /**
+     * FU-AND-0716 R3-01 残留：负向核对（「不发请求」「不显示」「不跳转」）之前，等此刻已发起的钱包调用全部连同调用方的回调都已结算
+     * （[FlowLedger]），代替原来「固定轮次空转后直接断言」——在途的估算、返回页面时的重读迟于固定轮次结算时，原写法会在它们处理之前就核对。
+     */
+    private fun walletCallsSettled() {
+        val target = flows.started { true }
+        FlowWait.settled(flows, target, ::pump, { "请求 ${requestLines()}" }) { true }
+        settle()
+    }
+
+    /**
+     * FU-AND-0716 R3-01：提交结算（onSettled）之后的 rules 读取失败落地之前不断言。先等 [startedBefore] 之后至少又发起了一次 rules，再等此刻已发起的
+     * rules 全部连同提现页的业务回调结算（[FlowLedger]），最后等读取失败的页内提示出现。[onPoll] 在每轮核对结算前调用（测试用它显式放行挂住的响应）。
+     */
+    private fun followUpRulesFailureSettled(
+        startedBefore: Int,
+        onPoll: () -> Unit = {},
+    ) {
+        rulesSettledSince(startedBefore, onPoll)
+        idleUntil { has(WalletTags.WITHDRAW_READ_ERROR) }
+    }
+
+    /** [startedBefore] 之后至少又发起了一次 rules，且此刻已发起的 rules 都已连同提现页的业务回调结算（[FlowLedger]）。 */
+    private fun rulesSettledSince(
+        startedBefore: Int,
+        onPoll: () -> Unit = {},
+    ) {
+        idleUntil { flows.started(::isRules) > startedBefore }
+        val target = flows.started(::isRules)
+        FlowWait.until(::pump, { "rules 已结算 ${flows.settled(::isRules)}/$target；请求 ${requestLines()}" }) {
+            onPoll()
+            flows.settled(::isRules) >= target
+        }
+    }
+
+    private fun isSubmit(call: ApiCall): Boolean = call.operationId == WITHDRAW_OPERATION
+
+    /**
+     * FU-AND-0716 RC-01：再次提交得到 20001 之后、推进焦点 / 播报等待之前：先等 [startedBefore] 之后又发起了一次提交，再等此刻已发起的提交全部连同
+     * 提现页的业务回调结算（[FlowLedger]：FIELD_ERROR 分支在这条回调里换新字段错误事件），最后等字段错误提示重新出现在页面上（提交时已清掉）。
+     * [onPoll] 在每轮核对结算前调用（测试用它显式放行挂住的响应）。
+     */
+    private fun secondFieldErrorLanded(
+        startedBefore: Int,
+        onPoll: () -> Unit = {},
+    ) {
+        idleUntil { flows.started(::isSubmit) > startedBefore }
+        val target = flows.started(::isSubmit)
+        FlowWait.until(::pump, { "提交已结算 ${flows.settled(::isSubmit)}/$target；请求 ${requestLines()}" }) {
+            onPoll()
+            flows.settled(::isSubmit) >= target
+        }
+        idleUntil { has(WalletTags.WITHDRAW_FIELD_ERROR) }
     }
 
     private fun requestLines(): List<String> = synchronized(requests) { requests.map { it.method + " " + it.path } }
@@ -448,9 +526,15 @@ class AppWalletIntegrationTest {
         idleUntil { has(WalletTags.WITHDRAW_ESTIMATE) || !has(WalletTags.WITHDRAW_CALCULATING) }
     }
 
+    /**
+     * FU-AND-0716 窄修二：二次验证面板已出现且这次发码已有结论（离开 SENDING，「正在发送验证码…」不在）。面板一出现就处于 SENDING，发码请求与应答都在后台；
+     * 只等面板出现就核对发码请求、「已发送」文案，或输码后点【验证并提交】（canVerify 要求 READY，SENDING 时点击不受理），发码晚到时会提前核对或白点。
+     */
+    private fun stepUpReady(): Boolean = has(WalletTags.STEP_UP_CODE) && texts(STEP_UP_SENDING_TEXT) == 0
+
     /** 走完二次验证面板（输入验证码、点【验证并提交】）。 */
     private fun passStepUp(code: String = "123456") {
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         input(WalletTags.STEP_UP_CODE, code)
         click(WalletTags.STEP_UP_SUBMIT)
     }
@@ -616,12 +700,13 @@ class AppWalletIntegrationTest {
         val afterEstimate = all("GET", RULES_PATH).size
         input(WalletTags.WITHDRAW_INPUT, "")
         advance(ESTIMATE_WAIT_MS)
+        walletCallsSettled()
         assertFalse(has(WalletTags.WITHDRAW_ESTIMATE))
         assertEquals(afterEstimate, all("GET", RULES_PATH).size)
         // 提交：第一次 10003 → 二次验证面板（发码带 purpose=step_up、action=withdraw），通过后沿用原键、原体重放
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_SHEET) }
+        idleUntil { stepUpReady() }
         val sms = body(last("POST", SMS_PATH))
         assertEquals("step_up", sms["purpose"]?.jsonPrimitive?.content)
         assertEquals("withdraw", sms["action"]?.jsonPrimitive?.content)
@@ -696,7 +781,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.PENDING_CARD) }
         idleUntil { has(WalletTags.PENDING_CARD) }
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
         click(WalletTags.PENDING_ABANDON)
@@ -713,7 +798,7 @@ class AppWalletIntegrationTest {
         synchronized(answers) { answers.remove(WITHDRAW_PATH) }
         typeAmount("5")
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
         idleUntil { top()?.name == "WithdrawRecords" }
         assertTrue(header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
     }
@@ -725,7 +810,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.PENDING_CARD) }
         idleUntil { has(WalletTags.PENDING_CARD) }
         val sent = all("POST", WITHDRAW_PATH).size
         // 换账号：上一个账号的键不发、不展示；已输入的金额清空
@@ -781,12 +866,62 @@ class AppWalletIntegrationTest {
         synchronized(answers) { answers.remove(WITHDRAW_PATH) }
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
+        walletCallsSettled()
         assertEquals("补办完不自动提交", 1, count("POST", WITHDRAW_PATH))
         assertEquals("10", fieldText(WalletTags.WITHDRAW_INPUT))
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
         idleUntil { top()?.name == "WithdrawRecords" }
         assertTrue("再点用新键", header(all("POST", WITHDRAW_PATH)[1], "Idempotency-Key") != firstKey)
+    }
+
+    /**
+     * FU-AND-0716 R2-01：提交的 10003 响应被服务端挂住、晚于「点击 + 固定 5 轮空转」才到达时，[passStepUpWhenShown] 仍等到面板出现并通过它，
+     * 不靠轮次。显式握手：先确认挂住期间固定空转之后面板确实还没出现（旧的 passStepUpIfShown 在这里检查不到面板就返回），再在等待已开始轮询
+     * （[done] 第一次被调用）时放行响应。时间上限（CEILING_MS）只用于失败退出。
+     */
+    @Test
+    fun fuand0716_r2_01_aStepUpAnswerHeldPastTheFixedRoundsIsStillHandled() {
+        launch()
+        openWithdraw()
+        typeAmount("10")
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        synchronized(answers) {
+            answers[WITHDRAW_PATH] = { req ->
+                if (req.method == "POST" && req.getHeader("X-Step-Up-Token") == null) {
+                    arrived.countDown()
+                    held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
+                    envelope("null", code = 10003)
+                } else if (req.method == "POST") {
+                    submitAnswer(last("POST", WITHDRAW_PATH)!!)
+                } else {
+                    defaultAnswer(last(req.method.orEmpty(), WITHDRAW_PATH)!!)
+                }
+            }
+        }
+        try {
+            click(WalletTags.WITHDRAW_SUBMIT)
+            assertTrue("提交已到服务端、响应挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
+            settle()
+            assertFalse("挂住期间固定空转之后面板还没出现", has(WalletTags.STEP_UP_CODE))
+            var released = false
+            passStepUpWhenShown {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+                top()?.name == "WithdrawRecords"
+            }
+            idleUntil { top()?.name == "WithdrawRecords" }
+            assertTrue("等待开始轮询后才放行", released)
+            val posts = all("POST", WITHDRAW_PATH)
+            assertEquals("一次无 token、一次带 token", 2, posts.size)
+            assertNull(header(posts[0], "X-Step-Up-Token"))
+            assertNotNull("面板已被通过、带 token 重发", header(posts[1], "X-Step-Up-Token"))
+        } finally {
+            held.countDown()
+        }
     }
 
     @Test
@@ -799,7 +934,7 @@ class AppWalletIntegrationTest {
                 { envelope("null", code = 42901).setResponseCode(429).setHeader("Retry-After", "12") }
         }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.WITHDRAW_ERROR) }
         idleUntil { has(WalletTags.WITHDRAW_ERROR) }
         assertTrue(texts("操作太频繁，请稍后再试") > 0)
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
@@ -816,12 +951,12 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("null", code = 50301, trace = "trace-abc123456") } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.WITHDRAW_ERROR) }
         idleUntil { has(WalletTags.WITHDRAW_ERROR) }
         assertTrue("文案无占位符也独立追加 trace6", texts("123456") > 0)
         synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("""{"risk_msg_code":"fixture"}""", code = 44001) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { texts("操作未通过安全校验") > 0 }
         idleUntil { texts("操作未通过安全校验") > 0 }
         assertTrue(texts("这笔提现没有提交，金额没有冻结") > 0)
         assertEquals("金额保留在本页", "10", fieldText(WalletTags.WITHDRAW_INPUT))
@@ -989,14 +1124,14 @@ class AppWalletIntegrationTest {
         input(WalletTags.WITHDRAW_INPUT, "10")
         advance(ESTIMATE_WAIT_MS)
         idleUntil { texts("预计到账 ¥10，以实际到账为准") > 0 }
-        // 4 元那次迟到的响应：序号、金额都对不上，不覆盖
-        Thread.sleep(LATE_MS + LATE_SLACK_MS)
-        settle()
+        // 4 元那次迟到的响应：序号、金额都对不上，不覆盖（等提现页处理完这次估算响应再核对）
+        lateResponsesSettled(1) { it.operationId == RULES_OPERATION && it.query == "amount_fen=$SLOW_AMOUNT" }
         assertTrue(texts("预计到账 ¥10，以实际到账为准") > 0)
         assertEquals(0, texts("预计到账 ¥4，"))
         // ⑪ 清空：在途的估算回来也不显示
         input(WalletTags.WITHDRAW_INPUT, "")
         settle()
+        walletCallsSettled()
         assertFalse(has(WalletTags.WITHDRAW_ESTIMATE))
     }
 
@@ -1006,7 +1141,7 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         // 不满 6 位不能验证
         input(WalletTags.STEP_UP_CODE, "12345")
         composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
@@ -1032,7 +1167,7 @@ class AppWalletIntegrationTest {
         assertFalse(has(WalletTags.STEP_UP_SHEET))
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         assertTrue(header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
     }
 
@@ -1069,7 +1204,7 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
         composeRule.runOnUiThread {
             val dialog =
@@ -1082,7 +1217,7 @@ class AppWalletIntegrationTest {
         assertEquals("关闭不发请求", 1, count("POST", WITHDRAW_PATH))
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsEnabled()
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         assertTrue("与关闭按钮同一出口：下次用新键", header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
     }
 
@@ -1093,11 +1228,11 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.PENDING_CARD) }
         idleUntil { has(WalletTags.PENDING_CARD) }
         synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("""{"reason":"daily_count"}""", code = 30303) } }
         click(WalletTags.PENDING_CONFIRM)
-        passStepUpIfShown()
+        passStepUpWhenShown { !has(WalletTags.PENDING_CARD) }
         idleUntil { !has(WalletTags.PENDING_CARD) }
         assertTrue("fallback 文案（G06）", texts("今日提现次数已用完，请明天再试") > 0)
         assertTrue(pendingBackend.list("user-one").isEmpty())
@@ -1131,7 +1266,7 @@ class AppWalletIntegrationTest {
             }
         }
         click(WalletTags.PAYOUT_SAVE)
-        passStepUpIfShown()
+        passStepUpWhenShown { top()?.name == "Withdraw" }
         idleUntil { top()?.name == "Withdraw" }
         assertEquals("回到同一实例，金额仍在", "5", fieldText(WalletTags.WITHDRAW_INPUT))
         assertEquals(0, count("POST", WITHDRAW_PATH))
@@ -1167,7 +1302,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         // 提交先过二次验证；重放的那次延迟后回网关错误页（结果未知）
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         synchronized(answers) {
             answers[WITHDRAW_PATH] = {
                 MockResponse().setResponseCode(502).setBody("<html>bad gateway</html>").setBodyDelay(LATE_MS, TimeUnit.MILLISECONDS)
@@ -1175,6 +1310,8 @@ class AppWalletIntegrationTest {
         }
         input(WalletTags.STEP_UP_CODE, "123456")
         click(WalletTags.STEP_UP_SUBMIT)
+        // FU-AND-0716 窄修二：验证在后台，通过后才发原键重放；原写法点完固定轮次就离页，验证晚到时重放根本没发出。等重放已经发起（在途）再离开
+        idleUntil { flows.started(::isSubmit) >= 2 }
         // 在途时离开提现页，再进一个新的提现页
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -1199,7 +1336,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { has(WalletTags.PENDING_CARD) }
         idleUntil { has(WalletTags.PENDING_CARD) }
         // 换一个新的提现页，rules 读取失败：整页加载失败，但待确认卡照常可确认 / 放弃
         synchronized(answers) { answers[RULES_PATH] = { envelope("null", code = 50001, trace = "trace-rr4455") } }
@@ -1242,7 +1379,7 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         assertEquals(1, count("POST", SMS_PATH))
         composeRule
             .onNode(
@@ -1258,7 +1395,7 @@ class AppWalletIntegrationTest {
         settle()
         // 重开面板：同一账号、号码、action 的截止时间没到，不再发码，恢复倒计时
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         assertEquals(1, count("POST", SMS_PATH))
         assertTrue(texts("秒后重新获取") > 0)
     }
@@ -1303,16 +1440,71 @@ class AppWalletIntegrationTest {
             answers[WITHDRAW_PATH] = { envelope("null", code = 30306) }
             answers[RULES_PATH] = { envelope("null", code = 50001) }
         }
+        val rulesBefore = flows.started(::isRules)
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { texts("提现功能暂时关闭，请稍后再试") > 0 }
         idleUntil { texts("提现功能暂时关闭，请稍后再试") > 0 }
-        settle()
+        // R3-01：文案来自提交的 30306；随后 onSettled 发起的那次 rules 要等它连同业务回调结束、读取失败落到页内提示，才能断言、撤替身
+        followUpRulesFailureSettled(rulesBefore)
         // rules 读取失败不恢复旧的允许状态
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
         // 之后成功取得、明确允许的 rules 才解除
         synchronized(answers) { answers.remove(RULES_PATH) }
+        val allowedBefore = flows.started(::isRules)
         typeAmount("5")
+        rulesSettledSince(allowedBefore)
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsEnabled()
+    }
+
+    /**
+     * FU-AND-0716 R3-01：提交返回 30306 之后，onSettled 发起的 rules 被服务端挂住、晚于「文案出现 + 固定 5 轮空转」才失败时，
+     * [followUpRulesFailureSettled] 仍等到这次 rules 连同业务回调结束、读取失败落地，才让后面的断言执行。显式握手：先确认挂住期间固定空转之后
+     * 读取失败确实还没落地（原写法在这里就已断言按钮禁用、撤掉失败替身），再在等待开始轮询结算时放行响应。时间上限（CEILING_MS）只用于失败退出。
+     */
+    @Test
+    fun fuand0716_r3_01_theFollowUpRulesFailureHeldPastTheFixedRoundsIsAwaitedBeforeAsserting() {
+        launch()
+        openWithdraw()
+        typeAmount("10")
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        synchronized(answers) {
+            answers[WITHDRAW_PATH] = { envelope("null", code = 30306) }
+            answers[RULES_PATH] = {
+                arrived.countDown()
+                held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
+                envelope("null", code = 50001)
+            }
+        }
+        try {
+            val rulesBefore = flows.started(::isRules)
+            click(WalletTags.WITHDRAW_SUBMIT)
+            passStepUpWhenShown { texts("提现功能暂时关闭，请稍后再试") > 0 }
+            idleUntil { texts("提现功能暂时关闭，请稍后再试") > 0 }
+            assertTrue("后续 rules 已到服务端、响应挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
+            settle()
+            val settledBefore = flows.settled(::isRules)
+            assertFalse("挂住期间固定空转之后读取失败还没落地", has(WalletTags.WITHDRAW_READ_ERROR))
+            assertTrue("挂住期间后续 rules 还没结算", settledBefore < flows.started(::isRules))
+            var released = false
+            followUpRulesFailureSettled(rulesBefore) {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertTrue("后续 rules 已结算", flows.settled(::isRules) > settledBefore)
+            assertTrue("读取失败已落地", has(WalletTags.WITHDRAW_READ_ERROR))
+            composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
+            synchronized(answers) { answers.remove(RULES_PATH) }
+            val allowedBefore = flows.started(::isRules)
+            typeAmount("5")
+            rulesSettledSince(allowedBefore)
+            composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsEnabled()
+        } finally {
+            held.countDown()
+        }
     }
 
     @Test
@@ -1322,12 +1514,12 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("null", code = 40901) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { texts("正在处理，请稍候") > 0 }
         idleUntil { texts("正在处理，请稍候") > 0 }
         val first = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
         synchronized(answers) { answers.remove(WITHDRAW_PATH) }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
         idleUntil { top()?.name == "WithdrawRecords" }
         assertTrue("40901 后下次点击用新键", header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != first)
         assertTrue(pendingBackend.list("user-one").isEmpty())
@@ -1351,11 +1543,12 @@ class AppWalletIntegrationTest {
             }
         }
         val before = count("GET", "/v1/me")
+        val base = flows.started(::isMe)
         composeRule.runOnUiThread { wallet.refreshRealname() }
         idleUntil { count("GET", "/v1/me") > before }
         composeRule.runOnUiThread { wallet.refreshRealname() }
-        Thread.sleep(LATE_MS + LATE_SLACK_MS)
-        settle()
+        // 两次查询都交回 AppWallet 且结论处理完（旧的那次被取代、作废）
+        lateResponsesSettled(base + 2, ::isMe)
         composeRule.runOnUiThread { assertTrue("最新一次的结论不被旧查询覆盖", wallet.realnameVerified()) }
     }
 
@@ -1392,9 +1585,78 @@ class AppWalletIntegrationTest {
         assertEquals("同一次错误只播报一次", 1, announcedCount(text))
         assertEquals("保留输入", "10", fieldText(WalletTags.WITHDRAW_INPUT))
         // 再次提交得到同样的错误：新的错误事件，再播报一次
+        val submitsBefore = flows.started(::isSubmit)
         click(WalletTags.WITHDRAW_SUBMIT)
+        // RC-01：第二次的字段错误与播报要等网络返回 20001。先等这次提交连同提现页业务回调结算、新的字段错误事件落到页面，再推进焦点 / 播报的等待
+        secondFieldErrorLanded(submitsBefore)
         focusWait()
         assertEquals(2, announcedCount(text))
+    }
+
+    /**
+     * FU-AND-0716 RC-01：r1_13 第二次提交的 20001 被服务端挂住、晚于「点击 + focusWait 的固定轮次」才返回时，[secondFieldErrorLanded] 仍等到这次提交
+     * 连同业务回调结算、新的字段错误落地，才让焦点 / 播报等待与「恰好 2 次」的断言执行。显式握手：先确认挂住期间原写法的固定等待之后播报仍只有 1 次、
+     * 字段错误还没回来（原写法在这里就已断言 2 次），再在等待第一次核对结算时放行响应。时间上限（CEILING_MS）只用于失败退出。
+     */
+    @Test
+    fun fuand0716_rc01_theSecondFieldErrorHeldPastTheFixedRoundsIsAwaitedBeforeCountingAnnouncements() {
+        launch()
+        openWithdraw()
+        typeAmount("10")
+        val posts = AtomicInteger()
+        val arrived = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        synchronized(answers) {
+            answers[WITHDRAW_PATH] = { req ->
+                if (req.method == "POST") {
+                    if (posts.incrementAndGet() == 2) {
+                        arrived.countDown()
+                        held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
+                    }
+                    envelope("""{"fields":["amount_fen"]}""", code = 20001)
+                } else {
+                    envelope("""{"items":[],"next_cursor":null}""")
+                }
+            }
+        }
+        try {
+            click(WalletTags.WITHDRAW_SUBMIT)
+            idleUntil { has(WalletTags.WITHDRAW_FIELD_ERROR) }
+            focusWait()
+            val text =
+                composeRule
+                    .onNodeWithTag(WalletTags.WITHDRAW_FIELD_ERROR, useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .config
+                    .getOrNull(SemanticsProperties.Text)
+                    ?.joinToString("")
+                    .orEmpty()
+            assertEquals("第一次错误播报一次", 1, announcedCount(text))
+            val submitsBefore = flows.started(::isSubmit)
+            click(WalletTags.WITHDRAW_SUBMIT)
+            assertTrue("第二次提交已到服务端、响应挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
+            // 原写法：点击后只 focusWait（推进 Compose 时钟 + 固定 5 轮）就断言播报 2 次
+            focusWait()
+            val settledBefore = flows.settled(::isSubmit)
+            assertEquals("挂住期间固定等待之后还没有第二次播报", 1, announcedCount(text))
+            assertFalse("挂住期间字段错误还没回来（提交时已清掉）", has(WalletTags.WITHDRAW_FIELD_ERROR))
+            assertTrue("挂住期间第二次提交还没结算", settledBefore < flows.started(::isSubmit))
+            var released = false
+            secondFieldErrorLanded(submitsBefore) {
+                if (!released) {
+                    released = true
+                    held.countDown()
+                }
+            }
+            assertTrue("等待开始轮询后才放行", released)
+            assertTrue("第二次提交已结算", flows.settled(::isSubmit) > settledBefore)
+            focusWait()
+            composeRule.onNodeWithTag(WalletTags.WITHDRAW_FIELD_ERROR, useUnmergedTree = true).assertIsFocused()
+            assertEquals(2, announcedCount(text))
+            assertEquals("保留输入", "10", fieldText(WalletTags.WITHDRAW_INPUT))
+        } finally {
+            held.countDown()
+        }
     }
 
     /** R1-13：收款账号表单本地校验与 20001 → 首个错误（按显示顺序）获得焦点并播报一次；错误字段在滚动区域外也滚到可见。 */
@@ -1489,22 +1751,22 @@ class AppWalletIntegrationTest {
             }
         }
         // ① 点【提现】后返回上一页：查询回来不再打开资金页
+        val first = flows.started(::isMe)
         click(WalletTags.WALLET_WITHDRAW)
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
         val afterPop = stack()
-        Thread.sleep(LATE_MS + LATE_SLACK_MS)
-        settle()
+        lateResponsesSettled(first + 1, ::isMe)
         assertEquals("发起页出栈后不跳转", afterPop, stack())
         assertFalse(stack().contains("Withdraw"))
         // ② 点【提现】后被更新的查询取代：旧 continuation 不执行
         open("Wallet")
         idleUntil { has(WalletTags.WALLET_WITHDRAW) }
         composeRule.runOnUiThread { wallet.forgetRealname() }
+        val second = flows.started(::isMe)
         click(WalletTags.WALLET_WITHDRAW)
         composeRule.runOnUiThread { wallet.refreshRealname() }
-        Thread.sleep(2 * LATE_MS + LATE_SLACK_MS)
-        settle()
+        lateResponsesSettled(second + 2, ::isMe)
         assertEquals("Wallet", top()?.name)
         composeRule.runOnUiThread { assertTrue(wallet.realnameVerified()) }
     }
@@ -1516,7 +1778,7 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         assertTrue(has(WalletTags.SHEET_MIDDLE))
         assertFalse(has(WalletTags.SHEET_FALLBACK))
         composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).assertIsDisplayed()
@@ -1530,7 +1792,7 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_CODE) }
+        idleUntil { stepUpReady() }
         idleUntil { has(WalletTags.SHEET_FALLBACK) }
         composeRule.onNodeWithTag(WalletTags.STEP_UP_CLOSE, useUnmergedTree = true).assertExists()
         composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
@@ -1552,7 +1814,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         val before = count("GET", SUMMARY_PATH)
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpIfShown()
+        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
         idleUntil { top()?.name == "WithdrawRecords" }
         idleUntil { count("GET", SUMMARY_PATH) > before }
         assertEquals("钱包页不在栈顶也已重取", "WithdrawRecords", top()?.name)
@@ -1658,39 +1920,36 @@ class AppWalletIntegrationTest {
         }
         // ① ON_PAUSE 之后、ON_STOP 之前（STARTED）响应回来
         composeRule.runOnUiThread { wallet.forgetRealname() }
+        val paused = flows.started(::isMe)
         click(WalletTags.WALLET_WITHDRAW)
         composeRule.runOnUiThread { entry.maxLifecycle = androidx.lifecycle.Lifecycle.State.STARTED }
-        Thread.sleep(LATE_MS + LATE_SLACK_MS)
-        settle()
+        lateResponsesSettled(paused + 1, ::isMe)
         assertEquals("后台不打开资金页", "Wallet", top()?.name)
         composeRule.runOnUiThread { entry.maxLifecycle = androidx.lifecycle.Lifecycle.State.RESUMED }
         settle()
+        walletCallsSettled()
         assertEquals("Wallet", top()?.name)
         // ② 暂停后在响应前回到前台：原许可已作废
         composeRule.runOnUiThread { wallet.forgetRealname() }
+        val resumed = flows.started(::isMe)
         click(WalletTags.WALLET_WITHDRAW)
         composeRule.runOnUiThread {
             entry.maxLifecycle = androidx.lifecycle.Lifecycle.State.STARTED
             entry.maxLifecycle = androidx.lifecycle.Lifecycle.State.RESUMED
         }
-        Thread.sleep(LATE_MS + LATE_SLACK_MS)
-        settle()
+        lateResponsesSettled(resumed + 1, ::isMe)
         assertEquals("Wallet", top()?.name)
     }
 
     // ---------------------------------------------------------------- 工具
 
     /**
-     * F-AND-31（FU-AND-0714）：显式等待「二次验证面板出现，或已经到达 [done] 的终态」，面板出现就通过它。[passStepUpIfShown] 只停 5 轮主线程空转就判断
-     * 「面板有没有出现」，高负载下 10003 的响应晚于这几轮到达时会漏过面板，之后一直等不到终态（等页面超时）。
+     * F-AND-31（FU-AND-0714）/ FU-AND-0716 R2-01：显式等待「二次验证面板出现，或已经到达本次操作的终态 [done]」，面板出现就通过它。
+     * 原来的 passStepUpIfShown 只停 5 轮主线程空转就判断「面板有没有出现」，高负载下 10003 的响应晚于这几轮到达时会漏过面板，之后一直等不到终态
+     * （等页面超时）；第 2 轮修复已逐处换成本函数并删掉旧函数，[done] 取各处原来紧随其后的那条终态等待。
      */
     private fun passStepUpWhenShown(done: () -> Boolean) {
         idleUntil { has(WalletTags.STEP_UP_CODE) || done() }
-        if (has(WalletTags.STEP_UP_CODE)) passStepUp()
-    }
-
-    private fun passStepUpIfShown() {
-        settle()
         if (has(WalletTags.STEP_UP_CODE)) passStepUp()
     }
 
@@ -1873,15 +2132,17 @@ class AppWalletIntegrationTest {
         const val WITHDRAW_PATH = "/v1/withdrawals"
         const val PAYOUT_PATH = "/v1/me/payout-account"
         const val SMS_PATH = "/v1/auth/sms-codes"
+        const val STEP_UP_SENDING_TEXT = "正在发送验证码…"
         const val STEP_UP_PATH = "/v1/auth/step-up"
         const val ABANDON_PATH = "/v1/idempotency-keys/abandon"
-        const val WAIT_S = 8L
         const val POLL_MS = 10L
         const val SETTLE_ROUNDS = 5
         const val ESTIMATE_WAIT_MS = 600L
         const val SLOW_AMOUNT = 400L
+        const val GET_ME_OPERATION = "getMe"
+        const val RULES_OPERATION = "getWithdrawRules"
+        const val WITHDRAW_OPERATION = "createWithdrawal"
         const val LATE_MS = 800L
-        const val LATE_SLACK_MS = 300L
         const val FOCUS_WAIT_MS = 300L
 
         /** AC-S2-33：可提现 ¥10、冻结 ¥2、已提现 ¥0、预估 ¥10.19、已收货 ¥7.5、暂缓 ¥4.5、最早 11 月。 */

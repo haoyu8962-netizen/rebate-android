@@ -1,7 +1,6 @@
 package com.couli.feature.web
 
 import android.graphics.Bitmap
-import android.os.SystemClock
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -24,7 +23,6 @@ import com.couli.core.clientcore.ClientEvent
 import java.io.ByteArrayInputStream
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -79,33 +77,26 @@ class WebContainersReviewR2Test {
             WebView(activity).also { activity.root.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         }
 
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> onMain { block() } }
+
+    /** 页面已交回结论之后读一次值。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(WAIT_S, TimeUnit.SECONDS))
-        return result
-    }
+    ): String = probe(webView).read(script)
 
-    private fun waitUntil(
-        message: String,
-        condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + WAIT_S * MILLIS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    /** 动作脚本（导航、改 DOM、发桥消息）：不等回调，结果由随后的等待确认。 */
+    private fun fire(
+        webView: WebView,
+        script: String,
+    ) = probe(webView).fire(script)
+
+    /** F-AND-31：等页面交回「脚本已执行、已是 [url] 这份文档」（探测不挂在导航上）。 */
+    private fun awaitPage(
+        webView: WebView,
+        url: String,
+        script: String = "window.ready === true && location.href",
+    ) = probe(webView).await("page $url ready", script) { it == "\"$url\"" }
 
     private fun load(
         webView: WebView,
@@ -113,7 +104,7 @@ class WebContainersReviewR2Test {
         html: String,
     ) {
         onMain { webView.loadDataWithBaseURL(url, html, "text/html", "utf-8", url) }
-        waitUntil("page $url ready") { evaluate(webView, "window.ready === true && location.href") == "\"$url\"" }
+        awaitPage(webView, url)
     }
 
     private fun external(
@@ -151,22 +142,25 @@ class WebContainersReviewR2Test {
                 "https://embed.other.test/frame",
                 "https://redirector.other.test/hop?to=item",
             )
-        frames.forEach { evaluate(webView, "frameTo('$it'); true") }
-        waitUntil("all subframe documents decided") { frames.all { it in server.cancelled || it in server.served } }
-        Thread.sleep(SETTLE_MS)
+        frames.forEach { fire(webView, "frameTo('$it')") }
+        WebWait.until("all subframe documents decided", detail = { "cancelled=${server.cancelled} served=${server.served}" }) {
+            frames.all { it in server.cancelled || it in server.served }
+        }
+        // 负向观察窗（不是同步等待：只可能让「没加载 / 没提示」的核对变弱，不会造成偶发失败），保持原 1 秒
+        Thread.sleep(NEGATIVE_WINDOW_MS)
         assertEquals("no subframe document is loaded", emptyList<String>(), frames.filter { it in server.served })
         assertEquals("the same-origin frame has no content", "\"\"", evaluate(webView, "frameText(0)"))
         assertTrue("cancelled non-platform subframes give no notice", callbacks.frames.isEmpty())
 
         // 命中平台规则的子框架：同样取消，并按第 31 条提示（子框架层）
-        evaluate(webView, "frameTo('https://shop.taobao.example.test/frame'); true")
-        assertTrue("platform subframe noticed", callbacks.blocked.await(WAIT_S, TimeUnit.SECONDS))
+        fire(webView, "frameTo('https://shop.taobao.example.test/frame')")
+        WebWait.latch("platform subframe noticed", callbacks.blocked)
         assertEquals(listOf(NavFrame.SUBFRAME), callbacks.frames.toList())
 
         // 主框架照常：页面还在，主框架导航到普通页照常加载
         assertEquals("\"$THIRD_PARTY/page\"", evaluate(webView, "location.href"))
-        evaluate(webView, "location.href = '$THIRD_PARTY/next'; true")
-        waitUntil("main frame navigated") { evaluate(webView, "location.href") == "\"$THIRD_PARTY/next\"" }
+        fire(webView, "location.href = '$THIRD_PARTY/next'")
+        awaitPage(webView, "$THIRD_PARTY/next", script = "location.href")
         assertTrue("$THIRD_PARTY/next" in server.served)
         onMain { controller.destroy() }
     }
@@ -185,29 +179,29 @@ class WebContainersReviewR2Test {
             webView.webViewClient = LocalServer(webView.webViewClient)
             controller.open("$THIRD_PARTY/help")
         }
-        waitUntil("page /help ready") { evaluate(webView, "window.ready === true && location.href") == "\"$THIRD_PARTY/help\"" }
-        waitUntil("exit offered on /help") { callbacks.exit == true }
+        awaitPage(webView, "$THIRD_PARTY/help")
+        WebWait.until("exit offered on /help") { callbacks.exit == true }
         assertEquals("$THIRD_PARTY/help", onMain { controller.browserTarget() })
 
         // pushState 到命中 promo 的同源地址：出口立即撤下，点击也不交出
-        evaluate(webView, "history.pushState({}, '', '/promo/offer'); true")
-        waitUntil("exit withdrawn after pushState") { callbacks.exit == false }
+        fire(webView, "history.pushState({}, '', '/promo/offer')")
+        WebWait.until("exit withdrawn after pushState") { callbacks.exit == false }
         assertNull("no exit on a promo page", onMain { controller.browserTarget() })
 
         // 历史返回（同文档）：回到 /help，出口恢复，交出的是 /help
-        evaluate(webView, "history.back(); true")
-        waitUntil("exit back after history.back") { callbacks.exit == true }
+        fire(webView, "history.back()")
+        WebWait.until("exit back after history.back") { callbacks.exit == true }
         assertEquals("$THIRD_PARTY/help", onMain { controller.browserTarget() })
 
         // replaceState 到 promo：撤下；片段导航回普通地址：恢复，交出的是带片段的当前地址
-        evaluate(webView, "history.replaceState({}, '', '/promo/x'); true")
-        waitUntil("exit withdrawn after replaceState") { callbacks.exit == false }
+        fire(webView, "history.replaceState({}, '', '/promo/x')")
+        WebWait.until("exit withdrawn after replaceState") { callbacks.exit == false }
         assertNull(onMain { controller.browserTarget() })
-        evaluate(webView, "history.replaceState({}, '', '/faq'); true")
-        waitUntil("exit back after replaceState to a plain page") { callbacks.exit == true }
+        fire(webView, "history.replaceState({}, '', '/faq')")
+        WebWait.until("exit back after replaceState to a plain page") { callbacks.exit == true }
         assertEquals("$THIRD_PARTY/faq", onMain { controller.browserTarget() })
-        evaluate(webView, "location.hash = 'q1'; true")
-        waitUntil("fragment navigation followed") { onMain { controller.browserTarget() } == "$THIRD_PARTY/faq#q1" }
+        fire(webView, "location.hash = 'q1'")
+        WebWait.until("fragment navigation followed") { onMain { controller.browserTarget() } == "$THIRD_PARTY/faq#q1" }
         assertEquals(true, callbacks.exit)
         assertEquals("$THIRD_PARTY/faq#q1", onMain { controller.browserTarget() })
         onMain { controller.destroy() }
@@ -225,10 +219,10 @@ class WebContainersReviewR2Test {
         load(webView, "https://brand.other.test/home", PLAIN_PAGE)
 
         // 先到一个不命中任何规则的普通页（hit=false），再从那里到只命中 promo 的地址
-        evaluate(webView, "location.href = '$PLAIN_NEXT'; true")
-        waitUntil("plain page loaded") { evaluate(webView, "window.ready === true && location.href") == "\"$PLAIN_NEXT\"" }
-        evaluate(webView, "location.href = '$THIRD_PARTY/promo/deal'; true")
-        waitUntil("promo navigation sampled") { hits(events).any { it.first == "example.test" } }
+        fire(webView, "location.href = '$PLAIN_NEXT'")
+        awaitPage(webView, PLAIN_NEXT)
+        fire(webView, "location.href = '$THIRD_PARTY/promo/deal'")
+        WebWait.until("promo navigation sampled", detail = { "hits=${hits(events)}" }) { hits(events).any { it.first == "example.test" } }
         assertEquals(
             "promo is loaded but still a hit",
             listOf("example.test" to "true"),
@@ -263,16 +257,18 @@ class WebContainersReviewR2Test {
         val controller =
             onMain { TrustedWebViewController(webView, TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"), host, NoTrusted) }
         onMain { webView.loadDataWithBaseURL("$TRUSTED/page", PLAIN_PAGE, "text/html", "utf-8", null) }
-        waitUntil("bridge ready") { evaluate(webView, "window.ready === true && !!window.__REBATE_BRIDGE__") == "true" }
+        probe(webView).await("bridge ready", "window.ready === true && !!window.__REBATE_BRIDGE__") { it == "true" }
 
-        evaluate(webView, PROTO_CALLS)
-        waitUntil("second call answered") { evaluate(webView, "String(window.out.second)") != "\"undefined\"" }
+        fire(webView, PROTO_CALLS)
+        probe(webView).await("second call answered", "String(window.out && window.out.second)") { it != "\"undefined\"" }
+        // 第一条调用到达原生是异步的（第二条在页面里本地应答，可能先于它）：等它到达再核对「只有一条」
+        WebWait.until("first call reached native") { services.calls.get() >= 1 }
         assertEquals("duplicate answered locally with 90002", "\"90002\"", evaluate(webView, "String(window.out.second)"))
         assertEquals("the first call is still pending", "\"undefined\"", evaluate(webView, "String(window.out.first)"))
         assertEquals("only one message reached native", 1, services.calls.get())
 
         release.complete(Unit)
-        waitUntil("first call settled") { evaluate(webView, "String(window.out.first)") != "\"undefined\"" }
+        probe(webView).await("first call settled", "String(window.out.first)") { it != "\"undefined\"" }
         assertEquals("the first call got the native result", "\"0\"", evaluate(webView, "String(window.out.first)"))
         assertEquals(1, services.calls.get())
         onMain { controller.destroy() }
@@ -439,10 +435,7 @@ class WebContainersReviewR2Test {
         const val THIRD_PARTY = "https://page.example.test"
         const val PLAIN_NEXT = "https://shop.other.test/next"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val WAIT_S = 10L
-        const val MILLIS = 1000L
-        const val POLL_MS = 200L
-        const val SETTLE_MS = 1_000L
+        const val NEGATIVE_WINDOW_MS = 1_000L
         const val FULL_SAMPLE_BP = 10_000
 
         const val PLAIN_PAGE = "<!doctype html><html><body><p>plain</p><script>window.ready = true;</script></body></html>"

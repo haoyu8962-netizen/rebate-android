@@ -21,8 +21,6 @@ import com.couli.core.bridge.BridgeServices
 import com.couli.core.bridge.BridgeUi
 import com.couli.core.bridge.BridgeUpdateState
 import java.io.ByteArrayInputStream
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,7 +28,6 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -66,6 +63,14 @@ class ConformancePageTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /**
+     * FU-AND-0716 第 3 轮（编排复验 r3 失败，同 F-AND-31 的手势时钟）：注入的手势时钟只在测试推进时走动。负载 60–82 时「系统派发的触摸 → 页面点击 →
+     * 桥消息到达」可超过 1 秒，L2 用例就被判 90404（复验 r3 的 net.signedRequest/timeout、FU-AND-0710 负载 >100 时的 net.signedRequest/bad_params）；
+     * 这段调度延迟不属于被测逻辑。每次点按钮前推进 [GESTURE_SPACING_MS]（超过 1 秒窗口），上一次点击的资格先过期，这次调用读到的是它自己那次点击的
+     * 同一时刻；窗口判定（GestureClock 0..1000 毫秒）照生产执行，自动跑的 no_gesture 用例在任何点击之前、照旧断言 90404。
+     */
+    private val clock = ManualClock()
+
     @Before
     fun launch() {
         scenario = ActivityScenario.launch(WebTestHostActivity::class.java)
@@ -84,34 +89,14 @@ class ConformancePageTest {
         return value as T
     }
 
+    /** 读写页面状态（F-AND-31 的 [PageProbe]）：动作在主线程执行并等它执行完。 */
+    private fun probe(webView: WebView) = PageProbe(webView) { block -> scenario.onActivity { block() } }
+
+    /** 页面已稳定时读一次值：等回调到上限（[WebWait.CEILING_MS]），没回判失败（原为单次 10 秒）。 */
     private fun evaluate(
         webView: WebView,
         script: String,
-    ): String {
-        val latch = CountDownLatch(1)
-        var result = "null"
-        onMain {
-            webView.evaluateJavascript(script) { value ->
-                result = value
-                latch.countDown()
-            }
-        }
-        assertTrue("evaluateJavascript timed out", latch.await(EVAL_S, TimeUnit.SECONDS))
-        return result
-    }
-
-    private fun waitUntil(
-        message: String,
-        timeoutMs: Long,
-        condition: () -> Boolean,
-    ) {
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (condition()) return
-            Thread.sleep(POLL_MS)
-        }
-        throw AssertionError("timed out: $message")
-    }
+    ): String = probe(webView).read(script)
 
     /** 测试代码读取页面状态（容器自己从不执行脚本）。 */
     private fun result(webView: WebView): JsonObject? {
@@ -144,13 +129,16 @@ class ConformancePageTest {
                 scope = scope,
             )
         val controller =
-            onMain { TrustedWebViewController(webView, TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"), host, NoCallbacks) }
+            onMain {
+                TrustedWebViewController(webView, TrustedWebConfig(setOf(TRUSTED), emptySet(), "1.0.0"), host, NoCallbacks, clock::now)
+            }
         assumeTrue("system WebView supports the transport", controller.bridgeInstalled)
         onMain {
             webView.webViewClient = AssetServer(webView.webViewClient)
             assertTrue(controller.load("$TRUSTED/conformance/$query"))
         }
-        waitUntil("conformance auto runs done", RUN_TIMEOUT_MS) { result(webView)?.get("status")?.jsonPrimitive?.content == "done" }
+        // 原为轮询里单次求值 10 秒没回即判失败（页面加载、提交文档期间求值回调会迟到或丢失）：改为等页面交回 status=done（[PageProbe.await]）
+        probe(webView).await("conformance auto runs done", STATUS_SCRIPT, RUN_TIMEOUT_MS) { it == "\"done\"" }
         return webView
     }
 
@@ -168,6 +156,8 @@ class ConformancePageTest {
             )
         val point = Json.parseToJsonElement(raw).jsonArray.map { it.jsonPrimitive.content.toFloat() }
         val (x, y) = point[0] * point[2] to point[1] * point[2]
+        // 上一次点击的手势资格先过期（见 [clock]），这次点击与随后的桥调用读到同一时刻
+        clock.advance(GESTURE_SPACING_MS)
         onMain {
             val down = SystemClock.uptimeMillis()
             listOf(MotionEvent.ACTION_DOWN to down, MotionEvent.ACTION_UP to down + TAP_MS).forEach { (action, at) ->
@@ -186,9 +176,17 @@ class ConformancePageTest {
     ) {
         ids.forEach { id ->
             tap(webView, id)
-            waitUntil("tapped $id recorded", timeoutMs) { rows(checkNotNull(result(webView)))[id]?.get("pass") !is JsonNull }
+            // 原为固定 [timeoutMs] 内轮询（单次求值失败即判失败）：改为等页面记下这一项（[PageProbe.await]），上限取它与 [WebWait.CEILING_MS] 的较大者。
+            // 判据不变：这一项的 pass 不再是 null（找不到这一项与原来一样算记下，随后的逐项断言照常判）
+            probe(webView).await("tapped $id recorded", recordedScript(id), maxOf(timeoutMs, WebWait.CEILING_MS)) { it != "null" }
         }
     }
+
+    /** 这一项已记下：pass 不是 null 时回 "set"，没有这一项回 "missing"，否则 null（与原判据 `rows[id]?.get("pass") !is JsonNull` 一致）。 */
+    private fun recordedScript(id: String): String =
+        "(function(){var r=window.__RESULT__;if(!r||!r.cases)return null;" +
+            "var c=r.cases.find(function(c){return c.id===\"$id\";});" +
+            "return c?(c.pass===null?null:'set'):'missing';})()"
 
     private fun buttons(webView: WebView): List<String> {
         val raw =
@@ -449,9 +447,11 @@ class ConformancePageTest {
         const val TRUSTED = "https://h5.example.test"
         const val SHARE_DOMAIN = "s.example.test"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
-        const val EVAL_S = 10L
-        const val POLL_MS = 100L
         const val TAP_MS = 40L
+
+        /** 两次点击之间推进的手势时钟（超过 GestureClock 的 1 秒窗口）。 */
+        const val GESTURE_SPACING_MS = 2_000L
+        const val STATUS_SCRIPT = "(window.__RESULT__ && window.__RESULT__.status) || null"
         const val RUN_TIMEOUT_MS = 120_000L
         const val TAP_TIMEOUT_MS = 10_000L
         const val TIMEOUT_TAP_MS = 30_000L

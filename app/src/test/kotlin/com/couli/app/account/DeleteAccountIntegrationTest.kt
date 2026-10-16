@@ -35,7 +35,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         assertTrue(hasText(CouliFormat.money(1234)))
         assertTrue(hasText(CouliFormat.money(5678)))
         assertFalse("未勾选不可申请", enabled(AccountTags.DELETE_SUBMIT))
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         assertTrue(enabled(AccountTags.DELETE_SUBMIT))
         tap(AccountTags.DELETE_SUBMIT)
         // 10003 → 面板（account_deletion 发码）→ 验证 → 原键重放 → 冷静期
@@ -75,8 +75,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 30416, """{"amount_fen":200}""")
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("30416 提示") { has(AccountTags.DELETE_NEGATIVE_NOTICE) }
         assertTrue(hasText(CouliFormat.money(200)))
         assertTrue("键结束（3xxxx 写入幂等记录）", records().isEmpty())
@@ -84,7 +83,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
         openDeleteFromSettings()
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         assertTrue("回正后可申请", enabled(AccountTags.DELETE_SUBMIT))
         tap(AccountTags.DELETE_SUBMIT)
         idleUntil { has(AccountTags.DELETE_COOLING) }
@@ -107,7 +106,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         settle()
         openDeleteFromSettings()
         assertFalse("回正：初始态", has(AccountTags.DELETE_NEGATIVE_NOTICE))
-        tap(AccountTags.DELETE_WAIVER)
+        checkWaiver()
         assertTrue(enabled(AccountTags.DELETE_SUBMIT))
     }
 
@@ -117,8 +116,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 30412)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_ERROR) }
         assertTrue(hasText(t("error.30412")))
         assertTrue("勾选保留（G14），可以再点", enabled(AccountTags.DELETE_SUBMIT))
@@ -178,9 +176,12 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         openDeleteFromSettings()
         enqueueTimeout("POST", CANCEL)
         val reads = all("GET", DELETION).size
+        val work = workSnapshot()
         tap(AccountTags.DELETE_CANCEL)
         idleUntil("核对读取") { all("GET", DELETION).size > reads }
         settle()
+        // FU-AND-0716 窄修六：核对读取记下≠已结算；等撤回与核对读取的续体结束再核对「不重发、无记录」
+        workSince(work, "撤回超时与核对读取结算")
         assertEquals("不自动重发（G17）", 1, all("POST", CANCEL).size)
         assertTrue("仍冷静期：保留人工重试", has(AccountTags.DELETE_CANCEL))
         assertTrue(records().none { it.operationId == "cancelDeletion" })
@@ -204,8 +205,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         serverState.phoneBound = false
         launch()
         openDeleteFromSettings()
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.DELETE_NO_PHONE) }
         assertTrue(hasText(t("deletion.step_up_unsupported")))
         assertTrue("full 会话给【去绑定手机号】", has(AccountTags.DELETE_BIND_PHONE))
@@ -224,8 +224,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
             release.await(WAIT_S, java.util.concurrent.TimeUnit.SECONDS)
             envelope(deletionJson("cooling", canCancel = true))
         }
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         assertTrue(arrived.await(WAIT_S, java.util.concurrent.TimeUnit.SECONDS))
         assertEquals("发送前写入在途记录", PendingKeyStore.IN_FLIGHT, records().single().stateRaw)
         assertFalse("在途不可再点", enabled(AccountTags.DELETE_SUBMIT))

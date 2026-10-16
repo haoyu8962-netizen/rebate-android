@@ -92,10 +92,20 @@ class Router(
         pendingHeld = true
     }
 
-    /** 明确释放暂缓（之后的恢复照常执行）。 */
+    /**
+     * 明确释放暂缓（之后的恢复照常执行）。原来确实在暂缓时 [heldReleases] 加 1：Router 之外经会话订阅自动恢复的入口（购买页的
+     * resumeAfterLogin）暂缓期间不执行，释放后由它通知原页重新核对归属与前置、再恢复一次（FU-AND-0716 ①，iOS R1-01）。
+     */
     fun releaseHeldPending() {
+        if (!pendingHeld) return
         pendingHeld = false
+        mutableHeldReleases.value += 1
     }
+
+    private val mutableHeldReleases = MutableStateFlow(0L)
+
+    /** 暂缓被明确释放的次数（只增不减；会话结束、丢弃待办时的一并解除不算释放）。 */
+    val heldReleases: StateFlow<Long> = mutableHeldReleases.asStateFlow()
 
     /** 本进程里登记的 pending_action 与登记时的会话标签（只在内存；进程重启后归属未知，清理时按原会话的处理）。 */
     private var pendingTag: Pair<PendingAction, Long>? = null

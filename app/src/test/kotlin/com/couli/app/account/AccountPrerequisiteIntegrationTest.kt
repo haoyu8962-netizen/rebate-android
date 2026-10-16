@@ -32,8 +32,7 @@ class AccountPrerequisiteIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 10005)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil("补办：BindPhone") { top() == "BindPhone" }
         assertTrue("不登记 pending_action、不重放", records().isEmpty())
         composeRule.runOnUiThread { navController.popBackStack() }
@@ -78,8 +77,7 @@ class AccountPrerequisiteIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueTimeout("POST", DELETION)
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { has(AccountTags.PENDING_CARD) }
         val key = records().single().key
         // 之后被封禁：白名单外接口 10006；注销页（白名单）不被 10006 换走（G73）
@@ -103,8 +101,7 @@ class AccountPrerequisiteIntegrationTest : AccountHarness() {
         launch()
         openDeleteFromSettings()
         enqueueCode("POST", DELETION, 10405, """{"min_supported_version":"9.0.0"}""")
-        tap(AccountTags.DELETE_WAIVER)
-        tap(AccountTags.DELETE_SUBMIT)
+        checkWaiverAndSubmit()
         idleUntil { records().singleOrNull()?.stateRaw == PendingKeyStore.HELD }
         assertFalse("10405 不进待确认卡", has(AccountTags.PENDING_CARD))
     }

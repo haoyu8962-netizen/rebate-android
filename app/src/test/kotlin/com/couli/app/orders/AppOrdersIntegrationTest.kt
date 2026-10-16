@@ -40,6 +40,8 @@ import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.AppModule
+import com.couli.app.FlowLedger
+import com.couli.app.FlowWait
 import com.couli.app.login.AppLogin
 import com.couli.app.orderCacheStore
 import com.couli.app.orderRestorePendingFlag
@@ -63,6 +65,7 @@ import com.couli.core.clipboard.ClipboardWriter
 import com.couli.core.clipboard.SystemClipboard
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentStartupReconciler
+import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.CallEpochs
@@ -158,6 +161,9 @@ class AppOrdersIntegrationTest {
     private val host = FakeHost()
     private var forcedUpdates = 0
     private val requests = mutableListOf<Recorded>()
+
+    /** 订单页端口上每次调用连同页面回调的结算记录（FU-AND-0716 窄修二，见 [ordersCallsSettled]）。 */
+    private val flows = FlowLedger()
 
     /** 路径（不含查询串，完全相同；以「/」结尾的按前缀）→ 回答；没有登记的按默认样例回答。 */
     private val answers = mutableMapOf<String, (RecordedRequest) -> MockResponse>()
@@ -357,7 +363,7 @@ class AppOrdersIntegrationTest {
             login.syncSession()
             orders =
                 AppOrders(
-                    api = ApiClientPageApi(api),
+                    api = flows.page(ApiClientPageApi(api)),
                     store = store,
                     routing = routing,
                     sessionEpoch = { tokens.loginEpoch },
@@ -520,6 +526,17 @@ class AppOrdersIntegrationTest {
         open("OrderList", params)
         idleUntil { listRequests().isNotEmpty() && composeRule.onAllNodesWithTag(OrderTags.LIST_PAGE).fetchSemanticsNodes().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：假服务记下请求时应答还没生成；等首页（不带游标）的订单页调用连同页面回调结算，才算打开完成。随后自动翻的第二页不在其中
+        // （有的用例故意挂住它）
+        firstPageSettled()
+    }
+
+    private fun firstPage(call: ApiCall): Boolean = call.query?.contains("cursor=") != true
+
+    private fun firstPageSettled() {
+        val target = flows.started(::firstPage)
+        FlowWait.settled(flows, target, ::pump, { "请求 ${listRequests()}" }, ::firstPage)
+        settle()
     }
 
     private fun settle() {
@@ -538,6 +555,21 @@ class AppOrdersIntegrationTest {
             Thread.sleep(POLL_MS)
         }
         assertTrue(condition())
+    }
+
+    /**
+     * FU-AND-0716 窄修二：此刻已发起的订单页调用（列表、详情、待跟单）全部连同页面的业务回调结算（[FlowLedger]）。点筛选 / 搜索 / 换会话之后、核对
+     * 「最后一次请求」或记下请求数之前用它，代替「固定轮次空转后直接读假服务记录」——请求经 IO 线程到达，晚于固定轮次时原写法读到的是上一次请求。
+     */
+    private fun ordersCallsSettled() {
+        val target = flows.started { true }
+        FlowWait.settled(flows, target, ::pump, { "请求 ${listRequests()}" }) { true }
+        settle()
+    }
+
+    private fun pump() {
+        shadowOf(Looper.getMainLooper()).idle()
+        composeRule.waitForIdle()
     }
 
     private fun listRequests(): List<Map<String, String>> =
@@ -579,6 +611,7 @@ class AppOrdersIntegrationTest {
         // 分组只传 status_group，客户端不过滤：假服务故意回一张「预估中」的卡，页面照样显示
         synchronized(answers) { answers[LIST_PATH] = { envelope(listData(listOf(self1()))) } }
         click(OrderTags.GROUP_PREFIX + "credited")
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "self", "status_group" to "credited"), listRequests().last())
         composeRule.onNodeWithTag(OrderTags.CARD_PREFIX + "ord-self-1").assertExists()
         composeRule.onNodeWithTag(OrderTags.GROUP_PREFIX + "credited").assertIsSelected()
@@ -588,6 +621,7 @@ class AppOrdersIntegrationTest {
         click(OrderTags.FILTER_OPTION_PREFIX + "taobao")
         click(OrderTags.FILTER_MONTH)
         click(OrderTags.FILTER_OPTION_PREFIX + "2026-10")
+        ordersCallsSettled()
         assertEquals(
             mapOf("scope" to "self", "status_group" to "credited", "platform" to "taobao", "paid_month" to "2026-10"),
             listRequests().last(),
@@ -597,10 +631,12 @@ class AppOrdersIntegrationTest {
         search("3741234567890123456")
         search("3741234567")
         search("纯牛奶")
+        ordersCallsSettled()
         val sent = listRequests().drop(before).map { it["q"] }
         assertEquals(listOf("3741234567890123456", "3741234567", "纯牛奶"), sent)
         // 切到分享：分组回到全部、其余条件清空，搜索框提示为「搜商品名」
         click(OrderTags.TAB_SHARE)
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "share"), listRequests().last())
         composeRule.onNodeWithTag(OrderTags.GROUP_PREFIX + "all").assertIsSelected()
         composeRule.onNodeWithText("搜商品名").assertExists()
@@ -633,6 +669,7 @@ class AppOrdersIntegrationTest {
         // 分享单搜单号：只发 q，结果只按假服务（空）显示，并带「分享订单只按商品名搜索」
         synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
         search("3712345678901234567")
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "share", "q" to "3712345678901234567"), listRequests().last())
         composeRule.onNodeWithText("分享订单只按商品名搜索").assertExists()
         composeRule.onNodeWithText("没有找到相关订单").assertExists()
@@ -787,6 +824,8 @@ class AppOrdersIntegrationTest {
         composeRule.onNodeWithText("只显示 2025-10-12 之后的订单，更早的订单请联系客服").assertExists()
         synchronized(answers) { answers[LIST_PATH] = { envelope(listData(listOf(self1()))) } }
         click(OrderTags.GROUP_PREFIX + "estimating")
+        // FU-AND-0716 窄修六：提示是否出现由这次列表应答决定；等它结算再核对「不显示」
+        ordersCallsSettled()
         assertEquals(0, composeRule.onAllNodesWithTag(OrderTags.HISTORY_HINT).fetchSemanticsNodes().size)
         open("OrderDetail", mapOf("order_id" to "ord-missing"))
         idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_EMPTY).fetchSemanticsNodes().isNotEmpty() }
@@ -925,6 +964,8 @@ class AppOrdersIntegrationTest {
         settle()
         composeRule.onNodeWithTag(OrderTags.TAB_SELF).performClick()
         settle()
+        // FU-AND-0716 窄修六：再拉卡的应答还在途；等它结算再核对「不再出现」
+        ordersCallsSettled()
         assertEquals(0, composeRule.onAllNodesWithTag(PendingTrackTags.NOTIFY_ROW, useUnmergedTree = true).fetchSemanticsNodes().size)
     }
 
@@ -1103,6 +1144,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("旧轮次的响应不覆盖新结果", 0, composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-late").fetchSemanticsNodes().size)
         composeRule.onNodeWithTag(OrderTags.CARD_PREFIX + "ord-share-1").assertExists()
     }
@@ -1126,6 +1169,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("OrderList", top()?.name ?: "OrderList")
         assertEquals(0, composeRule.onAllNodesWithTag(OrderTags.DETAIL_PAGE).fetchSemanticsNodes().size)
         assertEquals("出栈后没有任何复制", 0, system.writes)
@@ -1231,6 +1276,8 @@ class AppOrdersIntegrationTest {
         openOrders()
         idleUntil { count(PENDING_PATH) >= 1 }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         val sentList = listRequests().size
         val sentPending = count(PENDING_PATH)
         composeRule.onNodeWithTag(OrderTags.GROUP_PREFIX + "credited").assertIsNotEnabled()
@@ -1310,6 +1357,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         composeRule.onNodeWithTag(OrderTags.CARD_PREFIX + "ord-self-1").assertExists()
         assertEquals("旧轮次的第二页不追加", 0, composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-page2").fetchSemanticsNodes().size)
         assertEquals("不再卡在「加载中」", 0, texts("加载中"))
@@ -1385,6 +1434,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("旧快照不让关闭的卡复活", 0, composeRule.onAllNodesWithTag(PendingTrackTags.CARD).fetchSemanticsNodes().size)
         // 同一 link 的新尝试照常显示
         synchronized(answers) {
@@ -1443,6 +1494,7 @@ class AppOrdersIntegrationTest {
         click(OrderTags.FILTER_MONTH)
         composeRule.onNodeWithTag(OrderTags.FILTER_OPTION_PREFIX + "2026-10").performScrollTo().performClick()
         settle()
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "self", "platform" to "pdd", "paid_month" to "2026-10"), listRequests().last())
         val mask = composeRule.onNodeWithTag(OrderTags.MASK).fetchSemanticsNode().boundsInRoot
         val month = composeRule.onNodeWithTag(OrderTags.FILTER_MONTH).fetchSemanticsNode().boundsInRoot
@@ -1603,6 +1655,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("断连后的自动重试没有再发包", 1, listRequests().count { it["status_group"] == "credited" })
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -1627,6 +1681,8 @@ class AppOrdersIntegrationTest {
         refreshList()
         idleUntil { count(PENDING_PATH) > fetched }
         settle()
+        // FU-AND-0716 窄修六：旧快照（dismissed=false）的应答记下≠已处理；等它结算再核对「不复活」
+        ordersCallsSettled()
         assertEquals(0, composeRule.onAllNodesWithTag(PendingTrackTags.CARD).fetchSemanticsNodes().size)
     }
 
@@ -1728,6 +1784,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals(
             "商品详情页的旧快照不让已关闭的尝试复活",
             emptyList<String>(),
@@ -1801,7 +1859,10 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
+        ordersCallsSettled()
         assertEquals(A_ORDER_NO, searchText())
         assertEquals(A_ORDER_NO, listRequests().last()["q"])
         click(OrderTags.FILTER_PLATFORM)
@@ -1809,10 +1870,13 @@ class AppOrdersIntegrationTest {
         // A 的会话失效 → 登录 B（B 的列表为空：页面上任何位置出现 A 的单号都只能是残留）
         synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
         switchSession(null)
+        ordersCallsSettled()
         val before = listRequests().size
         switchSession("user-two")
         idleUntil { listRequests().size > before }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("返回后搜索框是空的", "", searchText())
         assertEquals("页面上没有 A 的完整单号", 0, texts(A_ORDER_NO))
         assertEquals(
@@ -1826,6 +1890,8 @@ class AppOrdersIntegrationTest {
         recreateRestored()
         idleUntil { listRequests().size > beforeRecreate }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("重建后搜索框是空的", "", searchText())
         assertEquals("重建后页面上没有 A 的完整单号", 0, texts(A_ORDER_NO))
         assertTrue("重建后的请求不带 A 的搜索词", listRequests().drop(beforeRecreate).none { it.containsKey("q") })
@@ -1851,6 +1917,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(seed))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("搜索框不恢复别的账号的输入", "", searchText())
         assertEquals("按默认条件取第一页", listOf(mapOf("scope" to "self")), listRequests())
         assertEquals("别的账号的半屏不恢复", 0, composeRule.onAllNodesWithTag(OrderTags.FILTER_OPTION_PREFIX + "taobao").fetchSemanticsNodes().size)
@@ -1869,12 +1937,14 @@ class AppOrdersIntegrationTest {
         click(OrderTags.FILTER_PLATFORM)
         composeRule.onNodeWithTag(OrderTags.FILTER_OPTION_PREFIX + "pdd").performScrollTo().performClick()
         settle()
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "self", "platform" to "pdd"), listRequests().last())
         val sent = listRequests().size
         composeRule.runOnUiThread { gate.complete(Unit) }
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        ordersCallsSettled()
         assertEquals("等待结束后不再按旧条件重发", sent, listRequests().size)
         assertEquals(mapOf("scope" to "self", "platform" to "pdd"), listRequests().last())
         val filter = composeRule.onNodeWithTag(OrderTags.FILTER_PLATFORM).fetchSemanticsNode().textsInside()
@@ -1890,12 +1960,14 @@ class AppOrdersIntegrationTest {
         settle()
         assertTrue("等待期间不发请求", listRequests().isEmpty())
         search("纯牛奶")
+        ordersCallsSettled()
         assertEquals(mapOf("scope" to "self", "platform" to "taobao", "q" to "纯牛奶"), listRequests().last())
         val sent = listRequests().size
         composeRule.runOnUiThread { gate.complete(Unit) }
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        ordersCallsSettled()
         assertEquals("等待结束后不再按旧条件重发", sent, listRequests().size)
         assertEquals("纯牛奶", searchText())
     }
@@ -1917,6 +1989,8 @@ class AppOrdersIntegrationTest {
         composeRule.runOnUiThread { gate.complete(Unit) }
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals(listOf(mapOf("scope" to "self")), listRequests())
         assertEquals("", searchText())
     }
@@ -1937,6 +2011,7 @@ class AppOrdersIntegrationTest {
         settle()
         assertEquals(A_ORDER_NO, searchText())
         assertTrue("等待期间不发请求", listRequests().isEmpty())
+        ordersCallsSettled()
         val pendingBefore = count(PENDING_PATH)
         // 会话存储换成 B，通知还没执行；随后恢复等待结束
         composeRule.runOnUiThread { tokens.save("access-two", "refresh-two", "full", "user-two") }
@@ -1944,6 +2019,7 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        ordersCallsSettled()
         assertTrue("换号窗口内恢复：0 个订单请求 ${listRequests()}", listRequests().isEmpty())
         assertEquals("待跟单也不拉", pendingBefore, count(PENDING_PATH))
         assertEquals("A 保存的搜索词已清", "", searchText())
@@ -1954,8 +2030,12 @@ class AppOrdersIntegrationTest {
         }
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals(listOf(mapOf("scope" to "self")), listRequests())
         assertEquals("", searchText())
     }
@@ -1971,6 +2051,8 @@ class AppOrdersIntegrationTest {
         openOrders()
         idleUntil { count(PENDING_PATH) > 0 }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         val page = orders.listHandle()?.pending
         assertNotNull(page)
         val stale = page!!.currentTicket().epoch
@@ -1980,6 +2062,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("调用方的固定世代已不是当前会话：零请求", before, count(PENDING_PATH))
         composeRule.runOnUiThread { page.refresh(page.currentTicket().epoch) }
         idleUntil { count(PENDING_PATH) == before + 1 }
@@ -2069,6 +2153,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertNull("换条件后恢复作废", model.pendingRestore)
         assertTrue("锚点不是旧恢复的目标卡", model.anchor.orderId != "ord-25")
         assertEquals(0, composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + "ord-25").fetchSemanticsNodes().size)
@@ -2133,6 +2219,8 @@ class AppOrdersIntegrationTest {
         settle()
         synchronized(answers) { answers.remove("$LIST_PATH/ord-self-1") }
         click(OrderTags.DETAIL_STALE_RETRY)
+        // 重试一点下去旧数据提示就收起（刷新中），详情要等这次重取连同页面回调结算
+        ordersCallsSettled()
         idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_STALE).fetchSemanticsNodes().isEmpty() }
         composeRule.onNodeWithTag(OrderTags.DETAIL_AMOUNTS).assertExists()
     }
@@ -2361,6 +2449,8 @@ class AppOrdersIntegrationTest {
         settle()
         open("OrderList")
         settle()
+        // FU-AND-0716 窄修五：回到订单页时的待跟单 / 列表读取还在途，卡片落地会重新排版；等它们连同回调结算再核对锚点
+        ordersCallsSettled()
         assertEquals("锚点不被首次排版覆盖", before, model.anchor)
         idleUntil { composeRule.onAllNodesWithTag(OrderTags.CARD_PREFIX + before.orderId).fetchSemanticsNodes().isNotEmpty() }
         assertEquals(
@@ -2435,7 +2525,10 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
+        ordersCallsSettled()
         assertEquals(A_ORDER_NO, searchText())
         // 清理之后的列表为空：页面上任何位置出现这个单号都只能是残留
         synchronized(answers) { answers[LIST_PATH] = { envelope(listData(emptyList())) } }
@@ -2446,6 +2539,8 @@ class AppOrdersIntegrationTest {
         assertEquals("切环境同步清空搜索框", "", (orders.listHandle() as com.couli.feature.orders.OrderListViewModel).input.value)
         idleUntil { listRequests().size > before }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("", searchText())
         assertEquals("页面上没有完整单号", 0, texts(A_ORDER_NO))
         assertTrue("之后的请求不带这个搜索词", listRequests().drop(before).none { it.containsKey("q") })
@@ -2453,6 +2548,8 @@ class AppOrdersIntegrationTest {
         recreateRestored()
         idleUntil { listRequests().size > beforeRecreate }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("重建后搜索框是空的", "", searchText())
         assertTrue("重建后的请求不带这个搜索词", listRequests().drop(beforeRecreate).none { it.containsKey("q") })
         // 撤回同意：同样同步清掉
@@ -2542,6 +2639,8 @@ class AppOrdersIntegrationTest {
         }
         idleUntil { listRequests().size > beforeNotice }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertTrue(
             "通知到后列表里没有 A 的数据",
             model.controller.state.value.items
@@ -2572,6 +2671,8 @@ class AppOrdersIntegrationTest {
         val oldTicket = service.state.value.ticket
         composeRule.onNodeWithTag(OrderTags.TAB_SHARE).performClick()
         settle()
+        // FU-AND-0716 窄修六：切到分享后的读取还在途；等它结算再核对旧回调的效果
+        ordersCallsSettled()
         assertTrue(
             "分享子 Tab 不显示卡",
             service.state.value.cards
@@ -2657,6 +2758,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()), moduleCleaners = true)
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
         assertEquals(A_ORDER_NO, searchText())
         // 切走、进程被回收：系统留下保存状态，订单 ViewModel 不再存在
@@ -2680,6 +2783,7 @@ class AppOrdersIntegrationTest {
             orders.onSessionChanged()
         }
         settle()
+        ordersCallsSettled()
         // 打开订单：用回收前保存的那份状态重建
         val beforeReopen = listRequests().size
         composeRule.runOnUiThread {
@@ -2702,6 +2806,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()), moduleCleaners = true)
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
         lateinit var state: android.os.Bundle
         composeRule.runOnUiThread {
@@ -2741,6 +2847,10 @@ class AppOrdersIntegrationTest {
         switchSession("user-two")
         idleUntil { pageActions().ticket != old.ticket }
         settle()
+        // FU-AND-0716 窄修二：换号后 B 的重取在后台；记下请求数之前等它们连同页面回调结算（原写法固定轮次后就记，B 的请求晚到会被算成旧回调发的）
+        ordersCallsSettled()
+        // 这里核对的是全部请求：换号引起的登录补查（getMe）也要先结束
+        idleUntil { login.phoneChecksSettled() }
         val requestsBefore = synchronized(requests) { requests.size }
         val writes = system.writes
         composeRule.runOnUiThread {
@@ -2762,6 +2872,8 @@ class AppOrdersIntegrationTest {
             old.onOpen("ord-self-1")
         }
         settle()
+        // 旧回调若真的发了请求，等它到达并结算后再核对「不发任何请求」
+        ordersCallsSettled()
         assertEquals("搜索框不写入 A 的单号", "", searchText())
         assertEquals("", model.input.value)
         assertNull("旧回调不打开半屏", model.sheet.value)
@@ -2783,6 +2895,8 @@ class AppOrdersIntegrationTest {
         recreateRestored()
         idleUntil { listRequests().size > beforeRecreate }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("重建后也恢复不出", "", searchText())
         assertTrue(listRequests().drop(beforeRecreate).none { it.containsKey("q") })
         // 当前组合的新回调照常写入并进恢复记录
@@ -2799,16 +2913,21 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         val old = pageActions()
         composeRule.runOnUiThread { orders.onCleanup() }
         idleUntil { pageActions().ticket != old.ticket }
         settle()
+        // FU-AND-0716 窄修二：清理后的重取在后台；记下请求数之前等它结算，核对前再等旧回调可能发出的请求结算
+        ordersCallsSettled()
         val before = listRequests().size
         composeRule.runOnUiThread {
             old.onInput(A_ORDER_NO)
             old.onSubmit()
         }
         settle()
+        ordersCallsSettled()
         assertEquals("", searchText())
         assertEquals("不发请求", before, listRequests().size)
         assertTrue(restoreFilesWith(A_ORDER_NO).isEmpty())
@@ -2823,6 +2942,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
         val state = killOrders()
         assertTrue("前提：恢复记录在盘上", restoreFilesWith(A_ORDER_NO).isNotEmpty())
@@ -2845,6 +2966,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
         val state = killOrders()
         assertTrue(restoreFilesWith(A_ORDER_NO).isNotEmpty())
@@ -2865,6 +2988,8 @@ class AppOrdersIntegrationTest {
         launchRestored(RestoredOwner(android.os.Bundle()))
         idleUntil { listRequests().isNotEmpty() }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         search(A_ORDER_NO)
         val state = killOrders()
         val root = AppOrders.restoreRoot(context)
@@ -3084,6 +3209,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("旧【重试】回调不以 B 的会话请求 A 页面的订单", before, count("$LIST_PATH/ord-o7"))
         assertTrue(
             "旧回调执行前即返回：页面不被改成加载中",
@@ -3118,6 +3245,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("旧刷新回调零请求", before, count("$LIST_PATH/ord-self-1"))
         assertEquals("旧复制回调零写入", writes, system.writes)
         assertTrue(
@@ -3174,6 +3303,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("恢复等待结束：会话存储已换号而通知未到 → 零请求", before, count(path))
         assertNull("等待结束后没有按任何身份发起加载（状态未被绑定）", model.controller.state.value.owner)
         // 通知到达：清空旧页面的会话出口按 B 重新绑定并请求一次
@@ -3183,6 +3314,8 @@ class AppOrdersIntegrationTest {
         }
         idleUntil { count(path) == before + 1 }
         settle()
+        // FU-AND-0716 窄修三：请求已记下≠应答已处理；再等订单页调用连同回调结算
+        ordersCallsSettled()
         assertEquals("只请求一次", before + 1, count(path))
         composeRule.runOnUiThread { model.controller.leave() }
     }
@@ -3208,6 +3341,8 @@ class AppOrdersIntegrationTest {
         settle()
         Thread.sleep(LATE_MS)
         settle()
+        // FU-AND-0716 窄修二：固定时长观察窗之后，再等此刻已发起的订单页调用连同回调结算，才核对（迟到响应已处理 / 确实没有新请求）
+        ordersCallsSettled()
         assertEquals("外跳等待结束：会话存储已换号而通知未到 → 零请求", before, count(PENDING_PATH))
         composeRule.runOnUiThread {
             login.syncSession()
