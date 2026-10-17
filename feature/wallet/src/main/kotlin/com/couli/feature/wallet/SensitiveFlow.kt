@@ -85,8 +85,14 @@ interface FlowHost {
     /** 写请求发出之前的同步出口，供表单保存重建后的保守提交锁；旧页面接线无需实现。 */
     fun onWriteStarted() = Unit
 
+    /** 带本次固定的幂等键；保留无参出口，每次写发起仍通知旧宿主。 */
+    fun onWriteStarted(key: String) = onWriteStarted()
+
     /** 本表单明确不出款的结局已采用，同步释放重建用的在途标记；操作锁仍持有到采用完毕。 */
     fun onWriteReleased() = Unit
+
+    /** 只释放本次写所用的键，不从此刻的未决卡片反推。 */
+    fun onWriteReleased(key: String) = onWriteReleased()
 
     /** 业务成功（首次提交、确认上一笔、放弃得到 completed 且原结果成功）：[data] 为原操作的 data。 */
     fun onSucceeded(
@@ -191,7 +197,14 @@ class SensitiveFlow(
     fun onVisibility(shown: Boolean) {
         if (shown != visible) viewGen += 1
         visible = shown
-        if (shown) everVisible = true
+        if (shown) {
+            everVisible = true
+            // 入场中发出的请求从首次可见起按正常可见请求处理；之后被覆盖，回来不补弹。
+            if (sentBeforeFirstVisible) {
+                sentViewGen = viewGen
+                sentBeforeFirstVisible = false
+            }
+        }
         showDeferredStepUp()
     }
 
@@ -314,7 +327,7 @@ class SensitiveFlow(
         // 被它拦下时记下原因（共性第 62 条），回调按原因结算
         val probe = gate.probe()
         val owner = CallOwnership(deps.api.epochs(), sendAllowed = probe::allowed) { deps.env.sessionEpoch() == click.epoch }
-        host.onWriteStarted()
+        host.onWriteStarted(key)
         deps.service.launch {
             try {
                 val call =
@@ -337,9 +350,12 @@ class SensitiveFlow(
                 settleShared(click.account, click.epoch, result, outcome, countToken = true)
                 // 页面已出栈或会话已换代：不改页面（结论已由网络层落到未决记录，共享结算已做）
                 if (!alive() || deps.env.sessionEpoch() != click.epoch) return@launch
-                // 同账号分区换代也会重建表单：旧结局只同步记录，不能锁新表单或写回旧成功标记。
-                if (click.form !== formOwner) return@launch
-                onSubmitResult(result, outcome, replayed, probe)
+                // 同账号分区换代后的旧成功只刷新、轻提示，不锁新表单或写回旧成功标记。
+                if (click.form !== formOwner) {
+                    previousFormSucceeded(click.account, outcome)
+                    return@launch
+                }
+                onSubmitResult(result, outcome, replayed, probe, key)
             } finally {
                 finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
@@ -385,22 +401,24 @@ class SensitiveFlow(
         outcome: Outcome?,
         replayed: Boolean,
         probe: SendProbe,
+        key: String,
     ) {
         if (outcome == null) {
-            localRejected(result, probe)
+            localRejected(result, probe, key)
             return
         }
-        apply(outcome, result, SensitiveOutcome.SUBMIT, replayed, null)
+        apply(outcome, result, SensitiveOutcome.SUBMIT, replayed, null, key)
     }
 
     /** 没有发出（本地拒绝）：同一操作已有未决键 → 按记录进待确认；限流闸门 → 限流提示；其余提示网络错误，键不用了。 */
     private fun localRejected(
         result: ApiResult,
         probe: SendProbe,
+        key: String,
     ) {
         reuseKey = null
         val reason = (result as? ApiResult.LocalReject)?.reason
-        val key =
+        val errorKey =
             when {
                 // 本请求被发送前限流拒绝（共性第 62 条）：按记下的原因，不看回调时刻的禁用期
                 probe.gated(result) -> "error.42901"
@@ -409,8 +427,8 @@ class SensitiveFlow(
 
                 else -> WalletErrors.NETWORK_KEY
             }
-        update { it.copy(phase = FlowState.EDITING, error = key?.let(::notice)) }
-        if (result is ApiResult.LocalReject && reason != LocalRejectReason.PENDING_KEY_UNRESOLVED) host.onWriteReleased()
+        update { it.copy(phase = FlowState.EDITING, error = errorKey?.let(::notice)) }
+        if (result is ApiResult.LocalReject && reason != LocalRejectReason.PENDING_KEY_UNRESOLVED) host.onWriteReleased(key)
         refreshPending()
     }
 
@@ -474,7 +492,7 @@ class SensitiveFlow(
         val version = s.pendingVersion
         val write = beginWrite() ?: return
         sentViewGen = viewGen
-        host.onWriteStarted()
+        host.onWriteStarted(intent.key)
         // 会话级作用域执行（共性第 40 条）：离页不取消已发出的确认，共享结算照常
         deps.service.launch {
             try {
@@ -498,7 +516,7 @@ class SensitiveFlow(
                     refreshPending()
                     return@launch
                 }
-                apply(outcome, result, SensitiveOutcome.CONFIRM, intent.stepUpReplayed, intent)
+                apply(outcome, result, SensitiveOutcome.CONFIRM, intent.stepUpReplayed, intent, intent.key)
             } finally {
                 finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
@@ -538,7 +556,7 @@ class SensitiveFlow(
         val version = s.pendingVersion
         val write = beginWrite() ?: return
         sentViewGen = viewGen
-        host.onWriteStarted()
+        host.onWriteStarted(intent.key)
         // 会话级作用域执行（共性第 40 条）：离页不取消已发出的作废，共享结算照常
         deps.service.launch {
             try {
@@ -562,7 +580,7 @@ class SensitiveFlow(
                     refreshPending()
                     return@launch
                 }
-                apply(outcome, result, SensitiveOutcome.ABANDON, replayed = true, intent = null)
+                apply(outcome, result, SensitiveOutcome.ABANDON, replayed = true, intent = null, key = intent.key)
             } finally {
                 finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
@@ -573,18 +591,35 @@ class SensitiveFlow(
 
     /**
      * 结果来自 target(intent) 固定的原键，不用此刻的待确认卡重新判归属；卡已消失或换键也不能吞掉原键的成功。
-     * 只登记原表单的成功，不把过时的错误、已放弃或另一张表单的结果更新到页面。
+     * 原表单成功仍登记资金锁；换表单的成功仅刷新、轻提示，过时的错误和已放弃不更新页面。
      */
     private fun recordSupersededSuccess(
         intent: Intent,
         result: ApiResult,
         outcome: Outcome?,
     ) {
-        if (formOwner !== intent.form) return
+        if (formOwner !== intent.form) {
+            previousFormSucceeded(intent.account, outcome)
+            return
+        }
         if (result !is ApiResult.Success || outcome == null) return
         val done = outcome.actionRaw == SensitiveOutcome.DONE
         val alreadyDone = outcome.actionRaw == SensitiveOutcome.ALREADY_DONE && outcome.textKey == SensitiveOutcome.ALREADY_DONE_KEY
         if (done || alreadyDone) host.onSucceeded(result.data as? JsonObject, alreadyDone)
+    }
+
+    /** 同账号换表单后的旧成功：只告知上一笔已提交，不走新表单的成功锁、错误条或导航。 */
+    private fun previousFormSucceeded(
+        account: String,
+        outcome: Outcome?,
+    ) {
+        if (operationId != WithdrawController.OPERATION || formOwner.account != account) return
+        val succeeded =
+            outcome?.actionRaw == SensitiveOutcome.DONE ||
+                (outcome?.actionRaw == SensitiveOutcome.ALREADY_DONE && outcome.textKey == SensitiveOutcome.ALREADY_DONE_KEY)
+        if (!succeeded) return
+        update { it.copy(toast = notice("withdraw.previous_submitted").copy(assertive = false)) }
+        host.onSettled()
     }
 
     private fun abandonInput(result: ApiResult): OutcomeInput =
@@ -620,6 +655,7 @@ class SensitiveFlow(
         phase: String,
         replayed: Boolean,
         intent: Intent?,
+        key: String,
     ) {
         if (outcome.nextSubmitNewKey) reuseKey = null
         // 禁用期、token 失效、强更已在 [settleShared] 按会话归属结算
@@ -641,7 +677,7 @@ class SensitiveFlow(
                     host.onSucceeded((result as? ApiResult.Success)?.data as? JsonObject, alreadyDone = true)
                 } else {
                     update { it.copy(phase = FlowState.EDITING, error = message, toast = notice(SensitiveOutcome.ALREADY_DONE_KEY)) }
-                    host.onWriteReleased()
+                    host.onWriteReleased(key)
                     host.onSettled()
                 }
             }
@@ -668,7 +704,7 @@ class SensitiveFlow(
                 reuseKey = null
                 endPending()
                 update { it.copy(phase = FlowState.EDITING, toast = message?.copy(assertive = false), error = null) }
-                host.onWriteReleased()
+                host.onWriteReleased(key)
                 host.onSettled()
             }
 
@@ -677,7 +713,7 @@ class SensitiveFlow(
             -> {
                 if (phase != SensitiveOutcome.SUBMIT) endPending()
                 update { it.copy(phase = FlowState.EDITING, error = message ?: notice(WalletErrors.NETWORK_KEY)) }
-                if (outcome.actionRaw == SensitiveOutcome.SHOW_ERROR_KEY_ENDS) host.onWriteReleased()
+                if (outcome.actionRaw == SensitiveOutcome.SHOW_ERROR_KEY_ENDS) host.onWriteReleased(key)
                 (result as? ApiResult.Failure)?.code?.let(host::onBusinessError)
                 if (outcome.keyEnds) host.onSettled()
                 refreshPending()
@@ -694,7 +730,7 @@ class SensitiveFlow(
                         error = null,
                     )
                 }
-                host.onWriteReleased()
+                host.onWriteReleased(key)
                 refreshPending()
             }
 

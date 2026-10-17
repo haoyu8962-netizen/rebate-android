@@ -107,7 +107,10 @@ object WalletDraftTexts : WalletTexts {
             "withdraw.submitted_spoken" to "提现申请已提交，审核中",
             // 代拟（FU-AND-0718 R1-01）：成功或在途表单恢复后的中性提示，不推断最终结局。
             "withdraw.submission_locked" to "本页已有提现操作，请到提现记录查看结果",
+            // 代拟（FU-AND-0719 F-AND-42；FU-AND-0720 R1-04 补登记）：成功后等待进入记录页。
             "withdraw.submitted_opening_records" to "已提交，正在打开提现记录",
+            // 代拟（FU-AND-0720 F-AND-45 R1-01）：换代后的上一张表单迟到成功，一次性轻提示。
+            "withdraw.previous_submitted" to "上一笔提现已提交，可在提现记录查看",
             "withdraw.spoken.quick" to "提现金额 {amount}，预计到账 {net}",
             "withdraw.spoken.amount" to "提现金额 {amount}",
             "withdraw.load_failed" to "加载失败",

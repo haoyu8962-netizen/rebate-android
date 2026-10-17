@@ -2390,6 +2390,82 @@ class AppWalletIntegrationTest {
     }
 
     /**
+     * FU-AND-0720 / F-AND-45 R1-02：提现页在入场转场里（宿主 STARTED，页面从未 ON_RESUME）提交，响应挂住；页面随后首次 ON_RESUME（可见过），再被覆盖
+     * （宿主到 STARTED，页面 ON_PAUSE）；这时 10003 才到达；宿主回到 RESUMED。「发出时从未可见」的标记应在首次可见后失效，所以回来时**不**自动弹二次验证
+     * 面板、不自动续发、仍在提现页（与 T-03 / lesson37 同一口径：可见过之后被覆盖时收到的 10003 等用户再点）。用户再点【提交】才出现面板，沿用原键。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand45_r102_aStepUpSentDuringTheEntryTransitionButAnsweredAfterTheFirstResumeAndACoverWaitsForTheUser() {
+        val writes = WithdrawWrites()
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) }
+        assertEquals("前提：提现页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = withdrawModel(entry)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        writes.hold = gate
+        typeAndSubmit(model, "10")
+        idleUntil { writes.count() == 1 }
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：提现页首次 ON_RESUME（可见过）", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        assertEquals("前提：提现页被覆盖（ON_PAUSE）", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        writes.hold = null
+        gate.complete(Unit)
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：端口收到 1 次提交", 1, writes.count())
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：提现页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        walletCallsSettled()
+        assertFalse("入场发出→已可见→被覆盖→10003 到达：回来不自动弹二次验证面板", has(WalletTags.STEP_UP_CODE))
+        assertEquals("回来不自动续发", 1, writes.count())
+        assertEquals("仍在提现页", "Withdraw", top()?.name)
+        click(WalletTags.WITHDRAW_SUBMIT)
+        assertTrue("用户再点【提交】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
+        // 第 2 版（评审 T-04）：等这一阶段的调用全部结算后取快照：恰好 2 次（首发 + 用户再点），沿用原键
+        walletCallsSettled()
+        val keys = synchronized(writes.keys) { writes.keys.toList() }
+        assertEquals("用户再点恰好发出第 2 次：$keys", 2, keys.size)
+        assertEquals("用户再点沿用原键", keys[0], keys[1])
+    }
+
+    /**
+     * R1-02 对照（不得因清标记退化 F-AND-42 ①）：同样在入场转场里提交、响应挂住；页面首次 ON_RESUME 之后**一直可见**，10003 在可见期间到达——不要求
+     * 用户再点【提交】，二次验证面板出现；面板弹出本身不发写请求。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand45_r102_control_aStepUpSentDuringTheEntryTransitionAndAnsweredWhileVisibleOpensThePanel() {
+        val writes = WithdrawWrites()
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) }
+        assertEquals("前提：提现页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = withdrawModel(entry)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        writes.hold = gate
+        typeAndSubmit(model, "10")
+        idleUntil { writes.count() == 1 }
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：提现页首次 ON_RESUME", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        writes.hold = null
+        gate.complete(Unit)
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
+        assertTrue("入场发出、可见期间收到 10003：弹出二次验证面板（不要求用户再点【提交】）", appears { has(WalletTags.STEP_UP_CODE) })
+        walletCallsSettled()
+        assertEquals("面板弹出本身不发写请求", 1, writes.count())
+    }
+
+    /**
      * F-AND-42 ②：页面可见时成功到达，导航被拒（AppShell 已把 NavController 解绑，生产 replaceTopAccepted「没有导航」一支）——页面仍可见，给中性提示
      * 「已提交，正在打开提现记录」，不显示错误条；【提现记录】入口在；本页再点不发。
      */

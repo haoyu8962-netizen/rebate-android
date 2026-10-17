@@ -114,8 +114,14 @@ class WithdrawViewModel(
         draftIdentity = identity
         val restored = initialDraft(identity, owner)
         controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner, initialSubmissionLocked = submissionLocked)
-        controller.onSubmissionStarted = { saved[K_IN_FLIGHT] = true }
-        controller.onSubmissionReleased = { saved.remove<Boolean>(K_IN_FLIGHT) }
+        // 首个未释放的键随 Handle 保存；其他键的写不能覆盖它，也不能按恢复时的卡片反推。
+        // 旧版本的 Boolean 标记没有设锁键，保守保留，直至表单换代清理。
+        controller.onSubmissionStarted = { key ->
+            if (saved.get<Any>(K_IN_FLIGHT) == null) saved[K_IN_FLIGHT] = key
+        }
+        controller.onSubmissionReleased = { key ->
+            if (saved.get<Any>(K_IN_FLIGHT) == key) saved.remove<Any>(K_IN_FLIGHT)
+        }
         controller.onSuccessRecorded = { data ->
             saved[K_SUCCEEDED] = true
             saved[K_WITHDRAWAL_ID] = (data?.get(WalletRoutes.WITHDRAWAL_ID) as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -125,7 +131,7 @@ class WithdrawViewModel(
         // 确认换代时同步清旧表单的草稿和保存标记；同一身份的通知不会调用 onReset。
         controller.onReset = { next ->
             clearDraft()
-            saved.remove<Boolean>(K_IN_FLIGHT)
+            saved.remove<Any>(K_IN_FLIGHT)
             saved.remove<Boolean>(K_SUCCEEDED)
             saved.remove<String>(K_WITHDRAWAL_ID)
             draftIdentity = next
@@ -245,7 +251,7 @@ class WithdrawViewModel(
     }
 
     /** 标记跟随这一张表单的 SavedStateHandle；离开后新开的提现页使用新的 Handle。 */
-    private val submissionLocked: Boolean get() = saved.get<Boolean>(K_SUCCEEDED) == true || saved.get<Boolean>(K_IN_FLIGHT) == true
+    private val submissionLocked: Boolean get() = saved.get<Boolean>(K_SUCCEEDED) == true || saved.get<Any>(K_IN_FLIGHT) != null
 
     private fun clearDraft() {
         saved.remove<String>(K_AMOUNT)

@@ -169,10 +169,10 @@ class WithdrawController(
     var onReset: (SessionIdentity) -> Unit = {}
 
     /** 发出写请求之前同步保存该表单的在途标记。 */
-    var onSubmissionStarted: () -> Unit = {}
+    var onSubmissionStarted: (String) -> Unit = {}
 
     /** 明确不出款的结局采用时同步清除保存的在途标记。 */
-    var onSubmissionReleased: () -> Unit = {}
+    var onSubmissionReleased: (String) -> Unit = {}
 
     /** 成功时同步保存终态、清掉金额草稿，先于任何导航。 */
     var onSuccessRecorded: (JsonObject?) -> Unit = {}
@@ -616,9 +616,12 @@ class WithdrawController(
 
     // ---------------------------------------------------------------- FlowHost
 
-    override fun onWriteStarted() = onSubmissionStarted()
+    override fun onWriteStarted(key: String) {
+        super.onWriteStarted(key)
+        onSubmissionStarted(key)
+    }
 
-    override fun onWriteReleased() = onSubmissionReleased()
+    override fun onWriteReleased(key: String) = onSubmissionReleased(key)
 
     /** 提交成功时页面不在栈顶可见：替换为提现记录的导航留到页面回到可见时再做（APP-09 共性第 37、41 条）。 */
     private var deferredSuccess: Pair<JsonObject?, Boolean>? = null

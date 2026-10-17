@@ -816,6 +816,8 @@ class WalletReviewR1Test {
         controller.onVisibility(true)
         flow.submit(body, body)
         val submits = api.of(WithdrawController.OPERATION)
+        // F-AND-46（FU-AND-0720）：取 submits[1] 之前先断言提交次数——回来不自动续发、用户再点恰好发出第 2 次
+        assertEquals("回来不自动续发，用户再点恰好发出第 2 次", 2, submits.size)
         assertEquals("回来再点沿用原键", submits[0].call.idempotencyKey, submits[1].call.idempotencyKey)
         // 44001：被覆盖时不弹风控弹窗
         controller.onVisibility(false)
