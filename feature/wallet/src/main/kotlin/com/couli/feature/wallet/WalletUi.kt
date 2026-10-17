@@ -552,6 +552,8 @@ internal fun OnReturn(
 internal fun OnVisibility(onChange: (Boolean) -> Unit) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
+        // 首次组合时可能尚未 RESUMED，也可能直接被覆盖而没有 ON_PAUSE；先同步当前状态。
+        onChange(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {

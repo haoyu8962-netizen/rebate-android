@@ -126,6 +126,16 @@ interface WalletEnv : StepUpEnv {
         entryId: String?,
     )
 
+    /** 返回是否实际替换了发起页。旧接线沿用 [replaceTop]；App 接线必须反馈栈顶校验与出栈结果。 */
+    fun replaceTopAccepted(
+        route: String,
+        params: JsonObject,
+        entryId: String?,
+    ): Boolean {
+        replaceTop(route, params, entryId)
+        return true
+    }
+
     /** 经 App 写剪贴板的唯一入口（APP-07 ClipboardWriter：先记自写 hash 并确认落盘，记不下就不写）；返回是否写入。 */
     fun copy(text: String): Boolean
 

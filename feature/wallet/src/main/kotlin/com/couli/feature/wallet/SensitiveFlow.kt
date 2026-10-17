@@ -68,8 +68,10 @@ data class FlowState(
     val guideRoute: String? = null,
     /** 本表单所属的账号与登录世代（APP-09 共性第 52 条）：按钮回调带上它，执行前核对仍是当前会话。 */
     val owner: FormOwner = FormOwner(null, Long.MIN_VALUE),
+    /** 本页写操作从发起到结果采用完毕的独立锁，不由未决记录是否存在决定。 */
+    val operationInFlight: Boolean = false,
 ) {
-    val canSubmit: Boolean get() = phase == EDITING && pending == null && !pendingUnreadable
+    val canSubmit: Boolean get() = phase == EDITING && pending == null && !pendingUnreadable && !operationInFlight
 
     companion object {
         const val EDITING = "editing"
@@ -80,6 +82,9 @@ data class FlowState(
 
 /** 发起页接线：成功、引导补办、键结束后的刷新。 */
 interface FlowHost {
+    /** 写请求发出之前的同步出口，供表单保存重建后的保守提交锁；旧页面接线无需实现。 */
+    fun onWriteStarted() = Unit
+
     /** 业务成功（首次提交、确认上一笔、放弃得到 completed 且原结果成功）：[data] 为原操作的 data。 */
     fun onSucceeded(
         data: JsonObject?,
@@ -276,11 +281,13 @@ class SensitiveFlow(
             if (alive()) update { it.copy(phase = FlowState.EDITING) }
             return
         }
+        val write = beginWrite() ?: return
         sentViewGen = viewGen
         // 提交离开页面不取消（未决记录兜底）；会话换代即作废（尚未写出的不发）；禁用期是独立的发送前闸门（APP-08 共性第 27 条），不进归属；
         // 被它拦下时记下原因（共性第 62 条），回调按原因结算
         val probe = gate.probe()
         val owner = CallOwnership(deps.api.epochs(), sendAllowed = probe::allowed) { deps.env.sessionEpoch() == click.epoch }
+        host.onWriteStarted()
         deps.service.launch {
             try {
                 val call =
@@ -305,6 +312,7 @@ class SensitiveFlow(
                 if (!alive() || deps.env.sessionEpoch() != click.epoch) return@launch
                 onSubmitResult(result, outcome, replayed, probe)
             } finally {
+                finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(click.account, operationId)
             }
@@ -386,6 +394,7 @@ class SensitiveFlow(
         val account: String,
         val epoch: Long,
         val key: String,
+        val form: FormOwner,
     ) {
         var stepUpReplayed = false
     }
@@ -407,9 +416,9 @@ class SensitiveFlow(
         owner: FormOwner,
     ): Intent? {
         val pending = s.pending?.takeIf { it.key == key } ?: return null
-        if (!alive() || pending.inFlight || !owns(owner)) return null
+        if (!alive() || localBusy || pending.inFlight || !owns(owner)) return null
         val account = owner.account ?: return null
-        return Intent(account, owner.epoch, pending.key)
+        return Intent(account, owner.epoch, pending.key, formOwner)
     }
 
     /** 【确认上一笔】：原键、原请求体重发（二次验证照常）。 */
@@ -433,8 +442,9 @@ class SensitiveFlow(
         // 二次验证之后续发：页面、会话与账号仍是点击时的才发（共性第 14 条）
         if (!alive() || !deps.env.ownedBy(intent.account, intent.epoch)) return
         val version = s.pendingVersion
+        val write = beginWrite() ?: return
         sentViewGen = viewGen
-        markInFlight(true)
+        host.onWriteStarted()
         // 会话级作用域执行（共性第 40 条）：离页不取消已发出的确认，共享结算照常
         deps.service.launch {
             try {
@@ -448,11 +458,11 @@ class SensitiveFlow(
                 settleShared(intent.account, intent.epoch, result, outcome, countToken = true)
                 if (!alive() || deps.env.sessionEpoch() != intent.epoch) return@launch
                 if (s.pendingVersion != version) {
-                    // 键已经结束（别的在途请求先回来了）：这次的响应只用于核对，不再改变页面
+                    // 待确认卡的版本可以过时，原表单原键的成功终态不能丢，否则记录消失会放开新提交。
+                    recordSupersededSuccess(intent, result, outcome)
                     refreshPending()
                     return@launch
                 }
-                markInFlight(false)
                 if (outcome == null) {
                     update { it.copy(pendingNotice = notice(SensitiveOutcome.RETRY_LATER_KEY)) }
                     refreshPending()
@@ -460,6 +470,7 @@ class SensitiveFlow(
                 }
                 apply(outcome, result, SensitiveOutcome.CONFIRM, intent.stepUpReplayed, intent)
             } finally {
+                finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(intent.account, operationId)
             }
@@ -472,7 +483,7 @@ class SensitiveFlow(
         owner: FormOwner = formOwner,
     ) {
         val pending = s.pending?.takeIf { it.key == key } ?: return
-        if (pending.inFlight || !owns(owner)) return
+        if (localBusy || pending.inFlight || !owns(owner)) return
         if (gate.active) {
             update { it.copy(pendingNotice = notice(SensitiveOutcome.RETRY_LATER_KEY)) }
             return
@@ -495,8 +506,9 @@ class SensitiveFlow(
             return
         }
         val version = s.pendingVersion
+        val write = beginWrite() ?: return
         sentViewGen = viewGen
-        markInFlight(true)
+        host.onWriteStarted()
         // 会话级作用域执行（共性第 40 条）：离页不取消已发出的作废，共享结算照常
         deps.service.launch {
             try {
@@ -510,10 +522,10 @@ class SensitiveFlow(
                 settleShared(intent.account, intent.epoch, result, outcome, countToken = false)
                 if (!alive() || deps.env.sessionEpoch() != intent.epoch) return@launch
                 if (s.pendingVersion != version) {
+                    recordSupersededSuccess(intent, result, outcome)
                     refreshPending()
                     return@launch
                 }
-                markInFlight(false)
                 if (outcome == null) {
                     // 本地阻断（禁用期、会话已换、记录已换键）：原键保持待确认
                     update { it.copy(pendingNotice = notice(SensitiveOutcome.RETRY_LATER_KEY)) }
@@ -522,10 +534,27 @@ class SensitiveFlow(
                 }
                 apply(outcome, result, SensitiveOutcome.ABANDON, replayed = true, intent = null)
             } finally {
+                finishWrite(write)
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(intent.account, operationId)
             }
         }
+    }
+
+    /**
+     * 结果来自 target(intent) 固定的原键，不用此刻的待确认卡重新判归属；卡已消失或换键也不能吞掉原键的成功。
+     * 只登记原表单的成功，不把过时的错误、已放弃或另一张表单的结果更新到页面。
+     */
+    private fun recordSupersededSuccess(
+        intent: Intent,
+        result: ApiResult,
+        outcome: Outcome?,
+    ) {
+        if (formOwner !== intent.form) return
+        if (result !is ApiResult.Success || outcome == null) return
+        val done = outcome.actionRaw == SensitiveOutcome.DONE
+        val alreadyDone = outcome.actionRaw == SensitiveOutcome.ALREADY_DONE && outcome.textKey == SensitiveOutcome.ALREADY_DONE_KEY
+        if (done || alreadyDone) host.onSucceeded(result.data as? JsonObject, alreadyDone)
     }
 
     private fun abandonInput(result: ApiResult): OutcomeInput =
@@ -796,7 +825,7 @@ class SensitiveFlow(
 
     /**
      * 按当前会话账号的未决记录重建待确认状态（进入页面、冷启动、登录成功、回前台、键结束之后）。记录读不出 → 不能确认未决状态，【提交】置灰。
-     * 本进程正在发送的首次提交（submitting）不被记录的 in_flight 打断。
+     * 本页写操作持锁期间不被记录的消失或换键打断，结果采用后再同步。
      */
     fun refreshPending() {
         if (!alive()) return
@@ -823,11 +852,12 @@ class SensitiveFlow(
         }
     }
 
-    /** 按记录重建：没有记录 → 退出待确认；本次首次提交还在发送 → 不打断；有记录 → 待确认（换了键版本加 1，本进程在途的保持在途）。 */
+    /** 本页写操作结果采用前不让记录同步改阶段或版本；释放操作锁后再按最新记录重建。 */
     private fun reconcile(
         state: FlowState,
         view: PendingView?,
     ): FlowState {
+        if (localBusy) return state.copy(pendingUnreadable = false)
         if (view == null) {
             val cleared =
                 if (state.pending != null) {
@@ -839,10 +869,9 @@ class SensitiveFlow(
         }
         if (state.phase == FlowState.SUBMITTING && view.key == reuseKey && view.inFlight) return state.copy(pendingUnreadable = false)
         val fresh = state.pending?.key != view.key
-        val busy = view.inFlight || (!fresh && localBusy)
         return state.copy(
             phase = FlowState.PENDING,
-            pending = view.copy(inFlight = busy),
+            pending = view,
             pendingVersion = if (fresh) state.pendingVersion + 1 else state.pendingVersion,
             pendingUnreadable = false,
         )
@@ -851,16 +880,32 @@ class SensitiveFlow(
     private fun view(record: PendingKeyRecord): PendingView =
         PendingView(record.key, record.summary, record.createdAtMillis, inFlight = record.stateRaw == PendingKeyStore.IN_FLIGHT)
 
-    /** 本页自己正在确认或作废（别的页面、已出栈页面的在途只看记录本身的状态）。 */
-    private var localBusy = false
+    /** 独立于记录的本页操作锁；令牌防止旧表单的 finally 解除新表单的写锁。 */
+    private var activeWrite: Any? = null
+    private val localBusy: Boolean get() = s.operationInFlight
+
+    private fun beginWrite(): Any? {
+        if (localBusy) return null
+        val write = Any()
+        activeWrite = write
+        markInFlight(true)
+        return write
+    }
+
+    /** 成功回调、错误或二次验证结局已采用之后，才放开入口并同步本机记录。 */
+    private fun finishWrite(write: Any) {
+        if (activeWrite !== write) return
+        activeWrite = null
+        markInFlight(false)
+        refreshPending()
+    }
 
     private fun markInFlight(busy: Boolean) {
-        localBusy = busy
         update { state ->
-            val pending = state.pending ?: return@update state
             state.copy(
-                pending = pending.copy(inFlight = busy),
-                pendingNotice = if (busy) notice(BUSY_KEY).copy(assertive = false) else state.pendingNotice,
+                operationInFlight = busy,
+                pending = state.pending?.copy(inFlight = busy),
+                pendingNotice = if (busy && state.pending != null) notice(BUSY_KEY).copy(assertive = false) else state.pendingNotice,
             )
         }
     }
@@ -907,7 +952,7 @@ class SensitiveFlow(
         stepUpIntent = null
         guideOwner = null
         stepUp.dismiss()
-        localBusy = false
+        activeWrite = null
         mutable.value = FlowState(pendingVersion = s.pendingVersion + 1, owner = formOwner)
     }
 

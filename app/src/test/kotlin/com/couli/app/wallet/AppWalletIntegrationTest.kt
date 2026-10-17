@@ -344,8 +344,25 @@ class AppWalletIntegrationTest {
     private fun settle() {
         repeat(SETTLE_ROUNDS) {
             shadowOf(Looper.getMainLooper()).idle()
-            composeRule.waitForIdle()
+            composeIdle()
             Thread.sleep(POLL_MS)
+        }
+    }
+
+    /**
+     * FU-AND-0718：宿主 Activity 被 [hostTo] 移到 STARTED 期间，Compose 测试的 waitForIdle 每次要空等约 2 秒（节点查找也不可用），改为只推进主线程
+     * （含帧回调，让组合照常进行）；其余时候照旧。
+     */
+    private var hostPaused = false
+
+    private fun composeIdle() {
+        if (!hostPaused) {
+            composeRule.waitForIdle()
+            return
+        }
+        repeat(PAUSED_FRAMES) {
+            composeRule.mainClock.advanceTimeByFrame()
+            shadowOf(Looper.getMainLooper()).idle()
         }
     }
 
@@ -363,7 +380,7 @@ class AppWalletIntegrationTest {
 
     private fun pump() {
         shadowOf(Looper.getMainLooper()).idle()
-        composeRule.waitForIdle()
+        composeIdle()
     }
 
     /** F-AND-36：等流程交回结论（原为最多 8 秒的轮询，负载 >50 时冷启动页面等待超时），见 [FlowWait]；超时打印页面树与现场。 */
@@ -1943,6 +1960,316 @@ class AppWalletIntegrationTest {
         assertEquals("Wallet", top()?.name)
     }
 
+    // ---------------------------------------------------------------- FU-AND-0718 / F-AND-41（资金）
+
+    /**
+     * Activity（NavHost 的宿主）移到 [state]：STARTED = 前台但没有焦点（多窗口、系统弹层、正在进出动画的那一刻），此时打开的页面最高只到 STARTED，
+     * 不收 ON_RESUME。只用来摆出「页面首次 ON_RESUME 之前」的生命周期，不替代生产的任何调度。
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun hostTo(state: androidx.lifecycle.Lifecycle.State) {
+        (
+            composeRule as androidx.compose.ui.test.junit4.AndroidComposeTestRule<
+                androidx.test.ext.junit.rules.ActivityScenarioRule<androidx.activity.ComponentActivity>,
+                androidx.activity.ComponentActivity,
+            >
+        ).activityRule.scenario
+            .moveToState(state)
+        hostPaused = state != androidx.lifecycle.Lifecycle.State.RESUMED
+        settle()
+    }
+
+    /** F-AND-41 的钱包端口包装：createWithdrawal 在入口同步记下幂等键（写请求计数）；[hold] 非空时响应拿到之后先挂住（迟到的成功）。 */
+    private class WithdrawWrites {
+        val keys = mutableListOf<String?>()
+
+        @Volatile var hold: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+        fun count(): Int = synchronized(keys) { keys.size }
+
+        fun wrap(inner: WalletApi): WalletApi =
+            object : WalletApi by inner {
+                override suspend fun send(call: ApiCall): ApiResult {
+                    if (call.operationId != WITHDRAW_OPERATION) return inner.send(call)
+                    synchronized(keys) { keys += call.idempotencyKey }
+                    val result = inner.send(call)
+                    hold?.await()
+                    return result
+                }
+            }
+    }
+
+    /** 提现提交直接成功（免二次验证，假定 token 已有）；提现记录列表照默认。 */
+    private fun withdrawSucceedsDirectly() {
+        synchronized(answers) {
+            answers[WITHDRAW_PATH] = { request ->
+                if (request.method == "POST") {
+                    envelope(RECORDS.first().replace("W2026101200001", F41_WITHDRAWAL))
+                } else {
+                    envelope("""{"items":[${RECORDS.joinToString(",")}],"next_cursor":null}""")
+                }
+            }
+        }
+    }
+
+    /**
+     * 提现页这一回退栈条目上的 ViewModel（页面组合时按生产的 viewModel { } 建好的那一个，这里只取不建）。宿主 STARTED 时 Compose 测试的节点查找不可用，
+     * 期间的输入与点击改为调用页面控件同一个回调入口（输入框 → model.onAmountChange(text, owner)；【提交】→ controller.submit(渲染版本, 表单身份)）。
+     */
+    private fun withdrawModel(entry: androidx.navigation.NavBackStackEntry): WithdrawViewModel =
+        androidx.lifecycle
+            .ViewModelProvider(
+                entry,
+                object : androidx.lifecycle.ViewModelProvider.Factory {
+                    override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = error("提现页的 ViewModel 应已由页面建好")
+                },
+            )[WithdrawViewModel::class.java]
+
+    /** 发起页此刻处于 CONTENT（rules 已加载）。 */
+    private fun withdrawLoaded(entry: androidx.navigation.NavBackStackEntry): Boolean =
+        runCatching {
+            withdrawModel(entry)
+                .controller.state.value.phase == com.couli.feature.wallet.WithdrawSnapshot.CONTENT
+        }.getOrDefault(false)
+
+    /** 经页面控件同一回调入口输入金额（等过 0.5 秒停顿）并点【提交】。 */
+    private fun typeAndSubmit(
+        model: WithdrawViewModel,
+        amount: String,
+    ) {
+        composeRule.runOnUiThread { model.onAmountChange(amount, model.controller.flow.owner) }
+        advance(ESTIMATE_WAIT_MS)
+        composeRule.runOnUiThread {
+            val controller = model.controller
+            controller.submit(controller.state.value.version, controller.flow.state.value.owner)
+        }
+        settle()
+    }
+
+    /** 用户在提现页上能做的再提交尝试：直接再点、清空重输同一金额再点（回调入口同上；每次取此刻的渲染版本与表单身份）。 */
+    private fun tryResubmit(model: WithdrawViewModel) {
+        composeRule.runOnUiThread {
+            val controller = model.controller
+            controller.submit(controller.state.value.version, controller.flow.state.value.owner)
+        }
+        settle()
+        composeRule.runOnUiThread { model.onAmountChange("", model.controller.flow.owner) }
+        typeAndSubmit(model, "10")
+        walletCallsSettled()
+    }
+
+    @SuppressLint("RestrictedApi")
+    private fun recordsParams(): String? =
+        navController.currentBackStack.value
+            .lastOrNull { it.destination.hasRoute(RouteDestination::class) }
+            ?.toRoute<RouteDestination>()
+            ?.takeIf { it.name == "WithdrawRecords" }
+            ?.paramsJson
+
+    /**
+     * F-AND-41（FU-AND-0717 复核三 RC-04 的本端原场景）：提现页在首次 ON_RESUME 之前（宿主 STARTED）提交，响应回来之前被收款账号页覆盖（发起页 STARTED →
+     * CREATED，从未 ON_PAUSE）；成功到达时 AppWallet.replaceTop 因发起页不在栈顶不受理。之后返回提现页：
+     * - 导航没有实际完成之前，本页不得回到可提交（直接再点、清空重输同一金额再点都不发）；
+     * - 宿主回到前台（提现页第一次 ON_RESUME）后进提现记录（带这一笔的 withdrawal_id），发起页已移除；
+     * - createWithdrawal 在端口入口记到的总数始终为 1。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand41_aWithdrawSubmittedBeforeItsFirstResumeAndCoveredIsNotResubmittableAndNavigatesOnceVisible() {
+        val writes = WithdrawWrites()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) }
+        val events = mutableListOf<androidx.lifecycle.Lifecycle.Event>()
+        composeRule.runOnUiThread {
+            entry.lifecycle.addObserver(androidx.lifecycle.LifecycleEventObserver { _, event -> events += event })
+        }
+        assertEquals("前提：提现页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = withdrawModel(entry)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        writes.hold = gate
+        typeAndSubmit(model, "10")
+        idleUntil { writes.count() == 1 }
+        open("PayoutAccount")
+        idleUntil { top()?.name == "PayoutAccount" }
+        settle()
+        assertEquals("前提：提现页被覆盖（CREATED）", androidx.lifecycle.Lifecycle.State.CREATED, entry.lifecycle.currentState)
+        assertFalse("前提：提现页从未 ON_RESUME", events.any { it == androidx.lifecycle.Lifecycle.Event.ON_RESUME })
+        writes.hold = null
+        gate.complete(Unit)
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：发起页不在栈顶，替换不受理", "PayoutAccount", top()?.name)
+        composeRule.runOnUiThread { navController.popBackStack() }
+        settle()
+        idleUntil { top()?.name == "Withdraw" || top()?.name == "WithdrawRecords" }
+        if (top()?.name == "Withdraw") {
+            tryResubmit(model)
+            assertEquals("导航未完成：本页再点不发", 1, writes.count())
+        }
+        // 第 3 版 T-05：停住 Compose 动画时钟后回到前台——导航受理、发起条目已移出回退栈，而它的转场还没结束、条目没有 DESTROYED（ViewModel 未清除）；
+        // 在这个窗口里用保留下来的旧回调直接再提交、清空重输再提交，窗口仍开着时核对；之后放开时钟完成转场，写请求仍为 1
+        composeRule.mainClock.autoAdvance = false
+        val window = resumeIntoExitWindow(entry)
+        assertTrue("前提：到达「发起条目已移除、尚未 DESTROYED」的窗口（${entry.lifecycle.currentState}）", window)
+        resubmitInWindow(model)
+        assertTrue("前提：再提交时窗口仍开着（${entry.lifecycle.currentState}）", inExitWindow(entry))
+        composeRule.mainClock.autoAdvance = true
+        settle()
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue("进的是这一笔", recordsParams().orEmpty().contains(F41_WITHDRAWAL))
+        assertFalse("发起页已移除", stack().contains("Withdraw"))
+        tryResubmit(model)
+        assertEquals("createWithdrawal 总数为 1", 1, writes.count())
+    }
+
+    /**
+     * 终版补测 M35 / M36（Compose 界面层）：成功之后导航没有受理（NavController 已解绑）、提现页仍在且可见——页面渲染锁定提示卡：中性提示文案非空且显示出来，
+     * 带【提现记录】入口；点入口经 Router 打开提现记录。
+     */
+    @Test
+    fun fand0718_final_theLockedFormShowsANonEmptyHintAndARecordsEntry() {
+        val writes = WithdrawWrites()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = withdrawModel(entry)
+        composeRule.runOnUiThread { wallet.detach(navController) }
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：仍在提现页", "Withdraw", top()?.name)
+        assertTrue("前提：已锁住", model.controller.state.value.successPending)
+        val hint = wallet.deps.texts.text("withdraw.submission_locked")
+        assertTrue("锁定提示文案非空：「$hint」", hint.isNotBlank())
+        idleUntil { texts(hint) > 0 }
+        val entryText = wallet.deps.texts.text("pending_confirm.withdraw.records")
+        assertTrue("记录入口文案非空", entryText.isNotBlank())
+        composeRule.runOnUiThread { wallet.attach(navController) }
+        settle()
+        val nodes = composeRule.onAllNodesWithText(entryText, useUnmergedTree = false)
+        assertTrue("有【提现记录】入口", nodes.fetchSemanticsNodes().isNotEmpty())
+        nodes[0].performClick()
+        settle()
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertEquals(1, writes.count())
+    }
+
+    /** 发起条目已不在回退栈里，但还没有 DESTROYED（转场未结束、ViewModel 未清除）。 */
+    @SuppressLint("RestrictedApi")
+    private fun inExitWindow(entry: androidx.navigation.NavBackStackEntry): Boolean =
+        navController.currentBackStack.value.none { it.id == entry.id } &&
+            entry.lifecycle.currentState != androidx.lifecycle.Lifecycle.State.DESTROYED
+
+    /** 动画时钟停住时把宿主移回 RESUMED，逐帧推进直到进入 [inExitWindow]（最多 [WINDOW_FRAMES] 帧）；返回是否到达。 */
+    @Suppress("UNCHECKED_CAST")
+    private fun resumeIntoExitWindow(entry: androidx.navigation.NavBackStackEntry): Boolean {
+        (
+            composeRule as androidx.compose.ui.test.junit4.AndroidComposeTestRule<
+                androidx.test.ext.junit.rules.ActivityScenarioRule<androidx.activity.ComponentActivity>,
+                androidx.activity.ComponentActivity,
+            >
+        ).activityRule.scenario
+            .moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+        hostPaused = false
+        repeat(WINDOW_FRAMES) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (inExitWindow(entry)) return true
+            composeRule.mainClock.advanceTimeByFrame()
+        }
+        return false
+    }
+
+    /** 窗口内（不推进动画时钟）经旧实例的回调入口再提交：直接点、清空重输同一金额再点。 */
+    private fun resubmitInWindow(model: WithdrawViewModel) {
+        composeRule.runOnUiThread {
+            val controller = model.controller
+            controller.submit(controller.state.value.version, controller.flow.state.value.owner)
+            model.onAmountChange("", controller.flow.owner)
+            model.onAmountChange("10", controller.flow.owner)
+        }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ESTIMATE_WAIT_MS))
+        composeRule.runOnUiThread {
+            val controller = model.controller
+            controller.submit(controller.state.value.version, controller.flow.state.value.owner)
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    /**
+     * 第 2 版 T-01：提现页 RESUMED、可见时成功到达，真实 AppWallet 的替换已尝试但没有受理（配置变更窗口：AppShell 已把 NavController 解绑）——
+     * 期间本页不可再提交；NavController 重新绑定后，经生产生命周期入口（宿主 ON_PAUSE → ON_RESUME）重试并消费原成功结果：进这一笔的提现记录、发起页
+     * 移除；之后旧页面回调再提交也不发；createWithdrawal 始终为 1。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand41_aRejectedNavigationIsRetriedAndConsumesTheOriginalSuccessOnceNavigationIsBack() {
+        val writes = WithdrawWrites()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = withdrawModel(entry)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        writes.hold = gate
+        typeAndSubmit(model, "10")
+        idleUntil { writes.count() == 1 }
+        composeRule.runOnUiThread { wallet.detach(navController) }
+        writes.hold = null
+        gate.complete(Unit)
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：替换已尝试但没有受理（仍在提现页）", "Withdraw", top()?.name)
+        assertEquals("前提：提现页可见", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        tryResubmit(model)
+        assertEquals("导航未受理：本页再点不发", 1, writes.count())
+        composeRule.runOnUiThread { wallet.attach(navController) }
+        settle()
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue("消费的是原成功结果", recordsParams().orEmpty().contains(F41_WITHDRAWAL))
+        assertFalse("发起页已移除", stack().contains("Withdraw"))
+        tryResubmit(model)
+        assertEquals("createWithdrawal 总数为 1", 1, writes.count())
+    }
+
+    /**
+     * F-AND-41（按当前生命周期初始化可见状态）：提现页在栈顶、但还没有 ON_RESUME（宿主 STARTED）时成功到达——不按「可见」立即导航；本页不可再提交；
+     * 宿主回到前台后进提现记录。createWithdrawal 总数为 1。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand41_aSuccessArrivingBeforeTheFirstResumeWaitsForTheResumeAndBlocksResubmit() {
+        val writes = WithdrawWrites()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) }
+        assertEquals("前提：提现页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = withdrawModel(entry)
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("首次 ON_RESUME 之前不导航", "Withdraw", top()?.name)
+        tryResubmit(model)
+        assertEquals("成功之后本页再点不发", 1, writes.count())
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue(recordsParams().orEmpty().contains(F41_WITHDRAWAL))
+        assertFalse(stack().contains("Withdraw"))
+        walletCallsSettled()
+        assertEquals(1, writes.count())
+    }
+
     // ---------------------------------------------------------------- 工具
 
     /**
@@ -2144,6 +2471,7 @@ class AppWalletIntegrationTest {
         const val SUMMARY_PATH = "/v1/wallet/summary"
         const val RULES_PATH = "/v1/withdrawals/rules"
         const val WITHDRAW_PATH = "/v1/withdrawals"
+        const val F41_WITHDRAWAL = "W2026101200141"
         const val PAYOUT_PATH = "/v1/me/payout-account"
         const val SMS_PATH = "/v1/auth/sms-codes"
         const val STEP_UP_SENDING_TEXT = "正在发送验证码…"
@@ -2151,6 +2479,8 @@ class AppWalletIntegrationTest {
         const val ABANDON_PATH = "/v1/idempotency-keys/abandon"
         const val POLL_MS = 10L
         const val SETTLE_ROUNDS = 5
+        const val PAUSED_FRAMES = 4
+        const val WINDOW_FRAMES = 120
         const val ESTIMATE_WAIT_MS = 600L
         const val SLOW_AMOUNT = 400L
         const val GET_ME_OPERATION = "getMe"

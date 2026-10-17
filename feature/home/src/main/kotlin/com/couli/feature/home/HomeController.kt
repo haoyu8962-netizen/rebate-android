@@ -76,7 +76,7 @@ class HomeController(
      * 本机写入的世代票据（共性第 23 条，R1-01）：构造时（身份固定时）取一次；写 LKG、关闭记录、弹窗计数都带它，存储在与清理共用的锁里核对。
      * 撤回同意、切换环境的清理推进世代后，本实例已经排进 IO 的写入也会被拒（只取消协程挡不住已在等锁的同步写入）。
      */
-    private val lkgTicket = deps.lkg?.ticket(identity.scope)
+    private val lkgTicket = deps.lkg?.ticket(identity.scope, identity.partition)
     private val prefsTicket = deps.prefs?.ticket()
 
     private var renderGen = 0L
@@ -1059,6 +1059,7 @@ class HomeController(
             expectedAccount = identity.account,
             allowed = { probe.allowed() && alive },
             stillOwned = { alive },
+            loginEpoch = identity.partition,
         )
 
     // ---------------------------------------------------------------- 作废

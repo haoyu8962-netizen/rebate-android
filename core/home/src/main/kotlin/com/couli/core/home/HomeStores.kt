@@ -95,6 +95,21 @@ class HomeLkgStore(
         return WriteTicket(key, allGeneration, scopeGenerations[key] ?: 0L, epochDirOf(scope))
     }
 
+    /** 按首页固定身份的快照取票，不另读世代；未知票据拒绝写入，首次确认后由新控制器重新取票。 */
+    fun ticket(
+        scope: String,
+        loginEpoch: String?,
+    ): WriteTicket {
+        val key = digest(scope)
+        val epochDir =
+            when {
+                this.loginEpoch == null || !HomeLkgScope.isMember(scope) -> null
+                loginEpoch.isNullOrEmpty() -> UNKNOWN_EPOCH
+                else -> EPOCH_PREFIX + digest(loginEpoch)
+            }
+        return WriteTicket(key, allGeneration, scopeGenerations[key] ?: 0L, epochDir)
+    }
+
     /** 读一个作用域的 LKG 原文；待清理未完成、登录世代未知（会员作用域）、没有文件、读不出 → null。 */
     @Synchronized
     fun read(scope: String): String? {

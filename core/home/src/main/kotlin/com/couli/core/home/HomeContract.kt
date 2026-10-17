@@ -16,6 +16,8 @@ data class HomeIdentity(
     val loginEpoch: Long,
     val epochs: CallEpochs,
     val env: String,
+    /** 与固定身份来自同一快照的持久化登录世代；未知为 null。 */
+    val partition: String? = null,
 ) {
     /** LKG 分区（G16 ②）。 */
     val scope: String get() = HomeLkgScope.of(level, account, env)
@@ -32,6 +34,8 @@ class HomeCall(
     val expectedAccount: String?,
     val allowed: () -> Boolean,
     val stillOwned: () -> Boolean,
+    /** 本次请求所属首页固定身份的持久化登录世代（与写入票据同源）；未知为 null。只读观察。 */
+    val loginEpoch: String? = null,
 )
 
 /**

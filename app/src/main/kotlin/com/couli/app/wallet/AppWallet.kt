@@ -186,11 +186,21 @@ class AppWallet(
                 params: JsonObject,
                 entryId: String?,
             ) {
+                replaceTopAccepted(route, params, entryId)
+            }
+
+            @Suppress("ReturnCount") // 未接导航、发起页不在栈顶、出栈失败分别拒绝；实际替换后才受理
+            override fun replaceTopAccepted(
+                route: String,
+                params: JsonObject,
+                entryId: String?,
+            ): Boolean {
                 // 只替换发起页这一个导航实例（共性第 50 条）：它不在栈顶就不动
-                val controller = navController ?: return
-                if (entryId != null && controller.currentBackStackEntry?.id != entryId) return
-                controller.popBackStack()
+                val controller = navController ?: return false
+                if (entryId != null && controller.currentBackStackEntry?.id != entryId) return false
+                if (!controller.popBackStack()) return false
                 open(route, params)
+                return true
             }
 
             override fun copy(text: String): Boolean = writer(text)

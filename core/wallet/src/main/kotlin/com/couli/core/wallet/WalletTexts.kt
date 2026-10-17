@@ -105,6 +105,8 @@ object WalletDraftTexts : WalletTexts {
             "cs.appeal_entry" to "联系客服申诉",
             // TODO(N-32) 设计稿 A11yAnnounce 标「待商量」
             "withdraw.submitted_spoken" to "提现申请已提交，审核中",
+            // 代拟（FU-AND-0718 R1-01）：成功或在途表单恢复后的中性提示，不推断最终结局。
+            "withdraw.submission_locked" to "本页已有提现操作，请到提现记录查看结果",
             "withdraw.spoken.quick" to "提现金额 {amount}，预计到账 {net}",
             "withdraw.spoken.amount" to "提现金额 {amount}",
             "withdraw.load_failed" to "加载失败",

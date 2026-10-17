@@ -66,7 +66,7 @@ data class WithdrawSnapshot(
     val payoutError: Notice? = null,
     /** 提交得到 30306 后本页记下的服务端阻断（共性第 10 条）：只有之后成功取得、明确允许的 rules 才解除。 */
     val serverBlocked: Boolean = false,
-    /** 提交已成功、等页面回到可见再进提现记录（共性第 41 条）：期间【提交】不可用。 */
+    /** 本表单已成功或恢复了在途标记：即使导航被拒或已受理，提交回调也一直不可用。 */
     val successPending: Boolean = false,
 ) {
     val inputFen: Long? get() = WithdrawAmountInput.parse(amountText)
@@ -116,6 +116,8 @@ class WithdrawController(
      * 构造这一刻一次性取得（此时没有恢复数据）。之后本页的估算、页头与收款账号读取、提交都只用它，当前会话只用于和它比较。
      */
     initialOwner: FormOwner = FormOwner.of(deps.env),
+    /** 同一表单重建时恢复的成功 / 在途标记：没有明确结果也保守拦住再次提交。 */
+    initialSubmissionLocked: Boolean = false,
 ) : FlowHost {
     private var left = false
 
@@ -126,7 +128,7 @@ class WithdrawController(
     private var estimateJob: Job? = null
     private val owners = mutableListOf<CallOwnership>()
 
-    private val mutable = MutableStateFlow(WithdrawSnapshot(amountText = initialAmount))
+    private val mutable = MutableStateFlow(WithdrawSnapshot(amountText = initialAmount, successPending = initialSubmissionLocked))
     val state: StateFlow<WithdrawSnapshot> = mutable.asStateFlow()
     private val s: WithdrawSnapshot get() = mutable.value
 
@@ -163,6 +165,12 @@ class WithdrawController(
 
     /** 按一份已确认快照判定换代、清空重建之前（发起页据此清掉旧金额草稿）。 */
     var onReset: (SessionIdentity) -> Unit = {}
+
+    /** 发出写请求之前同步保存该表单的在途标记；结局不清除此保存标记。 */
+    var onSubmissionStarted: () -> Unit = {}
+
+    /** 成功时同步保存终态、清掉金额草稿，先于任何导航。 */
+    var onSuccessRecorded: (JsonObject?) -> Unit = {}
 
     /** 表单身份没建立（未知期取得）：这时不读取（不以 expectedAccount = null 发）。 */
     private fun identityPending(): Boolean = flow.owner.account == null
@@ -603,6 +611,8 @@ class WithdrawController(
 
     // ---------------------------------------------------------------- FlowHost
 
+    override fun onWriteStarted() = onSubmissionStarted()
+
     /** 提交成功时页面不在栈顶可见：替换为提现记录的导航留到页面回到可见时再做（APP-09 共性第 37、41 条）。 */
     private var deferredSuccess: Pair<JsonObject?, Boolean>? = null
 
@@ -611,7 +621,6 @@ class WithdrawController(
         flow.onVisibility(shown)
         if (!shown || left) return
         val (data, done) = deferredSuccess ?: return
-        deferredSuccess = null
         navigateSucceeded(data, done)
     }
 
@@ -623,18 +632,16 @@ class WithdrawController(
 
     /**
      * 成功的页面反馈：「此刻可见」与「发出时的导航许可」分开判断（共性第 41 条）。成功导航是这次提交本身的结果，发起页此刻在栈顶可见就立即进提现记录
-     * （发出之后被覆盖又回来也一样）；不可见时先记下，回到可见时消费，期间【提交】不可用。
+     * （发出之后被覆盖又回来也一样）。先记成功终态与原结果，导航实际受理后才消费结果；本表单的提交锁不随消费解除。
      */
     override fun onSucceeded(
         data: JsonObject?,
         alreadyDone: Boolean,
     ) {
-        if (!flow.visibleNow) {
-            deferredSuccess = data to alreadyDone
-            update { it.copy(successPending = true) }
-            return
-        }
-        navigateSucceeded(data, alreadyDone)
+        deferredSuccess = data to alreadyDone
+        update { it.copy(successPending = true) }
+        onSuccessRecorded(data)
+        if (flow.visibleNow) navigateSucceeded(data, alreadyDone)
     }
 
     private fun navigateSucceeded(
@@ -642,9 +649,11 @@ class WithdrawController(
         alreadyDone: Boolean,
     ) {
         val id = (data?.get(WalletRoutes.WITHDRAWAL_ID) as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (!alreadyDone) events.tryEmit(WithdrawEvent.Announce(SUBMITTED_KEY))
         val params = id?.let { JsonObject(mapOf(WalletRoutes.WITHDRAWAL_ID to JsonPrimitive(it))) } ?: EMPTY
-        deps.env.replaceTop(WalletRoutes.WITHDRAW_RECORDS, params, entryId)
+        if (deps.env.replaceTopAccepted(WalletRoutes.WITHDRAW_RECORDS, params, entryId)) {
+            deferredSuccess = null
+            if (!alreadyDone) events.tryEmit(WithdrawEvent.Announce(SUBMITTED_KEY))
+        }
     }
 
     override fun onSettled() {
@@ -670,7 +679,7 @@ class WithdrawController(
 
     /**
      * 会话换代（App 在会话通知里同步调用）：同步清空已输入的金额、估算、rules 与收款账号行（不得在登录新账号后看到旧账号的余额或金额），作废在途读请求，
-     * 再按新会话重取；未决记录按新账号重读。
+     * 再按新会话重取；未决记录按新账号重读。本表单的成功 / 重建锁保留，离开再进入才是没有该锁的新表单。
      */
     fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
 
@@ -683,7 +692,7 @@ class WithdrawController(
         payoutSeq += 1
         estimateJob?.cancel()
         cancelAll()
-        mutable.value = WithdrawSnapshot(version = s.version + 1)
+        mutable.value = WithdrawSnapshot(version = s.version + 1, successPending = s.successPending)
         // 新表单（金额已清空）的固定身份：调用方那一份快照（共性第 65 条）
         identityAborted = false
         flow.onSessionChanged(FormOwner.of(identity))

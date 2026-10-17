@@ -255,7 +255,7 @@ class AppHome(
                     accountCache = it
                     accountEpoch = known.loginEpoch
                 }
-                HomeIdentity(HomeLevel.MEMBER, known.account, known.loginEpoch, epochs, envKey())
+                withKnownPartition(HomeIdentity(HomeLevel.MEMBER, known.account, known.loginEpoch, epochs, envKey(), known.partition))
             }
         }
     }
@@ -276,8 +276,12 @@ class AppHome(
     fun identity(): HomeIdentity {
         val level = level()
         val account = if (level == HomeLevel.MEMBER) account() else null
-        return HomeIdentity(level, account, tokens.loginEpoch, client.inFlight.epochs(), envKey())
+        return withKnownPartition(HomeIdentity(level, account, tokens.loginEpoch, client.inFlight.epochs(), envKey()))
     }
+
+    /** 分区暂失只延后：仅基础身份仍一致时沿用已确认分区；首次确认、明确换代都进入原有作废重建出口。 */
+    private fun withKnownPartition(identity: HomeIdentity): HomeIdentity =
+        identity.copy(partition = identity.partition ?: target?.takeIf { it.copy(partition = null) == identity }?.partition)
 
     // ---------------------------------------------------------------- 控制器
 

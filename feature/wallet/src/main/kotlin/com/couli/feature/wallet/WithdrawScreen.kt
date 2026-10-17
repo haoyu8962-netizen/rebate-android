@@ -65,6 +65,7 @@ import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.IdentityVerdict
 import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.EstimateLine
+import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.core.wallet.WalletTexts
 import com.couli.core.wallet.WithdrawBlockGuide
@@ -76,7 +77,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * 提现页的 ViewModel：配置重建与进程回收后用 SavedStateHandle 恢复已输入的金额，并绑定账号归属（账号哈希对得上才恢复，APP-08 第 19、23 条）；
- * 不恢复估算结果。身份证号、卡号、登录号不进 SavedStateHandle（本页也没有）。
+ * 已有成功或在途标记的同一表单只恢复提交锁，不回填金额；不恢复估算结果。身份证号、卡号、登录号不进 SavedStateHandle（本页也没有）。
  */
 class WithdrawViewModel(
     config: WalletPageConfig,
@@ -112,12 +113,17 @@ class WithdrawViewModel(
         val owner = FormOwner.of(identity)
         draftIdentity = identity
         val restored = initialDraft(identity, owner)
-        controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner)
+        controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner, initialSubmissionLocked = submissionLocked)
+        controller.onSubmissionStarted = { saved[K_IN_FLIGHT] = true }
+        controller.onSuccessRecorded = { data ->
+            saved[K_SUCCEEDED] = true
+            saved[K_WITHDRAWAL_ID] = (data?.get(WalletRoutes.WITHDRAWAL_ID) as? JsonPrimitive)?.takeIf { it.isString }?.content
+            clearDraft()
+        }
         config.hooks.bindLeave(controller::leave)
-        // 换代清空重建之前：旧金额草稿删掉，新表单身份与草稿归属取自同一份快照（不拼接两次读取）；新表单没有可恢复的草稿
+        // 换代时清掉旧金额草稿，身份与草稿归属取同一份快照；本表单已保存的成功 / 在途锁不随身份通知解除。
         controller.onReset = { next ->
-            saved.remove<String>(K_AMOUNT)
-            saved.remove<String>(K_OWNER)
+            clearDraft()
             draftIdentity = next
             draftDecided = draftReady(next)
             userEdited = false
@@ -147,6 +153,10 @@ class WithdrawViewModel(
         identity: SessionIdentity,
         owner: FormOwner,
     ): String {
+        if (submissionLocked) {
+            draftDecided = true
+            return ""
+        }
         if (!draftReady(identity)) return ""
         val draft = saved.get<String>(K_AMOUNT)?.takeIf { saved.get<String>(K_OWNER) == draftHash(identity) }
         if (draft == null) {
@@ -166,6 +176,7 @@ class WithdrawViewModel(
      */
     @Suppress("ReturnCount") // 不是本表单的确认、确认换代、分区仍未知三个出口
     private fun resolveDraft(identity: SessionIdentity) {
+        if (controller.state.value.successPending) return
         if (!identity.known || identity.account == null || FormOwner.of(identity) != controller.flow.owner) return
         if (identity.verdictFor(draftIdentity) == IdentityVerdict.CHANGED) return
         draftIdentity = identity
@@ -222,11 +233,19 @@ class WithdrawViewModel(
      */
     fun persist(owner: FormOwner = controller.flow.owner) {
         val target = draftIdentity
-        val bound = draftDecided && draftReady(target)
+        val bound = !controller.state.value.successPending && draftDecided && draftReady(target)
         if (!bound || owner != controller.flow.owner || owner != FormOwner.of(target)) return
         if (!owner.current(deps.env)) return
         saved[K_AMOUNT] = controller.state.value.amountText
         saved[K_OWNER] = draftHash(target)
+    }
+
+    /** 标记跟随这一张表单的 SavedStateHandle；离开后新开的提现页使用新的 Handle。 */
+    private val submissionLocked: Boolean get() = saved.get<Boolean>(K_SUCCEEDED) == true || saved.get<Boolean>(K_IN_FLIGHT) == true
+
+    private fun clearDraft() {
+        saved.remove<String>(K_AMOUNT)
+        saved.remove<String>(K_OWNER)
     }
 
     override fun onCleared() {
@@ -244,6 +263,9 @@ class WithdrawViewModel(
     private companion object {
         const val K_AMOUNT = "withdraw.amount"
         const val K_OWNER = "withdraw.owner"
+        const val K_SUCCEEDED = "withdraw.succeeded"
+        const val K_WITHDRAWAL_ID = "withdraw.withdrawal_id"
+        const val K_IN_FLIGHT = "withdraw.in_flight"
     }
 }
 
@@ -321,6 +343,17 @@ fun WithdrawScreen(config: WalletPageConfig) {
             }
         },
     ) {
+        if (state.successPending) {
+            WalletCard {
+                Text(text = texts.text("withdraw.submission_locked"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                CouliButton(
+                    text = texts.text("pending_confirm.withdraw.records"),
+                    onClick = controller::openRecords,
+                    variant = CouliButtonVariant.TEXT,
+                    size = CouliButtonSize.COMPACT,
+                )
+            }
+        }
         when (state.phase) {
             WithdrawSnapshot.CONTENT -> {
                 val display = state.display()
