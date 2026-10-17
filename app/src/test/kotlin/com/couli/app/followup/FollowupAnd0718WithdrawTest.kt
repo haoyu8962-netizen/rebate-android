@@ -524,7 +524,7 @@ class FollowupAnd0718WithdrawTest {
     }
 
     /**
-     * M33（当前产品口径）：确认上一笔在途时同一进程身份换代（同账号、本进程登录世代不变、持久化世代 E1→E2；App 判 CHANGED，表单按新快照重建）；之后旧表单的
+     * M33（FU-AND-0719 编排裁定口径，F-AND-43 ①）：确认上一笔在途时同一进程身份换代（同账号、本进程登录世代不变、持久化世代 E1→E2；App 判 CHANGED，表单按新快照重建）；之后旧表单的
      * 确认成功迟到——成功只落在旧表单，不给新表单上提交锁（新表单 successPending 为 false）；写请求只有那 1 次确认。
      */
     @Test
@@ -553,6 +553,10 @@ class FollowupAnd0718WithdrawTest {
         gate.complete(Unit)
         writesSettled(api)
         assertFalse("旧表单的迟到成功不锁新表单", controller.state.value.successPending)
+        // FU-AND-0719 编排裁定（F-AND-43 ①）同步：不锁新表单，但新表单上不得显示可重试错误，该笔成功可见（待确认卡已消失）。三条写路径的完整用例见
+        // FollowupAnd0719WithdrawTest.fand43_*
+        assertNull("新表单不显示可重试错误", flow.state.value.error)
+        assertNull("该笔成功可见：待确认卡已消失", flow.state.value.pending)
         assertEquals(listOf("confirm:${WithdrawController.OPERATION}"), api.writes)
     }
 

@@ -115,15 +115,19 @@ class WithdrawViewModel(
         val restored = initialDraft(identity, owner)
         controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner, initialSubmissionLocked = submissionLocked)
         controller.onSubmissionStarted = { saved[K_IN_FLIGHT] = true }
+        controller.onSubmissionReleased = { saved.remove<Boolean>(K_IN_FLIGHT) }
         controller.onSuccessRecorded = { data ->
             saved[K_SUCCEEDED] = true
             saved[K_WITHDRAWAL_ID] = (data?.get(WalletRoutes.WITHDRAWAL_ID) as? JsonPrimitive)?.takeIf { it.isString }?.content
             clearDraft()
         }
         config.hooks.bindLeave(controller::leave)
-        // 换代时清掉旧金额草稿，身份与草稿归属取同一份快照；本表单已保存的成功 / 在途锁不随身份通知解除。
+        // 确认换代时同步清旧表单的草稿和保存标记；同一身份的通知不会调用 onReset。
         controller.onReset = { next ->
             clearDraft()
+            saved.remove<Boolean>(K_IN_FLIGHT)
+            saved.remove<Boolean>(K_SUCCEEDED)
+            saved.remove<String>(K_WITHDRAWAL_ID)
             draftIdentity = next
             draftDecided = draftReady(next)
             userEdited = false
@@ -345,7 +349,11 @@ fun WithdrawScreen(config: WalletPageConfig) {
     ) {
         if (state.successPending) {
             WalletCard {
-                Text(text = texts.text("withdraw.submission_locked"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                Text(
+                    text = texts.text(if (state.navigationRejected) "withdraw.submitted_opening_records" else "withdraw.submission_locked"),
+                    style = CouliTypography.footnote,
+                    color = CouliColors.textSecondary,
+                )
                 CouliButton(
                     text = texts.text("pending_confirm.withdraw.records"),
                     onClick = controller::openRecords,

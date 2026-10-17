@@ -85,6 +85,9 @@ interface FlowHost {
     /** 写请求发出之前的同步出口，供表单保存重建后的保守提交锁；旧页面接线无需实现。 */
     fun onWriteStarted() = Unit
 
+    /** 本表单明确不出款的结局已采用，同步释放重建用的在途标记；操作锁仍持有到采用完毕。 */
+    fun onWriteReleased() = Unit
+
     /** 业务成功（首次提交、确认上一笔、放弃得到 completed 且原结果成功）：[data] 为原操作的 data。 */
     fun onSucceeded(
         data: JsonObject?,
@@ -174,10 +177,32 @@ class SensitiveFlow(
     private var visible = true
     private var viewGen = 0L
     private var sentViewGen = 0L
+    private var everVisible = false
+    private var sentBeforeFirstVisible = false
+
+    private class DeferredStepUp(
+        val form: FormOwner,
+        val phase: String,
+        val intent: Intent?,
+    )
+
+    private var deferredStepUp: DeferredStepUp? = null
 
     fun onVisibility(shown: Boolean) {
         if (shown != visible) viewGen += 1
         visible = shown
+        if (shown) everVisible = true
+        showDeferredStepUp()
+    }
+
+    /** 只补入场时从未可见的验证面板；曾可见后被覆盖的请求仍等用户主动点击。 */
+    private fun showDeferredStepUp() {
+        val deferred = deferredStepUp ?: return
+        if (!visibleNow || localBusy) return
+        deferredStepUp = null
+        if (deferred.form !== formOwner || !formOwner.current(deps.env)) return
+        if (deferred.intent != null && s.pending?.key != deferred.intent.key) return
+        openStepUp(deferred.phase, deferred.intent)
     }
 
     private val onScreen: Boolean get() = alive() && visible && viewGen == sentViewGen
@@ -207,6 +232,7 @@ class SensitiveFlow(
     private class Click(
         val account: String,
         val epoch: Long,
+        val form: FormOwner,
     )
 
     /**
@@ -235,7 +261,7 @@ class SensitiveFlow(
         // 之后的键、token、未决记录与网络层 expectedAccount 都用这份固定身份（共性第 65 条：账号取自表单身份，不取自当前会话）
         if (owner != formOwner || !now.isOwnedBy(owner.account, owner.epoch)) return
         val account = owner.account ?: return
-        val click = Click(account, owner.epoch)
+        val click = Click(account, owner.epoch, formOwner)
         val key = reuseKey ?: deps.newKey()
         reuseKey = key
         lastBody = body
@@ -275,6 +301,7 @@ class SensitiveFlow(
         token: String?,
         replayed: Boolean,
     ) {
+        if (click.form !== formOwner) return
         // 发送前核对：会话已换（二次验证期间、排队期间）的不发，键不用了（从未发出或只收到过 10003，下次新键）
         if (!owned(click.account, click.epoch)) {
             reuseKey = null
@@ -310,6 +337,8 @@ class SensitiveFlow(
                 settleShared(click.account, click.epoch, result, outcome, countToken = true)
                 // 页面已出栈或会话已换代：不改页面（结论已由网络层落到未决记录，共享结算已做）
                 if (!alive() || deps.env.sessionEpoch() != click.epoch) return@launch
+                // 同账号分区换代也会重建表单：旧结局只同步记录，不能锁新表单或写回旧成功标记。
+                if (click.form !== formOwner) return@launch
                 onSubmitResult(result, outcome, replayed, probe)
             } finally {
                 finishWrite(write)
@@ -381,6 +410,7 @@ class SensitiveFlow(
                 else -> WalletErrors.NETWORK_KEY
             }
         update { it.copy(phase = FlowState.EDITING, error = key?.let(::notice)) }
+        if (result is ApiResult.LocalReject && reason != LocalRejectReason.PENDING_KEY_UNRESOLVED) host.onWriteReleased()
         refreshPending()
     }
 
@@ -611,18 +641,26 @@ class SensitiveFlow(
                     host.onSucceeded((result as? ApiResult.Success)?.data as? JsonObject, alreadyDone = true)
                 } else {
                     update { it.copy(phase = FlowState.EDITING, error = message, toast = notice(SensitiveOutcome.ALREADY_DONE_KEY)) }
+                    host.onWriteReleased()
                     host.onSettled()
                 }
             }
 
             SensitiveOutcome.STEP_UP -> {
                 when {
-                    replayed -> stepUpExhausted(phase, message)
+                    replayed -> {
+                        stepUpExhausted(phase, message)
+                    }
 
                     // 页面被覆盖：不打开面板，保留原键（首次提交下次点击沿用；确认阶段保持待确认）
-                    !onScreen -> stepUpDeferred(phase, message)
+                    !onScreen -> {
+                        if (sentBeforeFirstVisible) deferredStepUp = DeferredStepUp(formOwner, phase, intent)
+                        stepUpDeferred(phase, message)
+                    }
 
-                    else -> openStepUp(phase, intent)
+                    else -> {
+                        openStepUp(phase, intent)
+                    }
                 }
             }
 
@@ -630,6 +668,7 @@ class SensitiveFlow(
                 reuseKey = null
                 endPending()
                 update { it.copy(phase = FlowState.EDITING, toast = message?.copy(assertive = false), error = null) }
+                host.onWriteReleased()
                 host.onSettled()
             }
 
@@ -638,6 +677,7 @@ class SensitiveFlow(
             -> {
                 if (phase != SensitiveOutcome.SUBMIT) endPending()
                 update { it.copy(phase = FlowState.EDITING, error = message ?: notice(WalletErrors.NETWORK_KEY)) }
+                if (outcome.actionRaw == SensitiveOutcome.SHOW_ERROR_KEY_ENDS) host.onWriteReleased()
                 (result as? ApiResult.Failure)?.code?.let(host::onBusinessError)
                 if (outcome.keyEnds) host.onSettled()
                 refreshPending()
@@ -654,6 +694,7 @@ class SensitiveFlow(
                         error = null,
                     )
                 }
+                host.onWriteReleased()
                 refreshPending()
             }
 
@@ -886,6 +927,10 @@ class SensitiveFlow(
 
     private fun beginWrite(): Any? {
         if (localBusy) return null
+        // 默认可见的控制器入口也算可见过；Compose 首帧会先同步实际可见性。
+        if (visible) everVisible = true
+        sentBeforeFirstVisible = !everVisible
+        deferredStepUp = null
         val write = Any()
         activeWrite = write
         markInFlight(true)
@@ -898,6 +943,7 @@ class SensitiveFlow(
         activeWrite = null
         markInFlight(false)
         refreshPending()
+        showDeferredStepUp()
     }
 
     private fun markInFlight(busy: Boolean) {
@@ -950,6 +996,7 @@ class SensitiveFlow(
         lastSummary = ""
         lastClick = null
         stepUpIntent = null
+        deferredStepUp = null
         guideOwner = null
         stepUp.dismiss()
         activeWrite = null
@@ -957,6 +1004,7 @@ class SensitiveFlow(
     }
 
     fun leave() {
+        deferredStepUp = null
         stepUp.dismiss()
     }
 

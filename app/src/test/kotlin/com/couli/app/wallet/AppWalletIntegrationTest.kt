@@ -241,13 +241,14 @@ class AppWalletIntegrationTest {
 
     // ---------------------------------------------------------------- 搭建（与 AppModule 同一套接线）
 
-    @Suppress("LongMethod") // 与 AppModule 同一套接线逐项搭建
+    @Suppress("LongMethod", "LongParameterList") // 与 AppModule 同一套接线逐项搭建；各用例按需替换的接线逐项给
     private fun launch(
         config: String = CONFIG,
         realname: RealNameBackend? = FakeRealName(),
         labor: LaborBackend? = FakeLabor(),
         phone: (String) -> String? = { "13800005678" },
         wrapApi: (WalletApi) -> WalletApi = { it },
+        popGate: PopGate? = null,
     ) {
         val gate =
             PrivacyGate(MemoryStore(), clock = { now }, bundledPolicyVersion = "1").apply {
@@ -299,7 +300,13 @@ class AppWalletIntegrationTest {
                 ).also { it.connectSession() }
         }
         composeRule.setContent {
-            navController = rememberNavController()
+            // FU-AND-0719（F-AND-42）：[popGate] 给出时用可拒绝出栈的 NavHostController（其余与 rememberNavController 同一套导航器）
+            navController =
+                if (popGate == null) {
+                    rememberNavController()
+                } else {
+                    androidx.compose.runtime.remember { refusingNavController(popGate) }
+                }
             androidx.compose.runtime.CompositionLocalProvider(
                 com.couli.core.designsystem.LocalCouliAnnouncer provides
                     com.couli.core.designsystem
@@ -2147,7 +2154,8 @@ class AppWalletIntegrationTest {
         assertTrue("前提：已锁住", model.controller.state.value.successPending)
         val hint = wallet.deps.texts.text("withdraw.submission_locked")
         assertTrue("锁定提示文案非空：「$hint」", hint.isNotBlank())
-        idleUntil { texts(hint) > 0 }
+        // FU-AND-0719（F-AND-42）同步：导航被拒、页面可见时改为（或另加）中性提示「已提交，正在打开提现记录」也算显示了提示
+        idleUntil { texts(hint) > 0 || texts(SUBMITTED_HINT) > 0 }
         val entryText = wallet.deps.texts.text("pending_confirm.withdraw.records")
         assertTrue("记录入口文案非空", entryText.isNotBlank())
         composeRule.runOnUiThread { wallet.attach(navController) }
@@ -2268,6 +2276,181 @@ class AppWalletIntegrationTest {
         assertFalse(stack().contains("Withdraw"))
         walletCallsSettled()
         assertEquals(1, writes.count())
+    }
+
+    // ---------------------------------------------------------------- FU-AND-0719 / F-AND-42（提交体验）
+
+    /** popBackStack() 是否被拒（[refusingNavController]）；[refused] 记被拒的次数，用来证明用例确实走到了生产 replaceTopAccepted 的 popBackStack()=false 分支。 */
+    private class PopGate {
+        @Volatile var refuse = false
+
+        @Volatile var refused = 0
+    }
+
+    /**
+     * 与 rememberNavController 同一套导航器（嵌套图、Compose 目的地、对话框）的 NavHostController，只在 [gate] 打开时让无参 popBackStack() 返回 false 且
+     * 不动回退栈。用于摆出生产 AppWallet.replaceTopAccepted 里「出栈失败 → 不受理」那一支（真实图里从 Home 之上出栈不会失败）；其余行为不变。
+     */
+    private fun refusingNavController(gate: PopGate): NavHostController =
+        object : NavHostController(context) {
+            override fun popBackStack(): Boolean {
+                if (gate.refuse) {
+                    gate.refused += 1
+                    return false
+                }
+                return super.popBackStack()
+            }
+        }.apply {
+            // 嵌套图导航器在 Kotlin 里是 internal（字节码 public）：按 rememberNavController 的做法构造同一个类
+            navigatorProvider.addNavigator(
+                Class
+                    .forName("androidx.navigation.compose.ComposeNavGraphNavigator")
+                    .getConstructor(androidx.navigation.NavigatorProvider::class.java)
+                    .newInstance(navigatorProvider) as androidx.navigation.Navigator<*>,
+            )
+            navigatorProvider.addNavigator(androidx.navigation.compose.ComposeNavigator())
+            navigatorProvider.addNavigator(androidx.navigation.compose.DialogNavigator())
+        }
+
+    /** 有限等待某个界面条件出现（到上限不抛），返回是否出现；调用方再用带说明的断言判定，使红灯落在预期断言上。 */
+    private fun appears(condition: () -> Boolean): Boolean =
+        runCatching { FlowWait.until(::pump, ceilingMs = APPEAR_MS, condition = condition) }.isSuccess
+
+    /**
+     * F-AND-42 ①（FU-AND-0718 评审 r1 R1-03）：提现页在入场转场里（宿主 STARTED，页面从未 ON_RESUME）提交，服务端回 10003。首次 ON_RESUME 之后应当弹出
+     * 二次验证面板，不得静默要求用户再点一次【提交】。之后走完面板：沿用原键、原体重放 1 次后成功进提现记录。
+     * - 面板弹出本身不发写请求：通过面板之前 createWithdrawal 仍为 1；
+     * - 写请求总数恰好 2（原键首发 + 二次验证后的原键重放），两次幂等键相同，不出现第三次。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand42_aStepUpAnsweredDuringTheEntryTransitionOpensThePanelOnTheFirstResume() {
+        val writes = WithdrawWrites()
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) }
+        assertEquals("前提：提现页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = withdrawModel(entry)
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：端口收到 1 次提交", 1, writes.count())
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
+        assertEquals("前提：仍在 STARTED", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：提现页已 ON_RESUME", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        assertTrue("首次 ON_RESUME 后弹出二次验证面板（不要求用户再点【提交】）", appears { has(WalletTags.STEP_UP_CODE) })
+        walletCallsSettled()
+        assertEquals("面板弹出本身不发写请求", 1, writes.count())
+        passStepUp()
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        val keys = synchronized(writes.keys) { writes.keys.toList() }
+        assertEquals("写请求恰好 2：首发 + 二次验证后的重放", 2, keys.size)
+        assertEquals("重放沿用原键", keys[0], keys[1])
+        val submits = all("POST", WITHDRAW_PATH)
+        assertNull(header(submits[0], "X-Step-Up-Token"))
+        assertNotNull(header(submits[1], "X-Step-Up-Token"))
+        // 第 2 版（评审 T-04）：续发沿用原请求体，金额是最初提交的 1000 分
+        assertEquals("续发沿用原请求体", submits[0].body, submits[1].body)
+        assertEquals("1000", body(submits[1])["amount_fen"]?.jsonPrimitive?.content)
+    }
+
+    /**
+     * 第 2 版（评审 T-03）对照：提现页曾经 RESUMED（可见过），之后宿主到 STARTED（ON_PAUSE）时提交、收到 10003；宿主回到 RESUMED 后**不**自动弹二次验证
+     * 面板、**不**自动续发（既有 lesson37 口径：只有入场转场里、页面从未可见时发出的才在首次 ON_RESUME 弹）。用户再点【提交】才继续：沿用原键，出现面板。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand42_t03_aStepUpAnsweredWhilePausedAfterBeingVisibleWaitsForTheUserOnReturn() {
+        val writes = WithdrawWrites()
+        launch(wrapApi = writes::wrap)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = withdrawModel(entry)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        assertEquals("前提：提现页已 ON_PAUSE（STARTED）", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：端口收到 1 次提交", 1, writes.count())
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：提现页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        walletCallsSettled()
+        assertFalse("曾可见、暂停时收到的 10003：回来不自动弹面板", has(WalletTags.STEP_UP_CODE))
+        assertEquals("回来不自动续发", 1, writes.count())
+        assertEquals("仍在提现页", "Withdraw", top()?.name)
+        click(WalletTags.WITHDRAW_SUBMIT)
+        assertTrue("用户再点【提交】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
+        val keys = synchronized(writes.keys) { writes.keys.toList() }
+        assertTrue("用户再点才发、沿用原键：$keys", keys.size >= 2 && keys.distinct().size == 1)
+    }
+
+    /**
+     * F-AND-42 ②：页面可见时成功到达，导航被拒（AppShell 已把 NavController 解绑，生产 replaceTopAccepted「没有导航」一支）——页面仍可见，给中性提示
+     * 「已提交，正在打开提现记录」，不显示错误条；【提现记录】入口在；本页再点不发。
+     */
+    @Test
+    fun fand42_aRejectedNavigationWhileVisibleShowsTheNeutralSubmittedHint() {
+        val writes = WithdrawWrites()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = withdrawModel(entry)
+        composeRule.runOnUiThread { wallet.detach(navController) }
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertEquals("前提：仍在提现页", "Withdraw", top()?.name)
+        assertEquals("前提：提现页可见", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        assertTrue("导航被拒、页面可见：显示中性提示「$SUBMITTED_HINT」", appears { texts(SUBMITTED_HINT) > 0 })
+        assertFalse("中性提示，不是错误条", has(WalletTags.WITHDRAW_ERROR))
+        assertTrue("有【提现记录】入口", texts(wallet.deps.texts.text("pending_confirm.withdraw.records")) > 0)
+        tryResubmit(model)
+        assertEquals(1, writes.count())
+    }
+
+    /**
+     * F-AND-42 ③（popBackStack()=false 分支，G03）：提现页在栈顶可见时成功到达，生产 replaceTopAccepted 走到 popBackStack() 而出栈失败（返回 false，
+     * 回退栈不动）——不受理：仍在提现页、不打开提现记录；本页锁住（再点、清空重输都不发）；显示中性提示、不显示错误条。之后出栈恢复正常，经生产生命周期入口
+     * （宿主 ON_PAUSE → ON_RESUME）重试，进这一笔的提现记录、发起页移除；createWithdrawal 始终为 1。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand42_aPopBackStackReturningFalseKeepsTheLockAndRetriesTheOriginalSuccessLater() {
+        val writes = WithdrawWrites()
+        val pop = PopGate()
+        withdrawSucceedsDirectly()
+        launch(wrapApi = writes::wrap, popGate = pop)
+        open("Withdraw")
+        idleUntil { top()?.name == "Withdraw" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { withdrawLoaded(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = withdrawModel(entry)
+        val stackBefore = stack()
+        pop.refuse = true
+        typeAndSubmit(model, "10")
+        lateResponsesSettled(1, ::isSubmit)
+        assertTrue("前提：走到了 popBackStack()=false 分支（${pop.refused} 次）", pop.refused >= 1)
+        assertEquals("出栈失败：不受理，回退栈不动", stackBefore, stack())
+        assertEquals("仍在提现页", "Withdraw", top()?.name)
+        assertTrue("导航被拒、页面可见：显示中性提示「$SUBMITTED_HINT」", appears { texts(SUBMITTED_HINT) > 0 })
+        assertFalse("中性提示，不是错误条", has(WalletTags.WITHDRAW_ERROR))
+        tryResubmit(model)
+        assertEquals("出栈失败后本页再点不发", 1, writes.count())
+        pop.refuse = false
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue("消费的是原成功结果", recordsParams().orEmpty().contains(F41_WITHDRAWAL))
+        assertFalse("发起页已移除", stack().contains("Withdraw"))
+        tryResubmit(model)
+        assertEquals("createWithdrawal 总数为 1", 1, writes.count())
     }
 
     // ---------------------------------------------------------------- 工具
@@ -2488,6 +2671,12 @@ class AppWalletIntegrationTest {
         const val WITHDRAW_OPERATION = "createWithdrawal"
         const val LATE_MS = 800L
         const val FOCUS_WAIT_MS = 300L
+
+        /** F-AND-42：导航被拒、页面仍可见时的中性提示（编排给定文案）。 */
+        const val SUBMITTED_HINT = "已提交，正在打开提现记录"
+
+        /** F-AND-42：等界面条件出现的上限（到上限由调用方的断言判红）。 */
+        const val APPEAR_MS = 5_000L
 
         /** AC-S2-33：可提现 ¥10、冻结 ¥2、已提现 ¥0、预估 ¥10.19、已收货 ¥7.5、暂缓 ¥4.5、最早 11 月。 */
         const val SUMMARY =

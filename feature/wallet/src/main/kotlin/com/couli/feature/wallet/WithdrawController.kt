@@ -68,6 +68,8 @@ data class WithdrawSnapshot(
     val serverBlocked: Boolean = false,
     /** 本表单已成功或恢复了在途标记：即使导航被拒或已受理，提交回调也一直不可用。 */
     val successPending: Boolean = false,
+    /** 成功结果已登记，但替换发起页的导航尚未受理。 */
+    val navigationRejected: Boolean = false,
 ) {
     val inputFen: Long? get() = WithdrawAmountInput.parse(amountText)
 
@@ -166,8 +168,11 @@ class WithdrawController(
     /** 按一份已确认快照判定换代、清空重建之前（发起页据此清掉旧金额草稿）。 */
     var onReset: (SessionIdentity) -> Unit = {}
 
-    /** 发出写请求之前同步保存该表单的在途标记；结局不清除此保存标记。 */
+    /** 发出写请求之前同步保存该表单的在途标记。 */
     var onSubmissionStarted: () -> Unit = {}
+
+    /** 明确不出款的结局采用时同步清除保存的在途标记。 */
+    var onSubmissionReleased: () -> Unit = {}
 
     /** 成功时同步保存终态、清掉金额草稿，先于任何导航。 */
     var onSuccessRecorded: (JsonObject?) -> Unit = {}
@@ -613,6 +618,8 @@ class WithdrawController(
 
     override fun onWriteStarted() = onSubmissionStarted()
 
+    override fun onWriteReleased() = onSubmissionReleased()
+
     /** 提交成功时页面不在栈顶可见：替换为提现记录的导航留到页面回到可见时再做（APP-09 共性第 37、41 条）。 */
     private var deferredSuccess: Pair<JsonObject?, Boolean>? = null
 
@@ -652,7 +659,10 @@ class WithdrawController(
         val params = id?.let { JsonObject(mapOf(WalletRoutes.WITHDRAWAL_ID to JsonPrimitive(it))) } ?: EMPTY
         if (deps.env.replaceTopAccepted(WalletRoutes.WITHDRAW_RECORDS, params, entryId)) {
             deferredSuccess = null
+            update { it.copy(navigationRejected = false) }
             if (!alreadyDone) events.tryEmit(WithdrawEvent.Announce(SUBMITTED_KEY))
+        } else {
+            update { it.copy(navigationRejected = true) }
         }
     }
 
