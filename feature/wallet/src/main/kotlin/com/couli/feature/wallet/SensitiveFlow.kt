@@ -70,8 +70,14 @@ data class FlowState(
     val owner: FormOwner = FormOwner(null, Long.MIN_VALUE),
     /** 本页写操作从发起到结果采用完毕的独立锁，不由未决记录是否存在决定。 */
     val operationInFlight: Boolean = false,
+    /**
+     * 本页自己写过、结果仍未知的键，其未决记录在本页没有采用明确终态时消失了（别处确认 / 放弃、记录被删；FU-AND-0721 review-r1 S0）：
+     * 原活页面保守锁住提交，与重建后按保存标记锁住同口径。会话换代会清掉本字段，但提现控制器换代时保留提交锁（successPending），活页仍锁住；
+     * 离开后新开的表单才解除（review-r2 第 5 条更正）。
+     */
+    val unresolvedLock: Boolean = false,
 ) {
-    val canSubmit: Boolean get() = phase == EDITING && pending == null && !pendingUnreadable && !operationInFlight
+    val canSubmit: Boolean get() = phase == EDITING && pending == null && !pendingUnreadable && !operationInFlight && !unresolvedLock
 
     companion object {
         const val EDITING = "editing"
@@ -80,8 +86,36 @@ data class FlowState(
     }
 }
 
+/**
+ * 本表单持久化的键关联（FU-AND-0721 不变式的守卫数据来源，提现：发起页从 SavedStateHandle 同步读出）：[succeeded] 成功锁；[inFlight] 本页交给网络层、
+ * 尚未采用「没有业务结果 / 明确不出款」结局的第一个键（[inFlightKey] 为该键，旧版本的 Boolean 标记没有键）；[unknownKey] 本页写过而结果未知、或本页观察到
+ * 其待确认 / 忙碌卡的键，只在本页采用其终态时清掉。没有持久关联的宿主（收款账号）给 [NONE]。
+ */
+data class PersistedKeys(
+    val succeeded: Boolean = false,
+    val inFlight: Boolean = false,
+    val inFlightKey: String? = null,
+    val unknownKey: String? = null,
+) {
+    /** 本表单关联、而本机记录 [recordKey] 不是它的键（没有记录为 null）：该键在本页未采用终态时已消失，视为未解决。 */
+    fun unresolvedAgainst(recordKey: String?): String? =
+        when {
+            unknownKey != null && unknownKey != recordKey -> unknownKey
+            inFlight && recordKey == null -> inFlightKey.orEmpty()
+            else -> null
+        }
+
+    companion object {
+        val NONE = PersistedKeys()
+    }
+}
+
 /** 发起页接线：成功、引导补办、键结束后的刷新。 */
+@Suppress("TooManyFunctions") // 每个结局 / 标记出口一个回调，均有空实现，旧宿主无需实现
 interface FlowHost {
+    /** 本表单此刻持久化的键关联（守卫只读它与本机记录判定，不读内存态）；旧宿主 / 收款账号没有持久关联。 */
+    fun persistedKeys(): PersistedKeys = PersistedKeys.NONE
+
     /** 写请求发出之前的同步出口，供表单保存重建后的保守提交锁；旧页面接线无需实现。 */
     fun onWriteStarted() = Unit
 
@@ -93,6 +127,15 @@ interface FlowHost {
 
     /** 只释放本次写所用的键，不从此刻的未决卡片反推。 */
     fun onWriteReleased(key: String) = onWriteReleased()
+
+    /** 本页结果未知的 [key] 的未决记录消失、本页未采用其终态：页面保守锁住提交（[FlowState.unresolvedLock]），在途标记保留。 */
+    fun onWriteUnresolved(key: String) = Unit
+
+    /**
+     * 本页结果未知的键变了（[key] = null：本页已采用它的终态或会话换代）。发起页同步存进本表单的可恢复状态（SavedStateHandle），重建后交回
+     * [SensitiveFlow] 的 initialUnknown（FU-AND-0721 review-r3 S0：观察到即保存，不等记录消失）；旧页面接线无需实现。
+     */
+    fun onUnknownChanged(key: String?) = Unit
 
     /** 业务成功（首次提交、确认上一笔、放弃得到 completed 且原结果成功）：[data] 为原操作的 data。 */
     fun onSucceeded(
@@ -150,6 +193,8 @@ class SensitiveFlow(
      * 来取得身份。
      */
     initialOwner: FormOwner,
+    /** 同一表单重建时恢复的「本页结果未知的键」（[FlowHost.onUnknownChanged] 保存的那个）：重读记录时它已消失就保守锁住。 */
+    initialUnknown: String? = null,
 ) {
     /** 本表单所属的账号与登录世代（共性第 52、65 条）：构造时由发起页传入，只在会话换代通知（[onSessionChanged]）里随新表单一起换成发起页传入的新身份。 */
     private var formOwner = initialOwner
@@ -163,8 +208,24 @@ class SensitiveFlow(
 
     val stepUp = StepUpController(deps, scope, alive)
 
-    /** 当前（或下次提交沿用的）键；null = 下次用新键。 */
+    /** 当前（或下次提交沿用的）键；null = 下次用新键。沿用时只发它首次固定的原请求体（[lastBody]），不与当前表单重组。 */
     private var reuseKey: String? = null
+
+    /**
+     * 本页结果未知的键（FU-AND-0721 review-r1 / r2 / r3 S0），只经 [trackUnknown] 改并同步交宿主持久化：本页写过而结果仍未知（进过待确认），或本页观察到
+     * 它的待确认记录（渲染了待确认卡，含别页首次提交在途的忙碌卡（G17）；点击与否、点击途中提前返回都不影响）。内存里这份只用于沿用它时按「结果未知过」
+     * 分类（确认口径）与换代豁免；锁与放行一律由守卫按宿主持久化的那份判定（[guard]、[lockIfUnresolvedVanished]）。本页采用了它的终态（键结束）才清掉。
+     */
+    private var ownUnknown: String? = initialUnknown
+
+    /**
+     * 会话换代时被替换的旧表单仍在途的那个键：旧表单这笔写收尾（迟到结局由 [previousFormSucceeded] 处理，F-AND-43 ① 不锁新表单）之前，它的记录
+     * 不算新表单观察到；收尾后清掉，记录仍在（仍结果未知）就照常按观察登记。
+     */
+    private var replacedWriteKey: String? = null
+
+    /** 沿用的键只收到过页面被覆盖时的 10003（没有业务结果）：用户改了表单再提交时结束它、换新键（G04②）。 */
+    private var reuseEndable = false
 
     /** 最近一次提交的请求体与摘要（二次验证后沿用原键、原体重放）。 */
     private var lastBody: String? = null
@@ -252,36 +313,75 @@ class SensitiveFlow(
      * 用户点【提交】（【保存】）。[body] 原始请求体（UTF-8 原文，签名与重放都用这份），[summary] 未决记录的展示摘要，[owner] 渲染这张表单时的
      * 账号与登录世代（共性第 52 条）。
      */
-    @Suppress("ReturnCount") // 不能提交、表单身份、限流、没有会话账号几个出口
+    @Suppress("ReturnCount") // 守卫不放行、限流两个出口
     fun submit(
         body: String,
         summary: String,
         owner: FormOwner = formOwner,
     ) {
-        if (!alive() || !s.canSubmit) return
+        if (!alive()) return
+        // FU-AND-0721 不变式：生成新键之前先过持久守卫（身份、本机记录、本表单保存的关联），不能判定的一律不放行；内存态只能再加拒绝
+        val account = guard(owner) ?: return
+        if (!s.canSubmit) return
         if (gate.active) {
             update { it.copy(error = notice("error.42901")) }
             return
         }
-        // 一份身份快照（FU-AND-0717 第 3 轮整体重理：不先读账号、再读世代与账号）。会话账号读不出（身份暂时未知、没有会话）：不能确定这次提交属于谁，
-        // 不发（只做判断，不从当前会话取账号）
+        val click = Click(account, owner.epoch, formOwner)
+        val (key, sendBody, sendSummary) = nextRequest(body, summary)
+        lastClick = click
+        update { it.copy(phase = FlowState.SUBMITTING, error = null, fieldErrors = emptyList(), fieldErrorKey = null, guideRoute = null) }
+        val token = deps.tokens.take(action, account, deps.clock(), click.epoch, deps.env.sessionScope())
+        send(click, key, sendBody, sendSummary, token, false)
+    }
+
+    /**
+     * 生成新键之前的持久守卫（FU-AND-0721 不变式：本地持久化里有未解决的键时，任何入口都必须先解决它才能生成新键）。只读持久记录判定：一份身份快照、
+     * 本机未决记录（现读）、本表单保存的键关联（[FlowHost.persistedKeys]）；不读内存里的卡片或标志。每一步不能判定都返回 null（不放行），并把结论同步到
+     * 页面（待确认卡、保守锁、读不出）。返回放行时本次提交所属的账号。
+     */
+    @Suppress("ReturnCount") // 身份、记录、关联、成功锁逐项不放行
+    private fun guard(owner: FormOwner): String? {
+        // ① 身份：一份快照既用于表单归属核对（共性第 52、65 条），也决定能否按本表单身份读记录；暂时未知、已换代都不放行。
+        //    会话账号读不出（身份暂时未知、没有会话）：提示网络错误，不发（只做判断，不从当前会话取账号）
         val now = deps.env.identitySnapshot()
         if (!now.known || now.account == null) {
             update { it.copy(error = notice(WalletErrors.NETWORK_KEY)) }
-            return
+            return null
         }
-        // 表单所属身份先于生成键、读取 token 核对（共性第 52 条，Android R3-01）：会话已换而清空通知还没执行时，旧表单不发、不登记到新账号；
-        // 之后的键、token、未决记录与网络层 expectedAccount 都用这份固定身份（共性第 65 条：账号取自表单身份，不取自当前会话）
-        if (owner != formOwner || !now.isOwnedBy(owner.account, owner.epoch)) return
-        val account = owner.account ?: return
-        val click = Click(account, owner.epoch, formOwner)
+        if (owner != formOwner || !now.isOwnedBy(owner.account, owner.epoch)) return null
+        val account = owner.account ?: return null
+        // ② 现读本机记录并同步页面：读不出、身份此刻不是 SAME 都不放行
+        val synced = sync(now) ?: return null
+        // ③ 本操作仍有未决记录（本页或别页的键）：先经卡片确认 / 放弃、或等在途结束
+        if (synced.record != null) return null
+        // ④ 没有记录，而本表单保存的关联键未被本页采用终态：已在 [sync] 里锁住
+        val keys = host.persistedKeys()
+        if (keys.unresolvedAgainst(null) != null || keys.succeeded) return null
+        return account
+    }
+
+    /**
+     * 这次提交用的键、请求体与摘要。原键原体（BR-ID-10）：沿用的键只发它首次固定的请求体与摘要，不与当前表单重组（review-r1 S0 根因二）；
+     * 只收到过覆盖期 10003 的原键（没有业务结果）而表单已改：结束它、释放在途标记，再用新键提交新表单（G04②）。
+     */
+    private fun nextRequest(
+        body: String,
+        summary: String,
+    ): Triple<String, String, String> {
+        val reused = reuseKey
+        if (reused != null && reuseEndable && body != lastBody) {
+            reuseKey = null
+            host.onWriteReleased(reused)
+        }
         val key = reuseKey ?: deps.newKey()
+        val sendBody = if (key == reused) lastBody ?: body else body
+        val sendSummary = if (key == reused) lastSummary else summary
         reuseKey = key
-        lastBody = body
-        lastSummary = summary
-        lastClick = click
-        update { it.copy(phase = FlowState.SUBMITTING, error = null, fieldErrors = emptyList(), fieldErrorKey = null, guideRoute = null) }
-        send(click, key, body, summary, deps.tokens.take(action, account, deps.clock(), click.epoch, deps.env.sessionScope()), false)
+        reuseEndable = false
+        lastBody = sendBody
+        lastSummary = sendSummary
+        return Triple(key, sendBody, sendSummary)
     }
 
     /** 渲染快照的身份就是本流程当前的表单身份，且仍是当前会话（共性第 52 条）。 */
@@ -323,6 +423,8 @@ class SensitiveFlow(
         }
         val write = beginWrite() ?: return
         sentViewGen = viewGen
+        // 沿用结果未知过的键（review-r1 S0 根因三）：按确认口径分类，20901 / 5xxxx 等不把它当成首次提交的失败结束、换新键
+        val everUnknown = key == ownUnknown
         // 提交离开页面不取消（未决记录兜底）；会话换代即作废（尚未写出的不发）；禁用期是独立的发送前闸门（APP-08 共性第 27 条），不进归属；
         // 被它拦下时记下原因（共性第 62 条），回调按原因结算
         val probe = gate.probe()
@@ -345,7 +447,8 @@ class SensitiveFlow(
                     if (result is ApiResult.LocalReject || result is ApiResult.SessionEnded) {
                         null
                     } else {
-                        SensitiveOutcome.of(outcomeOp, SensitiveOutcome.SUBMIT, keyEverUnknown = false, input(result))
+                        val phase = if (everUnknown) SensitiveOutcome.CONFIRM else SensitiveOutcome.SUBMIT
+                        SensitiveOutcome.of(outcomeOp, phase, keyEverUnknown = everUnknown, input(result))
                     }
                 settleShared(click.account, click.epoch, result, outcome, countToken = true)
                 // 页面已出栈或会话已换代：不改页面（结论已由网络层落到未决记录，共享结算已做）
@@ -358,6 +461,7 @@ class SensitiveFlow(
                 onSubmitResult(result, outcome, replayed, probe, key)
             } finally {
                 finishWrite(write)
+                if (replacedWriteKey == key) replacedWriteKey = null
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(click.account, operationId)
             }
@@ -428,7 +532,8 @@ class SensitiveFlow(
                 else -> WalletErrors.NETWORK_KEY
             }
         update { it.copy(phase = FlowState.EDITING, error = errorKey?.let(::notice)) }
-        if (result is ApiResult.LocalReject && reason != LocalRejectReason.PENDING_KEY_UNRESOLVED) host.onWriteReleased(key)
+        // 本地拒绝 = 这次写没有离开本机（网络层发送前拒绝，记录未写入或已退回）：本次键的在途标记同步释放；别的键的未决记录由下面的重读接管（观察登记）
+        if (result is ApiResult.LocalReject) host.onWriteReleased(key)
         refreshPending()
     }
 
@@ -519,6 +624,7 @@ class SensitiveFlow(
                 apply(outcome, result, SensitiveOutcome.CONFIRM, intent.stepUpReplayed, intent, intent.key)
             } finally {
                 finishWrite(write)
+                if (replacedWriteKey == intent.key) replacedWriteKey = null
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(intent.account, operationId)
             }
@@ -583,6 +689,7 @@ class SensitiveFlow(
                 apply(outcome, result, SensitiveOutcome.ABANDON, replayed = true, intent = null, key = intent.key)
             } finally {
                 finishWrite(write)
+                if (replacedWriteKey == intent.key) replacedWriteKey = null
                 // 结算通知放在本页处理完之后（共性第 1 条）：Main.immediate 下通知会同步执行，先通知会抢在本页之前改掉待确认版本
                 deps.pending.notify(intent.account, operationId)
             }
@@ -658,6 +765,19 @@ class SensitiveFlow(
         key: String,
     ) {
         if (outcome.nextSubmitNewKey) reuseKey = null
+        // 本页写过的键：结束了就不再是未决；首次提交进待确认、或确认 / 放弃后仍未结束，记为本页结果未知的键
+        if (outcome.keyEnds) {
+            if (ownUnknown == key) trackUnknown(null)
+        } else if (phase != SensitiveOutcome.SUBMIT || outcome.actionRaw in PENDING_ACTIONS) {
+            trackUnknown(key)
+        }
+        // F-AND-44（FU-AND-0721）：首次提交、从未结果未知的键，凡不是成功也不进待确认的结局（42901、44001、5xxxx、补办引导、强更、10003、
+        // 10002 / 10402 预算用尽等），网络层都已删除它的记录、没有业务结果——在途标记与记录同生命周期，同步释放；成功另由成功锁保持，
+        // 40901 / 超时 / 断连进待确认不释放。沿用原键再发时 [send] 重新设上。确认 / 放弃阶段不按结局码放锁（维持现状）。
+        val settledWithoutResult =
+            outcome.actionRaw != SensitiveOutcome.DONE && outcome.actionRaw != SensitiveOutcome.ALREADY_DONE &&
+                outcome.actionRaw !in PENDING_ACTIONS
+        if (phase == SensitiveOutcome.SUBMIT && key != ownUnknown && settledWithoutResult) host.onWriteReleased(key)
         // 禁用期、token 失效、强更已在 [settleShared] 按会话归属结算
         val traceId = (result as? ApiResult.Failure)?.traceId
         val message = outcome.textKey?.let { Notice(it, ++serial, traceId, outcome.showTrace6) }
@@ -683,9 +803,10 @@ class SensitiveFlow(
             }
 
             SensitiveOutcome.STEP_UP -> {
+                // 10003 的在途标记已在上面释放：于是「有在途标记却没有记录」只剩进程死亡窗口，守卫按未决键锁住，不需要读内存态
                 when {
                     replayed -> {
-                        stepUpExhausted(phase, message)
+                        stepUpExhausted(phase, message, key)
                     }
 
                     // 页面被覆盖：不打开面板，保留原键（首次提交下次点击沿用；确认阶段保持待确认）
@@ -790,10 +911,13 @@ class SensitiveFlow(
     private fun stepUpExhausted(
         phase: String,
         message: Notice?,
+        key: String,
     ) {
         val text = message ?: notice("error.10003")
-        if (phase == SensitiveOutcome.SUBMIT) {
+        if (phase == SensitiveOutcome.SUBMIT && key != ownUnknown) {
             reuseKey = null
+            // 首次提交的键就此结束（F-AND-44）：释放重建用的在途标记
+            host.onWriteReleased(key)
             update { it.copy(phase = FlowState.EDITING, error = text) }
         } else {
             update { it.copy(pendingNotice = text) }
@@ -808,6 +932,8 @@ class SensitiveFlow(
     ) {
         val text = message ?: notice("error.10003")
         if (phase == SensitiveOutcome.SUBMIT) {
+            // 原键只收到 10003（没有业务结果）：用户原样再点沿用原键原体，改了表单再点则结束它、换新键
+            reuseEndable = reuseKey != null && reuseKey != ownUnknown
             update { it.copy(phase = FlowState.EDITING, error = text) }
         } else {
             update { it.copy(pendingNotice = text) }
@@ -844,6 +970,8 @@ class SensitiveFlow(
         intent: Intent?,
     ) {
         val panelOwner = stepUpOwner(phase, intent) ?: return
+        // 首次提交的面板属于打开时沿用的原键：用户关闭面板时只释放这个键的在途标记
+        val panelKey = reuseKey.takeIf { phase == SensitiveOutcome.SUBMIT && it != ownUnknown }
         update { it.copy(phase = if (phase == SensitiveOutcome.SUBMIT) FlowState.SUBMITTING else it.phase) }
         stepUpIntent = intent
         stepUp.open(
@@ -873,8 +1001,10 @@ class SensitiveFlow(
             onClosed = {
                 stepUpIntent = null
                 // 用户关闭面板：首次提交回到编辑态，本次键结束不用（从未结果未知，下次用新键）；待确认保持待确认
-                if (phase == SensitiveOutcome.SUBMIT) {
+                if (phase == SensitiveOutcome.SUBMIT && panelKey != null) {
                     reuseKey = null
+                    // 本次键结束（F-AND-44）：释放重建用的在途标记（不改操作锁，面板打开期间没有在途写）
+                    panelKey?.let(host::onWriteReleased)
                     update { it.copy(phase = FlowState.EDITING) }
                 }
                 refreshPending()
@@ -905,11 +1035,25 @@ class SensitiveFlow(
      * 本页写操作持锁期间不被记录的消失或换键打断，结果采用后再同步。
      */
     fun refreshPending() {
-        if (!alive()) return
+        sync(deps.env.identitySnapshot())
+    }
+
+    /** 一次按持久记录的同步结果：读到的本机记录（没有为 null）。 */
+    private class Synced(
+        val record: PendingKeyRecord?,
+    )
+
+    /**
+     * 把持久记录同步到页面（[refreshPending] 与提交前守卫共用的唯一读取路径）：按本表单身份现读本机记录，重建待确认卡、登记观察、按保存的关联判保守锁、
+     * 收起已失效的二次验证面板。返回 null = 这次没能读（页面已出栈、身份不是 SAME、记录读不出），守卫按不放行处理；界面保持原样或置 pendingUnreadable。
+     */
+    @Suppress("ReturnCount") // 出栈、身份、读不出、别的账号的记录逐项不读
+    private fun sync(identity: com.couli.core.network.SessionIdentity): Synced? {
+        if (!alive()) return null
         // 只把本表单身份的记录放进本表单（共性第 65 条）：当前会话已不是固定身份（令牌已换、清空通知还没执行）时不读，读到别的账号的记录也不放进来
         // 一份快照（FU-AND-0717 第 3 轮）：身份暂时未知、已换代都不读（不改已显示的待确认状态）；未知期取得的表单等接管（[adoptOwner]）之后再读
         val owner = formOwner
-        if (owner.verdict(deps.env.identitySnapshot()) != com.couli.core.network.IdentityVerdict.SAME) return
+        if (owner.verdict(identity) != com.couli.core.network.IdentityVerdict.SAME) return null
         val record =
             try {
                 deps.api.pendingFor(operationId)
@@ -917,15 +1061,57 @@ class SensitiveFlow(
                 @Suppress("TooGenericExceptionCaught", "SwallowedException") error: Exception,
             ) {
                 update { it.copy(pendingUnreadable = true) }
-                return
+                return null
             }
-        if (record != null && record.account != owner.account) return
+        if (record != null && record.account != owner.account) return null
         update { state -> reconcile(state, record?.let(::view)) }
+        lockIfUnresolvedVanished(record)
+        // 观察即未知（review-r3 S0）：本页采用了待确认记录（结果未知或曾未知），就把它记为本页结果未知的键并同步存进可恢复状态
+        if (record != null && s.pending?.key == record.key && observable(record)) trackUnknown(record.key)
         // 确认流程的二次验证所属的键已在别处结算或被替换：同步收起面板（共性第 49 条）
         val intent = stepUpIntent
         if (intent != null && s.pending?.key != intent.key) {
             stepUpIntent = null
             stepUp.dismiss()
+        }
+        return Synced(record)
+    }
+
+    /**
+     * 本页观察到的待确认记录：结果未知的记录，或在途的记录（曾未知而正被确认；或别页首次提交在途、本页显示忙碌卡——G17 裁定也算观察，服务端给出
+     * 它的终态之前本页不生成新键）。本页自己持锁的写不算观察（它的结局由 [apply] 采用）；换代前本流程旧表单自己还在途的那个键除外（[replacedWriteKey]，
+     * 只属于本流程，别页在途的卡片键不享有）。
+     */
+    private fun observable(record: PendingKeyRecord): Boolean =
+        record.key != replacedWriteKey &&
+            when (record.stateRaw) {
+                PendingKeyStore.UNKNOWN -> true
+                PendingKeyStore.IN_FLIGHT -> record.everUnknown || !localBusy
+                else -> false
+            }
+
+    /**
+     * 「本页结果未知的键」的唯一入口（review-r2 / r3 统一）：本页写出的键结果未知、本页观察到的待确认记录（[refreshPending]）都走这里，并同步交给
+     * 宿主保存（[FlowHost.onUnknownChanged]）。已因原键消失而保守锁住时不再换成别的键（锁的依据不能被后来的记录冲掉）；传 null 只在本页采用其终态时（会话换代由 [resetFor] 清）。
+     */
+    private fun trackUnknown(key: String?) {
+        if (key != null && s.unresolvedLock && ownUnknown != null) return
+        if (ownUnknown == key) return
+        ownUnknown = key
+        host.onUnknownChanged(key)
+    }
+
+    /**
+     * review-r1 S0 根因一：本表单持久关联的键（[FlowHost.persistedKeys]：本页写过 / 观察到而结果未知的键，或本页交给网络层的键）的记录消失或被别的键替换，
+     * 而本页没有采用它的终态（别处确认成功 / 放弃、记录被删都分不清）——不回到可提交的编辑态，保守锁住，并通知宿主显示与重建后相同的提交锁；标记不动。
+     * 只按持久关联判定（不读内存态）；本页写操作持锁期间（记录可能还没写入）不判。没有持久关联的宿主（收款账号）不会进入。
+     */
+    private fun lockIfUnresolvedVanished(record: PendingKeyRecord?) {
+        if (localBusy) return
+        val key = host.persistedKeys().unresolvedAgainst(record?.key) ?: return
+        if (!s.unresolvedLock) {
+            update { it.copy(unresolvedLock = true, phase = if (it.phase == FlowState.PENDING) FlowState.EDITING else it.phase) }
+            host.onWriteUnresolved(key)
         }
     }
 
@@ -1026,8 +1212,14 @@ class SensitiveFlow(
     }
 
     private fun resetFor(owner: FormOwner) {
+        replacedWriteKey = if (localBusy) s.pending?.key ?: reuseKey else null
         formOwner = owner
         reuseKey = null
+        if (ownUnknown != null) {
+            ownUnknown = null
+            host.onUnknownChanged(null)
+        }
+        reuseEndable = false
         lastBody = null
         lastSummary = ""
         lastClick = null
@@ -1085,5 +1277,9 @@ class SensitiveFlow(
     companion object {
         const val COMPLETED = "completed"
         const val BUSY_KEY = "error.40901"
+
+        /** 进入或保持待确认的结局（apply 的 else 分支）：首次提交收到它们，键结果未知。 */
+        private val PENDING_ACTIONS =
+            setOf(SensitiveOutcome.PENDING_CONFIRM, SensitiveOutcome.SHOW_ERROR_KEEP_PENDING, SensitiveOutcome.ABANDON_BUSY)
     }
 }

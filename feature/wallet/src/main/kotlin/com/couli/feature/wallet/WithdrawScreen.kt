@@ -113,7 +113,26 @@ class WithdrawViewModel(
         val owner = FormOwner.of(identity)
         draftIdentity = identity
         val restored = initialDraft(identity, owner)
-        controller = WithdrawController(deps, viewModelScope, restored, config.entryId, owner, initialSubmissionLocked = submissionLocked)
+        controller =
+            WithdrawController(
+                deps,
+                viewModelScope,
+                restored,
+                config.entryId,
+                owner,
+                initialSubmissionLocked = submissionLocked,
+                initialUnknownKey = saved.get<String>(K_UNKNOWN),
+            )
+        // 守卫的数据来源（FU-AND-0721 不变式）：每次判定都从 Handle 现读三个保存键，不用内存镜像
+        controller.readPersistedKeys = {
+            val marker = saved.get<Any>(K_IN_FLIGHT)
+            PersistedKeys(
+                succeeded = saved.get<Boolean>(K_SUCCEEDED) == true,
+                inFlight = marker != null && marker != false,
+                inFlightKey = marker as? String,
+                unknownKey = saved.get<String>(K_UNKNOWN),
+            )
+        }
         // 首个未释放的键随 Handle 保存；其他键的写不能覆盖它，也不能按恢复时的卡片反推。
         // 旧版本的 Boolean 标记没有设锁键，保守保留，直至表单换代清理。
         controller.onSubmissionStarted = { key ->
@@ -121,6 +140,10 @@ class WithdrawViewModel(
         }
         controller.onSubmissionReleased = { key ->
             if (saved.get<Any>(K_IN_FLIGHT) == key) saved.remove<Any>(K_IN_FLIGHT)
+        }
+        // 本页结果未知的键（含只是观察到的待确认记录，review-r3 S0）：观察到即存，跟随这一张表单的 Handle；不是账号级标记
+        controller.onUnknownSaved = { key ->
+            if (key == null) saved.remove<String>(K_UNKNOWN) else saved[K_UNKNOWN] = key
         }
         controller.onSuccessRecorded = { data ->
             saved[K_SUCCEEDED] = true
@@ -132,6 +155,7 @@ class WithdrawViewModel(
         controller.onReset = { next ->
             clearDraft()
             saved.remove<Any>(K_IN_FLIGHT)
+            saved.remove<String>(K_UNKNOWN)
             saved.remove<Boolean>(K_SUCCEEDED)
             saved.remove<String>(K_WITHDRAWAL_ID)
             draftIdentity = next
@@ -276,6 +300,7 @@ class WithdrawViewModel(
         const val K_SUCCEEDED = "withdraw.succeeded"
         const val K_WITHDRAWAL_ID = "withdraw.withdrawal_id"
         const val K_IN_FLIGHT = "withdraw.in_flight"
+        const val K_UNKNOWN = "withdraw.unknown_key"
     }
 }
 

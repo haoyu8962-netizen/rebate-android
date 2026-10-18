@@ -106,7 +106,7 @@ sealed interface WithdrawEvent {
  *   并标记钱包需要刷新。
  * 请求绑定页面实例与会话世代；页面出栈（同步出口）后读请求作废，迟到的响应不改页面。只在主线程使用。
  */
-@Suppress("TooManyFunctions") // 页面每个入口一个函数
+@Suppress("TooManyFunctions", "LongParameterList") // 页面每个入口一个函数；恢复数据（金额、身份、提交锁、结果未知的键）逐项给
 class WithdrawController(
     private val deps: WalletDeps,
     private val scope: CoroutineScope,
@@ -120,6 +120,8 @@ class WithdrawController(
     initialOwner: FormOwner = FormOwner.of(deps.env),
     /** 同一表单重建时恢复的成功 / 在途标记：没有明确结果也保守拦住再次提交。 */
     initialSubmissionLocked: Boolean = false,
+    /** 同一表单重建时恢复的本页结果未知的键（[onUnknownSaved] 存的那个；FU-AND-0721 review-r3 S0）。 */
+    initialUnknownKey: String? = null,
 ) : FlowHost {
     private var left = false
 
@@ -148,6 +150,7 @@ class WithdrawController(
             host = this,
             alive = { !left },
             initialOwner = initialOwner,
+            initialUnknown = initialUnknownKey,
         )
 
     val alive: Boolean get() = !left
@@ -168,11 +171,20 @@ class WithdrawController(
     /** 按一份已确认快照判定换代、清空重建之前（发起页据此清掉旧金额草稿）。 */
     var onReset: (SessionIdentity) -> Unit = {}
 
+    /**
+     * 本表单此刻持久化的键关联（成功锁、在途标记、结果未知的键；FU-AND-0721 不变式）：发起页从 SavedStateHandle 同步读出。守卫只按它与本机记录判定，
+     * 不读内存里的卡片或锁；缺省（旧接线、单测）没有持久关联。
+     */
+    var readPersistedKeys: () -> PersistedKeys = { PersistedKeys.NONE }
+
     /** 发出写请求之前同步保存该表单的在途标记。 */
     var onSubmissionStarted: (String) -> Unit = {}
 
     /** 明确不出款的结局采用时同步清除保存的在途标记。 */
     var onSubmissionReleased: (String) -> Unit = {}
+
+    /** 本页结果未知的键变了（观察到 / 写出后结果未知 / 采用终态后清掉）：同步存进本表单的可恢复状态。 */
+    var onUnknownSaved: (String?) -> Unit = {}
 
     /** 成功时同步保存终态、清掉金额草稿，先于任何导航。 */
     var onSuccessRecorded: (JsonObject?) -> Unit = {}
@@ -616,12 +628,40 @@ class WithdrawController(
 
     // ---------------------------------------------------------------- FlowHost
 
+    override fun persistedKeys(): PersistedKeys = readPersistedKeys()
+
     override fun onWriteStarted(key: String) {
         super.onWriteStarted(key)
         onSubmissionStarted(key)
     }
 
-    override fun onWriteReleased(key: String) = onSubmissionReleased(key)
+    override fun onWriteReleased(key: String) {
+        onSubmissionReleased(key)
+        unlockIfResolved()
+    }
+
+    /** 结果未知的键在本页没有采用终态就消失（review-r1 S0）：与重建后按在途标记锁住同口径，显示提交锁与【提现记录】入口。 */
+    override fun onWriteUnresolved(key: String) = update { it.copy(successPending = true) }
+
+    override fun onUnknownChanged(key: String?) {
+        onUnknownSaved(key)
+        unlockIfResolved()
+    }
+
+    /** 本表单已成功（成功锁不随持久关联的清除解除）。 */
+    private var succeeded = false
+
+    /**
+     * 重建 / 记录消失时按持久关联上的提交锁，在本页自己采用了设锁键的明确不出款结局（在途标记、结果未知的键都已清掉）后解除：未决键已解决，
+     * 下一次提交可生成恰好一个新键（FU-AND-0721 不变式）。成功锁不解除。只按持久关联判定，没有持久关联的宿主接线（旧单测）不会误解锁。
+     */
+    private fun unlockIfResolved() {
+        if (succeeded || resetting || !s.successPending) return
+        val keys = readPersistedKeys()
+        if (keys === PersistedKeys.NONE) return
+        val resolved = !keys.succeeded && !keys.inFlight && keys.unknownKey == null
+        if (resolved) update { it.copy(successPending = false) }
+    }
 
     /** 提交成功时页面不在栈顶可见：替换为提现记录的导航留到页面回到可见时再做（APP-09 共性第 37、41 条）。 */
     private var deferredSuccess: Pair<JsonObject?, Boolean>? = null
@@ -649,6 +689,7 @@ class WithdrawController(
         alreadyDone: Boolean,
     ) {
         deferredSuccess = data to alreadyDone
+        succeeded = true
         update { it.copy(successPending = true) }
         onSuccessRecorded(data)
         if (flow.visibleNow) navigateSucceeded(data, alreadyDone)
@@ -708,9 +749,18 @@ class WithdrawController(
         mutable.value = WithdrawSnapshot(version = s.version + 1, successPending = s.successPending)
         // 新表单（金额已清空）的固定身份：调用方那一份快照（共性第 65 条）
         identityAborted = false
-        flow.onSessionChanged(FormOwner.of(identity))
+        // 换代清掉旧表单的持久关联不算「本页采用了终态」：本表单的成功 / 重建锁保留（review-r2 第 5 条），离开再进入才是没有该锁的新表单
+        resetting = true
+        try {
+            flow.onSessionChanged(FormOwner.of(identity))
+        } finally {
+            resetting = false
+        }
         start()
     }
+
+    /** 会话换代重建进行中（其间清掉持久关联不解锁）。 */
+    private var resetting = false
 
     /** 页面出栈（同步出口）：作废读请求并取消传输；提交、确认、放弃不取消（未决记录兜底）。 */
     fun leave() {

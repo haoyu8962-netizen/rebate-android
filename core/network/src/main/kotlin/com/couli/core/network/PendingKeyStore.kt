@@ -76,6 +76,8 @@ data class PendingKeyState(
  * - [onResponse]：没有统一外壳（超时、断连、网关错误页）→ unknown；拿到业务结果（成功、3xxxx，含作废接口带回的原结果）
  *   或已作废（abandoned、20903）→ 结束并删除记录；其余（10001/10004/10005、20903 以外的 2xxxx、10405、40901、42901、
  *   5xxxx 等）出现过结果未知的保持待确认，从未结果未知的删除记录（升级后或补办后由用户重新提交，用新键）。
+ *   例外：提现（[busyKeepsPending]，FU-AND-0721 F-AND-44）的 40901「同键处理中」不是终态，原键未结束：记录转为结果未知（待确认），
+ *   保留原键原体，由用户经【确认上一笔】原键重放，不得换新键（BR-ID-10 细则「未决键」、BR-ID-01 ④）。其他操作的 40901 维持原口径。
  * - [confirm] / [abandon]：只在 unknown 时由用户点击开始（置为 in_flight），两者在途时都不能再点；[abandon] 不是本地删除，
  *   作废接口返回 abandoned 后由 [onResponse] 结束。
  * - [coldStart]：冷启动、登录成功、切回前台时调用，只恢复该账号的记录；上个进程遗留的 in_flight 变 unknown。本进程（本个
@@ -220,6 +222,9 @@ class PendingKeyStore(
                 Outcome.NON_TERMINAL -> {
                     when {
                         record.everUnknown -> backend.write(record.copy(stateRaw = UNKNOWN))
+
+                        // 提现 40901：原键仍在处理，结果未知，进待确认（不删除、不换键）
+                        busyKeepsPending(record.operationId, kind) -> backend.write(record.copy(stateRaw = UNKNOWN, everUnknown = true))
 
                         // APP-13a 两个操作的非终结响应保留原记录（共性第 7 条）：下一次用户提交沿用原键原体
                         holdsKey(record.operationId, kind) -> backend.write(record.copy(stateRaw = HELD))
@@ -419,6 +424,16 @@ class PendingKeyStore(
             val code = kind.removePrefix(ENVELOPE_PREFIX).toIntOrNull() ?: return false
             return code !in ENDING_CODES
         }
+
+        /** 首次提交收到 40901 后原键转为结果未知的操作（FU-AND-0721 只裁定提现；收款账号、绑手机、注销等维持原口径）。 */
+        private const val BUSY_PENDING_OPERATION = "createWithdrawal"
+        private const val BUSY_KIND = "envelope_40901"
+
+        /** [kind] 对 [operationId] 是「同键处理中、原键未结束」（只对提现）。 */
+        fun busyKeepsPending(
+            operationId: String,
+            kind: String,
+        ): Boolean = operationId == BUSY_PENDING_OPERATION && kind == BUSY_KIND
 
         const val NO_ENVELOPE = "no_envelope"
         const val ENVELOPE_SUCCESS = "envelope_success"

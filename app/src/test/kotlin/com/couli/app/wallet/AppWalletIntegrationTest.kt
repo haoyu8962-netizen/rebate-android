@@ -60,6 +60,7 @@ import com.couli.core.network.MemoryPendingKeyBackend
 import com.couli.core.network.MemorySessionTokens
 import com.couli.core.network.NetworkContext
 import com.couli.core.network.PendingKeyStore
+import com.couli.core.network.PendingTarget
 import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.UpdateRaw
 import com.couli.core.privacy.PrivacyGate
@@ -123,7 +124,7 @@ class AppWalletIntegrationTest {
     val composeRule = createComposeRule()
 
     private val context: Context = ApplicationProvider.getApplicationContext()
-    private val now = OffsetDateTime.parse("2026-10-12T09:45:00+08:00").toInstant().toEpochMilli()
+    private var now = OffsetDateTime.parse("2026-10-12T09:45:00+08:00").toInstant().toEpochMilli()
     private lateinit var server: MockWebServer
     private lateinit var routing: AppRouting
     private lateinit var navController: NavHostController
@@ -1534,21 +1535,73 @@ class AppWalletIntegrationTest {
     }
 
     @Test
-    fun lesson12_neverUnknownKeyEndsOn42901And40901() {
-        launch()
+    fun lesson12_neverUnknownRateLimitedKeyEndsAfterItsCooldown() {
+        // FU-AND-0721：40901 改为原键未决，见 FollowupAnd0721WithdrawTest；这里保留 42901 的新键对照。
+        val writes = WithdrawWrites()
+        launch(wrapApi = writes::wrap)
         openWithdraw()
         typeAmount("10")
+        synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("null", code = 42901).setHeader("Retry-After", "1") } }
+        click(WalletTags.WITHDRAW_SUBMIT)
+        lateResponsesSettled(1, ::isSubmit)
+        assertTrue("42901 的结果已显示", texts("操作太频繁，请稍后再试") > 0)
+        val beforeRetry = synchronized(writes.keys) { writes.keys.toList() }
+        assertEquals("限流结算不自动重发", 1, beforeRetry.size)
+        now += 1_001L
+        advance(1_001L)
+        // 本例只测限流后主动提交，不让额外的 10003 验证重放混入“两次写”的计数。
+        withdrawSucceedsDirectly()
+        click(WalletTags.WITHDRAW_SUBMIT)
+        walletCallsSettled()
+        val afterRetry = synchronized(writes.keys) { writes.keys.toList() }
+        assertEquals("限流到期后主动提交恰好增加一次写", 2, afterRetry.size)
+        assertNotNull("第二次提交必须有幂等键", afterRetry[1])
+        assertTrue("42901 到期后下次点击用新键", afterRetry[1] != beforeRetry.single())
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue(pendingBackend.list("user-one").isEmpty())
+    }
+
+    /** FU-AND-0721 r1：保留 ApiClient + MockWebServer + AppShell 的 40901 待确认与原键重放回归。 */
+    @Test
+    fun fand44_busy40901ThroughTheNetworkStackKeepsTheOriginalPendingKey() {
+        val writes = PendingWithdrawalWrites()
+        launch(wrapApi = writes::wrap)
+        openWithdraw()
+        typeAmount("10")
+        val model = withdrawModel(requireNotNull(navController.currentBackStackEntry))
         synchronized(answers) { answers[WITHDRAW_PATH] = { envelope("null", code = 40901) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { texts("正在处理，请稍候") > 0 }
-        idleUntil { texts("正在处理，请稍候") > 0 }
-        val first = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
-        synchronized(answers) { answers.remove(WITHDRAW_PATH) }
-        click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
+        lateResponsesSettled(1, ::isSubmit)
+        writes.settle(::pump)
+        val original = writes.snapshot()
+        assertEquals("首次提交只写一次", 1, original.size)
+        val key = original.single().second
+        assertNotNull("首次提交有幂等键", key)
+        val pending = pendingBackend.list("user-one").singleOrNull()
+        assertEquals("真实网络管线不能删除 40901 的原键", key, pending?.key)
+        assertEquals("40901 要落成待确认", PendingKeyStore.UNKNOWN, pending?.stateRaw)
+        assertTrue("页面出现原键待确认卡", has(WalletTags.PENDING_CARD))
+        now += 10_000L
+        advance(10_000L)
+        writes.settle(::pump)
+        val afterTime = writes.snapshot()
+        assertEquals("时间经过不自动重发", original, afterTime)
+        typeAndSubmit(model, "11")
+        walletCallsSettled()
+        writes.settle(::pump)
+        val attempted = writes.snapshot()
+        assertEquals("普通提交入口不能绕过待确认、发新键", original, attempted)
+        withdrawSucceedsDirectly()
+        click(WalletTags.PENDING_CONFIRM)
+        writes.settle(::pump)
+        walletCallsSettled()
+        val confirmed = writes.snapshot()
+        assertEquals("用户确认恰好原键重放一次", listOf(WITHDRAW_OPERATION to key, "confirm:$WITHDRAW_OPERATION" to key), confirmed)
         idleUntil { top()?.name == "WithdrawRecords" }
-        assertTrue("40901 后下次点击用新键", header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != first)
-        assertTrue(pendingBackend.list("user-one").isEmpty())
+        tryResubmit(model)
+        writes.settle(::pump)
+        val afterSuccess = writes.snapshot()
+        assertEquals("原键成功后不能再写", confirmed, afterSuccess)
     }
 
     @Test
@@ -2002,6 +2055,49 @@ class AppWalletIntegrationTest {
                     val result = inner.send(call)
                     hold?.await()
                     return result
+                }
+            }
+    }
+
+    /** 提交、确认、放弃都在端口入口同步记账；结算采用 FlowLedger，不看 HTTP 层是否已经写出。 */
+    private class PendingWithdrawalWrites {
+        private val calls = mutableListOf<Pair<String, String?>>()
+        private val ledger = FlowLedger()
+
+        fun snapshot(): List<Pair<String, String?>> = synchronized(calls) { calls.toList() }
+
+        fun settle(pump: () -> Unit) {
+            FlowWait.until(pump) { ledger.started { true } == ledger.settled { true } }
+            pump()
+        }
+
+        fun wrap(inner: WalletApi): WalletApi =
+            object : WalletApi by inner {
+                override suspend fun send(call: ApiCall): ApiResult {
+                    if (call.operationId != WITHDRAW_OPERATION) return inner.send(call)
+                    synchronized(calls) { calls += call.operationId to call.idempotencyKey }
+                    return ledger.around(call) { inner.send(call) }
+                }
+
+                override suspend fun confirmPending(
+                    operationId: String,
+                    stepUpToken: String?,
+                    target: PendingTarget,
+                ): ApiResult {
+                    synchronized(calls) { calls += "confirm:$operationId" to target.key }
+                    return ledger.around(ApiCall("confirm:$operationId", idempotencyKey = target.key)) {
+                        inner.confirmPending(operationId, stepUpToken, target)
+                    }
+                }
+
+                override suspend fun abandonPending(
+                    operationId: String,
+                    target: PendingTarget,
+                ): ApiResult {
+                    synchronized(calls) { calls += "abandon:$operationId" to target.key }
+                    return ledger.around(ApiCall("abandon:$operationId", idempotencyKey = target.key)) {
+                        inner.abandonPending(operationId, target)
+                    }
                 }
             }
     }
