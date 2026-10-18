@@ -23,6 +23,7 @@ import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardTitlePolicy
 import com.couli.core.clipboard.ClipboardWatcher
 import com.couli.core.clipboard.ClipboardWriter
+import com.couli.core.clipboard.ImportPreferenceStore
 import com.couli.core.clipboard.InviteConfirmAction
 import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.ParseAction
@@ -82,6 +83,16 @@ data class ClipboardPrompt(
     val share: Boolean = false,
 )
 
+/** 要显示的首次用途弹层（[source]：回前台的可读取场景 / 设置页打开开关）。 */
+data class ClipboardConsentNotice(
+    val source: String,
+) {
+    companion object {
+        const val SOURCE_FOREGROUND = "foreground"
+        const val SOURCE_SETTINGS = "settings"
+    }
+}
+
 /**
  * parse 或手动粘贴之后要在发起页上显示的东西（只在发起页仍是当前页时显示）。
  * [id]：每次发布自增的唯一编号（APP-07 共性第 26 条）。内容相同的两次结果编号不同，StateFlow 不会把它们合并；界面回调带渲染时的
@@ -132,7 +143,7 @@ sealed interface ClipboardResult {
  * 剪贴板识别的 App 接线（APP-07；brief §2；BR-ID-16、BR-INV-04；03 §4.6）：
  * - 读取时机（[watcher]）：MainActivity 的生命周期入口 [onForeground] / [onBackground] / [onWindowFocus]；前提由 [readState] 现取：本机已同意当前
  *   版本隐私政策、配置开关 clipboard.enabled.android 不为 false（G05）、当前路由与浮层不在敏感清单、栈顶网页容器没有经 setAutoDetect(false)
- *   抑制（G06）、设备级开关开启；另外只在首页 Tab 根页读（提示条只在首页显示，别的页面读了也不提示——不读，TODO(N-30) rule-gaps A01）；
+ *   抑制（G06）、设备级开关开启且功能同意版本有效（FU-AND-0722；没看过当前版本的用途弹层时首页根页出弹层、本轮不读）；另外只在首页 Tab 根页读（提示条只在首页显示，别的页面读了也不提示——不读，TODO(N-30) rule-gaps A01）；
  * - 读到的原文只在内存里分类（[ClipboardClassifier]），立刻丢弃，只留抽出的片段（uploadText / 邀请码）与 hash；
  * - 提示条与请求绑定：前台轮次、首页世代、隐私与环境世代、会话世代（[Ticket]）；用户主动粘贴的请求绑定发起页与界面世代（[screenGen]：
  *   页面被覆盖、出栈、切 Tab、敏感浮层出现时同步加 1，回到同一页面实例也不恢复，A-R1-02）。点击、发请求、结果回来，每次等待之后复核
@@ -158,8 +169,18 @@ class AppClipboard(
     private val clock: () -> Long = System::currentTimeMillis,
     /** 本机盐的随机源（FU-CLIP C3：生产为系统 CSPRNG；测试注入样例字节）。 */
     randomSalt: () -> ByteArray = ::secureSalt,
+    /** 开关与功能同意的本机状态（FU-AND-0722；设备级，与 [prefs] 同一偏好文件）。 */
+    private val importPreferences: ImportPreferenceStore = prefs.importPreferences(clock),
+    /**
+     * 开关关闭的同步通知（G20：立即生效）：在本机已置关、[autoSwitch] 已更新之后调。留给 ImportCoordinator（FU-AND-0723）撤销在途的自动任务。
+     */
+    private val onAutoReadDisabled: () -> Unit = {},
+    /** 撤回隐私同意的同步通知（R06/R16）：本机开关与功能同意已清、[autoSwitch] 已置关之后调；隐私政策升级（NOT_DECIDED）不调。留给 0723。 */
+    private val onImportConsentWithdrawn: () -> Unit = {},
+    /** 本组件的有限工作（parse、限流计时等）跑在这里；常驻订阅不放这里（测试据此等待结算）。 */
+    workScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = workScope
 
     /** 去重与自写记录（FU-CLIP C3）：只存本机盐的 HMAC 指纹与时间（盐经 Keystore 包裹存在 [ClipboardPreferences.salt]）。 */
     val records = ClipboardRecords(prefs.hashes, prefs.salt, clock, randomSalt)
@@ -283,10 +304,30 @@ class AppClipboard(
         mutableBusy.value = false
     }
 
-    private val mutableAutoSwitch = MutableStateFlow(prefs.autoDetect)
+    private val mutableAutoSwitch = MutableStateFlow(importPreferences.snapshot().enabled == true)
 
-    /** 设备级开关「打开 App 自动识别剪贴板」（默认开启）。 */
+    /**
+     * 设备级开关「打开 App 自动识别剪贴板」此刻是否为开（BR-ID-16 新版：默认关；未选择、关都为 false）。功能同意版本失效时开关原值保留（R05），
+     * 是否真的自动读另看 [autoReadAllowed]。
+     */
     val autoSwitch: StateFlow<Boolean> = mutableAutoSwitch.asStateFlow()
+
+    private val mutableConsentNotice = MutableStateFlow<ClipboardConsentNotice?>(null)
+
+    /** 首次用途说明弹层（R02）：非 null 时由外壳（AppShell）显示 ClipboardNotice；【开启】→ [onNoticeEnable]，【暂不开启】/ 返回 → [onNoticeNotNow]。 */
+    val consentNotice: StateFlow<ClipboardConsentNotice?> = mutableConsentNotice.asStateFlow()
+
+    /**
+     * 外壳此刻有别的弹窗（可关闭的更新提示等，G22）：外壳接线时给。用途弹层排在它之后——回前台时它在就先等（本轮不读），它关掉后本轮仍在首页根页
+     * 就接着出（G31 修正）；用途弹层显示期间它晚到，用途弹层收起让位。它的显示状态一变，外壳就调 [onDialogsChanged]。
+     */
+    var otherDialogShowing: () -> Boolean = { false }
+
+    /** 设置来源的用途弹层出现时所在的页面（[currentOrigin]）：页面一变（被覆盖、出栈、切走）就收起。 */
+    private var noticeOrigin: String? = null
+
+    /** 回前台那轮该出用途弹层、但被更新提示等挡住或被收起让位：记下轮次，同一轮里挡的东西没了再出（G22、G31）。 */
+    private var deferredNoticeRound: Long? = null
 
     /** 手动粘贴的请求世代：作废时加 1，旧请求的归属随之失效。 */
     private var manualGen = 0L
@@ -357,6 +398,8 @@ class AppClipboard(
         cold: Boolean,
         hasFocus: Boolean,
     ) {
+        // G42：回前台立即补试还没落盘的关闭 / 撤回 / 入队（只写此刻最新的意图），不等退避；在判定读取之前，失败也不影响本轮
+        importPreferences.flushPendingWrites()
         dropLegacy()
         watcher.onForeground(cold, hasFocus)
         publish()
@@ -367,6 +410,7 @@ class AppClipboard(
     /** ON_STOP（配置变更重建不调）：作废未点击的提示条、在途读取与 parse、结果提示。 */
     fun onBackground() {
         watcher.onBackground()
+        deferredNoticeRound = null
         invalidateAll()
     }
 
@@ -474,6 +518,8 @@ class AppClipboard(
         if (mutableResult.value?.origin != origin) mutableResult.value = null
         // 分享已经回首页：到达首页 Tab 根页时再出提示条，身份按此刻一次取定（共性第 7 条）
         presentShare()
+        // 用途弹层随界面让位或恢复（G22）：首页来源离开首页根页、设置来源离开设置页（敏感页、强更页推入）即收起
+        reviewConsentNotice()
     }
 
     /**
@@ -481,6 +527,8 @@ class AppClipboard(
      * 浮层关闭后旧请求也不恢复（A-R1-04）。
      */
     fun onSensitiveOverlay() {
+        // 用途弹层不压在敏感浮层上（G22，首页与设置两种来源）：收起，不记看过、不入队；浮层关了以后同一轮里可以再出
+        yieldConsentNotice()
         // 暂存与正回首页的系统分享同步作废（R1-02）
         pageGen += 1
         pendingShare = null
@@ -495,11 +543,32 @@ class AppClipboard(
 
     // ---------------------------------------------------------------- 作废出口
 
-    /** 隐私结论变化：不再是已同意（撤回、基本模式）时作废全部，并清掉本机的自写记录与提示记录（BR-ID-13 思路，brief §0）。 */
-    fun onPrivacyChanged(state: PrivacyState) {
+    /**
+     * 隐私结论变化：不再是已同意（撤回、基本模式）时作废全部，并清掉本机的自写记录与提示记录（BR-ID-13 思路，brief §0）。
+     * [withdrawn]：这次变化是真实的「撤回隐私同意」（[connect] 按「已同意 → 基本模式」认定）——只有它清功能同意、通知撤回钩子；首启或隐私政策升级后
+     * 选【仍不同意】进入基本模式、政策升级转入未决定都不清（BR-ID-16「政策升级不清功能同意」，口径修正推翻 G33）。
+     */
+    fun onPrivacyChanged(
+        state: PrivacyState,
+        withdrawn: Boolean = false,
+    ) {
         if (state == PrivacyState.CONSENTED) return
+        // 首启弹窗（含隐私政策升级）在前：用途弹层先收起，同一轮不再补出
+        mutableConsentNotice.value = null
+        deferredNoticeRound = null
         invalidateAll()
         clearRecords()
+        if (withdrawn) withdrawImportConsent()
+    }
+
+    /**
+     * 撤回隐私同意（R06）：同步清本机开关、功能同意与看过弹层（待上报队列保留，G26；写盘失败时内存里也已清、不许读，并自动重试，G35），置关后
+     * 通知撤回钩子。确认落盘与失败重试另由 CredentialCleanerRegistry 登记的 [ClipboardPreferences.clearHashes] 负责。
+     */
+    private fun withdrawImportConsent() {
+        importPreferences.clearOnPrivacyWithdraw()
+        mutableAutoSwitch.value = false
+        onImportConsentWithdrawn()
     }
 
     /**
@@ -607,8 +676,92 @@ class AppClipboard(
             overlay = currentOverlay(),
             configEnabled = configEnabled(),
             webSuppressed = !homeOnTop && topEntryId in suppressedWeb,
-            androidAutoSwitch = mutableAutoSwitch.value,
+            // 开关开且功能同意版本有效才读；还没看过当前版本的用途弹层时也放行到 [autoRead]，由它在可读取场景出弹层或等别的弹窗（不读，R02）
+            androidAutoSwitch = autoReadAllowed() || noticeEligible(),
         )
+
+    /** 当前功能同意版本（config.clipboard.consent_version）；缺键为 null，不用包内常量兜底（G47）。 */
+    fun consentVersion(): String? = ImportPreferenceStore.currentConsentVersion(configData())
+
+    /** 自动读取的开关门槛（R11 ②③）：开关开，且功能同意版本就是当前版本；当前版本缺失时一律不满足（G47）。 */
+    fun autoReadAllowed(): Boolean = importPreferences.isAutoReadAllowed(consentVersion())
+
+    /**
+     * 回前台时该出用途弹层（R02 ①、R04、R05）：已同意隐私、没看过当前版本的弹层、弹层没在显示。用户明确关闭过的也算——版本变了下次进入可读取
+     * 场景就重新弹（BR-ID-16 细则原文，口径修正推翻 G30）。路由、敏感页与浮层、焦点、配置开关由读取判定另查；只在首页根页出（[autoRead]）；
+     * 外壳别的弹窗在时先等（[autoRead]、[reviewConsentNotice]）。
+     */
+    private fun noticeEligible(): Boolean {
+        // 配置缺 consent_version：无版本可记，不出用途弹层（G47）
+        val version = consentVersion() ?: return false
+        return privacy() == PrivacyState.CONSENTED &&
+            mutableConsentNotice.value == null &&
+            !importPreferences.hasSeenNotice(version)
+    }
+
+    /** 别的弹窗、首启弹窗、强更与敏感浮层（G22）都不在：用途弹层此刻可以显示。 */
+    private fun noticeUnobstructed(): Boolean = !otherDialogShowing() && !promptShowing() && overlayClear()
+
+    /**
+     * 外壳的弹窗显示状态变了（可关闭的更新提示出现 / 关闭、强更结论到达，AppShell 接线）：用途弹层让位或在同一轮里接着出（G22、G31）。
+     */
+    fun onDialogsChanged() = reviewConsentNotice()
+
+    /**
+     * 用途弹层显示期间持续让位（口径修正）：首启弹窗、强更、更新提示、敏感浮层出现，或它所在的页面变了（首页来源离开首页根页、设置来源离开
+     * 设置页）就收起——不记看过、不入队；首页来源记下本轮，挡的东西没了且仍在首页根页时同一轮接着出（本轮仍不读，G21）。
+     */
+    private fun reviewConsentNotice() {
+        val notice = mutableConsentNotice.value
+        if (notice == null) {
+            resumeDeferredNotice()
+        } else if (!noticeStays(notice)) {
+            yieldConsentNotice()
+        }
+    }
+
+    /** 正在显示的用途弹层可以留着：仍已同意隐私、没有别的弹窗与敏感浮层、它所在的页面没变。 */
+    private fun noticeStays(notice: ClipboardConsentNotice): Boolean {
+        val onItsPage =
+            when (notice.source) {
+                ClipboardConsentNotice.SOURCE_FOREGROUND -> homeRoot()
+                else -> currentOrigin() == noticeOrigin
+            }
+        return privacy() == PrivacyState.CONSENTED && noticeUnobstructed() && onItsPage
+    }
+
+    /** 被挡住或让位的那一轮还没结束（仍在前台、轮次没变）且又满足回前台出弹层的条件：接着出（本轮仍不读，G21）。 */
+    private fun resumeDeferredNotice() {
+        val round = deferredNoticeRound ?: return
+        val sameRound = watcher.inForeground && watcher.round == round
+        if (!sameRound) deferredNoticeRound = null
+        if (sameRound && foregroundNoticeReady()) {
+            deferredNoticeRound = null
+            showConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND)
+        }
+    }
+
+    /** 与 [autoRead] 出弹层的条件一致：首页根页、本轮不是分享、配置没关自动识别、没有有效同意、该出弹层且没被挡住。 */
+    private fun foregroundNoticeReady(): Boolean {
+        val scene = homeRoot() && !shareInRound() && configEnabled()
+        return scene && !autoReadAllowed() && noticeEligible() && noticeUnobstructed()
+    }
+
+    /** 收起用途弹层让位（不是用户选择：不记看过、不入队）；首页来源的本轮仍可在同一轮里恢复。 */
+    private fun yieldConsentNotice() {
+        val notice = mutableConsentNotice.value ?: return
+        mutableConsentNotice.value = null
+        noticeOrigin = null
+        if (notice.source == ClipboardConsentNotice.SOURCE_FOREGROUND && watcher.inForeground) deferredNoticeRound = watcher.round
+    }
+
+    private fun showConsentNotice(source: String) {
+        noticeOrigin = currentOrigin()
+        mutableConsentNotice.value = ClipboardConsentNotice(source)
+    }
+
+    /** 用户刚从别的 App 分享过来（暂存、正回首页或分享提示条显示中）：这一轮前台不读剪贴板，也不出用途弹层（AS04）。 */
+    private fun shareInRound(): Boolean = pendingShare != null || awaitingShare != null || ticket?.scene == ShareImportAction.SCENE_SHARE
 
     /** 回前台后第一次获得焦点：读 1 次（只在首页根页），读到的原文立即分类后丢弃。 */
     @Suppress("ReturnCount") // 不在首页、分享优先、读取结果
@@ -616,7 +769,15 @@ class AppClipboard(
         // TODO(N-30) rule-gaps A01：提示条只在首页根页显示，别的页面上回前台不读（读了也不会提示）
         if (!homeRoot()) return WatcherReadOutcome.DONE
         // 用户刚从别的 App 分享过来（暂存、正回首页或分享提示条显示中）：这一次前台不再读剪贴板，不用剪贴板提示条替换分享（AS04）
-        if (pendingShare != null || awaitingShare != null || ticket?.scene == ShareImportAction.SCENE_SHARE) return WatcherReadOutcome.DONE
+        if (shareInRound()) return WatcherReadOutcome.DONE
+        // 没有有效功能同意：不读；没看过当前版本的弹层就出弹层（别的弹窗在时先等，它关掉后同一轮接着出）。弹层出现即用掉本轮，点【开启】后本轮
+        // 也不补读（G21）
+        if (!autoReadAllowed()) {
+            if (noticeEligible()) {
+                if (noticeUnobstructed()) showConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND) else deferredNoticeRound = round
+            }
+            return WatcherReadOutcome.DONE
+        }
         return when (val read = system.read()) {
             ClipRead.Unavailable -> {
                 WatcherReadOutcome.UNAVAILABLE
@@ -1395,10 +1556,58 @@ class AppClipboard(
 
     // ---------------------------------------------------------------- 设置
 
-    /** 设置页开关（设备级，存本机；登录、退出、换账号都不改它）。 */
+    /**
+     * 设置页开关（设备级，存本机；登录、退出、换账号都不改它）。打开：功能同意版本仍有效时直接开（G20，不再弹层、不重复上报）；否则先出用途弹层，
+     * 点【开启】才开（R02 ②）。关闭：立即置关并同步通知 [onAutoReadDisabled]（G20），只改本机，不写撤回记录。
+     */
     fun setAutoSwitch(enabled: Boolean) {
-        prefs.autoDetect = enabled
-        mutableAutoSwitch.value = enabled
+        if (!enabled) {
+            // 写盘失败也立即按关闭生效（不读），store 自动重试落盘（G35）
+            importPreferences.setOff()
+            mutableAutoSwitch.value = false
+            onAutoReadDisabled()
+            return
+        }
+        val version = consentVersion()
+        if (version == null) {
+            // 配置缺 consent_version（G47）：开关可拨，只记本机开关；不写功能同意、不入队、不弹层，门槛②不满足、不读。写盘失败已回滚（G35）
+            mutableAutoSwitch.value = importPreferences.switchOnWithoutConsent() || importPreferences.snapshot().enabled == true
+        } else if (importPreferences.hasValidConsent(version)) {
+            // 写盘失败：store 已回滚，开关保持原样，用户可再点（G35）
+            mutableAutoSwitch.value = importPreferences.enable(version) || importPreferences.snapshot().enabled == true
+        } else if (mutableConsentNotice.value == null && noticeUnobstructed()) {
+            showConsentNotice(ClipboardConsentNotice.SOURCE_SETTINGS)
+        }
+    }
+
+    /**
+     * 用途弹层【开启】（R03）：写当前版本、点击时刻、开，并把设备级同意记录入待上报队列（不发请求，G03）；本轮不补读（G21）。写盘失败（G35）：
+     * store 已回滚为点击前的状态（不读、不入队），弹层留着让用户再点，不自动重试开启。
+     */
+    fun onNoticeEnable() {
+        if (mutableConsentNotice.value == null) return
+        // 弹层显示期间版本被撤掉（G47）：无版本可记，收起弹层，不写同意、不记看过、不入队
+        val version = consentVersion() ?: return closeNotice()
+        if (importPreferences.enable(version)) {
+            closeNotice()
+            mutableAutoSwitch.value = true
+        } else {
+            mutableAutoSwitch.value = importPreferences.snapshot().enabled == true
+        }
+    }
+
+    /** 用途弹层【暂不开启】、返回键或点外部（R04、G27）：只记看过当前版本，保持原选择，不读（写盘失败时内存里已记，store 自动重试）。 */
+    fun onNoticeNotNow() {
+        if (mutableConsentNotice.value == null) return
+        closeNotice()
+        // 配置缺 consent_version 时无版本可记（G47）：只收起
+        consentVersion()?.let(importPreferences::markNoticeSeen)
+    }
+
+    /** 收起用途弹层（选择本身由调用方记录或不记）。 */
+    private fun closeNotice() {
+        mutableConsentNotice.value = null
+        noticeOrigin = null
     }
 
     private fun JsonObject.text(name: String): String? =
@@ -1466,7 +1675,13 @@ fun AppClipboard.connect(
     routing: AppRouting,
     cleaners: EnvironmentSwitchCleanerRegistry?,
 ) {
-    privacy.onConclusionChanged { onPrivacyChanged(it) }
+    // 真实撤回 = 已同意 → 基本模式（PrivacyGate.withdraw，含冷启动补完被打断的撤回）；首启 / 政策升级后【仍不同意】是未决定 → 基本模式，不算撤回
+    var last = privacy.conclusion
+    privacy.onConclusionChanged { next ->
+        val withdrawn = last == PrivacyState.CONSENTED && next == PrivacyState.BASIC_MODE
+        last = next
+        onPrivacyChanged(next, withdrawn)
+    }
     if (privacy.conclusion != PrivacyState.CONSENTED) clearRecords()
     // 切换环境：同步作废（在任何等待之前）
     cleaners?.register { _, _ -> onEnvironmentSwitched() }

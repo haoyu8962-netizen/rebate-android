@@ -42,12 +42,12 @@ class ClipboardSaltStoreTest {
         assertArrayEquals(SAMPLE_SALT, (prefs.salt.read() as ClipboardSaltRead.Present).salt)
         assertTrue(prefs.hashes.write(ClipboardRecords.KEY_SELF, "样例指纹"))
         assertTrue(prefs.hashes.write(ClipboardRecords.KEY_SALT_ID, "样例盐编号"))
-        prefs.autoDetect = false
-        // AppModule 的撤回清理项（不带密钥也能删）
-        ClipboardPreferences(context).clearHashes()
+        assertTrue(raw().edit().putBoolean("device_auto_detect", true).commit())
+        // AppModule 的撤回清理项；在预种旧键的同一实例上执行，避免构造迁移抢先删除
+        prefs.clearHashes()
         assertFalse("盐已删", raw().contains(ClipboardPreferences.KEY_SALT))
         assertTrue("记录与 saltId 已删", raw().all.keys.none { it.startsWith("hash.") })
-        assertFalse("设备级开关不在清理范围", ClipboardPreferences(context).autoDetect)
+        assertFalse("FU-AND-0722 R06：撤回不能留下旧开关", raw().contains("device_auto_detect"))
     }
 
     @Test

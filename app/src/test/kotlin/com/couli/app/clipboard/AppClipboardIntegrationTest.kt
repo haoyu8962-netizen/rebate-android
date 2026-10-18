@@ -54,6 +54,7 @@ import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.ClipboardFingerprint
 import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardUi
+import com.couli.core.clipboard.ImportPreferenceStore
 import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.SystemClipboard
 import com.couli.core.config.CouliPreferenceNamespaces
@@ -140,6 +141,7 @@ class AppClipboardIntegrationTest {
     private lateinit var privacy: AppPrivacy
     private lateinit var routing: AppRouting
     private lateinit var clipboard: AppClipboard
+    private lateinit var importPreferences: ImportPreferenceStore
     private lateinit var navController: NavHostController
     private lateinit var login: AppLogin
     private val system = FakeClipboard()
@@ -280,7 +282,9 @@ class AppClipboardIntegrationTest {
         session: SessionState = SessionState.GUEST,
         withTrade: Boolean = false,
         config: String = CONFIG,
+        autoReadEnabled: Boolean? = true,
     ) {
+        importPreferences = regressionImportPreferences(context, { now }, autoReadEnabled.takeIf { decision == "consented" })
         val gate =
             PrivacyGate(MemoryStore(decision), clock = { now }, bundledPolicyVersion = "1").apply {
                 // 撤回同意的本地清理（AppModule 的 CredentialCleanerRegistry）：作废在途请求、删 hash 记录
@@ -350,6 +354,7 @@ class AppClipboardIntegrationTest {
                     configData = { Json.parseToJsonElement(config) as JsonObject },
                     // FU-CLIP C3：盐经 Keystore 包裹存储；Robolectric 没有 AndroidKeyStore，注入样例加密与样例盐字节（接线改动，见交回清单）
                     prefs = ClipboardPreferences(context, SampleCipher),
+                    importPreferences = importPreferences,
                     sessionEpoch = { sessionEpoch },
                     clock = { now },
                     randomSalt = { SAMPLE_SALT.copyOf() },
@@ -601,8 +606,7 @@ class AppClipboardIntegrationTest {
 
     @Test
     fun android_switchOffReadsNothingUntilThePasteButtonIsTapped() {
-        prefs().edit().putBoolean("device_auto_detect", false).commit()
-        launch()
+        launch(autoReadEnabled = false)
         copy(LINK)
         foreground(cold = true)
         assertEquals("开关关闭：回前台不读", 0, system.reads)
@@ -644,11 +648,11 @@ class AppClipboardIntegrationTest {
 
     @Test
     fun android_settingsShowsTheSwitchForAConsentedGuest() {
-        launch()
+        launch(autoReadEnabled = null)
         composeRule.runOnUiThread { navController.navigate(RouteDestination(SETTINGS, "{}", readonly = false)) }
         composeRule.waitForIdle()
-        composeRule.onNodeWithTag(ClipboardScreens.SETTINGS_ROW).assertIsDisplayed().performClick()
-        composeRule.waitForIdle()
+        // FU-AND-0722 G01：游客缺省关闭；点击开启先出用途弹层，交给新文件专项覆盖。
+        composeRule.onNodeWithTag(ClipboardScreens.SETTINGS_ROW).assertIsDisplayed()
         assertFalse(clipboard.autoSwitch.value)
         assertFalse(ClipboardPreferences(context).autoDetect)
     }
@@ -929,8 +933,7 @@ class AppClipboardIntegrationTest {
     /** 已同意的游客关掉自动识别，手动粘贴纯邀请落地页：不发 parse，只本地抽码；确认后经 Router 预填登录页，全程不发请求。 */
     @Test
     fun manualPasteOfAPureInviteLinkNeverUploadsAndPrefillsLoginAfterConfirm() {
-        prefs().edit().putBoolean("device_auto_detect", false).commit()
-        launch()
+        launch(autoReadEnabled = false)
         copy("邀请码 K7M2QX https://share.example.test/i/K7M2QX")
         foreground(cold = true)
         assertEquals("开关关闭：回前台不读", 0, system.reads)
@@ -1086,8 +1089,7 @@ class AppClipboardIntegrationTest {
 
     /** 手动粘贴、自动识别关掉、回到前台（parse 的归属要求在前台）。 */
     private fun launchForManualPaste(session: SessionState = SessionState.GUEST) {
-        prefs().edit().putBoolean("device_auto_detect", false).commit()
-        launch(session = session)
+        launch(session = session, autoReadEnabled = false)
         foreground(cold = true)
     }
 
@@ -1131,7 +1133,7 @@ class AppClipboardIntegrationTest {
         assertTrue("旧关闭回调不清掉新结果", clipboard.result.value === second)
         assertFalse("旧回调不按旧结果去搜索", "Search" in routes())
         // 提示条：旧编号的回调不动当前提示
-        prefs().edit().putBoolean("device_auto_detect", true).commit()
+        composeRule.runOnUiThread { importPreferences.enable("1") }
         composeRule.runOnUiThread { clipboard.setAutoSwitch(true) }
         copy(LINK)
         foreground()
@@ -1875,7 +1877,8 @@ class AppClipboardIntegrationTest {
         const val H5_ORIGIN = "https://h5.example.test"
         const val LINK = "https://e.tb.cn/h.AbCdEf?tk=Xy12"
         const val CONFIG =
-            """{"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on"},""" +
+            """{"clipboard":{"consent_version":"1"},""" +
+                """"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on"},""" +
                 """"search_status":{"taobao":"on"}}}"""
         const val WAIT_S = 5L
         const val POLL_MS = 10L
@@ -1889,7 +1892,8 @@ class AppClipboardIntegrationTest {
         const val HTTP_UNAVAILABLE = 503
         const val CHECKS_BEFORE_POP = 100
         const val TWO_PLATFORM_CONFIG =
-            """{"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on","jd":"on"},""" +
+            """{"clipboard":{"consent_version":"1"},""" +
+                """"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on","jd":"on"},""" +
                 """"search_status":{"taobao":"on","jd":"on"}}}"""
     }
 }

@@ -36,9 +36,19 @@ internal object ClipboardDraftTexts {
             "clipboard.login_invite.paste" to "粘贴",
             "clipboard.login_invite.paste_label" to "粘贴邀请码",
             "clipboard.login_invite.not_found" to "未识别到邀请码",
-            // ---- 设置页开关（BR-TEXT-14 表 C settings.clipboard_auto / .desc，契约快照未同步）
+            // ---- 设置页开关（BR-TEXT-14 表 C settings.clipboard_auto / .desc，契约快照未同步；.desc 按 couli #124 2026-10-17 改写，原句作废）
             "settings.clipboard_auto" to "打开 App 自动识别剪贴板",
-            "settings.clipboard_auto.desc" to "打开 App 时识别复制的商品链接，可以随时关闭",
+            "settings.clipboard_auto.desc" to "开启后，在系统支持并允许时回到 App 会自动识别复制的商品链接或口令，否则可以用粘贴入口；可以随时关闭",
+            // ---- 首次用途说明弹层（FU-AND-0722；BR-TEXT-14 表 D clipboard.consent.*，.body 为占位措辞、等法务定稿）
+            "clipboard.consent.title" to "开启回到 App 自动查返利？",
+            "clipboard.consent.body" to
+                "开启后，回到可用页面时会读取剪贴板，在这台设备上提取商品链接、口令或好友邀请码：商品会提交到凑狸的服务查询优惠，" +
+                "邀请码要你确认后才绑定。系统支持并允许时才会自动识别，否则可以用粘贴入口；可以随时在设置里关闭",
+            "clipboard.consent.enable" to "开启",
+            "clipboard.consent.not_now" to "暂不开启",
+            // ---- 粘贴入口（BR-TEXT-14 表 C clipboard.paste_hint / .agent；首页与 AgentChat 的接入在 FU-AND-0724 / 0725）
+            "clipboard.paste_hint" to "粘贴查返利",
+            "clipboard.paste_hint.agent" to "让 AI 查返利",
             // ---- FU-CLIP C6 / C7：系统分享提示条与「上传前可见平台」（K26、K28；TODO(N-34) 待契约补键，提审前替换；与鸿蒙同键同字）
             "clipboard.share_prompt" to "收到分享的{platform_name}商品，查返利？",
             "clipboard.share_prompt.action" to "查返利",

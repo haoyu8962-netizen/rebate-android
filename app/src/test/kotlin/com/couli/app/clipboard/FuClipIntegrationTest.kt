@@ -36,6 +36,7 @@ import com.couli.core.clipboard.ClipboardFingerprint
 import com.couli.core.clipboard.ClipboardRecords
 import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardUi
+import com.couli.core.clipboard.ImportPreferenceStore
 import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.SystemClipboard
 import com.couli.core.config.CouliPreferenceNamespaces
@@ -107,6 +108,7 @@ class FuClipIntegrationTest {
     private lateinit var privacy: AppPrivacy
     private lateinit var routing: AppRouting
     private lateinit var clipboard: AppClipboard
+    private lateinit var importPreferences: ImportPreferenceStore
     private lateinit var navController: NavHostController
     private val system = FakeClipboard()
     private val inFlight = InFlightCalls()
@@ -201,6 +203,7 @@ class FuClipIntegrationTest {
             promptShowing = { privacy.promptShowing },
             configData = { Json.parseToJsonElement(configJson) as JsonObject },
             prefs = ClipboardPreferences(context, cipher),
+            importPreferences = importPreferences,
             sessionEpoch = { sessionEpoch },
             clock = { now },
             randomSalt = { SAMPLE_SALT.copyOf() },
@@ -211,6 +214,7 @@ class FuClipIntegrationTest {
         decision: String = "consented",
         restoration: StateRestorationTester? = null,
     ) {
+        importPreferences = regressionImportPreferences(context, { now }, true.takeIf { decision == "consented" })
         val gate =
             PrivacyGate(MemoryStore(decision), clock = { now }, bundledPolicyVersion = "1").apply {
                 // 撤回同意的本地清理（AppModule 的 CredentialCleanerRegistry 同一个清理项）
@@ -495,6 +499,9 @@ class FuClipIntegrationTest {
         composeRule.runOnUiThread {
             privacy.requestFullFunction()
             privacy.agree()
+            // R06 撤回已清用途同意；此旧 hash 回归显式恢复功能前提，提示条断言不变。
+            importPreferences.enable("1")
+            clipboard.setAutoSwitch(true)
         }
         composeRule.waitForIdle()
         assertEquals(PrivacyState.CONSENTED, privacy.conclusion)
@@ -1048,7 +1055,8 @@ class FuClipIntegrationTest {
         const val SEARCH_PATH = "/v1/products/search"
         const val LINK = "https://e.tb.cn/h.AbCdEf?tk=Xy12"
         const val CONFIG =
-            """{"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on","jd":"on"},""" +
+            """{"clipboard":{"consent_version":"1"},""" +
+                """"share_domains":["share.example.test"],"features":{"flags":{},"platform_status":{"taobao":"on","jd":"on"},""" +
                 """"search_status":{"taobao":"on","jd":"on"}}}"""
         const val WAIT_S = 5L
         const val POLL_MS = 10L

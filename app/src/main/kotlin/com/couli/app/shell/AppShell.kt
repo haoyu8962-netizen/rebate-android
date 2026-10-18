@@ -31,6 +31,7 @@ import com.couli.app.agent.AgentRoute
 import com.couli.app.agent.AgentWithdrawSettingsRow
 import com.couli.app.agent.AppAgent
 import com.couli.app.clipboard.AppClipboard
+import com.couli.app.clipboard.ClipboardConsentHost
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardSettingsRow
 import com.couli.app.clipboard.HomeClipboardArea
@@ -147,6 +148,8 @@ fun AppShell(
     }
     val noUpdate = remember { MutableStateFlow<UpdateUi?>(null) }
     val updateUi by (update?.ui ?: noUpdate).collectAsStateWithLifecycle()
+    // 可关闭的更新提示此刻显示（剪贴板用途弹层排在它之后，G22）
+    val updateDialog = updateUi?.state?.showPrompt == true
     val registry =
         remember(homeContent, update, web, login, search, clipboard, orders, wallet, me, home, agent) {
             RoutePageRegistry(
@@ -277,6 +280,12 @@ fun AppShell(
             onDispose { clipboard.onShellDetached() }
         }
         SideEffect { clipboard.onShell(selection.tab.route, basicShell) }
+        // G22：用途弹层排在可关闭的更新提示与强更之后——它们晚到时用途弹层让位，更新提示关掉后同一轮接着出（G31 修正）
+        DisposableEffect(clipboard, update) {
+            clipboard.otherDialogShowing = { update?.let { it.ui.value.state.showPrompt } == true }
+            onDispose { clipboard.otherDialogShowing = { false } }
+        }
+        LaunchedEffect(clipboard, updateDialog, updateUi?.status) { clipboard.onDialogsChanged() }
     }
 
     // 隐私结论变化（先于 Router 收到通知，AppPrivacy.onConclusionChanged(beforeRouting = true)）：
@@ -388,6 +397,9 @@ fun AppShell(
     if (login != null && !showPrompt) LoginNoticeHost(login) { routing.router.open(inAppRequest(ME_ROUTE)) }
     // 剪贴板 parse / 手动粘贴的结果（轻提示、30132【用商品名搜索】、多卡弹层）：只在发起页仍是当前页时显示
     if (clipboard != null && !showPrompt) ClipboardResultHost(clipboard)
+    // 剪贴板首次用途说明弹层（FU-AND-0722 R02）：排在首启隐私弹窗、强更、更新提示之后（G22）——它们在时不组合；状态上的让位与同轮恢复见 onDialogsChanged
+    val consentNoticeUnblocked = !updateDialog && topRoute != RouteNames.FORCE_UPDATE
+    if (clipboard != null && !showPrompt && consentNoticeUnblocked) ClipboardConsentHost(clipboard)
     // 统一客服出口的半屏、撤回同意落盘失败的提示（APP-12）
     if (me != null && !showPrompt) MeOverlayHost(me)
     // APP-13a G01 ③：10007 cooling 想打开不可用的 DeleteAccount → 只提示 error.10007（不进升级页、不导航）

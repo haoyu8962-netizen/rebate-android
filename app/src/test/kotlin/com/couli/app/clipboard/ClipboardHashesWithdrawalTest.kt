@@ -21,7 +21,7 @@ import org.robolectric.annotation.Config
 
 /**
  * 第 3 轮评审 A-R3-02（APP-03b 共性第 11 条）：撤回同意时剪贴板 hash 的删除要确认落盘（commit() 返回 true）才算成功；没落盘就抛错，
- * 撤回清理保留「待清理」标记，同一进程读凭据前、下次冷启动（新进程）时重试，直到确认删除。设备级开关不在清理范围。
+ * 撤回清理保留「待清理」标记，同一进程读凭据前、下次冷启动（新进程）时重试，直到确认删除。FU-AND-0722 R06：开关也须清除。
  * 生产接线同 AppModule：CredentialCleanerRegistry 里登记 ClipboardPreferences.clearHashes()。
  */
 @RunWith(AndroidJUnit4::class)
@@ -119,7 +119,7 @@ class ClipboardHashesWithdrawalTest {
         assertTrue("重试成功", first.credentialAccess.readable())
         assertTrue("hash 已删除落盘", hashesOnDisk().isEmpty())
         assertFalse("确认删除后才去掉待清理标记", SharedPreferencesPrivacyStore(context).withdrawalCleanupPending)
-        assertFalse("设备级开关不在撤回清理范围", clipboardPrefs.getBoolean("device_auto_detect", true))
+        assertFalse("FU-AND-0722 R06：撤回重试完成后旧开关也被删除", clipboardPrefs.contains("device_auto_detect"))
     }
 
     @Test

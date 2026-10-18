@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import androidx.core.content.edit
 import com.couli.core.clipboard.ClipboardFingerprint
@@ -11,6 +13,9 @@ import com.couli.core.clipboard.ClipboardHashStore
 import com.couli.core.clipboard.ClipboardRecords
 import com.couli.core.clipboard.ClipboardSaltRead
 import com.couli.core.clipboard.ClipboardSaltStore
+import com.couli.core.clipboard.ImportPreferenceBackend
+import com.couli.core.clipboard.ImportPreferenceStore
+import com.couli.core.clipboard.ImportPreferenceWrites
 import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.core.network.AndroidKeystoreCipher
 import com.couli.core.network.EncryptedPreferences
@@ -20,8 +25,9 @@ import kotlinx.serialization.json.JsonObject
 
 /**
  * 剪贴板的本机记录（SharedPreferences [CouliPreferenceNamespaces.CLIPBOARD]，设备级：切换环境、登录、退出、换账号都不清）：
- * - 设备级开关「打开 App 自动识别剪贴板」[autoDetect]（BR-ID-16：默认开启，存本机、不随账号变）。旧版桥 clipboard.setAutoDetect 写在同一个文件的
- *   `auto_detect` 键，那是网页的临时抑制、不是用户的选择（G06），这里不读它；
+ * - 设备级开关「打开 App 自动识别剪贴板」与功能同意（[importPreferences]，BR-ID-16 新版 couli #124：默认关、三态，存本机、不随账号变；FU-AND-0722）。
+ *   旧版的 `device_auto_detect`（缺键当开启的两态开关）一律不认：构造时删除，老用户也要重新做用途同意（R01）。旧版桥 clipboard.setAutoDetect
+ *   写在同一个文件的 `auto_detect` 键，那是网页的临时抑制、不是用户的选择（G06），这里不读它；
  * - hash 记录（[hashes]：自写记录与 24 小时提示记录，FU-CLIP 起只存本机盐的 HMAC 指纹与时间，另记 saltId）与本机盐（[salt]，Keystore 包裹）。
  *   撤回同意时先删盐再删记录（[clearHashes]）；切换环境不清（与记录同一登记，K10）。
  */
@@ -39,6 +45,11 @@ class ClipboardPreferences internal constructor(
         context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.CLIPBOARD, Context.MODE_PRIVATE),
         saltCipher,
     )
+
+    init {
+        // FU-AND-0722 R01：旧两态开关不迁移（true / false 都不算用途同意），直接删；没落盘时撤回清理（[clearHashes]）与下次构造再删
+        if (prefs.contains(KEY_DEVICE_AUTO_DETECT)) prefs.edit { remove(KEY_DEVICE_AUTO_DETECT) }
+    }
 
     private val encrypted: EncryptedPreferences? =
         saltCipher?.let { cipher ->
@@ -83,9 +94,53 @@ class ClipboardPreferences internal constructor(
     @SuppressLint("ApplySharedPref", "UseKtx")
     private fun deleteSalt(): Boolean = runCatching { prefs.edit().remove(KEY_SALT).commit() }.getOrDefault(false)
 
-    var autoDetect: Boolean
-        get() = prefs.getBoolean(KEY_DEVICE_AUTO_DETECT, true)
-        set(value) = prefs.edit { putBoolean(KEY_DEVICE_AUTO_DETECT, value) }
+    /** 开关此刻是否为「开」（未选择、关都为 false；不看功能同意版本是否仍有效）。 */
+    val autoDetect: Boolean get() = importPreferences().snapshot().enabled == true
+
+    /**
+     * 开关与功能同意的本机存储（同一偏好文件，键见 [ImportPreferenceStore]）：同步 commit() 落盘，核对返回值（G35）。每次调用给一个新的视图；
+     * 所有视图共用同一份「还没落盘的意图」与重试（[importWrites]），读到的一致，排队的重试也只有一份。
+     */
+    fun importPreferences(clock: () -> Long = System::currentTimeMillis): ImportPreferenceStore =
+        ImportPreferenceStore(importBackend, clock, writes = importWrites, scheduleDelayedWriteRetry = ::scheduleImportRetry)
+
+    private val importWrites = ImportPreferenceWrites()
+
+    private val importBackend =
+        object : ImportPreferenceBackend {
+            override fun read(key: String): String? = runCatching { prefs.getString(key, null) }.getOrNull()
+
+            @SuppressLint("ApplySharedPref", "UseKtx")
+            override fun write(changes: Map<String, String?>): Boolean {
+                val editor = prefs.edit()
+                changes.forEach { (key, value) -> if (value == null) editor.remove(key) else editor.putString(key, value) }
+                return runCatching { editor.commit() }.getOrDefault(false)
+            }
+        }
+
+    /** 已排队、还没执行完的开关 / 功能同意写盘重试（主线程 Looper；测试与诊断观测用，只读）。 */
+    internal var pendingImportWriteRetries: Int = 0
+        private set
+
+    private val importRetryHandler by lazy { Handler(Looper.getMainLooper()) }
+
+    /** 按 store 给的退避延时（G42：2 秒起翻倍、封顶 5 分钟）排到主线程。 */
+    private fun scheduleImportRetry(
+        delayMillis: Long,
+        task: () -> Unit,
+    ) {
+        pendingImportWriteRetries += 1
+        importRetryHandler.postDelayed(
+            {
+                try {
+                    task()
+                } finally {
+                    pendingImportWriteRetries -= 1
+                }
+            },
+            delayMillis,
+        )
+    }
 
     val hashes: ClipboardHashStore =
         object : ClipboardHashStore {
@@ -107,7 +162,8 @@ class ClipboardPreferences internal constructor(
         }
 
     /**
-     * 撤回同意的本地清理（CredentialCleanerRegistry 登记）：只删 hash 记录，设备级开关保留（BR-ID-16）。同步落盘并核对 commit() 的返回值
+     * 撤回同意的本地清理（CredentialCleanerRegistry 登记）：删 hash 记录，并清掉开关、功能同意与「已看过弹层」（FU-AND-0722 R06）与旧开关键；
+     * 功能同意的待上报队列保留、继续补报（G26）。同步落盘并核对 commit() 的返回值
      * （A-R3-02，APP-03b 共性第 11 条）：没落盘就抛错，撤回清理据此保留「待清理」标记，冷启动、读凭据前再重试；只有确认删除落盘才算成功。
      * 不用 KTX 的 edit(commit = true)：它丢掉 commit() 的返回值，所以直接用 Editor（UseKtx 不适用）。
      */
@@ -120,7 +176,11 @@ class ClipboardPreferences internal constructor(
         (KNOWN_RECORD_KEYS.map { HASH_PREFIX + it } + prefs.all.keys.filter { it.startsWith(HASH_PREFIX) })
             .toSet()
             .forEach(editor::remove)
+        // 同一次提交：开关、功能同意、看过弹层（R06）与旧两态开关键
+        (ImportPreferenceStore.LOCAL_STATE_KEYS + KEY_DEVICE_AUTO_DETECT).forEach(editor::remove)
         check(editor.commit()) { "剪贴板 hash 记录删除未落盘" }
+        // 已确认删除：之前没落盘的开关 / 同意意图作废，排队的重试不能再把它们写回来（G35）
+        importWrites.forget(ImportPreferenceStore.LOCAL_STATE_KEYS)
     }
 
     companion object {

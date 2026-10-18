@@ -276,18 +276,18 @@ fun UpdatePromptDialog(
 ) {
     val notes = ui.result?.updateNotes?.takeIf { it.isNotBlank() } ?: UpdateTexts.text(UpdateTexts.TOO_OLD)
     val message = if (ui.promptUnavailable) notes + "\n\n" + UpdateTexts.text(UpdateTexts.UNAVAILABLE) else notes
-    Box(modifier = Modifier.testTag(UPDATE_PROMPT_TAG)) {
-        CouliDialog(
-            title = ui.result?.updateTitle?.takeIf { it.isNotBlank() } ?: UpdateDraftTexts.forceTitle(ui.state.targetVersion),
-            message = message,
-            confirmText = UpdateTexts.text(UpdateTexts.GO_STORE),
-            onConfirm = onGoStore,
-            dismissText = UpdateTexts.text(UpdateTexts.LATER),
-            onDismiss = onLater,
-            onDismissRequest = {},
-            dismissible = false,
-        )
-    }
+    // 测试标记挂在弹窗窗口里的内容根节点上（外层包一层 Box 只会得到 0 尺寸的占位，判定不了「显示」，FU-AND-0722 G36）
+    CouliDialog(
+        title = ui.result?.updateTitle?.takeIf { it.isNotBlank() } ?: UpdateDraftTexts.forceTitle(ui.state.targetVersion),
+        message = message,
+        confirmText = UpdateTexts.text(UpdateTexts.GO_STORE),
+        onConfirm = onGoStore,
+        modifier = Modifier.testTag(UPDATE_PROMPT_TAG),
+        dismissText = UpdateTexts.text(UpdateTexts.LATER),
+        onDismiss = onLater,
+        onDismissRequest = {},
+        dismissible = false,
+    )
 }
 
 private val BRAND_TILE_SIZE = 80.dp

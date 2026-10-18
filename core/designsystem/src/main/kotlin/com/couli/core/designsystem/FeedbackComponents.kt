@@ -265,6 +265,8 @@ fun CouliDialog(
     confirmText: String,
     onConfirm: () -> Unit,
     onDismissRequest: () -> Unit,
+    /** 弹窗内容根节点的修饰（如测试标记）。 */
+    modifier: Modifier = Modifier,
     message: String? = null,
     dismissText: String? = null,
     onDismiss: () -> Unit = onDismissRequest,
@@ -301,6 +303,7 @@ fun CouliDialog(
                 message = message,
                 confirmText = confirmText,
                 onConfirm = onConfirm,
+                modifier = modifier,
                 dismissText = dismissText,
                 onDismiss = onDismiss,
                 titleFocus = titleFocus,
