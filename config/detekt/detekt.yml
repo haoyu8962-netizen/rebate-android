@@ -51,6 +51,8 @@ complexity:
       # APP-10b 的 Agent 传输向量测试同样由 Codex 先写、本仓库不改
       - '**/core/agent/src/test/kotlin/com/couli/core/agent/AgentTransportVectorTest.kt'
       - '**/core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt'
+      # FU-AND-0723 的协调器撤销矩阵测试由 Codex 先写、本仓库不改
+      - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ImportCancellation0723Test.kt'
   NestedBlockDepth:
     excludes:
       - '**/core/config/src/test/kotlin/com/couli/core/clientcore/ClientCoreVectorTest.kt'
@@ -98,6 +100,9 @@ style:
     excludes: ['**/core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateVectorTest.kt']
   MaxLineLength:
     maxLineLength: 140
+    # FU-AND-0723 的协调器测试由 Codex 先写、本仓库不改：只对这一个文件放宽这一条
+    excludes:
+      - '**/core/clipboard/src/test/kotlin/com/couli/core/clipboard/ImportCoordinator0723Test.kt'
   MagicNumber:
     excludes: ['**/test/**', '**/testDebug/**', '**/androidTest/**', '**/*.kts']
   ForbiddenImport:

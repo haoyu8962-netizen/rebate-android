@@ -2,8 +2,7 @@
  * 实现前测试；只读输出，未编译运行。
  *
  * 接线约定：以下类型位于 com.couli.core.clipboard。
- * - ClipboardReadPolicy.decide(platform: String, state: JsonObject)
- *   -> { actionRaw: String, reasonRaw: String? }。
+ * - 旧 readPolicy 已作废；FU-AND-0723 的 ImportGate0723VectorTest 接管读取门槛。
  * - InviteCodeExtractor.extract(text: String): String?。
  * - ClipboardRules.defaults。
  * - ClipboardClassifier.classify(text: String, context: ClipboardContext,
@@ -29,8 +28,6 @@
  * - InviteConfirmAction.decide(session: String, me: JsonObject?)
  *   -> { actionRaw: String }；me 为题定邀请状态投影。
  * - expect 缺字段不判定，显式 null 必须无值。
- * - neutralState 只补向量规定的中性前提，不测试生产配置默认值；
- *   显式值覆盖补值，iosDetectHit 缺失保持缺失。
  * - 所有平台行都执行；每行独立 hash/ledger；nowMs 固定为毫秒。
  *   prompted.agoMs 转成 nowMs-agoMs，测试不实现业务判定。
  * - 模块复用仓库已有 JUnit4、kotlinx.serialization.json 测试依赖。
@@ -45,13 +42,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
-import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -61,7 +56,6 @@ class ClipboardVectorTest {
 
     private val groups =
         listOf(
-            "readPolicy",
             "inviteExtract",
             "classify",
             "writeLedger",
@@ -116,18 +110,10 @@ class ClipboardVectorTest {
     }
 
     @Test
-    fun readPolicyVectors() {
-        each("readPolicy") { row, expected, label ->
-            val platform = row.text("platform")
-            val actual =
-                ClipboardReadPolicy.decide(
-                    platform = platform,
-                    state = neutralState(platform, row.getValue("state").jsonObject),
-                )
-
-            assertEquals("$label.actionRaw", expected.text("actionRaw"), actual.actionRaw)
-            assertText(expected, "reasonRaw", actual.reasonRaw, label)
-        }
+    fun legacyReadPolicyIsExplicitlyObsolete() {
+        val status = vectors.getValue("readPolicyStatus").jsonObject
+        assertEquals("obsolete", status.text("status"))
+        assertEquals("importGate", status.text("replacedBy"))
     }
 
     @Test
@@ -256,27 +242,6 @@ class ClipboardVectorTest {
             assertEquals(label, expected.text("actionRaw"), actual.actionRaw)
         }
     }
-
-    private fun neutralState(
-        platform: String,
-        raw: JsonObject,
-    ): JsonObject =
-        buildJsonObject {
-            put("overlay", "none")
-            put("configEnabled", true)
-            put("webSuppressed", false)
-            put("readThisForeground", false)
-            if (platform == "ios") {
-                put("iosChangeCountChanged", true)
-            }
-            if (platform == "android") {
-                put("androidAutoSwitch", true)
-                put("androidWindowFocused", true)
-            }
-            for ((key, value) in raw) {
-                put(key, value)
-            }
-        }
 
     private fun each(
         group: String,
