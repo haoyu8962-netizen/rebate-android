@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 品牌 Logo 主图形（BRAND-01）：由规划仓库 design/logo/source/logo-mark.svg 经 Svg2Vector 转换；固有尺寸按 256 画布等比设为 48dp。浅色底用。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+  <path
+      android:pathData="M69,89 L79,45Q81,37 87,42L110,60Q126,51 145,54L161,38Q168,31 171,40L180,73C198,91 194,111 175,121 157,130 134,126 115,119 97,112 89,119 83,132 70,163 91,193 122,194 142,195 161,184 172,170L203,189C183,216 154,229 120,226 67,223 29,184 33,139 35,114 50,99 69,89ZM181,144Q184,134 195,136C207,138 214,150 210,164L207,174 178,158Z"
+      android:fillColor="#C44820"/>
+</vector>

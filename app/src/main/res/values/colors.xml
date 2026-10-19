@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 窗口底色与启动图标底色。取值同令牌 color.background.canvas / color.brand.primary（XML 资源不能引用生成的 Kotlin 常量）。 -->
+    <!-- 窗口底色与启动图标底色。取值同令牌 color.background.canvas / color.brand.primary（XML 资源不能引用生成的 Kotlin 常量）；
+         启动图标底色也就是品牌图标背景层 design/app-icon/layers/background.svg 的色值（BRAND-01）。 -->
     <color name="couli_window_background">#F2EEE6</color>
     <color name="couli_launcher_background">#C44820</color>
 </resources>

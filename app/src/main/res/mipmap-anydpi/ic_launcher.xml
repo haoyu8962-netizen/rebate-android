@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 图标占位：品牌色底 + 白色圆形。正式图标素材到位后替换。 -->
+<!--
+    品牌自适应图标（BRAND-01）。素材源：规划仓库 design/app-icon/layers/（background.svg、adaptive-foreground.svg、monochrome.svg）。
+    - 背景：纯色 #C44820（= layers/background.svg 的满画布色块，资源 couli_launcher_background）；
+    - 前景：白色主体，全部像素在中央 66/108 安全圆内（design/app-icon/README.md）；
+    - 单色：Android 13+ 主题图标用，系统只取透明度并按壁纸着色。
+    minSdk 26 起所有系统都支持自适应图标，不再需要旧式按密度的 mipmap PNG；也不单独提供 roundIcon——
+    启动器对自适应图标统一套遮罩（圆形启动器得到的就是圆形）。
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/couli_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>
