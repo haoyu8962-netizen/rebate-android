@@ -311,7 +311,9 @@ private const val STYLE_DARK = "dark"
 private const val DOWNLOAD_BLOCKED = "external_page.download_blocked"
 private const val DOWNLOAD_UNSUPPORTED = "external_page.download_unsupported"
 private val TOP_AND_SIDES = WindowInsetsSides.Top + WindowInsetsSides.Horizontal
-private val DEFAULT_BAR: List<Color> get() = listOf(CouliColors.backgroundCanvas)
+private val DEFAULT_BAR: List<Color>
+    @androidx.compose.runtime.Composable @androidx.compose.runtime.ReadOnlyComposable
+    get() = listOf(CouliColors.backgroundCanvas)
 
 /** 第三方页容器一个路由实例保留的状态（[WebContainerHolder]）。 */
 internal class ExternalWebHolder : WebContainerHolder() {

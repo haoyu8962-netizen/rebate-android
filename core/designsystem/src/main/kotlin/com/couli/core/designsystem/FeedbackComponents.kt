@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -282,6 +283,7 @@ fun CouliDialog(
     confirmTag: String? = null,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
+    val fontScale = callerFontScale()
     Dialog(
         onDismissRequest = onDismissRequest,
         properties =
@@ -292,26 +294,28 @@ fun CouliDialog(
             ),
     ) {
         // 可视区域（扣除安全区）四周各留 24：弹窗高度不会超过窗口，正文在弹窗内滚动
-        Box(
-            modifier = Modifier.safeDrawingPadding().padding(CouliSpacing.space6),
-            contentAlignment = Alignment.Center,
-        ) {
-            val titleFocus = remember { FocusRequester() }
-            FocusOnAppear(titleFocus)
-            CouliDialogContent(
-                title = title,
-                message = message,
-                confirmText = confirmText,
-                onConfirm = onConfirm,
-                modifier = modifier,
-                dismissText = dismissText,
-                onDismiss = onDismiss,
-                titleFocus = titleFocus,
-                body = body,
-                confirmEnabled = confirmEnabled,
-                dismissTag = dismissTag,
-                confirmTag = confirmTag,
-            )
+        WindowFontScale(fontScale) {
+            Box(
+                modifier = Modifier.safeDrawingPadding().padding(CouliSpacing.space6),
+                contentAlignment = Alignment.Center,
+            ) {
+                val titleFocus = remember { FocusRequester() }
+                FocusOnAppear(titleFocus)
+                CouliDialogContent(
+                    title = title,
+                    message = message,
+                    confirmText = confirmText,
+                    onConfirm = onConfirm,
+                    modifier = modifier,
+                    dismissText = dismissText,
+                    onDismiss = onDismiss,
+                    titleFocus = titleFocus,
+                    body = body,
+                    confirmEnabled = confirmEnabled,
+                    dismissTag = dismissTag,
+                    confirmTag = confirmTag,
+                )
+            }
         }
     }
 }
@@ -486,6 +490,9 @@ private fun DialogButtons(
  * 底部半屏（GUIDE §3）：白底、上两角 24、顶部 36×4 把手；标题 → 正文 → 操作。头部与底部操作 [actions] 固定，只有正文滚动，
  * 正文可滚时操作区上方加分隔线（adaptation-a11y-spec §4）。模态由 ModalBottomSheet 提供（底层不可达）；
  * 打开时焦点进标题，关闭（按钮、遮罩、返回、下拉都一样）后回到 [restoreFocusTo]（F-AND-05）。
+ *
+ * 保护型（资金与验证类：提现二次验证、实名、换收款账号；组件清单 §3.6）传 [dismissOnSwipe] = false、[dismissOnClickOutside] = false：
+ * 不能下滑、点遮罩关闭，保留右上关闭（[closeLabel]）与系统返回（返回先关半屏，adaptation-a11y-spec §4）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -495,27 +502,34 @@ fun CouliSheet(
     actions: (@Composable () -> Unit)? = null,
     restoreFocusTo: FocusRequester? = null,
     closeLabel: String? = null,
+    dismissOnSwipe: Boolean = true,
+    dismissOnClickOutside: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
+    val fontScale = callerFontScale()
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetGesturesEnabled = dismissOnSwipe,
         shape = RoundedCornerShape(topStart = CouliRadius.panel, topEnd = CouliRadius.panel),
         containerColor = CouliColors.backgroundSurface,
-        scrimColor = CouliColors.textPrimary.copy(alpha = CouliAlpha.SCRIM),
+        scrimColor = CouliColors.overlayScrim,
         dragHandle = { SheetHandle() },
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = true, shouldDismissOnClickOutside = dismissOnClickOutside),
     ) {
-        val titleFocus = remember { FocusRequester() }
-        FocusOnAppear(titleFocus)
-        CouliSheetBody(
-            title = title,
-            actions = actions,
-            titleFocus = titleFocus,
-            onClose = closeLabel?.let { { onDismissRequest() } },
-            closeLabel = closeLabel,
-            content = content,
-        )
+        WindowFontScale(fontScale) {
+            val titleFocus = remember { FocusRequester() }
+            FocusOnAppear(titleFocus)
+            CouliSheetBody(
+                title = title,
+                actions = actions,
+                titleFocus = titleFocus,
+                onClose = closeLabel?.let { { onDismissRequest() } },
+                closeLabel = closeLabel,
+                content = content,
+            )
+        }
     }
 }
 

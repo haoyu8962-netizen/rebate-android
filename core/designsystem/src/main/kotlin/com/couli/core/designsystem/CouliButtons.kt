@@ -65,25 +65,17 @@ fun CouliButton(
     loadingDescription: String? = null,
     accessibilityLabel: String? = null,
     leadingIcon: ImageVector? = null,
+    /** 外部交互源（目录页展示「按下」态用）；不给时组件自建。 */
+    interactionSource: MutableInteractionSource? = null,
 ) {
-    val interaction = remember { MutableInteractionSource() }
+    val interaction = interactionSource ?: remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val ring = focusRingVisible(interaction)
     val active = enabled && !loading
     val colors = buttonColors(variant, enabled = enabled, pressed = pressed)
     val shape = RoundedCornerShape(CouliRadius.button)
-    val padding =
-        when {
-            variant == CouliButtonVariant.TEXT -> PaddingValues(horizontal = CouliSpacing.space2, vertical = CouliSpacing.space1)
-            size == CouliButtonSize.COMPACT -> PaddingValues(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2)
-            else -> PaddingValues(horizontal = CouliSpacing.space5, vertical = CouliSpacing.space3)
-        }
-    val style: TextStyle =
-        when {
-            size == CouliButtonSize.COMPACT -> CouliTextStyles.footnoteSemibold
-            variant == CouliButtonVariant.SECONDARY -> CouliTextStyles.bodyMedium
-            else -> CouliTextStyles.bodySemibold
-        }
+    val padding = buttonPadding(variant, size)
+    val style = buttonTextStyle(variant, size)
     Box(
         modifier =
             modifier
@@ -94,8 +86,9 @@ fun CouliButton(
                 .then(
                     if (variant == CouliButtonVariant.SECONDARY) Modifier.border(CouliSizes.hairline, colors.border, shape) else Modifier,
                 ).clickable(
+                    // DS-02：恢复系统水波纹（M3 ripple，主题提供）；按下另有令牌底色变化
                     interactionSource = interaction,
-                    indication = null,
+                    indication = LocalIndication.current,
                     enabled = active,
                     role = Role.Button,
                     onClick = onClick,
@@ -123,12 +116,33 @@ fun CouliButton(
     }
 }
 
+private fun buttonPadding(
+    variant: CouliButtonVariant,
+    size: CouliButtonSize,
+): PaddingValues =
+    when {
+        variant == CouliButtonVariant.TEXT -> PaddingValues(horizontal = CouliSpacing.space2, vertical = CouliSpacing.space1)
+        size == CouliButtonSize.COMPACT -> PaddingValues(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2)
+        else -> PaddingValues(horizontal = CouliSpacing.space5, vertical = CouliSpacing.space3)
+    }
+
+private fun buttonTextStyle(
+    variant: CouliButtonVariant,
+    size: CouliButtonSize,
+): TextStyle =
+    when {
+        size == CouliButtonSize.COMPACT -> CouliTextStyles.footnoteSemibold
+        variant == CouliButtonVariant.SECONDARY -> CouliTextStyles.bodyMedium
+        else -> CouliTextStyles.bodySemibold
+    }
+
 private data class ButtonColors(
     val background: Color,
     val content: Color,
     val border: Color,
 )
 
+@Composable
 private fun buttonColors(
     variant: CouliButtonVariant,
     enabled: Boolean,
@@ -167,9 +181,10 @@ private fun buttonColors(
         }
 
         CouliButtonVariant.ON_SOLID -> {
+            // T1：狸橙实底卡内按钮，深色下仍白底
             ButtonColors(
-                if (pressed) CouliColors.brandSubtle else CouliColors.backgroundSurface,
-                CouliColors.brandEmphasis,
+                if (pressed) CouliColors.brandSubtle else CouliColors.buttonInverseBackground,
+                if (pressed) CouliColors.brandEmphasis else CouliColors.buttonInverseText,
                 Color.Transparent,
             )
         }
@@ -249,8 +264,10 @@ fun CouliIconButton(
     tint: Color = CouliColors.textPrimary,
     iconSize: Dp = CouliSizes.iconLarge,
     enabled: Boolean = true,
+    /** 外部交互源（目录页展示「按下」态用）；不给时组件自建。 */
+    interactionSource: MutableInteractionSource? = null,
 ) {
-    val interaction = remember { MutableInteractionSource() }
+    val interaction = interactionSource ?: remember { MutableInteractionSource() }
     Box(
         modifier =
             modifier

@@ -44,6 +44,9 @@ fun Project.addDebugFeatureSources(
     }
 }
 
+/** Robolectric 单测进程的堆上限（DS-02 用例量增加后 512M 不够）。 */
+const val ROBOLECTRIC_MAX_HEAP = "3g"
+
 /**
  * Robolectric 在 JDK 17+ 上读写 SharedPreferences 等文件时要访问 jdk.internal.access（FileDescriptorInterceptor）。
  */

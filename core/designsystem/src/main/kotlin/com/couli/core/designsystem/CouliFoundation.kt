@@ -1,5 +1,6 @@
 package com.couli.core.designsystem
 
+import android.annotation.SuppressLint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.InteractionSource
@@ -17,6 +18,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
@@ -26,11 +28,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.debugInspectorInfo
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -126,18 +130,31 @@ object CouliTextStyles {
  * 白卡片：圆角 16、卡片阴影、白底。不裁切内容：卡内控件的焦点环（控件外 2 + 2）贴近卡片边缘时也完整可见
  * （adaptation-a11y-spec §8）；卡内图片等需要圆角的元素各自裁切。
  */
+@SuppressLint("UnnecessaryComposedModifier") // 误报：composed 里读 @Composable 属性（按主题取色）
 fun Modifier.couliCard(
-    background: Color = CouliColors.backgroundSurface,
+    background: Color = Color.Unspecified,
     shape: Shape = RoundedCornerShape(CouliRadius.card),
 ): Modifier =
-    this
-        .shadow(
-            elevation = CouliSizes.cardElevation,
-            shape = shape,
-            clip = false,
-            ambientColor = CouliColors.textPrimary.copy(alpha = CouliAlpha.CARD_SHADOW),
-            spotColor = CouliColors.textPrimary.copy(alpha = CouliAlpha.CARD_SHADOW),
-        ).background(background, shape)
+    composed(
+        inspectorInfo =
+            debugInspectorInfo {
+                name = "couliCard"
+                properties["background"] = background
+                properties["shape"] = shape
+            },
+    ) {
+        // 颜色在组合里按当前主题取（浅 / 深两套令牌）；[background] 不给时用 background.surface
+        val shadow = CouliColors.textPrimary.copy(alpha = CouliAlpha.CARD_SHADOW)
+        val fill = background.takeOrElse { CouliColors.backgroundSurface }
+        Modifier
+            .shadow(
+                elevation = CouliSizes.cardElevation,
+                shape = shape,
+                clip = false,
+                ambientColor = shadow,
+                spotColor = shadow,
+            ).background(fill, shape)
+    }
 
 /** 焦点令牌：focus.width（线宽）、focus.offset（与控件的间距），颜色 focus.ring（[CouliColors.focusRing]）。 */
 @Immutable
@@ -160,6 +177,7 @@ fun focusRingVisible(interactionSource: InteractionSource): Boolean {
  * 焦点环：控件外 [CouliFocus.offset] 处画 [CouliFocus.width] 实线（focus.ring），圆角跟随控件（控件圆角 + 外距）。
  * 放在 clip 之前，环画在控件外侧不被自身裁切；[visible] 用 [focusRingVisible] 算。
  */
+@SuppressLint("UnnecessaryComposedModifier") // 误报：composed 里读 @Composable 属性（按主题取色）
 fun Modifier.couliFocusRing(
     visible: Boolean,
     cornerRadius: Dp,
@@ -167,19 +185,25 @@ fun Modifier.couliFocusRing(
     if (!visible) {
         this
     } else {
-        this.drawWithContent {
-            drawContent()
-            val stroke = CouliFocus.width.toPx()
-            val inset = CouliFocus.offset.toPx() + stroke / 2
-            val radius = minOf(cornerRadius.toPx(), size.minDimension / 2) + inset
-            drawRoundRect(
-                color = CouliColors.focusRing,
-                topLeft = Offset(-inset, -inset),
-                size = Size(size.width + inset * 2, size.height + inset * 2),
-                cornerRadius = CornerRadius(radius, radius),
-                style = Stroke(width = stroke),
-            )
-        }
+        composed { focusRingDrawing(cornerRadius, CouliColors.focusRing) }
+    }
+
+private fun Modifier.focusRingDrawing(
+    cornerRadius: Dp,
+    ring: Color,
+): Modifier =
+    drawWithContent {
+        drawContent()
+        val stroke = CouliFocus.width.toPx()
+        val inset = CouliFocus.offset.toPx() + stroke / 2
+        val radius = minOf(cornerRadius.toPx(), size.minDimension / 2) + inset
+        drawRoundRect(
+            color = ring,
+            topLeft = Offset(-inset, -inset),
+            size = Size(size.width + inset * 2, size.height + inset * 2),
+            cornerRadius = CornerRadius(radius, radius),
+            style = Stroke(width = stroke),
+        )
     }
 
 /**

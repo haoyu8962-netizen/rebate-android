@@ -150,10 +150,13 @@ resolve_upstream() {
   return 0
 }
 
+# 必须在父 shell 导出；step 的命令通过管道执行，在 check_lock 内 export 会丢失。
+dt_dir="$(resolve_upstream "${COULI_DIR:-}" "$(lock_field design_tokens.repo)" "/Users/zhixing/我的项目/couli")"
+export COULI_DIR="$dt_dir"
+
 check_lock() {
-  local rp_dir dt_dir
+  local rp_dir
   rp_dir="$(resolve_upstream "${REBATE_PLATFORM_DIR:-}" "$(lock_field rebate_platform.repo)" "/Users/zhixing/我的项目/rebate-platform")"
-  dt_dir="$(resolve_upstream "${COULI_DIR:-}" "$(lock_field design_tokens.repo)" "/Users/zhixing/我的项目/couli")"
   if [ -z "$rp_dir" ] || [ -z "$dt_dir" ]; then
     echo "取不到上游仓库（rebate-platform：${rp_dir:-未找到}；couli：${dt_dir:-未找到}），无法按锁定提交核对快照。" >&2
     echo "请设置 REBATE_PLATFORM_DIR=/path/to/rebate-platform COULI_DIR=/path/to/couli 后重跑；" >&2
@@ -227,10 +230,14 @@ expect_failure "违反样例：Unicode 行终止符（U+2028，FU-AND-0717 F-X-0
 expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feature-dependency" \
   $GRADLE help "-Pcouli.fixture.featureDependency=$FIXTURES/feature-to-feature-dependency/feature-home-depends-on-search.gradle.kts"
 
+step "DS-02 官方素材状态（未到位可见挂起）" python3 tools/ci/ds02/check_oauth_assets.py
+step "DS-02 守卫违反样例（13 类系统控件只警告）" python3 tools/ci/ds02/check_guard.py
+
 step "构建 debug / staging / release 与 androidTest" \
   $GRADLE assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
 step "单元测试（testDebugUnitTest，含 Robolectric 与格式向量）" $GRADLE testDebugUnitTest
 step "组件快照测试（Roborazzi verifyRoborazziDebug；含首页 golden 页 APP-11 G29、Agent 页流 fixture 快照 APP-10 G32）" $GRADLE :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug
+step "DS-02 目录组件浅 / 深快照（仅 golden 用例）" $GRADLE :app:verifyRoborazziDebug --tests "*Ds02CatalogSnapshotTest"
 # APP-04（Android 第 2 轮评审 R2-05、共性第 44、55 条）：真实系统 WebView 仪器测试，含加载锁定 H5 一致性页、逐项断言
 # window.__RESULT__ 的 ConformancePageTest。以 am instrument 输出的「OK (N tests)」为唯一成功判据；任何失败、没有在线的设备
 # 或模拟器都让本步失败（不跳过）

@@ -492,12 +492,14 @@ fun ProductCardLarge(
         Box(modifier = Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
         Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
             // 详情的「平台 + 商品名」合为一项、读屏标题角色（A11yFocusProduct 第 10 项，APP-06a 共性第 30 条）
-            BadgedTitle(
-                platformName = data.platformName,
-                title = data.title,
-                style = CouliTextStyles.bodySemibold,
-                modifier = Modifier.semantics { heading() }.testTag(DETAIL_TITLE_TAG),
-            )
+            // 标题角色与测试标记放外层合并节点：标题 Text 本身留给「唯一允许省略的文字」标记（DS-02）
+            Box(Modifier.semantics(mergeDescendants = true) { heading() }.testTag(DETAIL_TITLE_TAG)) {
+                BadgedTitle(
+                    platformName = data.platformName,
+                    title = data.title,
+                    style = CouliTextStyles.bodySemibold,
+                )
+            }
             if (data.shopName != null) {
                 Text(text = data.shopName, style = CouliTypography.caption, color = CouliColors.textSecondary)
             }

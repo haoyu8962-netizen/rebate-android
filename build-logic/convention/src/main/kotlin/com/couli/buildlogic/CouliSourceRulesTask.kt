@@ -43,6 +43,11 @@ abstract class CouliSourceRulesTask : DefaultTask() {
         val root = scanRoot.get().asFile
         val scanningRepository = root.isDirectory && root.canonicalFile == repositoryRoot.get().asFile.canonicalFile
         val violations = CouliSourceRules.check(root, scanningRepository)
+        // DS-02 G1（组件清单 §6）：Feature 直接调系统基础控件——先只警告，不让任务失败；现有违规见 tools/ci/design-system-required-baseline.txt
+        val baseline = if (scanningRepository) DesignSystemGuard.baseline(repositoryRoot.get().asFile) else emptyList()
+        val warnings = CouliSourceRules.warnings(root, scanningRepository)
+        DesignSystemGuard.annotate(warnings, baseline).forEach { logger.warn(it) }
+        if (warnings.isNotEmpty()) logger.warn("couliRules：${warnings.size} 处 [design-system-required] 警告（只警告，不失败）")
         if (violations.isNotEmpty()) {
             violations.forEach { logger.error(it) }
             throw GradleException("couliRules：${violations.size} 处违反自定义源码规则或扫不完整（见上）")
@@ -108,6 +113,26 @@ internal object CouliSourceRules {
                     }
             }
         return incomplete + (cjk + sdkInit).toList()
+    }
+
+    /**
+     * DS-02 G1 警告（组件清单 §6）：feature 模块的非测试源码直接调用「必须经组件库」的系统控件（[DesignSystemGuard.CONTROLS]，
+     * 直接导入、别名、全限定、星号导入四种写法）时，返回「相对路径:行: [design-system-required] 控件短名 …」，每个调用点一条。
+     * 只警告：不进 [check] 的失败列表；扫不完整的文件由 [check] 报，这里跳过。
+     */
+    fun warnings(
+        root: File,
+        scanningRepository: Boolean,
+    ): List<String> {
+        if (!root.isDirectory) return emptyList()
+        return sourceFiles(root, scanningRepository).files.flatMap { file ->
+            val relative = file.relativeTo(root).invariantSeparatorsPath
+            if (file.extension != "kt" || !DesignSystemGuard.applies(relative)) return@flatMap emptyList()
+            val text = runCatching { file.readText() }.getOrNull() ?: return@flatMap emptyList()
+            DesignSystemGuard.findings(scanKotlinSource(text).code).map { (line, control) ->
+                "$relative:$line: ${DesignSystemGuard.MARKER} $control ${DesignSystemGuard.MESSAGE}"
+            }
+        }
     }
 
     /** 遍历结果：源码文件与遍历失败的诊断（列不出内容的目录、属性查不了的条目）。 */

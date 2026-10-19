@@ -16,6 +16,8 @@ roborazzi {
 
 dependencies {
     api(project(":core:generated"))
+    // DS-02：NavBar 接系统返回 / 预测性返回（BackHandler）；版本目录里已有的库，App 已在用
+    implementation(libs.androidx.activity.compose)
 
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)

@@ -1,0 +1,17 @@
+# c8a79c1 DS-02 r2 冻结的现有调用上限；重复行表示多个调用点；只准减少。
+feature/agent/src/main/kotlin/com/couli/feature/agent/AgentConsent.kt|Checkbox
+feature/agent/src/main/kotlin/com/couli/feature/agent/AgentFeedbackUi.kt|BasicTextField
+feature/agent/src/main/kotlin/com/couli/feature/agent/AgentScreen.kt|BasicTextField
+feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt|BasicTextField
+feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt|BasicTextField
+feature/login/src/main/kotlin/com/couli/feature/login/LoginScreen.kt|BasicTextField
+feature/login/src/main/kotlin/com/couli/feature/login/LoginScreen.kt|BasicTextField
+feature/login/src/main/kotlin/com/couli/feature/login/LoginScreen.kt|BasicTextField
+feature/me/src/main/kotlin/com/couli/feature/me/AccountUi.kt|BasicTextField
+feature/me/src/main/kotlin/com/couli/feature/me/Appeal.kt|OutlinedTextField
+feature/me/src/main/kotlin/com/couli/feature/me/MeUi.kt|Switch
+feature/me/src/main/kotlin/com/couli/feature/me/SettingsSubPages.kt|OutlinedTextField
+feature/orders/src/main/kotlin/com/couli/feature/orders/OrderListScreen.kt|BasicTextField
+feature/search/src/main/kotlin/com/couli/feature/search/SearchScreen.kt|BasicTextField
+feature/search/src/main/kotlin/com/couli/feature/search/SearchScreen.kt|BasicTextField
+feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletUi.kt|BasicTextField

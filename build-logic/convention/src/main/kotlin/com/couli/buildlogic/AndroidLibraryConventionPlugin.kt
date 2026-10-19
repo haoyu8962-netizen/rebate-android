@@ -40,7 +40,11 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
                 testOptions {
                     targetSdk = intVersion("android-targetSdk")
                     unitTests.isIncludeAndroidResources = true
-                    unitTests.all { test -> test.jvmArgs(ROBOLECTRIC_JVM_ARGS) }
+                    unitTests.all { test ->
+                        test.jvmArgs(ROBOLECTRIC_JVM_ARGS)
+                        // DS-02：目录组件浅 / 深快照与大字号检查共 2000 余个 Robolectric 原生绘制用例，默认 512M 堆在同一测试进程里会耗尽
+                        test.maxHeapSize = ROBOLECTRIC_MAX_HEAP
+                    }
                 }
                 lint.targetSdk = intVersion("android-targetSdk")
                 configureAndroidLint(lint)

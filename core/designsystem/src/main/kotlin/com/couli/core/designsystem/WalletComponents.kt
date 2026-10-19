@@ -323,6 +323,7 @@ private fun AmountCellView(
 }
 
 /** 标签色与数值色：实底全白；返利强调色只给正金额（[AmountCell.usesRebateAccent]）。 */
+@Composable
 private fun cellColors(
     cell: AmountCell,
     solid: Boolean,

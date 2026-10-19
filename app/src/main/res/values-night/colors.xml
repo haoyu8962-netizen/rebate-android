@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DS-02：页面经令牌跟随系统深色（负责人 2026-10-18）；窗口底色取深色提案 color.background.canvas（T13），冷启动不闪浅底。 -->
+    <color name="couli_window_background">#171513</color>
+</resources>

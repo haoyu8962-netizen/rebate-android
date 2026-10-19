@@ -35,6 +35,7 @@ import androidx.compose.ui.layout.FirstBaseline
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -489,8 +490,12 @@ fun BadgedTitle(
                         }
                     },
             ),
-        modifier = modifier.semantics { contentDescription = "$platformName $title" },
+        // 唯一允许省略的文字：标签让 200% 字号布局检查只对商品标题放行省略（不得含金额，DS-02）
+        modifier = modifier.semantics { contentDescription = "$platformName $title" }.testTag(TITLE_ELLIPSIS_TAG),
     )
 }
+
+/** 商品标题（唯一允许按行数省略的文字）的测试标记。 */
+const val TITLE_ELLIPSIS_TAG = "ds02-ellipsis-allowed"
 
 private const val BADGE_ID = "platform_badge"

@@ -1,5 +1,3 @@
-@file:Suppress("MagicNumber") // 样例金额取自 08 细则与设计画板，逐条对照，不抽常量
-
 package com.couli.app.catalog
 
 import androidx.activity.compose.BackHandler
@@ -9,62 +7,45 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
-import com.couli.core.designsystem.AiLabel
-import com.couli.core.designsystem.BuyButton
-import com.couli.core.designsystem.BuyButtonState
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Density
+import com.couli.core.designsystem.ActionMenuItem
+import com.couli.core.designsystem.CouliActionMenu
+import com.couli.core.designsystem.CouliAlertDialog
+import com.couli.core.designsystem.CouliAnchoredMenu
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
-import com.couli.core.designsystem.CouliDialogContent
+import com.couli.core.designsystem.CouliFilterChip
 import com.couli.core.designsystem.CouliSheet
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
-import com.couli.core.designsystem.CouliToast
+import com.couli.core.designsystem.CouliTheme
 import com.couli.core.designsystem.CouliTypography
-import com.couli.core.designsystem.DisclaimerFooter
-import com.couli.core.designsystem.DisclaimerLine
-import com.couli.core.designsystem.DisclaimerStyle
-import com.couli.core.designsystem.EmptyState
-import com.couli.core.designsystem.ErrorState
-import com.couli.core.designsystem.EstNetLine
-import com.couli.core.designsystem.MatchBadge
-import com.couli.core.designsystem.MatchBadgeKind
 import com.couli.core.designsystem.NavBar
-import com.couli.core.designsystem.PlatformBadge
-import com.couli.core.designsystem.PriceTag
-import com.couli.core.designsystem.PriceTagModel
-import com.couli.core.designsystem.PriceTagSize
-import com.couli.core.designsystem.ProductCardGridLayout
-import com.couli.core.designsystem.ProductCardLarge
-import com.couli.core.designsystem.ProductCardList
-import com.couli.core.designsystem.ProductCardVariant
-import com.couli.core.designsystem.RebateTag
-import com.couli.core.designsystem.RebateTagModel
-import com.couli.core.designsystem.RebateTagSize
-import com.couli.core.designsystem.SkeletonProductCard
-import com.couli.core.designsystem.StateAction
-import com.couli.core.designsystem.TabBar
 
 /**
  * 组件目录页的固定长标记：只在 debug / staging（src/debugFeatures）里出现；
@@ -72,13 +53,12 @@ import com.couli.core.designsystem.TabBar
  */
 const val COMPONENT_CATALOG_MARKER = "COULI_COMPONENT_CATALOG_DS01_6f2c9a4e81b7d350"
 
-/** 目录页里的页面（[key] 也用于 adb 直接打开：`am start -n com.couli.app/.MainActivity --es couli.catalog <key>`）。 */
+/** 目录页里的固定页面（[key] 也用于 adb 直接打开：`am start -n com.couli.app/.MainActivity --es couli.catalog <key>`）。 */
 internal enum class CatalogPage(
     val key: String,
     val title: String,
 ) {
     INDEX("index", "Component catalog"),
-    COMPONENTS("components", "Components (all states)"),
     SEARCH("Search", "Compare: Search"),
     STRESS("ProductCardStress", "Compare: ProductCardStress"),
     PRODUCT("Product", "Compare: Product"),
@@ -95,190 +75,267 @@ internal enum class CatalogPage(
 /** 已注入 intent extra 的键名。 */
 internal const val CATALOG_EXTRA = "couli.catalog"
 
-/** 组件目录（debug / staging）：索引 → 全部组件状态页 / 6 张对照页。 */
+private const val COMPONENT_PREFIX = "component:"
+
+/**
+ * 组件目录（debug / staging，DS-02「组件展示页」）：索引按组件清单分组 → 每个组件一屏，按变体 × 状态逐个摆出，
+ * 页顶可切「浅色 / 深色」「字号 100% / 200%」，标注 Android 实现是「系统控件」还是「自绘」；另有 6 张设计对照页。
+ * 目录自己初始浅色 / 100%（App 默认主题仍跟随系统）；切换只作用于目录。
+ */
 @Composable
 internal fun ComponentCatalog(
     initial: CatalogPage,
     onClose: () -> Unit,
 ) {
-    var page by rememberSaveable { mutableStateOf(initial) }
-    val back: () -> Unit = { if (page == CatalogPage.INDEX) onClose() else page = CatalogPage.INDEX }
+    var page by rememberSaveable { mutableStateOf(initial.key) }
+    var dark by rememberSaveable { mutableStateOf(false) }
+    var large by rememberSaveable { mutableStateOf(false) }
+    val back: () -> Unit = { if (page == CatalogPage.INDEX.key) onClose() else page = CatalogPage.INDEX.key }
     BackHandler(onBack = back)
-    Box(modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas).testTag(COMPONENT_CATALOG_MARKER)) {
-        when (page) {
-            CatalogPage.INDEX -> CatalogIndex(onOpen = { page = it }, onClose = onClose)
-            CatalogPage.COMPONENTS -> ComponentStatesPage(onBack = back)
-            CatalogPage.SEARCH -> SearchComparePage(onBack = back)
-            CatalogPage.STRESS -> StressComparePage(onBack = back)
-            CatalogPage.PRODUCT -> ProductComparePage(onBack = back)
-            CatalogPage.WALLET -> WalletComparePage(onBack = back)
-            CatalogPage.ME -> MeComparePage(onBack = back)
-            CatalogPage.SEARCH_EMPTY -> SearchEmptyComparePage(onBack = back)
+    CouliTheme(darkTheme = dark) {
+        Box(modifier = Modifier.fillMaxSize().background(CouliColors.backgroundCanvas).testTag(COMPONENT_CATALOG_MARKER)) {
+            val component = page.removePrefix(COMPONENT_PREFIX).takeIf { page.startsWith(COMPONENT_PREFIX) }
+            val entry = component?.let { CatalogRegistry.find(it) }
+            when {
+                entry != null -> {
+                    ComponentPage(
+                        entry = entry,
+                        dark = dark,
+                        large = large,
+                        onTheme = { dark = it },
+                        onFont = { large = it },
+                        onBack = back,
+                    )
+                }
+
+                else -> {
+                    when (CatalogPage.fromKey(page) ?: CatalogPage.INDEX) {
+                        CatalogPage.INDEX -> CatalogIndex(onOpen = { page = it }, onClose = onClose)
+                        CatalogPage.SEARCH -> SearchComparePage(onBack = back)
+                        CatalogPage.STRESS -> StressComparePage(onBack = back)
+                        CatalogPage.PRODUCT -> ProductComparePage(onBack = back)
+                        CatalogPage.WALLET -> WalletComparePage(onBack = back)
+                        CatalogPage.ME -> MeComparePage(onBack = back)
+                        CatalogPage.SEARCH_EMPTY -> SearchEmptyComparePage(onBack = back)
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun CatalogIndex(
-    onOpen: (CatalogPage) -> Unit,
+    onOpen: (String) -> Unit,
     onClose: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        NavBar(title = CatalogPage.INDEX.title, backLabel = CatalogSamples.BACK, onBack = onClose)
-        CatalogPage.entries.filter { it != CatalogPage.INDEX }.forEach { entry ->
-            Text(
-                text = entry.title,
-                style = CouliTypography.body,
-                color = CouliColors.textPrimary,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .clickable(role = Role.Button) { onOpen(entry) }
-                        .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3),
-            )
+        NavBar(title = CatalogPage.INDEX.title, backLabel = CatalogSamples.BACK, onBack = onClose, handleSystemBack = false)
+        LazyColumn(modifier = Modifier.weight(1f).testTag("catalog-index").navigationBarsPadding()) {
+            CatalogRegistry.entries.groupBy { it.group }.forEach { (group, entries) ->
+                item(key = "group/$group") { GroupHeader(group) }
+                items(entries, key = { it.id }) { entry ->
+                    IndexRow(
+                        title = entry.id,
+                        subtitle = "${entry.kind} · ${entry.cases.size} 个样例",
+                        modifier = Modifier.testTag("catalog-entry/${entry.id}"),
+                        onClick = { onOpen(COMPONENT_PREFIX + entry.id) },
+                    )
+                }
+            }
+            item(key = "group/compare") { GroupHeader("设计稿对照页") }
+            items(CatalogPage.entries.filter { it != CatalogPage.INDEX }, key = { it.key }) { entry ->
+                IndexRow(title = entry.title, subtitle = null, onClick = { onOpen(entry.key) })
+            }
         }
     }
 }
 
-/** 全部组件的主要状态（样例数据见 [CatalogSamples]）。 */
 @Composable
-private fun ComponentStatesPage(onBack: () -> Unit) {
-    var dialogOpen by rememberSaveable { mutableStateOf(false) }
-    var sheetOpen by rememberSaveable { mutableStateOf(false) }
-    ComparePageScaffold(
-        top = { NavBar(title = CatalogPage.COMPONENTS.title, backLabel = CatalogSamples.BACK, onBack = onBack) },
-        bottom = { TabBar(items = tabItems, selectedIndex = 1, onSelect = {}) },
+private fun GroupHeader(text: String) {
+    Text(
+        text = text,
+        style = CouliTextStyles.footnoteSemibold,
+        color = CouliColors.textSecondary,
+        modifier =
+            Modifier
+                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space4, bottom = CouliSpacing.space1)
+                .semantics { heading() },
+    )
+}
+
+@Composable
+private fun IndexRow(
+    title: String,
+    subtitle: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .heightIn(min = CouliSizes.touchTarget)
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2),
     ) {
-        SectionTitle("CouliButton")
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            CouliButton(text = "提现", onClick = {})
-            CouliButton(text = "取消", onClick = {}, variant = CouliButtonVariant.SECONDARY)
-            CouliButton(text = "提现规则", onClick = {}, variant = CouliButtonVariant.TEXT)
-            CouliButton(text = "提现", onClick = {}, loading = true, loadingDescription = CatalogSamples.LOADING)
-            CouliButton(text = "提现", onClick = {}, enabled = false)
-        }
-        SectionTitle("BuyButton")
-        val single = RebateTagModel.make("normal", 269, 269, false)
-        val range = RebateTagModel.make("price_compare_risk", 135, 269, false)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            BuyButton(base = CatalogSamples.BUY_COUPON, rebate = single, onClick = {})
-            BuyButton(base = CatalogSamples.BUY_COUPON, rebate = range, onClick = {})
-            BuyButton(base = CatalogSamples.BUY_NO_REBATE, rebate = RebateTagModel.make("no_rebate", 0, 0, false), onClick = {})
-            BuyButton(base = CatalogSamples.BUY_COUPON, rebate = single, onClick = {}, amountHidden = true)
-            BuyButton(base = CatalogSamples.BUY_COUPON, rebate = single, onClick = {
-            }, state = BuyButtonState.LOADING, loadingDescription = CatalogSamples.LOADING)
-            BuyButton(base = CatalogSamples.BUY_COUPON, rebate = single, onClick = {}, state = BuyButtonState.DISABLED)
-            BuyButton(
-                base = CatalogSamples.BUY_COUPON,
-                rebate = single,
-                onClick = {},
-                state = BuyButtonState.RETRY_LATER,
-                retryLaterText = CatalogSamples.RETRY_LATER,
-            )
-        }
-        SectionTitle("PriceTag")
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space6),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-        ) {
-            PriceTag(PriceTagModel.make("taobao", 3990, 1000, 2990, false))
-            PriceTag(PriceTagModel.make("taobao", 3990, 0, 3990, false))
-            PriceTag(PriceTagModel.make("pdd", 1990, 300, 1690, false))
-            PriceTag(PriceTagModel.make("pdd", 1990, 0, 1990, false))
-            PriceTag(PriceTagModel.make("taobao", 9999, 0, 9999, true))
-            PriceTag(PriceTagModel.make("taobao", 10099999, 100000, 9999999, false), size = PriceTagSize.LARGE)
-        }
-        SectionTitle("RebateTag")
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            RebateTag(single)
-            RebateTag(range)
-            RebateTag(RebateTagModel.make("price_compare_risk", 0, 5, false))
-            RebateTag(RebateTagModel.make("price_compare_risk", 8888888, 9999999, false))
-            RebateTag(RebateTagModel.make("no_rebate", 0, 0, false))
-            RebateTag(RebateTagModel.make("amount_unknown", null, null, false))
-            RebateTag(RebateTagModel.make("login_required", null, null, true))
-            RebateTag(range, size = RebateTagSize.LARGE)
-        }
-        SectionTitle("EstNetLine / PlatformBadge / MatchBadge / AiLabel")
-        EstNetLine(text = CatalogSamples.searchMilk.estNet)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            PlatformBadge(CatalogSamples.TAOBAO)
-            PlatformBadge(CatalogSamples.JD)
-            PlatformBadge(CatalogSamples.PDD)
-            MatchBadge("符合条件", MatchBadgeKind.MATCHED)
-            MatchBadge("已放宽条件", MatchBadgeKind.RELAXED)
-            MatchBadge("规格待确认", MatchBadgeKind.UNCONFIRMED)
-            AiLabel("AI 生成")
-        }
-        SectionTitle("DisclaimerFooter")
-        DisclaimerFooter(lines = listOf(DisclaimerLine(CatalogSamples.PRICE_BASIS_GENERAL), DisclaimerLine(CatalogSamples.REBATE_ESTIMATE)))
-        DisclaimerFooter(
-            style = DisclaimerStyle.DETAIL_PANEL,
-            lines = listOf(DisclaimerLine(CatalogSamples.PRICE_BASIS), DisclaimerLine(CatalogSamples.REBATE_COMPARE)),
-        )
-        SectionTitle("ProductCard: PDD no coupon / amount unknown / login / AI")
-        ProductCardList(data = CatalogSamples.pddNoCoupon, onBuy = {})
-        ProductCardList(data = CatalogSamples.amountUnknown, onBuy = {})
-        SectionTitle("ProductCard: amount unknown (grid / large, no price)")
-        ProductCardGridLayout(items = listOf(CatalogSamples.amountUnknown, CatalogSamples.pddNoCoupon), onInfo = {})
-        ProductCardLarge(data = CatalogSamples.amountUnknown)
-        ProductCardList(data = CatalogSamples.loginToView, onBuy = {})
-        ProductCardList(data = CatalogSamples.searchMilk, onBuy = {}, variant = ProductCardVariant.AI)
-        ProductCardList(data = CatalogSamples.searchMilk, onBuy = {}, buyState = BuyButtonState.LOADING)
-        SectionTitle("EmptyState / ErrorState / Skeleton / Toast")
-        EmptyState(title = "还没有收藏的商品", action = StateAction("去逛逛") {})
-        ErrorState(title = "页面加载失败，请重试", retry = StateAction("重试") {})
-        SkeletonProductCard(description = CatalogSamples.LOADING)
-        CouliToast(message = "已复制，可以打开微信粘贴给好友")
-        SectionTitle("CouliDialog / CouliSheet")
-        CouliDialogContent(title = "价格已变动", message = "价格已变动：¥29.9 → ¥31.9，继续购买？", confirmText = "继续购买", onConfirm = {}, dismissText = "取消")
-        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            CouliButton(
-                text = "Open dialog",
-                onClick = { dialogOpen = true },
-                variant = CouliButtonVariant.SECONDARY,
-                size = CouliButtonSize.COMPACT,
-            )
-            CouliButton(
-                text = "Open sheet",
-                onClick = { sheetOpen = true },
-                variant = CouliButtonVariant.SECONDARY,
-                size = CouliButtonSize.COMPACT,
-            )
-        }
-        SectionTitle("CouliFormat (BR-TEXT-11, now = 2026-10-12 10:00)")
-        CatalogSamples.timeSamples.forEach { Text(it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }
-        Box(Modifier.width(CouliSpacing.space1))
+        Text(text = title, style = CouliTypography.body, color = CouliColors.textPrimary)
+        if (subtitle != null) Text(text = subtitle, style = CouliTypography.caption, color = CouliColors.textSecondary)
     }
-    if (dialogOpen) {
-        CouliDialog(
-            title = "该商品当前暂无返利，继续购买？",
-            confirmText = "继续购买",
-            onConfirm = { dialogOpen = false },
-            dismissText = "取消",
-            onDismissRequest = { dialogOpen = false },
-        )
-    }
-    if (sheetOpen) {
-        CouliSheet(
-            title = "授权淘宝账号",
-            onDismissRequest = { sheetOpen = false },
-            actions = { CouliButton(text = "去授权", onClick = { sheetOpen = false }, modifier = Modifier.fillMaxWidth()) },
+}
+
+/** 一个组件一屏：页顶分类、说明与浅深 / 字号切换，下面按变体 × 状态逐个摆出（可滚动）。 */
+@Composable
+private fun ComponentPage(
+    entry: CatalogEntry,
+    dark: Boolean,
+    large: Boolean,
+    onTheme: (Boolean) -> Unit,
+    onFont: (Boolean) -> Unit,
+    onBack: () -> Unit,
+) {
+    val id = entry.id
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        NavBar(title = id, backLabel = CatalogSamples.BACK, onBack = onBack, handleSystemBack = false)
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = CouliSpacing.space4),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
-            Text("购买前需完成淘宝授权，用于识别你的订单", style = CouliTypography.footnote, color = CouliColors.textPrimary)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+                CouliFilterChip("浅色", selected = !dark, onClick = { onTheme(false) }, modifier = Modifier.testTag("catalog-theme-light"))
+                CouliFilterChip("深色", selected = dark, onClick = { onTheme(true) }, modifier = Modifier.testTag("catalog-theme-dark"))
+                CouliFilterChip("字号 100%", selected = !large, onClick = { onFont(false) }, modifier = Modifier.testTag("catalog-font-100"))
+                CouliFilterChip("字号 200%", selected = large, onClick = { onFont(true) }, modifier = Modifier.testTag("catalog-font-200"))
+            }
+            Text(
+                text = entry.kind,
+                style = CouliTextStyles.footnoteSemibold,
+                color = CouliColors.brandEmphasis,
+                modifier = Modifier.testTag("catalog-kind/$id"),
+            )
+            Text(
+                text = entry.note,
+                style = CouliTypography.caption,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.testTag("catalog-note/$id"),
+            )
+            RealContainers(id, large)
+        }
+        val density = LocalDensity.current
+        CompositionLocalProvider(LocalDensity provides Density(density.density, if (large) LARGE_FONT else 1f)) {
+            LazyColumn(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .testTag("catalog-cases/$id")
+                        .navigationBarsPadding(),
+            ) {
+                items(entry.cases, key = { (variant, state) -> "$variant/$state" }) { (variant, state) ->
+                    Column(modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space3)) {
+                        Text(
+                            text = CatalogRegistry.label(variant, state),
+                            style = CouliTypography.caption,
+                            color = CouliColors.textSecondary,
+                            modifier = Modifier.padding(horizontal = CouliSpacing.space4).testTag("catalog-label/$id/$variant/$state"),
+                        )
+                        CatalogComponentSample(
+                            componentId = id,
+                            variantId = variant,
+                            stateId = state,
+                            modifier = Modifier.padding(horizontal = CouliSpacing.space2).testTag("catalog-sample/$id/$variant/$state"),
+                        )
+                    }
+                }
+            }
         }
     }
 }
+
+/** 弹层类组件：页顶按钮打开真实系统容器（目录列表里只排内容，不同时弹出所有窗口）。 */
+@Suppress("CyclomaticComplexMethod") // 每种弹层一个分支，调试页
+@Composable
+private fun RealContainers(
+    id: String,
+    large: Boolean,
+) {
+    var open by rememberSaveable(id) { mutableStateOf<String?>(null) }
+    val options =
+        when (id) {
+            "Dialog" -> listOf("dialog" to "打开真实对话框")
+            "AlertDialog" -> listOf("alert" to "打开系统确认框")
+            "Sheet" -> listOf("sheet" to "打开普通半屏", "protected" to "打开保护型半屏")
+            "ActionMenu" -> listOf("menu" to "打开底部菜单", "anchor" to "打开锚点菜单")
+            else -> emptyList()
+        }
+    if (options.isEmpty()) return
+    Box {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            options.forEach { (key, label) ->
+                CouliButton(
+                    text = label,
+                    onClick = { open = key },
+                    variant = CouliButtonVariant.SECONDARY,
+                    size = CouliButtonSize.COMPACT,
+                )
+            }
+        }
+        val close = { open = null }
+        val menuItems = listOf(ActionMenuItem("用户协议"), ActionMenuItem("隐私政策"))
+        // 真实窗口跟目录选定字号（组件库把调用处字号带进窗口），不只是下面的静态样例
+        val density = LocalDensity.current
+        CompositionLocalProvider(LocalDensity provides Density(density.density, if (large) LARGE_FONT else 1f)) {
+            when (open) {
+                "dialog" -> {
+                    CouliDialog(
+                        title = "请阅读并同意协议",
+                        message = "为保障你的权益，请先阅读并同意《用户协议》和《隐私政策》。",
+                        confirmText = "同意",
+                        onConfirm = close,
+                        dismissText = "不同意",
+                        onDismissRequest = close,
+                    )
+                }
+
+                "alert" -> {
+                    CouliAlertDialog(
+                        title = "清除缓存？",
+                        message = "清除后图片需要重新加载。",
+                        confirmText = "清除",
+                        onConfirm = close,
+                        dismissText = "取消",
+                        onDismissRequest = close,
+                    )
+                }
+
+                "sheet", "protected" -> {
+                    val protected = open == "protected"
+                    CouliSheet(
+                        title = if (protected) "身份验证" else "价格区间",
+                        onDismissRequest = close,
+                        closeLabel = if (protected) "关闭" else null,
+                        dismissOnSwipe = !protected,
+                        dismissOnClickOutside = !protected,
+                        actions = { CouliButton(text = "确定", onClick = close, modifier = Modifier.fillMaxWidth()) },
+                    ) {
+                        Text(
+                            text = if (protected) "资金类半屏：不能下滑或点遮罩关闭，可点右上关闭或系统返回。" else "下滑、点遮罩、返回都能关闭。",
+                            style = CouliTypography.footnote,
+                            color = CouliColors.textPrimary,
+                        )
+                    }
+                }
+
+                "menu" -> {
+                    CouliActionMenu(items = menuItems, onSelect = { close() }, onDismissRequest = close, title = "查看协议")
+                }
+
+                "anchor" -> {
+                    CouliAnchoredMenu(expanded = true, items = menuItems, onSelect = { close() }, onDismissRequest = close)
+                }
+            }
+        }
+    }
+}
+
+private const val LARGE_FONT = 2f

@@ -1,98 +1,159 @@
 package com.couli.core.designsystem
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
 import com.couli.generated.DesignTokens
 
 /**
  * 颜色令牌的语义名（与 iOS 对齐：令牌路径 `brand.primary` → `brandPrimary`）。
- * 取值来自生成的 [DesignTokens.colors]；只有浅色主题（系统深色模式下强制浅色，TECH-22）。
+ * DS-02 起按当前主题取值（[CouliTheme] 提供浅 / 深两套与覆盖，见 [CouliThemeTokens]），只能在组合里读；
+ * 页面与组件都只认令牌名、不写色值，深色时自动跟随。
  */
 @Immutable
 object CouliColors {
-    val brandPrimary: Color = token("brand.primary")
-    val brandEmphasis: Color = token("brand.emphasis")
-    val brandSecondary: Color = token("brand.secondary")
-    val brandSubtle: Color = token("brand.subtle")
-    val backgroundCanvas: Color = token("background.canvas")
-    val backgroundAdminCanvas: Color = token("background.admin-canvas")
-    val backgroundSurface: Color = token("background.surface")
-    val backgroundMuted: Color = token("background.muted")
-    val backgroundPlaceholder: Color = token("background.placeholder")
-    val textPrimary: Color = token("text.primary")
-    val textSecondary: Color = token("text.secondary")
-    val textInverse: Color = token("text.inverse")
-    val textLink: Color = token("text.link")
-    val priceText: Color = token("price.text")
-    val rebateText: Color = token("rebate.text")
-    val rebateBackground: Color = token("rebate.background")
-    val rebateSolidBackground: Color = token("rebate.solid.background")
-    val rebateSolidText: Color = token("rebate.solid.text")
-    val statusPendingText: Color = token("status.pending.text")
-    val statusPendingBackground: Color = token("status.pending.background")
-    val statusSuccessText: Color = token("status.success.text")
-    val statusSuccessBackground: Color = token("status.success.background")
-    val statusWarningText: Color = token("status.warning.text")
-    val statusWarningBackground: Color = token("status.warning.background")
-    val statusErrorText: Color = token("status.error.text")
-    val statusErrorBackground: Color = token("status.error.background")
-    val borderSubtle: Color = token("border.subtle")
-    val borderControl: Color = token("border.control")
-    val focusRing: Color = token("focus.ring")
-    val sourceText: Color = token("source.text")
-    val sourceBackground: Color = token("source.background")
-    val sourceBorder: Color = token("source.border")
-    val buttonPrimaryDefaultBackground: Color = token("button.primary.default.background")
-    val buttonPrimaryDefaultText: Color = token("button.primary.default.text")
-    val buttonPrimaryPressedBackground: Color = token("button.primary.pressed.background")
-    val buttonPrimaryPressedText: Color = token("button.primary.pressed.text")
-    val buttonPrimaryDisabledBackground: Color = token("button.primary.disabled.background")
-    val buttonPrimaryDisabledText: Color = token("button.primary.disabled.text")
+    val brandPrimary: Color
+        @Composable @ReadOnlyComposable
+        get() = token("brand.primary")
+    val brandEmphasis: Color
+        @Composable @ReadOnlyComposable
+        get() = token("brand.emphasis")
+    val brandSecondary: Color
+        @Composable @ReadOnlyComposable
+        get() = token("brand.secondary")
+    val brandSubtle: Color
+        @Composable @ReadOnlyComposable
+        get() = token("brand.subtle")
+    val backgroundCanvas: Color
+        @Composable @ReadOnlyComposable
+        get() = token("background.canvas")
+    val backgroundAdminCanvas: Color
+        @Composable @ReadOnlyComposable
+        get() = token("background.admin-canvas")
+    val backgroundSurface: Color
+        @Composable @ReadOnlyComposable
+        get() = token("background.surface")
+    val backgroundMuted: Color
+        @Composable @ReadOnlyComposable
+        get() = token("background.muted")
+    val backgroundPlaceholder: Color
+        @Composable @ReadOnlyComposable
+        get() = token("background.placeholder")
+    val textPrimary: Color
+        @Composable @ReadOnlyComposable
+        get() = token("text.primary")
+    val textSecondary: Color
+        @Composable @ReadOnlyComposable
+        get() = token("text.secondary")
+    val textInverse: Color
+        @Composable @ReadOnlyComposable
+        get() = token("text.inverse")
+    val textLink: Color
+        @Composable @ReadOnlyComposable
+        get() = token("text.link")
+    val priceText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("price.text")
+    val rebateText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("rebate.text")
+    val rebateBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("rebate.background")
+    val rebateSolidBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("rebate.solid.background")
+    val rebateSolidText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("rebate.solid.text")
+    val statusPendingText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.pending.text")
+    val statusPendingBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.pending.background")
+    val statusSuccessText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.success.text")
+    val statusSuccessBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.success.background")
+    val statusWarningText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.warning.text")
+    val statusWarningBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.warning.background")
+    val statusErrorText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.error.text")
+    val statusErrorBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("status.error.background")
+    val borderSubtle: Color
+        @Composable @ReadOnlyComposable
+        get() = token("border.subtle")
+    val borderControl: Color
+        @Composable @ReadOnlyComposable
+        get() = token("border.control")
+    val focusRing: Color
+        @Composable @ReadOnlyComposable
+        get() = token("focus.ring")
+    val sourceText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("source.text")
+    val sourceBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("source.background")
+    val sourceBorder: Color
+        @Composable @ReadOnlyComposable
+        get() = token("source.border")
+    val buttonPrimaryDefaultBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.default.background")
+    val buttonPrimaryDefaultText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.default.text")
+    val buttonPrimaryPressedBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.pressed.background")
+    val buttonPrimaryPressedText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.pressed.text")
+    val buttonPrimaryDisabledBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.disabled.background")
+    val buttonPrimaryDisabledText: Color
+        @Composable @ReadOnlyComposable
+        get() = token("button.primary.disabled.text")
 
-    /** 令牌路径 → 颜色，便于核对映射完整。 */
-    val all: Map<String, Color> =
-        linkedMapOf(
-            "brand.primary" to brandPrimary,
-            "brand.emphasis" to brandEmphasis,
-            "brand.secondary" to brandSecondary,
-            "brand.subtle" to brandSubtle,
-            "background.canvas" to backgroundCanvas,
-            "background.admin-canvas" to backgroundAdminCanvas,
-            "background.surface" to backgroundSurface,
-            "background.muted" to backgroundMuted,
-            "background.placeholder" to backgroundPlaceholder,
-            "text.primary" to textPrimary,
-            "text.secondary" to textSecondary,
-            "text.inverse" to textInverse,
-            "text.link" to textLink,
-            "price.text" to priceText,
-            "rebate.text" to rebateText,
-            "rebate.background" to rebateBackground,
-            "rebate.solid.background" to rebateSolidBackground,
-            "rebate.solid.text" to rebateSolidText,
-            "status.pending.text" to statusPendingText,
-            "status.pending.background" to statusPendingBackground,
-            "status.success.text" to statusSuccessText,
-            "status.success.background" to statusSuccessBackground,
-            "status.warning.text" to statusWarningText,
-            "status.warning.background" to statusWarningBackground,
-            "status.error.text" to statusErrorText,
-            "status.error.background" to statusErrorBackground,
-            "border.subtle" to borderSubtle,
-            "border.control" to borderControl,
-            "focus.ring" to focusRing,
-            "source.text" to sourceText,
-            "source.background" to sourceBackground,
-            "source.border" to sourceBorder,
-            "button.primary.default.background" to buttonPrimaryDefaultBackground,
-            "button.primary.default.text" to buttonPrimaryDefaultText,
-            "button.primary.pressed.background" to buttonPrimaryPressedBackground,
-            "button.primary.pressed.text" to buttonPrimaryPressedText,
-            "button.primary.disabled.background" to buttonPrimaryDisabledBackground,
-            "button.primary.disabled.text" to buttonPrimaryDisabledText,
-        )
+    // —— 组件清单 §7 新增颜色（T1–T5），只在组件库常量里，令牌源补齐后改读生成物 ——
+    val buttonInverseBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.BUTTON_INVERSE_BACKGROUND)
+    val buttonInverseText: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.BUTTON_INVERSE_TEXT)
+    val borderActive: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.BORDER_ACTIVE)
+    val overlayScrim: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.OVERLAY_SCRIM)
+    val badgeBackground: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.BADGE_BACKGROUND)
+    val controlChecked: Color
+        @Composable @ReadOnlyComposable
+        get() = token(CouliThemeTokens.CONTROL_CHECKED)
 
-    private fun token(path: String): Color = parseHexColor(DesignTokens.colors.getValue(path))
+    /** 令牌源的浅色值（令牌路径 → 颜色，便于核对生成物映射完整；不含新增键、不随主题变化）。 */
+    val all: Map<String, Color> = DesignTokens.colors.mapValues { (_, hex) -> parseHexColor(hex) }
+
+    @Composable
+    @ReadOnlyComposable
+    private fun token(path: String): Color = LocalCouliColorTokens.current.getValue(path)
 }
 
 /** `#RRGGBB` → 不透明 [Color]。 */

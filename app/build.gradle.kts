@@ -2,6 +2,8 @@
 plugins {
     alias(libs.plugins.couli.android.application)
     alias(libs.plugins.couli.android.compose)
+    // DS-02：真实目录样例的浅 / 深 Roborazzi 基准（仅测试设施）。
+    alias(libs.plugins.roborazzi)
     // Navigation Compose 类型安全路由（APP-02a 的占位接线）
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
