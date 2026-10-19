@@ -75,6 +75,22 @@ class AppUpdate
         private val mutableUi = MutableStateFlow(UpdateUi(gate.state(clock()), store.load().result))
         val ui: StateFlow<UpdateUi> = mutableUi.asStateFlow()
 
+        private val mutablePromptShowing = MutableStateFlow(mutableUi.value.state.showPrompt)
+
+        /**
+         * 可关闭的更新提示此刻要显示（FU-AND-0724 G28：剪贴板自动识别的普通互斥模态 update_prompt）：与 [ui] 的 state.showPrompt 同步，
+         * 在发布界面状态的同一步里更新（[uiValue]），关闭提示即为 false。
+         */
+        val promptShowing: StateFlow<Boolean> = mutablePromptShowing.asStateFlow()
+
+        /** 发布界面状态的唯一写口：同时更新 [promptShowing]。 */
+        private var uiValue: UpdateUi
+            get() = mutableUi.value
+            set(value) {
+                mutableUi.value = value
+                mutablePromptShowing.value = value.state.showPrompt
+            }
+
         private val routerListeners = mutableListOf<(UpdateCheck) -> Unit>()
         private var coldStartChecked = false
         private var checkJob: Job? = null
@@ -230,8 +246,8 @@ class AppUpdate
             val result = store.load().result
             val status = gate.state(clock()).status
             val opened = result != null && openFirstStore(result)
-            mutableUi.value =
-                mutableUi.value.copy(
+            uiValue =
+                uiValue.copy(
                     forceUnavailable = status == UpdateStatus.BELOW_MIN && !opened,
                     promptUnavailable = status == UpdateStatus.BELOW_RECOMMENDED && !opened,
                 )
@@ -260,12 +276,12 @@ class AppUpdate
             if (checkJob?.isActive == true) {
                 if (thenPickStore) {
                     pickStoreAfterCheck = true
-                    mutableUi.value = mutableUi.value.copy(working = true, forceUnavailable = false)
+                    uiValue = uiValue.copy(working = true, forceUnavailable = false)
                 }
                 return
             }
             pickStoreAfterCheck = thenPickStore
-            mutableUi.value = mutableUi.value.copy(working = thenPickStore)
+            uiValue = uiValue.copy(working = thenPickStore)
             checkRound += 1
             checkInFlight = true
             // 新检查真正发出：欠的补查由它承担；在途期间「又被允许」的记录只对上一检查有效
@@ -279,7 +295,7 @@ class AppUpdate
                         // 检查开始后撤回同意 / 进基本模式 / 切了环境（R1-02）：结果作废——不落盘、不改强更结论、不选店，只结束「检查中」
                         gate.abandonCheck()
                         pickStoreAfterCheck = false
-                        mutableUi.value = mutableUi.value.copy(working = false)
+                        uiValue = uiValue.copy(working = false)
                         // 作废的检查不算做过：记下需要补查（R3-01）。检查已在这次检查退出前重新允许 → 现在补发新的一次；否则等
                         // 重新允许（onCheckAllowedChanged）、回前台或【重试】时再发
                         recheckOwed = true
@@ -297,7 +313,7 @@ class AppUpdate
                     }
                     val pick = pickStoreAfterCheck
                     pickStoreAfterCheck = false
-                    mutableUi.value = mutableUi.value.copy(working = false, forceUnavailable = false, promptUnavailable = false)
+                    uiValue = uiValue.copy(working = false, forceUnavailable = false, promptUnavailable = false)
                     publish()
                     if (pick && gate.state(clock()).status == UpdateStatus.BELOW_MIN) goToStore()
                 }
@@ -305,7 +321,7 @@ class AppUpdate
 
         private fun publish() {
             val state = gate.state(clock())
-            mutableUi.value = mutableUi.value.copy(state = state, result = store.load().result)
+            uiValue = uiValue.copy(state = state, result = store.load().result)
             val after = routerView(state)
             if (after != publishedRouterUpdate) {
                 publishedRouterUpdate = after

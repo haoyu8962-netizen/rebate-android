@@ -121,6 +121,12 @@ class AppLogin(
     BindPhoneHost {
     val service: LoginService = LoginService(client, tokens, this, legal, sessionScope)
 
+    /**
+     * 登录任务进行中（FU-AND-0724 G28：剪贴板自动识别的普通互斥模态 login，首页等非登录页上发起的登录任务）：真实 [LoginService] 的发码、
+     * 短信登录或第三方登录在途（[LoginService.busyState]），任务结束即为 false。登录页本身另按敏感页处理。
+     */
+    val taskActive: StateFlow<Boolean> get() = service.busyState
+
     /** 本机已知的「是否绑了手机」（按会话；第三方登录未绑 → 守卫按已登录未绑手机，APP-05b）。 */
     val phoneBinding = PhoneBindingState()
 
@@ -273,6 +279,8 @@ class AppLogin(
         // APP-13a R2-01：会话保存、刷新（作用域变化）、清理的同步出口——打开着的绑手机页在这条消息里按完整固定身份换代、清空敏感状态
         bindPhone.syncSession()
         verifyPhoneBinding()
+        // 按登录世代（不是会话枚举）换代的订阅方：同一身份状态下的换号枚举不变（FU-AND-0724 代码复审 r1 S2-2）
+        sessionStoredListener?.invoke()
     }
 
     /** 写入守卫的会话状态（并记下受限会话所在的登录世代）。 */
@@ -401,6 +409,9 @@ class AppLogin(
 
     /** 邀请码的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
     var invite: InvitePasteSource? = null
+
+    /** 会话保存、刷新、清理通知的转发（AppModule 接剪贴板，按登录世代判断换号）；在 Router 同步之后调。 */
+    var sessionStoredListener: (() -> Unit)? = null
 
     /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
     var customerService: (fromRoute: String) -> Unit = { open(HELP_ROUTE) }

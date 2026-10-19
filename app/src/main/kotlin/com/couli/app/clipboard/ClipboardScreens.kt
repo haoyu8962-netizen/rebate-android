@@ -75,14 +75,18 @@ object ClipboardScreens {
     /** 手动粘贴到只有邀请内容时的邀请确认条（游客，A-R3-01）。 */
     const val INVITE_CONFIRM = "clipboard_invite_confirm"
 
+    /** 网络异常结果的显式重试条（R24）与它的【重试】。 */
+    const val RETRY = "clipboard_retry"
+    const val RETRY_ACTION = "clipboard_retry_action"
+
     /** 多卡弹层里行内 30132 的【用商品名搜索】（后接行号）。 */
     const val ROW_SEARCH_BY_NAME_PREFIX = "clipboard_row_search_by_name_"
     const val SETTINGS_ROW = "clipboard_settings_row"
 }
 
 /**
- * 首页根页的剪贴板区（HomeClipboard / HomeClipboardInvite / Main）：搜索框下面依次是提示条（有时）、Android 开关关闭时的常驻粘贴按钮、
- * 「粘贴链接，先查返利 · 去粘贴」卡。42901 限流中按钮与卡置灰。
+ * 首页根页的剪贴板区（HomeClipboard / HomeClipboardInvite / Main）：搜索框下面依次是提示条（邀请、系统分享；商品自 FU-AND-0724 起直接出卡，
+ * 不出提示条）、30132 与网络异常重试的内联提示、Android 开关关闭时的常驻粘贴按钮、「粘贴链接，先查返利 · 去粘贴」卡。42901 限流中按钮与卡置灰。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 剪贴板、邀请、分享三种提示条的文案逐项选择
@@ -145,6 +149,7 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
             }
         }
         UnrecognizedInline(clipboard, origin = AppClipboard::isHomeOrigin)
+        RetryInline(clipboard, origin = AppClipboard::isHomeOrigin)
         InviteConfirmInline(clipboard, origin = AppClipboard::isHomeOrigin, enabled = !blocked)
         if (!autoSwitch) {
             PasteEntry(
@@ -191,6 +196,7 @@ fun SearchTypingPasteResult(
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
     val inset = Modifier.padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
     UnrecognizedInline(clipboard, origin = { it == entryId }, modifier = inset)
+    RetryInline(clipboard, origin = { it == entryId }, modifier = inset)
     InviteConfirmInline(clipboard, origin = { it == entryId }, enabled = !blocked, modifier = inset)
 }
 
@@ -249,7 +255,9 @@ private fun InviteConfirmBar(
 fun ClipboardResultHost(clipboard: AppClipboard) {
     val result by clipboard.result.collectAsStateWithLifecycle()
     when (val current = result) {
+        // 网络异常、可显式重试的结果（R24）在发起页内联显示（[RetryInline]），不按 2 秒轻提示自动消失
         is ClipboardResult.Notice -> {
+            if (clipboard.canRetry(current)) return
             LaunchedEffect(current) {
                 delay(NOTICE_MILLIS)
                 clipboard.consumeResult(current)
@@ -347,6 +355,64 @@ private fun UnrecognizedRow(
             ) {
                 Text(
                     text = ClipboardDraftTexts.text("clipboard.search_by_name"),
+                    style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
+                    color = if (disabled) CouliColors.textSecondary else CouliColors.brandEmphasis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 网络异常结果的显式重试（R24；与 30132 提示同一样式）：文案 + 【重试】，复用已批准的候选重发同一个请求，不读此刻的剪贴板。只在发起页仍是当前页时
+ * 显示；42901 禁用期与 parse 在途时置灰（执行层另在 [AppClipboard.retryResult] 拦）。出现时读屏播报一次。
+ */
+@Composable
+fun RetryInline(
+    clipboard: AppClipboard,
+    origin: (String) -> Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val result by clipboard.result.collectAsStateWithLifecycle()
+    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    val current = result as? ClipboardResult.Notice ?: return
+    if (!origin(current.origin) || !clipboard.canRetry(current)) return
+    AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
+    val disabled = blocked || busy
+    key(current.id) {
+        Row(
+            modifier =
+                modifier
+                    .fillMaxWidth()
+                    .background(CouliColors.statusErrorBackground, RoundedCornerShape(CouliRadius.button))
+                    .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1)
+                    .testTag(ClipboardScreens.RETRY),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        ) {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusErrorText,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+            Text(
+                text = current.text,
+                style = CouliTypography.footnote,
+                color = CouliColors.statusErrorText,
+                modifier = Modifier.weight(1f).padding(vertical = CouliSpacing.space2),
+            )
+            Box(
+                modifier =
+                    Modifier
+                        .heightIn(min = CouliSizes.touchTarget)
+                        .wrapClick(enabled = !disabled) { clipboard.retryResult(current) }
+                        .testTag(ClipboardScreens.RETRY_ACTION),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = ClipboardDraftTexts.text("clipboard.retry"),
                     style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
                     color = if (disabled) CouliColors.textSecondary else CouliColors.brandEmphasis,
                 )

@@ -11,11 +11,11 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavHostController
@@ -34,6 +34,7 @@ import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.ClipboardFingerprint
 import com.couli.core.clipboard.ClipboardRecords
+import com.couli.core.clipboard.ClipboardSaltRead
 import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardUi
 import com.couli.core.clipboard.ImportPreferenceStore
@@ -77,6 +78,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -125,8 +127,8 @@ class FuClipIntegrationTest {
         private val delegate: PageApi,
     ) : PageApi by delegate {
         override suspend fun send(call: ApiCall): ApiResult {
+            if (call.operationId == "parseInput") synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
             gatedQueue.removeFirstOrNull()?.let { reply ->
-                synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
                 return reply.await()
             }
             return delegate.send(call)
@@ -171,7 +173,7 @@ class FuClipIntegrationTest {
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.path.orEmpty()
-                    synchronized(requests) { requests += path to request.body.readUtf8() }
+                    if (!path.startsWith(PARSE_PATH)) synchronized(requests) { requests += path to request.body.readUtf8() }
                     return when {
                         path.startsWith(PARSE_PATH) -> envelope(0, singleCard())
 
@@ -371,7 +373,7 @@ class FuClipIntegrationTest {
             node.config.getOrNull(SemanticsProperties.ContentDescription)?.forEach { out.append(it).append('|') }
             node.children.forEach(::walk)
         }
-        walk(composeRule.onRoot(useUnmergedTree = true).fetchSemanticsNode())
+        composeRule.onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes().forEach(::walk)
         return out.toString()
     }
 
@@ -387,7 +389,7 @@ class FuClipIntegrationTest {
             assertFalse("$url 不出商品提示", promptShown())
             composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
             composeRule.waitForIdle()
-            assertTrue("$url 手动粘贴本地 30132", clipboard.result.value is ClipboardResult.Unrecognized)
+            assertNull("$url 无候选安静结束", clipboard.result.value)
         }
         assertEquals("parse 请求数 0", 0, parseBodies().size)
         assertEquals(0, system.writes)
@@ -400,8 +402,8 @@ class FuClipIntegrationTest {
         val raw = "私人 https://example.com/a?order=9 https://m.tb.cn/h.x 「查看订单 https://example.com/private?order=123」"
         copy(raw)
         foreground(cold = true)
-        assertTrue(promptShown())
-        tapPrompt()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
         idleUntil { parseBodies().size == 1 }
         assertEquals("https://m.tb.cn/h.x", parseBodies().single().text("text"))
         assertEquals("clipboard", parseBodies().single().text("scene"))
@@ -415,17 +417,15 @@ class FuClipIntegrationTest {
         assertNoRaw("example.com", "order=", "私人")
     }
 
-    /** 纯口令：自动识别出「淘宝口令」提示条，点击后请求体 = 口令片段。 */
+    /** 纯口令：自动直接识别，请求体只含口令片段。 */
     @Test
     fun c2_c7_pureTaobaoTokenPromptsAsTaobaoTokenAndUploadsOnlyTheToken() {
         launch()
         copy("复制这段 ￥AbCdEfGh12￥ 打开手机淘宝")
         foreground(cold = true)
-        assertTrue(promptShown())
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_DETAIL, useUnmergedTree = true).assertIsDisplayed()
-        composeRule.onNodeWithText("淘宝口令", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals("点击前 0 次", 0, parseBodies().size)
-        tapPrompt()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
+        assertEquals("无需点击已上传", 1, parseBodies().size)
         idleUntil { parseBodies().size == 1 }
         assertEquals("￥AbCdEfGh12￥", parseBodies().single().text("text"))
         assertEquals(0, system.writes)
@@ -445,24 +445,28 @@ class FuClipIntegrationTest {
         copy("https://u.jd.com/abc 「耳机」")
         background()
         foreground()
-        assertTrue("京东照常", promptShown())
-        tapPrompt()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
         idleUntil { parseBodies().size == 1 }
         assertEquals("https://u.jd.com/abc\n耳机", parseBodies().single().text("text"))
     }
 
-    /** 规则表变化：已显示但未点击的提示条若候选已不被允许，同步作废（§2.1 第 5 条）。 */
+    /** 规则表变化：已发出请求的候选若不再被允许，迟到响应不得呈现（§2.1 第 5 条）。 */
     @Test
-    fun c2_rulesTighteningInvalidatesAShownPrompt() {
+    fun c2_rulesTighteningInvalidatesAnInFlightAutomaticResult() {
         launch()
+        val reply = CompletableDeferred<ApiResult>()
+        gatedQueue += reply
         copy("https://m.tb.cn/h.x")
         foreground(cold = true)
-        assertTrue(promptShown())
+        idleUntil { parseBodies().size == 1 }
         configJson = CONFIG.replace(""""flags":{}""", """"flags":{"clipboard.enabled.taobao":false}""")
         composeRule.runOnUiThread { clipboard.onRulesChanged() }
-        composeRule.waitForIdle()
-        assertFalse("候选不再被允许，提示条作废", promptShown())
-        assertEquals(0, parseBodies().size)
+        composeRule.runOnUiThread { reply.complete(ApiResult.Success(Json.parseToJsonElement(singleCard()), "trace-000123", null)) }
+        idleUntil { !clipboard.busy.value }
+        assertNull("规则收紧后在途卡作废", clipboard.result.value)
+        assertFalse(promptShown())
+        assertEquals(1, parseBodies().size)
     }
 
     // ================================================================ C3：加盐指纹
@@ -474,6 +478,8 @@ class FuClipIntegrationTest {
         assertEquals("自写走唯一写入口", 1, system.writes)
         foreground(cold = true)
         assertFalse("自写内容不提示", promptShown())
+        assertEquals("自写内容不自动上传", 0, parseBodies().size)
+        assertNull(clipboard.result.value)
         val hmac = ClipboardFingerprint(SAMPLE_SALT).hash(LINK)
         val stored = prefs().all.entries.joinToString("|") { "${it.key}=${it.value}" }
         assertTrue("存储里是本次盐的 HMAC 指纹", stored.contains(hmac))
@@ -488,8 +494,9 @@ class FuClipIntegrationTest {
         launch()
         copy(LINK)
         foreground(cold = true)
-        assertTrue(promptShown())
-        composeRule.runOnUiThread { clipboard.onPromptClose() }
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
+        composeRule.runOnUiThread { clipboard.consumeResult(checkNotNull(clipboard.result.value)) }
         composeRule.runOnUiThread { assertTrue(clipboard.writer.write("复制的口令样例", "tpwd")) }
         assertTrue(prefs().contains(ClipboardPreferences.KEY_SALT))
         composeRule.runOnUiThread { privacy.withdraw() }
@@ -499,7 +506,7 @@ class FuClipIntegrationTest {
         composeRule.runOnUiThread {
             privacy.requestFullFunction()
             privacy.agree()
-            // R06 撤回已清用途同意；此旧 hash 回归显式恢复功能前提，提示条断言不变。
+            // R06 撤回已清用途同意；此 hash 回归显式恢复功能前提，按新口径直接出卡。
             importPreferences.enable("1")
             clipboard.setAutoSwitch(true)
         }
@@ -509,7 +516,8 @@ class FuClipIntegrationTest {
         copy(LINK)
         background()
         foreground()
-        assertTrue("再同意后同一内容重新可提示", promptShown())
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertEquals("再同意后同一候选重新识别", 2, parseBodies().size)
         assertEquals(1, system.writes)
     }
 
@@ -519,28 +527,39 @@ class FuClipIntegrationTest {
         composeRule.runOnUiThread { assertTrue(clipboard.writer.write(LINK, "tpwd")) }
         foreground(cold = true)
         assertFalse(promptShown())
+        assertEquals("换盐前自写排除生效", 0, parseBodies().size)
+        assertNull(clipboard.result.value)
         // 人为换盐（盐丢失后新建同理）：旧自写记录属于旧盐，整份作废
         assertTrue(ClipboardPreferences(context, cipher).salt.write(OTHER_SAMPLE_SALT))
         background()
         foreground()
-        assertTrue("旧自写记录不再排除", promptShown())
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertEquals("旧自写记录不再排除", 1, parseBodies().size)
         val stored = prefs().all.entries.joinToString("|") { "${it.key}=${it.value}" }
-        assertTrue("新提示记录按新盐记", stored.contains(ClipboardFingerprint(OTHER_SAMPLE_SALT).hash(LINK)))
+        val persistedSalt = (ClipboardPreferences(context, cipher).salt.read() as ClipboardSaltRead.Present).salt
+        assertArrayEquals(OTHER_SAMPLE_SALT, persistedSalt)
+        assertTrue("商品摘要使用新的持久盐", stored.contains(ClipboardFingerprint(persistedSalt).hash(LINK)))
+        assertFalse("不回退到无盐摘要", stored.contains(ClipboardText.sha256(LINK)))
         assertFalse("旧盐的指纹已清掉", stored.contains(ClipboardFingerprint(SAMPLE_SALT).hash(LINK)))
     }
 
     @Test
-    fun c3_whenTheSaltIsUnavailableSelfWritesAreRefusedAndNoAutoPromptButManualPasteWorks() {
+    fun c3_whenTheSaltIsUnavailableSelfWritesAreRefusedAndNoAutoUploadButManualPasteWorks() {
         launch()
         cipher.failing = true
         composeRule.runOnUiThread { assertFalse("自写记不上 → 不写系统剪贴板、返回失败", clipboard.writer.write(LINK, "tpwd")) }
         assertEquals(0, system.writes)
         copy(LINK)
         foreground(cold = true)
-        assertEquals("读了 1 次", 1, system.reads)
-        assertFalse("24 小时去重判断不了：这一次不自动提示", promptShown())
+        // foreground 已结算主线程/Compose；API 在 send 入口记数，不能用提示条是否出现替代上传断言。
+        assertTrue("盐不可用允许不读或只读不传", system.reads in 0..1)
+        assertEquals("自动路径不能上传", 0, parseBodies().size)
+        assertNull("自动路径没有结果卡", clipboard.result.value)
+        val autoReads = system.reads
         composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
-        idleUntil { parseBodies().size == 1 }
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertEquals("这一次请求必须来自手动", 1, parseBodies().size)
+        assertEquals(autoReads + 1, system.reads)
         assertFalse(
             "不回落到未加盐 hash",
             prefs()
@@ -567,9 +586,8 @@ class FuClipIntegrationTest {
     @Test
     fun c6_c7_shareFromTheSearchPageReturnsHomeShowsThePlatformAndUploadsOnlyCandidatesAsShareExt() {
         launch()
-        copy("剪贴板里另有 https://u.jd.com/abc")
+        copy("剪贴板里是普通聊天文字，没有商品候选")
         foreground(cold = true)
-        composeRule.runOnUiThread { clipboard.onPromptClose() }
         openRoute("Search")
         assertEquals("Search", routes().last())
         background()
@@ -772,7 +790,7 @@ class FuClipIntegrationTest {
             checkNotNull(oldClose).invoke()
         }
         composeRule.waitForIdle()
-        Thread.sleep(LATE_MS)
+        idleUntil { !clipboard.busy.value }
         assertEquals("旧点击不发请求", 0, parseBodies().size)
         assertEquals("旧关闭不清掉新提示", current.id, clipboard.prompt.value?.id)
     }
@@ -1010,19 +1028,17 @@ class FuClipIntegrationTest {
     // ================================================================ C7
 
     @Test
-    fun c7_theAutoPromptShowsThePlatformAndShortHostAndUploadsTheSameCandidates() {
+    fun c7_autoDirectlyUploadsAllCandidatesWithoutDisplayingRawPaths() {
         launch()
         val raw = "看看 https://detail.tmall.com/item.htm?id=1&spm=Track https://u.jd.com/abc 「保温杯」"
         copy(raw)
         foreground(cold = true)
-        composeRule.onNodeWithText("天猫商品链接 detail.tmall.com/…等 2 个", useUnmergedTree = true).assertIsDisplayed()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
         val texts = screenTexts()
-        assertTrue(texts.contains("检测到天猫商品链接，查返利"))
-        assertFalse("不含路径与查询", texts.contains("item.htm") || texts.contains("spm=Track"))
-        tapPrompt()
-        idleUntil { parseBodies().size == 1 }
+        assertTrue("遍历范围必须包含独立窗口里的商品卡", texts.contains("降噪蓝牙耳机"))
+        assertFalse("不在界面泄漏路径与查询", texts.contains("item.htm") || texts.contains("spm=Track"))
         assertEquals("https://detail.tmall.com/item.htm?id=1&spm=Track\nhttps://u.jd.com/abc\n保温杯", parseBodies().single().text("text"))
-        assertNotNull(clipboard.history.stamps().singleOrNull())
         assertEquals(0, system.writes)
     }
 
@@ -1060,6 +1076,5 @@ class FuClipIntegrationTest {
                 """"search_status":{"taobao":"on","jd":"on"}}}"""
         const val WAIT_S = 5L
         const val POLL_MS = 10L
-        const val LATE_MS = 200L
     }
 }

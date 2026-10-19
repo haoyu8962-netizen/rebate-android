@@ -116,9 +116,16 @@ enum class ImportLifecycleEvent {
  * - [read] 抛异常按 unavailable 收束；
  * - [showFallback]：自动任务读不到时在该页面保留「粘贴查返利」入口；
  * - [showNotice]：拉起首次用途说明弹层，调用当时即按已显示消费本轮（G21）；
- * - [finished]：释放之后的观察通知，同一 requestId 至多一次。
+ * - [finished]：释放之后的观察通知，同一 requestId 至多一次；
+ * - [deliver]：手动 fill_input / bridge_read 读到的成功文本原样交付（FU-AND-0724，R20）：同一 requestId 至多一次，不进候选提取、不上传；
+ *   缺省空实现只为兼容既有端口实现，生产端口必须接上。它不是 bridge.complete 的错误 / 取消出口（0725）。
  */
 interface ImportCoordinatorPorts {
+    fun deliver(
+        task: ImportTask,
+        text: String,
+    ) = Unit
+
     fun read(task: ImportTask)
 
     fun extract(

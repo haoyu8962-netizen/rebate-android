@@ -29,7 +29,7 @@ enum class ImportGateDecision {
  * 自动任务的门槛判定（BR-ID-16 正文「自动任务的读取门槛」7 项；03 §4.6「前台轮次与门控」；decision G05 / G10 / G11 / G21 / G22 / G47）。
  * 纯函数，不读剪贴板。判定顺序（先命中先返回）：
  * 1. 敏感路由或敏感浮层 → [ImportGateDecision.SKIP_SENSITIVE]（优先于未就绪，R13）；
- * 2. 已就绪的非目标页（只有首页根页与 AgentChat 是目标）→ [ImportGateDecision.DROP_NON_TARGET]；
+ * 2. 已就绪的非目标页（0724 只有首页根页是目标，G27；AgentChat 0725 恢复）→ [ImportGateDecision.DROP_NON_TARGET]；
  * 3. ① 隐私、② 当前 consent_version 缺失（G47，不兜底）、③ 服务端 auto_read.android 明确为 false（G05）、H5 暂停 → BLOCKED，且不弹用途层；
  * 4. ⑤ 普通互斥模态、④ 未就绪 / 不可交互 / 未获焦 → WAIT（等待期间也不弹用途层，G22）；
  * 5. 没看过当前版本的用途说明 → NOTICE（包括开关已开但版本到达前打开的、明确关闭但版本已变的，G30 / G47）；
@@ -40,8 +40,8 @@ object ImportGates {
     const val ROUTE_HOME = "Home"
     const val ROUTE_AGENT_CHAT = "AgentChat"
 
-    /** 现行敏感清单（BR-ID-16 细则「敏感页面不识别」，10-18 加 InviteBackfill）：InviteBackfill 还没登记进 routes.json（G01），所以不并入旧清单。 */
-    val sensitiveRoutes: Set<String> = ClipboardSensitive.routes + "InviteBackfill"
+    /** 现行敏感清单（BR-ID-16 细则「敏感页面不识别」，10-18 加 InviteBackfill）：0724 退役旧读取判定时已并入 [ClipboardSensitive.routes]（0723 G08）。 */
+    val sensitiveRoutes: Set<String> = ClipboardSensitive.routes
 
     /** 敏感浮层：二次验证、AuthSheet、第三方授权进行中 / 授权跳转、首启隐私、强更。 */
     val sensitiveModals: Set<String> = ClipboardSensitive.overlays
@@ -53,12 +53,22 @@ object ImportGates {
     const val MODAL_TRADE_RETURN_CONFIRMATION = "trade_return_confirmation"
     const val MODAL_UPDATE_PROMPT = "update_prompt"
 
+    /** 外壳的其他弹窗（可关闭的更新提示由外壳报来、用途说明弹层自己显示中，0723 接线说明第 4 条）：等待，不读、不再弹。 */
+    const val MODAL_OTHER_DIALOG = "other_dialog"
+
+    /** 本轮有系统分享在处理（G19：分享到达那轮跳过自动读）：等待；分享真正进入本轮处理时协调器另按 markSkipped 消费本轮。 */
+    const val MODAL_SHARE_IMPORT = "share_import"
+
     /** 本端在 features.clipboard.auto_read 里的键。 */
     const val CLIENT_ANDROID = "android"
 
     fun sensitive(env: ImportEnvironment): Boolean = env.page.route in sensitiveRoutes || env.modal in sensitiveModals
 
-    fun target(page: ImportPageScope): Boolean = (page.route == ROUTE_HOME && page.homeRoot) || page.route == ROUTE_AGENT_CHAT
+    /**
+     * 自动读取的目标页。G11 的目标是首页根页与 AgentChat；FU-AND-0724 期间按 G27 只有首页根页（AgentChat 还没有直送渲染，读了也呈现不了，
+     * 不能读取上传而无渲染），FU-AND-0725 接入 AgentChat 直送时恢复 [ROUTE_AGENT_CHAT]（同步共享向量里两行 Android 0724 版本）。
+     */
+    fun target(page: ImportPageScope): Boolean = page.route == ROUTE_HOME && page.homeRoot
 
     /** features.clipboard.auto_read.android：缺键（含整节缺失、非布尔）按开启，只有明确的 false 才停自动读取（G05、R09）。 */
     fun autoReadEnabled(configData: JsonObject): Boolean {

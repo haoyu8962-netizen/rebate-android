@@ -34,6 +34,12 @@ interface InvitePasteSource {
 
     fun paste(): String?
 
+    /**
+     * 需要先给用户看剪贴板用途说明时（FU-AND-0724 G15：第一次点粘贴先出弹层）：返回 true，本次不读，用户关掉弹层后同一次点击读一次、抽码经
+     * [onFilled] 交回一次（抽不到为 null）；不需要时返回 false，页面照常调 [paste]。缺省不需要。
+     */
+    fun pasteLater(onFilled: (String?) -> Unit): Boolean = false
+
     val blocked: StateFlow<Boolean> get() = NOT_BLOCKED
 }
 
@@ -236,7 +242,10 @@ class LoginViewModel(
             toast(texts.text(RATE_LIMITED_KEY))
             return
         }
-        val code = source.paste()
+        if (!source.pasteLater(::fillPastedInvite)) fillPastedInvite(source.paste())
+    }
+
+    private fun fillPastedInvite(code: String?) {
         if (code != null) {
             mutableState.update { it.copy(invite = code, inviteExpanded = true) }
         } else {

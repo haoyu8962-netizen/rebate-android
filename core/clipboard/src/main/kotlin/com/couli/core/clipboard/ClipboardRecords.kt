@@ -119,8 +119,14 @@ class ClipboardRecords(
     /** 加盐的自写记录（只读观察：读当前盐，不生成）。 */
     val ledger = ClipboardWriteLedger(capacity, hash = { readHash(it) }, store = store, key = KEY_SELF)
 
-    /** 加盐的 24 小时提示记录。 */
+    /** 加盐的 24 小时提示记录（FU-AND-0724 起只给邀请提示用：邀请独立去重，自动与手动共用，R25）。 */
     val history = PromptHistory(clock, store, key = KEY_PROMPTED)
+
+    /**
+     * 自动识别商品的去重摘要（FU-AND-0724；R22、G07、G08）：候选摘要（[CandidateExtractor.summaryInput]）的本机持久盐 HMAC 与时间，24 小时
+     * 内同一摘要只自动识别一次。只对自动任务；退出 / 切换账号时清（[clearProducts]），自写记录与盐不清；换盐、撤回同意随整套记录作废。
+     */
+    val products = PromptHistory(clock, store, key = KEY_PRODUCTS)
 
     private fun readHash(text: String): String = (fingerprint(create = false) as? Salt.Ready)?.fingerprint?.hash(text).orEmpty()
 
@@ -160,7 +166,11 @@ class ClipboardRecords(
     /** 写之前：记录属于别的盐（或还没有 saltId）→ 整份清掉，再记当前 saltId；以确认落盘为准。 */
     private fun prepareWrite(fingerprint: ClipboardFingerprint): Boolean {
         if (recordsMatch(fingerprint)) return true
-        val done = write(KEY_SELF, null) && write(KEY_PROMPTED, null) && write(KEY_SALT_ID, fingerprint.saltId)
+        val done =
+            write(KEY_SELF, null) &&
+                write(KEY_PROMPTED, null) &&
+                write(KEY_PRODUCTS, null) &&
+                write(KEY_SALT_ID, fingerprint.saltId)
         saltIdUnconfirmed = !done
         return done
     }
@@ -228,6 +238,34 @@ class ClipboardRecords(
         }
 
     /**
+     * 自动任务的商品去重判断（G07 / G14）：[fingerprint] 是本次提取时取得的指纹（[view]），记录属于别的盐视为空；严格小于 24 小时为命中
+     * （23:59:59.999 命中，24:00:00 放行）。
+     */
+    fun productSeenWithin24h(
+        fingerprint: ClipboardFingerprint,
+        summary: String,
+    ): Boolean =
+        synchronized(lock) {
+            val now = clock()
+            recordsMatch(fingerprint) &&
+                products.stamps().any { it.hash == summary && now - it.atMs in 0 until ClipboardClassifier.PROMPT_WINDOW_MS }
+        }
+
+    /** 发出 parse 之前记下商品摘要（G08：发出前记、失败也记）；盐此后被换掉时不写。返回是否确认落盘。 */
+    fun recordProduct(
+        fingerprint: ClipboardFingerprint,
+        summary: String,
+    ): Boolean =
+        synchronized(lock) {
+            val current = fingerprint(create = false) as? Salt.Ready ?: return false
+            if (current.fingerprint.saltId != fingerprint.saltId) return false
+            prepareWrite(fingerprint) && products.record(summary)
+        }
+
+    /** 退出 / 切换账号（G07）：只清商品去重摘要；自写记录、邀请提示记录与盐保留。 */
+    fun clearProducts(): Boolean = synchronized(lock) { write(KEY_PRODUCTS, null) }
+
+    /**
      * 分类前取加盐视图（自动识别用；已同意时调）：必要时生成盐。盐不可用 → null（这一次不自动提示，§2.2 第 5 条）。记录属于别的盐 → 视为空。
      */
     fun view(): ClipboardRecordsView? =
@@ -248,6 +286,7 @@ class ClipboardRecords(
                 runCatching { saltStore.delete() }.getOrDefault(false) &&
                     write(KEY_SELF, null) &&
                     write(KEY_PROMPTED, null) &&
+                    write(KEY_PRODUCTS, null) &&
                     write(KEY_SALT_ID, null)
             // 没确认落盘：读回的 saltId 不可信，之后写记录前重新清理（R1-04 同类）
             if (!done) saltIdUnconfirmed = true
@@ -268,6 +307,7 @@ class ClipboardRecords(
         const val KEY_SELF = "fp.self_written"
         const val KEY_PROMPTED = "fp.prompted"
         const val KEY_SALT_ID = "fp.salt_id"
+        const val KEY_PRODUCTS = "fp.products"
 
         /** 旧版（APP-07）未加盐 SHA-256 记录的键。 */
         val LEGACY_KEYS: List<String> = listOf(ClipboardWriteLedger.KEY, PromptHistory.KEY)

@@ -6,6 +6,7 @@ import com.couli.core.clipboard.ImportTask.Companion.PHASE_AWAITING_SYSTEM
 import com.couli.core.clipboard.ImportTask.Companion.PHASE_EXTRACTING
 import com.couli.core.clipboard.ImportTask.Companion.PHASE_PARSING
 import com.couli.core.clipboard.ImportTask.Companion.PHASE_READING
+import com.couli.core.clipboard.ImportTask.Companion.PURPOSE_PRODUCT_LOOKUP
 import com.couli.core.clipboard.ImportTask.Companion.TERMINAL_CANCELLED
 import com.couli.core.clipboard.ImportTask.Companion.TERMINAL_DEDUP
 import com.couli.core.clipboard.ImportTask.Companion.TERMINAL_EXPIRED
@@ -34,7 +35,9 @@ import kotlinx.serialization.json.JsonObject
  * 活动的自动任务；本轮「已消费」不因任何终态回退。
  *
  * 手动任务（R19）：只查隐私同意与发起页面仍有效，不查开关、功能同意版本、轮次与节流，不占自动任务的位置、不改 consumed。看过用途说明的
- * 前置（G15：Android 自绘按钮先弹层、关弹层后本次照常读）由界面在调用 [onPasteTap] 之前处理。同一目的同时只有一个手动任务（连点去重）。
+ * 前置（G15：Android 自绘按钮先弹层、关弹层后本次照常读）由界面在调用 [onPasteTap] 之前处理。同一页面实例上同一目的同时只有一个手动任务
+ * （连点去重，F-AND-54 ①：按 pageInstanceId + purpose，别的页面实例上的有效点击照常受理）。只有 product_lookup 走提取 → 上传 → 弹卡；
+ * fill_input / bridge_read 读到的文本经 [ImportCoordinatorPorts.deliver] 原样交付一次即成功收束（R20）。
  *
  * 撤销（R16）只有四类：真正进后台、页面实例销毁、关开关、撤回同意。关开关与撤回功能同意只撤自动任务（手动任务不校验开关与功能同意：
  * BR-ID-16 正文「手动任务不校验开关、功能同意版本」，03 §4.6「关闭与撤回：取消待执行的自动任务」）；撤回隐私同意（[onConsentRevoked]
@@ -73,6 +76,9 @@ class ImportCoordinator(
     private var activeAuto: ImportTask? = null
     private val manualTasks = LinkedHashMap<String, ImportTask>()
     private val queuedManual = mutableListOf<QueuedManual>()
+
+    /** 此刻在前台（进程级生命周期的 start 之后、stop 之前）。 */
+    val inForeground: Boolean get() = foreground
 
     fun snapshot(): ImportCoordinatorSnapshot =
         ImportCoordinatorSnapshot(
@@ -144,6 +150,16 @@ class ImportCoordinator(
         if (foreground && epoch == this.epoch) round = Round.CONSUMED
     }
 
+    /**
+     * 本轮跳过（03 §4.6 markSkipped）：只对携带的当前轮次生效，取消排队的尝试并按已消费处理，之后同轮不补读。用于系统分享在本轮处理时
+     * （G19：分享到达那轮不自动读剪贴板）。已在进行的自动任务不受影响（分享处理与在途任务的先后由调用方的模态等待保证）。
+     */
+    fun markSkipped(epoch: Long) {
+        if (!foreground || epoch != this.epoch) return
+        cancelAttempt()
+        round = Round.CONSUMED
+    }
+
     fun onAwaitingSystem(task: ImportTask) {
         workScope.launch {
             val registered = registered(task.requestId) ?: return@launch
@@ -155,11 +171,13 @@ class ImportCoordinator(
     fun onPasteTap(purpose: String) {
         val env = environment()
         if (!env.privacyAgreed) return
-        if (manualTasks.values.any { it.purpose == purpose } || queuedManual.any { it.purpose == purpose }) return
+        val page = env.page.pageInstanceId
+        // F-AND-54 ①：同一页面实例上同一目的的连点去重；别的页面实例（哪怕同一路由）上的有效点击照常受理
+        if (manualPending(page, purpose)) return
         val holder = arrayOfNulls<QueuedManual>(1)
         // 先登记再启动：即使注入的是立即执行的调度器，执行时也能找到自己的排队记录
         val job = workScope.launch(start = CoroutineStart.LAZY) { holder[0]?.let { startManual(it, purpose) } }
-        val queued = QueuedManual(job, env.page.pageInstanceId, purpose)
+        val queued = QueuedManual(job, page, purpose)
         holder[0] = queued
         queuedManual += queued
         job.start()
@@ -185,6 +203,14 @@ class ImportCoordinator(
     ) {
         workScope.launch { handleParsed(task.requestId, result) }
     }
+
+    /** 这个页面实例上同一目的的手动任务还在排队或进行中。 */
+    private fun manualPending(
+        page: String,
+        purpose: String,
+    ): Boolean =
+        manualTasks.values.any { it.purpose == purpose && it.pageInstanceId == page } ||
+            queuedManual.any { it.purpose == purpose && it.pageInstanceId == page }
 
     private fun roundOpen(): Boolean = foreground && epoch != null && round == Round.OPEN
 
@@ -274,6 +300,13 @@ class ImportCoordinator(
         if (!stillValid(task)) return expire(task)
         val text = result.text
         if (result.kindRaw != ImportReadResult.KIND_TEXT || text.isNullOrEmpty()) return unavailable(task)
+        if (task.kind == KIND_MANUAL && task.purpose != PURPOSE_PRODUCT_LOOKUP) {
+            // R20：fill_input / bridge_read 原样交付一次即成功（先释放：重复的读取回调找不到登记，不会二次交付）
+            release(task)
+            ports.deliver(task, text)
+            ports.finished(task, TERMINAL_SUCCESS)
+            return
+        }
         val next = task.copy(phase = PHASE_EXTRACTING)
         update(next)
         ports.extract(next, text)

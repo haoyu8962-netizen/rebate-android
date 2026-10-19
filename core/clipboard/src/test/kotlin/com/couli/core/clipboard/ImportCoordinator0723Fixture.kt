@@ -47,6 +47,7 @@ internal class ImportCoordinator0723Fixture(
     val extractions = mutableListOf<Pair<ImportTask, String>>()
     val parses = mutableListOf<Pair<ImportTask, List<String>>>()
     val cards = mutableListOf<Pair<ImportTask, JsonObject>>()
+    val deliveries = mutableListOf<Pair<ImportTask, String>>()
     val fallbacks = mutableListOf<String>()
     val notices = mutableListOf<Pair<Long, String>>()
     val finishes = mutableListOf<Pair<ImportTask, String>>()
@@ -65,6 +66,14 @@ internal class ImportCoordinator0723Fixture(
             requestIdGen = { "request-${++serial}" },
             ports =
                 object : ImportCoordinatorPorts {
+                    override fun deliver(
+                        task: ImportTask,
+                        text: String,
+                    ) {
+                        assertOwnerThread()
+                        deliveries += task to text
+                    }
+
                     override fun read(task: ImportTask) {
                         assertOwnerThread()
                         reads += task // 入口同步计数，抛异常也计一次。

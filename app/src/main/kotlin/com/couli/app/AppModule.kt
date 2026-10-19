@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.couli.app.account.AppAccount
 import com.couli.app.agent.AppAgent
 import com.couli.app.agent.connectAgentScreenReader
@@ -702,6 +703,7 @@ object AppModule {
         update: AppUpdate,
         privacy: AppPrivacy,
         clipboard: Provider<AppClipboard>,
+        trade: Provider<AppTrade>,
     ): AppLogin =
         AppLogin(
             client = client,
@@ -722,8 +724,24 @@ object AppModule {
 
                     override fun paste(): String? = clipboard.get().pasteInviteCode()
 
+                    // G15：还没看过用途说明时先出弹层，关掉后同一次点击读一次、抽码填回这个输入框
+                    override fun pasteLater(onFilled: (String?) -> Unit): Boolean {
+                        val board = clipboard.get()
+                        if (!board.manualNoticeNeeded()) return false
+                        board.pasteInviteCode(onFilled)
+                        return true
+                    }
+
                     override val blocked: StateFlow<Boolean> get() = clipboard.get().blocked
                 }
+            // 剪贴板普通互斥模态的生产来源（FU-AND-0724 G28 / G29）：登录、购买、更新三个服务都已构造完成后一次接上（不在 appClipboard
+            // provider 里取 AppLogin，避免循环依赖）；在 loginBuilt 之前接，订阅的初始同步不会经浮层来源回头取 AppLogin
+            val board = clipboard.get()
+            val shop = trade.get()
+            board.connectModalSources(trade = shop, login = login, update = update)
+            // 换号的生产通知（G07，代码复审 r1 S2-2）：网络层每次保存 / 清理会话都转给剪贴板，由它按登录世代判断是否换号、清商品摘要；
+            // 每次取当前实例（不捕获构造时的对象）
+            login.sessionStoredListener = { clipboard.get().onSessionStored() }
             loginBuilt = true
         }
 
@@ -1145,6 +1163,8 @@ object AppModule {
             prefs = ClipboardPreferences(context),
             sessionEpoch = { tokens.loginEpoch },
         ).also { board ->
+            // 前台轮次只由进程级生命周期决定（FU-AND-0724，R12）：ON_START / ON_STOP 在观察者回调里同步转给协调器
+            board.bindProcessLifecycle(ProcessLifecycleOwner.get().lifecycle)
             board.overlay = {
                 // AppLogin 构造时（init 里发布会话状态）会同步触发剪贴板的会话回调：那时还不能取 AppLogin（Dagger 判循环依赖、已登录冷启动即崩），
                 // 也不可能有第三方登录在进行（APP-08 联调发现的既有问题）

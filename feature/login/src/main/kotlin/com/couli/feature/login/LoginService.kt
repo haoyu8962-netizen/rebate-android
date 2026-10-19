@@ -18,6 +18,9 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -246,8 +249,32 @@ class LoginService(
     /** 第三方登录在途（与短信登录互斥）。 */
     @Volatile
     internal var thirdPartyBusy = false
+        set(value) {
+            field = value
+            publishBusy()
+        }
     private var sending = false
+        set(value) {
+            field = value
+            publishBusy()
+        }
     private var loggingIn = false
+        set(value) {
+            field = value
+            publishBusy()
+        }
+
+    private val mutableBusyState = MutableStateFlow(false)
+
+    /**
+     * [busy] 的可观察形式（FU-AND-0724 G28：剪贴板互斥模态「登录任务」的来源）：发码、短信登录、第三方登录任一在途为 true，三者都结束为 false；
+     * 在改变在途标记的同一线程、同一步里更新。
+     */
+    val busyState: StateFlow<Boolean> = mutableBusyState.asStateFlow()
+
+    private fun publishBusy() {
+        mutableBusyState.value = sending || loggingIn || thirdPartyBusy
+    }
 
     @Volatile
     private var loggingOut = false

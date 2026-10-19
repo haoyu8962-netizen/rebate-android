@@ -187,9 +187,10 @@ class ClipboardPreferences internal constructor(
         private const val KEY_DEVICE_AUTO_DETECT = "device_auto_detect"
         private const val HASH_PREFIX = "hash."
 
-        /** 撤回时一定要删的记录键（加盐的两份记录与 saltId、旧版未加盐的两份记录）。 */
+        /** 撤回时一定要删的记录键（加盐的自写、邀请提示、商品去重摘要三份记录与 saltId，旧版未加盐的两份记录）。 */
         private val KNOWN_RECORD_KEYS =
-            listOf(ClipboardRecords.KEY_SELF, ClipboardRecords.KEY_PROMPTED, ClipboardRecords.KEY_SALT_ID) + ClipboardRecords.LEGACY_KEYS
+            listOf(ClipboardRecords.KEY_SELF, ClipboardRecords.KEY_PROMPTED, ClipboardRecords.KEY_PRODUCTS, ClipboardRecords.KEY_SALT_ID) +
+                ClipboardRecords.LEGACY_KEYS
 
         /** 盐在偏好文件里的键（加密后的值；不以 [HASH_PREFIX] 开头，撤回时先单独删）。 */
         const val KEY_SALT = "salt.v1"

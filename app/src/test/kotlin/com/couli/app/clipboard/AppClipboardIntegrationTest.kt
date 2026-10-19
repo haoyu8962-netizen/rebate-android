@@ -52,6 +52,7 @@ import com.couli.core.clientcore.ConfigReply
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.ClipboardFingerprint
+import com.couli.core.clipboard.ClipboardSaltRead
 import com.couli.core.clipboard.ClipboardText
 import com.couli.core.clipboard.ClipboardUi
 import com.couli.core.clipboard.ImportPreferenceStore
@@ -111,6 +112,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -184,6 +186,7 @@ class AppClipboardIntegrationTest {
 
     /** R1-05：依次给每个 parse 的回答（不为空时优先于 [gated]）。 */
     private val gatedQueue = ArrayDeque<CompletableDeferred<ApiResult>>()
+    private val activeApiCalls = AtomicInteger()
 
     /** 剪贴板用的 PageApi：缺省原样交给 ApiClient；[gated] 不为 null 时这一次 parse 等测试给回答。 */
     private inner class GatedPageApi(
@@ -191,12 +194,18 @@ class AppClipboardIntegrationTest {
     ) : PageApi by delegate {
         @Suppress("ReturnCount") // 依次闸门、单次闸门、原样转发
         override suspend fun send(call: ApiCall): ApiResult {
-            lastOwnership = call.ownership
-            // R1-05：按发出顺序依次停在闸门的回答（多次 parse 交错、乱序到达）
-            gatedQueue.removeFirstOrNull()?.let { return it.await() }
-            val reply = gated ?: return delegate.send(call)
-            gated = null
-            return reply.await()
+            activeApiCalls.incrementAndGet()
+            try {
+                if (call.operationId == "parseInput") synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
+                lastOwnership = call.ownership
+                // R1-05：按发出顺序依次停在闸门的回答（多次 parse 交错、乱序到达）
+                gatedQueue.removeFirstOrNull()?.let { return it.await() }
+                val reply = gated ?: return delegate.send(call)
+                gated = null
+                return reply.await()
+            } finally {
+                activeApiCalls.decrementAndGet()
+            }
         }
     }
 
@@ -238,10 +247,10 @@ class AppClipboardIntegrationTest {
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.path.orEmpty()
-                    synchronized(requests) { requests += path to request.body.readUtf8() }
+                    if (!path.startsWith(PARSE_PATH)) synchronized(requests) { requests += path to request.body.readUtf8() }
                     return when {
                         path.startsWith(PARSE_PATH) -> {
-                            hold?.await(WAIT_S, TimeUnit.SECONDS)
+                            hold?.let { assertTrue("测试响应闸门必须被释放", it.await(WAIT_S, TimeUnit.SECONDS)) }
                             parseAnswer()
                         }
 
@@ -479,41 +488,43 @@ class AppClipboardIntegrationTest {
     // ---------------------------------------------------------------- AC-S1-03 a / e
 
     @Test
-    fun ac_s1_03_a_productLinkPromptsAndUploadsOnlyAfterTheTap() {
+    fun ac_s1_03_a_productLinkDirectlyParsesAndShowsCurrentPageCard() {
         launch()
         val raw = "【淘宝】$LINK 「降噪蓝牙耳机」 我的私人备注：周五前买"
         copy(raw)
         foreground(cold = true)
-
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_BAR).assertIsDisplayed()
-        composeRule.onNodeWithText("检测到商品链接，查返利？").assertIsDisplayed()
-        assertEquals("自动识别读 1 次", 1, system.reads)
-        assertEquals("点击前 parse 请求数为 0", 0, parseRequests().size)
-
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
-        idleUntil { routes().lastOrNull() == RouteNames.PRODUCT_DETAIL_FOR_TEST }
-
-        val bodies = parseRequests()
-        assertEquals("点击后恰好 1 次", 1, bodies.size)
-        val body = Json.parseToJsonElement(bodies.single()) as JsonObject
-        assertEquals("只上传链接与「」标题", "$LINK\n降噪蓝牙耳机", (body["text"] as JsonPrimitive).content)
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        composeRule.onNodeWithTag(ClipboardUi.PROMPT_BAR).assertDoesNotExist()
+        assertEquals(1, system.reads)
+        assertEquals(1, parseRequests().size)
+        val body = Json.parseToJsonElement(parseRequests().single()) as JsonObject
+        assertEquals(setOf("text", "scene"), body.keys)
+        assertEquals("$LINK\n降噪蓝牙耳机", (body["text"] as JsonPrimitive).content)
         assertEquals("clipboard", (body["scene"] as JsonPrimitive).content)
-        assertFalse("请求体不含原文其余部分", bodies.single().contains("备注") || bodies.single().contains("淘宝】"))
-        // 1 张卡：以进程内的卡片种子打开详情，沿用 parse 卡的 link_id，不重取详情
+        assertFalse(parseRequests().single().contains("私人备注"))
+        assertFalse(RouteNames.PRODUCT_DETAIL_FOR_TEST in routes())
+        val card = clipboard.result.value as ClipboardResult.CardList
+        assertEquals(1, card.rows.size)
         composeRule.onNodeWithText("降噪蓝牙耳机 5.3", substring = true).assertIsDisplayed()
-        assertEquals("详情用种子，不发 getProduct", 0, productRequests())
-        // e：全程系统剪贴板写入 0 次，内容前后一致
+        assertEquals(0, productRequests())
         assertEquals(0, system.writes)
         assertEquals(ClipRead.Text(raw), system.content)
         assertNoRawInStorage("e.tb.cn", "降噪", "备注")
-        // FU-CLIP C3（K32 允许的断言改动）：提示记录只存本机盐的 HMAC 指纹，不等于未加盐 SHA-256
-        val stored =
-            clipboard.history
-                .stamps()
-                .single()
-                .hash
-        assertEquals("提示记录只存加盐指纹", ClipboardFingerprint(SAMPLE_SALT).hash(raw), stored)
-        assertNotEquals("不是未加盐 SHA-256", ClipboardText.sha256(raw), stored)
+        // G07：去重输入只含按提取顺序去重后的候选，以换行连接；标题和包装不参与。
+        // 此用例没有 writer.write，不能由自写 ledger 的 HMAC 冒充商品摘要。
+        val summaryStorage =
+            prefs()
+                .all
+                .filterKeys { it.startsWith("hash.") }
+                .values
+                .joinToString("|")
+        val persistedSalt = (ClipboardPreferences(context, SampleCipher).salt.read() as ClipboardSaltRead.Present).salt
+        assertArrayEquals(SAMPLE_SALT, persistedSalt)
+        assertTrue("商品摘要必须用持久盐 HMAC", summaryStorage.contains(ClipboardFingerprint(persistedSalt).hash(LINK)))
+        assertFalse("商品摘要不能回退到无盐 SHA-256", summaryStorage.contains(ClipboardText.sha256(LINK)))
+        composeRule.runOnUiThread { clipboard.openCard(card, checkNotNull(card.rows.single().card)) }
+        idleUntil { routes().lastOrNull() == RouteNames.PRODUCT_DETAIL_FOR_TEST }
+        assertEquals("点卡才进详情，仍用种子", 0, productRequests())
     }
 
     // ---------------------------------------------------------------- b / c
@@ -534,15 +545,16 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground(cold = true)
-        assertTrue(promptShown())
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_CLOSE).performClick()
-        composeRule.waitForIdle()
-        assertFalse(promptShown())
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        val first = checkNotNull(clipboard.result.value)
+        composeRule.runOnUiThread { clipboard.consumeResult(first) }
         background()
         foreground()
-        assertEquals("回前台照常读 1 次", 2, system.reads)
-        assertFalse("同一内容 24 小时内不再提示（关掉也算提示过）", promptShown())
-        assertEquals(0, parseRequests().size)
+        composeRule.waitForIdle()
+        assertEquals(2, system.reads)
+        assertNull(clipboard.result.value)
+        assertFalse(promptShown())
+        assertEquals("同候选 TTL 内不再上传", 1, parseRequests().size)
         assertEquals(0, system.writes)
     }
 
@@ -614,7 +626,7 @@ class AppClipboardIntegrationTest {
         composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsDisplayed()
 
         composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
-        idleUntil { routes().lastOrNull() == RouteNames.PRODUCT_DETAIL_FOR_TEST }
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
         assertEquals("点了才读", 1, system.reads)
         assertEquals(1, parseRequests().size)
         assertEquals(0, system.writes)
@@ -661,6 +673,7 @@ class AppClipboardIntegrationTest {
     fun android_nullWithoutFocusIsNotEmptyAndAFocusedNullReadUsesUpTheForeground() {
         launch()
         system.content = ClipRead.Unavailable
+        val beforeHash = prefs().all.filterKeys { it.startsWith("hash.") }
         composeRule.runOnUiThread { clipboard.onForeground(cold = true, hasFocus = false) }
         composeRule.waitForIdle()
         assertEquals("真正未获焦：不读，等本轮第一次获焦", 0, system.reads)
@@ -668,7 +681,7 @@ class AppClipboardIntegrationTest {
         composeRule.waitForIdle()
         assertEquals(1, system.reads)
         assertFalse(promptShown())
-        assertTrue("null 不记 hash", clipboard.history.stamps().isEmpty())
+        assertEquals("null 不记 hash", beforeHash, prefs().all.filterKeys { it.startsWith("hash.") })
         // A-R1-01：已获焦读到 null 也算本次前台读过。之后剪贴板有了商品链接，下拉再收起通知栏（失焦再得焦）不再读
         copy(LINK)
         repeat(REFOCUS_TIMES) {
@@ -680,11 +693,14 @@ class AppClipboardIntegrationTest {
         }
         assertEquals("一次前台最多一次自动读取", 1, system.reads)
         assertFalse(promptShown())
+        assertEquals(0, parseRequests().size)
+        assertNull(clipboard.result.value)
         // 真正经过后台再回来：重新计
         background()
         foreground()
         assertEquals(2, system.reads)
-        assertTrue(promptShown())
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
         assertEquals(0, system.writes)
     }
 
@@ -717,9 +733,12 @@ class AppClipboardIntegrationTest {
     @Test
     fun ac_s1_63_d_productWinsOverInvite() {
         launch()
-        copy("【淘宝】$LINK https://share.example.test/i/K7M2QX 邀请码 K7M2QX")
+        copy("$LINK 邀请码 K7M2QX")
         foreground()
-        assertEquals("同一段文本只出商品条", "product", clipboard.prompt.value?.kind)
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertNull("商品优先，不出邀请条", clipboard.prompt.value)
+        assertEquals(1, parseRequests().size)
+        assertFalse(parseRequests().single().contains("K7M2QX"))
     }
 
     @Test
@@ -738,13 +757,13 @@ class AppClipboardIntegrationTest {
         hold = CountDownLatch(1)
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { parseRequests().size == 1 }
     }
 
     private fun releaseAndAssertDropped() {
         hold?.countDown()
-        Thread.sleep(LATE_MS)
+        idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
         composeRule.waitForIdle()
         assertFalse("迟到的响应不跳详情", RouteNames.PRODUCT_DETAIL_FOR_TEST in routes())
@@ -768,27 +787,18 @@ class AppClipboardIntegrationTest {
     @Test
     fun late_tabClickDropsAResponseArrivingBeforeTheNextRecomposition() {
         launch()
-        copy(LINK)
-        foreground()
-        assertTrue(promptShown())
         val reply = CompletableDeferred<ApiResult>()
         gated = reply
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
-        composeRule.waitForIdle()
-        assertEquals("parse 已发出（停在假服务的闸门）", 1, clipboard.parseCount)
+        copy(LINK)
+        foreground()
+        idleUntil { clipboard.parseCount == 1 }
         val tab = composeRule.onNodeWithText(ShellDraftTexts.TAB_AGENT).fetchSemanticsNode()
-        var homeAfterClick = true
-        var detailBeforeFrame = false
         composeRule.runOnUiThread {
             checkNotNull(tab.config[SemanticsActions.OnClick].action).invoke()
-            homeAfterClick = clipboard.homeRoot()
-            // 同一条消息里响应到达（还没有任何重组 / SideEffect）
+            assertFalse(clipboard.homeRoot())
             reply.complete(ApiResult.Success(Json.parseToJsonElement(singleCard()), "trace-000123", null))
-            detailBeforeFrame = navController.currentBackStack.value.any { it.destination.hasRoute(RouteDestination::class) }
         }
-        assertFalse("点 Tab 的同步出口已离开首页", homeAfterClick)
-        assertFalse("重组之前到达的响应不跳详情", detailBeforeFrame)
-        composeRule.waitForIdle()
+        idleUntil { !clipboard.busy.value }
         assertFalse(RouteNames.PRODUCT_DETAIL_FOR_TEST in routes())
         assertNull(clipboard.result.value)
         assertEquals(0, system.writes)
@@ -814,10 +824,18 @@ class AppClipboardIntegrationTest {
     fun late_withdrawingConsentDropsTheResponseAndClearsRecords() {
         launch()
         startParseThenHold()
-        assertTrue(clipboard.history.stamps().isNotEmpty())
+        val summary = ClipboardFingerprint(SAMPLE_SALT).hash(LINK)
+        assertTrue(
+            prefs()
+                .all
+                .filterKeys { it.startsWith("hash.") }
+                .values
+                .joinToString("|")
+                .contains(summary),
+        )
         composeRule.runOnUiThread { privacy.withdraw() }
         releaseAndAssertDropped()
-        assertTrue("撤回同意清掉提示记录", clipboard.history.stamps().isEmpty())
+        assertTrue("撤回同意清掉商品摘要", prefs().all.keys.none { it.startsWith("hash.") })
         assertTrue("撤回同意清掉自写记录", clipboard.ledger.hashes().isEmpty())
     }
 
@@ -838,7 +856,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.blocked.value }
         val reads = system.reads
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
@@ -881,7 +899,6 @@ class AppClipboardIntegrationTest {
         assertEquals(RouteNames.WEB_PAGE, routes().last())
         val entry = checkNotNull(navController.currentBackStackEntry).id
         composeRule.runOnUiThread { clipboard.setWebAutoDetect(entry, enabled = false) }
-        assertTrue("栈顶网页容器经 setAutoDetect(false) 抑制", clipboard.readState().webSuppressed)
         background()
         foreground()
         assertEquals("抑制的网页在栈顶：不读", 0, system.reads)
@@ -890,7 +907,8 @@ class AppClipboardIntegrationTest {
         background()
         foreground()
         assertEquals("网页关闭后下一次回前台恢复识别", 1, system.reads)
-        assertTrue(promptShown())
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertFalse(promptShown())
         assertTrue("设置页开关不受影响", clipboard.autoSwitch.value)
     }
 
@@ -902,7 +920,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
         composeRule.onNodeWithText("暂不支持这个链接或平台", substring = true).assertIsDisplayed()
@@ -912,20 +930,15 @@ class AppClipboardIntegrationTest {
     }
 
     @Test
-    fun manualPasteWithoutALinkShows30132LocallyAndSearchesByName() {
-        launch()
-        // FU-CLIP K04（K32 允许的改动）：原样例 ￥Zx8Cv7Bn6Mq￥ 按新规则是淘口令（商品候选）；「识别不了」改用主体纯数字的口令形态
+    fun manualPasteWithoutCandidatesFinishesSilently() {
+        launchForManualPaste()
         copy("￥12345678901￥「全脂纯牛奶 250ml」")
-        composeRule.runOnUiThread { clipboard.setAutoSwitch(false) }
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
-        composeRule.waitForIdle()
-        assertEquals("没抽到链接不上传", 0, parseRequests().size)
-        composeRule.onNodeWithText("这个口令暂时识别不了").assertIsDisplayed()
-        composeRule.onNodeWithTag(ClipboardScreens.SEARCH_BY_NAME).performClick()
-        composeRule.waitForIdle()
-        assertEquals("Search", routes().last())
-        val params = checkNotNull(navController.currentBackStackEntry).toRoute<RouteDestination>().paramsJson
-        assertTrue("预填「」内文字", params.contains("全脂纯牛奶 250ml"))
+        pasteHome()
+        idleUntil { system.reads == 1 && activeApiCalls.get() == 0 && !clipboard.busy.value }
+        assertEquals("无候选不上传", 0, parseRequests().size)
+        assertNull("无候选安静结束，不弹失败", clipboard.result.value)
+        assertFalse("不擅自导航", "Search" in routes())
+        assertEquals(0, system.writes)
     }
 
     // ---------------------------------------------------------------- 第 3 轮评审（A-R3-01：手动粘贴与自动识别同一套上传过滤）
@@ -939,7 +952,7 @@ class AppClipboardIntegrationTest {
         assertEquals("开关关闭：回前台不读", 0, system.reads)
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
         composeRule.waitForIdle()
-        Thread.sleep(LATE_MS)
+        idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("邀请落地页不上传 parse", 0, parseRequests().size)
         assertEquals("邀请码只在本地抽取", "K7M2QX", (clipboard.result.value as ClipboardResult.InviteConfirm).code)
@@ -997,64 +1010,51 @@ class AppClipboardIntegrationTest {
 
     private fun transportFailure() = ApiResult.TransportFailure("io", null, null, false)
 
-    /** R1-05：首页商品提示条发起 parse（在途）→ 点常驻粘贴卡 / 搜索页粘贴入口：不读剪贴板、不发 parse；界面置灰；结束后恢复。 */
+    /** R1-05：同页同目的手动任务在途时再次点击：不读、不发；结束后入口恢复。跨页有效点击由 ImportTiming0724Test 单独覆盖。 */
     @Test
-    fun r1_05_promptParseInFlightBlocksEveryPasteEntry() {
-        launch()
+    fun r1_05_samePageManualDoubleTapCannotReadOrParseAgain() {
+        launchForManualPaste()
         copy(LINK)
-        foreground(cold = true)
-        val prompt = checkNotNull(clipboard.prompt.value)
         val reply = CompletableDeferred<ApiResult>()
         gatedQueue.addLast(reply)
-        composeRule.runOnUiThread { clipboard.onPromptAction(prompt.id) }
-        composeRule.waitForIdle()
-        assertEquals(1, clipboard.parseCount)
-        assertTrue("共享 busy", clipboard.busy.value)
+        pasteHome()
+        idleUntil { clipboard.parseCount == 1 }
+        assertTrue(clipboard.busy.value)
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsNotEnabled()
         val reads = system.reads
-        composeRule.runOnUiThread {
-            clipboard.paste(ManualPasteAction.ENTRY_HOME)
-            clipboard.paste(ManualPasteAction.ENTRY_SEARCH_TYPING)
-            clipboard.onPromptAction(prompt.id)
-        }
-        composeRule.waitForIdle()
-        assertEquals("在途期间不读剪贴板", reads, system.reads)
-        assertEquals("在途期间不另发 parse", 1, clipboard.parseCount)
+        pasteHome()
+        assertEquals("同页同目的连点不能再次读", reads, system.reads)
+        assertEquals(1, clipboard.parseCount)
         composeRule.runOnUiThread { reply.complete(transportFailure()) }
-        composeRule.waitForIdle()
-        assertFalse("结束后 busy 解除", clipboard.busy.value)
+        idleUntil { !clipboard.busy.value }
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsEnabled()
     }
 
-    /** R1-05 反向：手动粘贴的商品 parse 在途 → 已有的商品提示条让位（清掉），旧提示条回调不发 parse；再点粘贴也不读不发。 */
+    /** R1-05 反向：手动商品 parse 在途：已经退役的商品提示回调不得发请求，同页再次点击也不读不发。 */
     @Test
-    fun r1_05_manualParseInFlightSupersedesThePromptAndBlocksOtherEntries() {
-        launch()
+    fun r1_05_retiredProductPromptCallbackCannotStartAnotherParse() {
+        launchForManualPaste()
         copy(LINK)
-        foreground(cold = true)
-        val prompt = checkNotNull(clipboard.prompt.value)
         val reply = CompletableDeferred<ApiResult>()
         gatedQueue.addLast(reply)
-        composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
-        composeRule.waitForIdle()
-        assertEquals(1, clipboard.parseCount)
-        assertNull("已有的商品提示条让位", clipboard.prompt.value)
+        pasteHome()
+        idleUntil { clipboard.parseCount == 1 }
+        assertNull("商品流程没有提示条", clipboard.prompt.value)
         val reads = system.reads
         composeRule.runOnUiThread {
-            clipboard.onPromptAction(prompt.id)
+            clipboard.onPromptAction(-1)
             clipboard.paste(ManualPasteAction.ENTRY_HOME)
         }
         composeRule.waitForIdle()
         assertEquals(reads, system.reads)
-        assertEquals("旧提示条与再次粘贴都不发", 1, clipboard.parseCount)
+        assertEquals(1, clipboard.parseCount)
         composeRule.runOnUiThread { reply.complete(transportFailure()) }
-        composeRule.waitForIdle()
-        assertFalse(clipboard.busy.value)
+        idleUntil { !clipboard.busy.value }
     }
 
     /**
      * R1-05：连续手动粘贴，响应乱序。第一次 parse（停在闸门 A）在途时再粘贴：共享 busy 下不读、不发；若第二次真的发出（busy 被去掉的变异），
-     * 后发的先回（网络错误提示）、先发的迟到成功（单卡会跳详情）也不得覆盖它——每次手动 parse 推进世代。两层分别断言，失败信息可区分。
+     * 后发的先回（网络错误提示）、先发的迟到成功（单卡在原页出卡）也不得覆盖它——每次手动 parse 推进世代。两层分别断言，失败信息可区分。
      */
     @Test
     fun r1_05_consecutiveManualPastesNeverLetALateResultOverrideTheNewerOne() {
@@ -1098,31 +1098,34 @@ class AppClipboardIntegrationTest {
         composeRule.waitForIdle()
     }
 
-    /** 第 17 条：App 自己写入的内容（复制口令等）经手动粘贴入口同样不上传 parse。 */
+    /** 第 17 条：G14：App 自写内容经手动入口照常识别，重复手动点击不受 TTL 影响。 */
     @Test
-    fun lesson17_manualPasteSkipsContentTheAppWroteItself() {
+    fun lesson17_manualPasteIncludesSelfWrittenContentWithoutDedup() {
         launchForManualPaste()
-        composeRule.runOnUiThread { clipboard.writer.write(LINK, "tpwd") }
+        composeRule.runOnUiThread { assertTrue(clipboard.writer.write(LINK, "tpwd")) }
         pasteHome()
-        Thread.sleep(LATE_MS)
-        shadowOf(Looper.getMainLooper()).idle()
-        assertEquals("自写内容不上传", 0, parseRequests().size)
-        assertNull("不出提示", clipboard.result.value)
-        // 别的 App 复制的同一类内容照常上传
-        copy("看看这个 $LINK")
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertEquals("G14 手动识别自写内容", 1, parseRequests().size)
+        val first = checkNotNull(clipboard.result.value)
+        composeRule.runOnUiThread { clipboard.consumeResult(first) }
         pasteHome()
-        idleUntil { parseRequests().size == 1 }
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        assertEquals("同内容手动再次识别", 2, parseRequests().size)
+        assertEquals(1, system.writes)
     }
 
     /** 第 18 条：旧结果的回调（关闭、用商品名搜索）只认渲染时那一条，不清掉、不执行内容相同的新结果；提示条回调绑定提示编号。 */
     @Test
     fun lesson18_oldResultCallbacksDoNotActOnTheCurrentResult() {
+        parseAnswer = { envelope(UNRECOGNIZED, "null") }
         launchForManualPaste()
-        copy("「全脂纯牛奶 250ml」看不懂的口令")
+        copy("$LINK 「全脂纯牛奶 250ml」看不懂的口令")
         pasteHome()
+        idleUntil { clipboard.result.value is ClipboardResult.Unrecognized }
         val first = clipboard.result.value as ClipboardResult.Unrecognized
-        copy("「低脂酸奶 100g」另一段口令")
+        copy("$LINK 「低脂酸奶 100g」另一段口令")
         pasteHome()
+        idleUntil { clipboard.result.value.let { it is ClipboardResult.Unrecognized && it.id != first.id } }
         val second = clipboard.result.value as ClipboardResult.Unrecognized
         assertTrue("新结果已替换旧结果", first != second)
         composeRule.runOnUiThread {
@@ -1132,11 +1135,15 @@ class AppClipboardIntegrationTest {
         composeRule.waitForIdle()
         assertTrue("旧关闭回调不清掉新结果", clipboard.result.value === second)
         assertFalse("旧回调不按旧结果去搜索", "Search" in routes())
-        // 提示条：旧编号的回调不动当前提示
+        val parseBeforeShare = parseRequests().size
+        // 提示条：旧编号的回调不动当前分享提示
         composeRule.runOnUiThread { importPreferences.enable("1") }
         composeRule.runOnUiThread { clipboard.setAutoSwitch(true) }
-        copy(LINK)
-        foreground()
+        composeRule.runOnUiThread {
+            clipboard.receiveShare("text/plain", LINK)
+            clipboard.onShareDelivered()
+        }
+        composeRule.waitForIdle()
         val prompt = checkNotNull(clipboard.prompt.value)
         composeRule.runOnUiThread {
             clipboard.onPromptClose(prompt.id - 1)
@@ -1144,7 +1151,7 @@ class AppClipboardIntegrationTest {
         }
         composeRule.waitForIdle()
         assertTrue("旧编号的关闭不清掉当前提示", clipboard.prompt.value?.id == prompt.id)
-        assertEquals("旧编号的按钮不上传", 0, parseRequests().size)
+        assertEquals("旧编号的按钮不上传", parseBeforeShare, parseRequests().size)
     }
 
     /** 第 19 条：已登录用户粘贴纯邀请内容：不发 parse，不落入 30132「识别不了」，不预填。 */
@@ -1202,7 +1209,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         assertTrue("行内 42901 启动禁用期", clipboard.blocked.value)
         val list = clipboard.result.value as ClipboardResult.CardList
@@ -1226,13 +1233,16 @@ class AppClipboardIntegrationTest {
      */
     @Test
     fun f1_05_anIdenticalSecondResultInvalidatesTheFirstResultsCallbacks() {
+        parseAnswer = { envelope(UNRECOGNIZED, "null") }
         launchForManualPaste()
-        val text = "「全脂纯牛奶 250ml」看不懂的口令"
+        val text = "$LINK 「全脂纯牛奶 250ml」看不懂的口令"
         copy(text)
         pasteHome()
+        idleUntil { clipboard.result.value is ClipboardResult.Unrecognized }
         val first = clipboard.result.value as ClipboardResult.Unrecognized
         copy(text)
         pasteHome()
+        idleUntil { clipboard.result.value.let { it is ClipboardResult.Unrecognized && it.id != first.id } }
         val second = clipboard.result.value as ClipboardResult.Unrecognized
         assertEquals("内容相同", first.copy(id = second.id), second)
         assertTrue("编号不同：第二次发布没有被合并", first.id != second.id)
@@ -1272,7 +1282,7 @@ class AppClipboardIntegrationTest {
         copy("https://share.example.test/i/K7M2QX")
         composeRule.onNodeWithTag(ClipboardUi.PASTE_ENTRY).performClick()
         composeRule.waitForIdle()
-        Thread.sleep(LATE_MS)
+        idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("邀请落地页不上传 parse", 0, parseRequests().size)
         composeRule.onNodeWithTag(ClipboardScreens.INVITE_CONFIRM).assertIsDisplayed()
@@ -1287,7 +1297,7 @@ class AppClipboardIntegrationTest {
         copy("https://share.example.test/i/K7M2QX")
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
         composeRule.waitForIdle()
-        Thread.sleep(LATE_MS)
+        idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("邀请落地页不上传 parse", 0, parseRequests().size)
         assertNull("已登录不出邀请确认（G01）", clipboard.result.value)
@@ -1302,7 +1312,7 @@ class AppClipboardIntegrationTest {
         foreground(cold = true)
         copy("【淘宝】$LINK 「降噪蓝牙耳机」 好友邀请你 https://share.example.test/i/K7M2QX 邀请码 K7M2QX")
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
-        idleUntil { routes().lastOrNull() == RouteNames.PRODUCT_DETAIL_FOR_TEST }
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
         val body = parseRequests().single()
         assertEquals("只上传商品片段", "$LINK\n降噪蓝牙耳机", ((Json.parseToJsonElement(body) as JsonObject)["text"] as JsonPrimitive).content)
         assertFalse("请求体不含邀请落地页", body.contains("share.example.test"))
@@ -1311,13 +1321,16 @@ class AppClipboardIntegrationTest {
     }
 
     @Test
-    fun emptyClipboardOnManualPasteOpensSearchTyping() {
-        launch()
+    fun emptyClipboardOnManualPasteTerminatesAndKeepsEntry() {
+        launchForManualPaste()
         system.content = ClipRead.Unavailable
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
-        composeRule.waitForIdle()
-        assertEquals("Search", routes().last())
-        composeRule.onNodeWithTag(com.couli.feature.search.SearchTags.PASTE_ENTRY).assertIsDisplayed()
+        pasteHome()
+        idleUntil { system.reads == 1 && activeApiCalls.get() == 0 && !clipboard.busy.value }
+        assertEquals(1, system.reads)
+        assertEquals(0, parseRequests().size)
+        assertNull(clipboard.result.value)
+        assertFalse("空内容不自动导航", "Search" in routes())
+        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsDisplayed()
     }
 
     @Test
@@ -1326,7 +1339,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.Notice }
         val notice = clipboard.result.value as ClipboardResult.Notice
         assertTrue("5xxxx 带 trace_id 末 6 位", notice.text.endsWith("（000123）"))
@@ -1403,7 +1416,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         val list = clipboard.result.value as ClipboardResult.CardList
         assertEquals("多结果保留 trace_id", "trace-000123", list.traceId)
@@ -1426,7 +1439,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         assertTrue("行内 42901 启动禁用期", clipboard.blocked.value)
         composeRule.runOnUiThread { clipboard.consumeResult(checkNotNull(clipboard.result.value)) }
@@ -1445,7 +1458,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.blocked.value }
         copy("邀请码 K7M2QX")
         composeRule.runOnUiThread { routing.router.open(RouteRequest(RouteNames.LOGIN, JsonObject(emptyMap()), RouteSource.IN_APP)) }
@@ -1461,7 +1474,7 @@ class AppClipboardIntegrationTest {
         assertEquals(0, system.writes)
     }
 
-    /** A-R1-07：24 小时内对 51 段不同内容出过提示条，再复制第 1 段回前台也不提示（去重记录不被条数上限挤掉）。 */
+    /** A-R1-07：24 小时内识别过 51 个不同候选，再复制第 1 个回前台不上传、不出卡（去重记录不被条数上限挤掉）。 */
     @Test
     fun dedupeHoldsFor24HoursBeyondFiftyRecords() {
         launch()
@@ -1469,23 +1482,24 @@ class AppClipboardIntegrationTest {
             copy("$LINK&n=$index")
             background()
             foreground()
-            assertTrue("第 ${index + 1} 段出提示条", promptShown())
+            idleUntil { clipboard.result.value is ClipboardResult.CardList }
+            assertEquals(index + 1, parseRequests().size)
+            composeRule.runOnUiThread { clipboard.consumeResult(checkNotNull(clipboard.result.value)) }
         }
-        assertEquals(FIFTY_ONE, clipboard.history.stamps().size)
         copy("$LINK&n=0")
         background()
         foreground()
-        assertFalse("第 1 段 24 小时内不再提示", promptShown())
-        assertEquals(0, parseRequests().size)
+        composeRule.waitForIdle()
+        assertNull(clipboard.result.value)
+        assertFalse(promptShown())
+        assertEquals("仍在 TTL 内的第 1 个不能被容量淘汰", FIFTY_ONE, parseRequests().size)
     }
 
-    /** A-R1-08：大屏（最小宽度 ≥600dp）+ 200% 字号：首页剪贴板区限宽 600dp、水平居中，提示条与粘贴卡的操作都可达。 */
+    /** A-R1-08：大屏（最小宽度 ≥600dp）+ 200% 字号：首页剪贴板区限宽 600dp、水平居中，结果卡与粘贴入口可达。 */
     @Test
     @Config(qualifiers = "w1280dp-h800dp-mdpi", fontScale = 2f)
     fun largeScreenHomeClipboardAreaIsWidthLimitedCenteredAndReachable() {
-        launch()
-        copy(LINK)
-        foreground()
+        launchForManualPaste()
         val root = composeRule.onRoot().getUnclippedBoundsInRoot()
         val area = composeRule.onNodeWithTag(ClipboardScreens.HOME_AREA).getUnclippedBoundsInRoot()
         val width = area.right - area.left
@@ -1494,26 +1508,26 @@ class AppClipboardIntegrationTest {
         val rightGap = root.right - area.right
         assertTrue("水平居中：左 $leftGap、右 $rightGap", (leftGap - rightGap).value in -1f..1f)
         composeRule.onNodeWithTag(HOME_HEADER_TAG).assert(hasScrollAction())
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().assertIsDisplayed()
+        copy(LINK)
+        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().performClick()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_PREFIX + 0).assertIsDisplayed()
     }
 
-    /** A-R1-08：窗口缩小（320×480dp）+ 200% 字号：剪贴板区可滚动，提示条按钮、关闭与粘贴卡都能滚到可见并点击。 */
+    /** A-R1-08：窗口缩小（320×480dp）+ 200% 字号：剪贴板区可滚动，粘贴入口可滚到可见并点击，结果卡可见。 */
     @Test
     @Config(qualifiers = "w320dp-h480dp-mdpi", fontScale = 2f)
     fun smallWindowBigFontHomeClipboardAreaScrolls() {
-        launch()
-        copy(LINK)
-        foreground()
+        launchForManualPaste()
         composeRule.onNodeWithTag(HOME_HEADER_TAG).assert(hasScrollAction())
         composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_CLOSE).performScrollTo().assertIsDisplayed()
-        composeRule
-            .onNodeWithTag(ClipboardUi.PROMPT_ACTION)
-            .performScrollTo()
-            .assertIsDisplayed()
-            .performClick()
-        idleUntil { routes().lastOrNull() == RouteNames.PRODUCT_DETAIL_FOR_TEST }
+        copy(LINK)
+        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        idleUntil { clipboard.result.value is ClipboardResult.CardList }
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
+        composeRule.onNodeWithTag(ClipboardScreens.CARD_PREFIX + 0).assertIsDisplayed()
     }
 
     // ---------------------------------------------------------------- 第 2 轮评审（A-R2-01 / 02 / 03 / 04）
@@ -1525,7 +1539,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.Notice }
         val notice = clipboard.result.value as ClipboardResult.Notice
         val generic = ClipboardDraftTexts.text("error.50001")
@@ -1542,7 +1556,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.Notice }
         val notice = clipboard.result.value as ClipboardResult.Notice
         val generic = ClipboardDraftTexts.text("error.50001")
@@ -1560,7 +1574,7 @@ class AppClipboardIntegrationTest {
         launch()
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         val list = clipboard.result.value as ClipboardResult.CardList
         val text = clipboard.rowText(list, list.rows[1])
@@ -1695,7 +1709,7 @@ class AppClipboardIntegrationTest {
 
     /**
      * 第 30 条：整体 30132（data=null）用请求前本地抽出的「」标题预填【用商品名搜索】，标题本身以 http 开头也照样；服务端多给的 data.raw 不采用；
-     * 没有「」标题时留空（不拿链接或首行）。手动粘贴与提示条两条路径都一样。
+     * 没有「」标题时留空（不拿链接或首行）。手动粘贴与自动识别两条路径都一样。
      */
     @Test
     fun fu0710_l30_whole30132PrefillsTheLocallyExtractedTitle() {
@@ -1728,12 +1742,12 @@ class AppClipboardIntegrationTest {
     }
 
     @Test
-    fun fu0710_l30_promptPathAlsoPrefillsTheLocallyExtractedTitle() {
+    fun fu0710_l30_automaticPathAlsoPrefillsTheLocallyExtractedTitle() {
         parseAnswer = { envelope(UNRECOGNIZED, "null") }
         launch()
         copy("$LINK 「HTTP转接头 USB3.0」")
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.Unrecognized }
         assertEquals("HTTP转接头 USB3.0", (clipboard.result.value as ClipboardResult.Unrecognized).prefill)
     }
@@ -1751,7 +1765,7 @@ class AppClipboardIntegrationTest {
         )
         copy(LINK)
         foreground()
-        composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
+        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         val id = clipboard.result.value!!.id
         val card = hasTestTag(ClipboardScreens.CARD_PREFIX + 0)
@@ -1784,17 +1798,18 @@ class AppClipboardIntegrationTest {
     /** 第 33 条：连续两次同类结果（两次 30132、弹层开着时又来一组多卡）按结果编号各读一次；普通重组不重复读。 */
     @Test
     fun fu0710_l33_consecutiveSameKindResultsAreAnnouncedOncePerResult() {
+        parseAnswer = { envelope(UNRECOGNIZED, "null") }
         launchForManualPaste()
         val unrecognized = DefaultTexts.text("error.30132").orEmpty()
 
         fun count(text: String) = synchronized(announced) { announced.count { it == text } }
-        copy("「全脂纯牛奶 250ml」看不懂的口令")
+        copy("$LINK 「全脂纯牛奶 250ml」看不懂的口令")
         pasteHome()
         idleUntil { count(unrecognized) == 1 }
-        copy("「低脂酸奶 100g」另一段口令")
+        copy("$LINK 「低脂酸奶 100g」另一段口令")
         pasteHome()
         idleUntil { count(unrecognized) == 2 }
-        Thread.sleep(LATE_MS)
+        idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
         composeRule.waitForIdle()
         assertEquals("重组不重复读", 2, count(unrecognized))
@@ -1885,7 +1900,6 @@ class AppClipboardIntegrationTest {
         const val RATE_LIMITED = 42901
         const val UNRECOGNIZED = 30132
         const val RATE_LIMIT_MS = 60_000L
-        const val LATE_MS = 300L
         const val REFOCUS_TIMES = 3
         const val UNKNOWN_SERVER_CODE = 59999
         const val SEARCH_DISABLED = 50304

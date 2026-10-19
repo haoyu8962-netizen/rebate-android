@@ -65,7 +65,9 @@ object ClipboardClassifier {
     /** 同一 hash 的提示间隔（G08：严格小于 24 小时不再提示）。 */
     const val PROMPT_WINDOW_MS = 24L * 60 * 60 * 1000
 
-    private val PURE_ALNUM = Regex("^[A-Za-z0-9]+$")
+    /** 「≤20 位的纯数字或纯字母串」（BR-ID-16 细则字面，G26）：数字、字母各自成类，数字字母混合不算。 */
+    private val PURE_DIGITS = Regex("^[0-9]+$")
+    private val PURE_LETTERS = Regex("^[A-Za-z]+$")
 
     @Suppress("ReturnCount") // 自写、去重、商品、邀请逐级短路
     fun classify(
@@ -115,7 +117,7 @@ object ClipboardClassifier {
         return when {
             length < rules.minLength -> REASON_TOO_SHORT
             length > rules.maxLength -> REASON_TOO_LONG
-            length <= rules.pureAlnumMaxLength && PURE_ALNUM.matches(text) -> REASON_PURE_ALNUM
+            length <= rules.pureAlnumMaxLength && (PURE_DIGITS.matches(text) || PURE_LETTERS.matches(text)) -> REASON_PURE_ALNUM
             rules.excludedWords.any { it.isNotEmpty() && text.contains(it) } -> REASON_EXCLUDED_WORD
             links.isEmpty() -> REASON_NO_LINK
             else -> null

@@ -154,10 +154,6 @@ class MainActivity : ComponentActivity() {
         home.onForeground(true)
         // Agent 页（APP-10）：App 在前台（可见性：进后台时关连接、停计时）
         agent.onForeground(true)
-        // 剪贴板（APP-07）：冷启动进入前台、或真正经过后台之后回到前台，才算一次回前台（配置变更重建不算）；之后第一次获得窗口焦点时读 1 次
-        if (!clipboardRebuilt) clipboard.onForeground(cold = clipboardColdStart, hasFocus = hasWindowFocus())
-        clipboardColdStart = false
-        clipboardRebuilt = false
         // AuthSheet 自动弹出计数：后台停留 ≥ 1800 秒回前台清零（BR-ID-18）
         search.trade?.onAppForeground()
         // 回前台：距上次成功检查超过复查间隔才查（03 §4.1）；冷启动那次由 Application 发起
@@ -176,6 +172,12 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 剪贴板（FU-AND-0724）：前台轮次只由进程级生命周期决定（AppModule 绑定 ProcessLifecycleOwner）；Activity 恢复只通知协调器再试一次
+        clipboard.onActivityResumed()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         clipboard.onWindowFocus(hasFocus)
@@ -186,8 +188,6 @@ class MainActivity : ComponentActivity() {
         // 首页（APP-11）：进后台（含配置变更重建的短暂停留）时轮播暂停、弹窗等待
         home.onForeground(false)
         agent.onForeground(false)
-        // 进后台（配置变更重建除外）：作废未点击的提示条、在途读取与 parse
-        if (isChangingConfigurations) clipboardRebuilt = true else clipboard.onBackground()
         if (!isChangingConfigurations) search.trade?.onAppBackground()
         // 导航票据（APP-12 G09）：真正进入后台算一次（回前台后，进后台之前发起的请求得到 10006 不再导航）
         if (!isChangingConfigurations) appRouting.navTickets.onBackground()
@@ -198,12 +198,6 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** 下一次 onStart 不是回前台：进程里第一次显示（冷启动检查由 Application 发起）或配置变更重建。按进程记。 */
         var skipNextForeground = true
-
-        /** 剪贴板：进程里第一次 onStart 是冷启动进入前台。按进程记。 */
-        var clipboardColdStart = true
-
-        /** 剪贴板：下一次 onStart 是配置变更重建（不算回前台）。按进程记。 */
-        var clipboardRebuilt = false
     }
 
     override fun onNewIntent(intent: Intent) {

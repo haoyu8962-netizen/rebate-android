@@ -133,8 +133,8 @@ class FollowupAnd0714ClipboardTest {
         private val delegate: PageApi,
     ) : PageApi by delegate {
         override suspend fun send(call: ApiCall): ApiResult {
+            if (call.operationId == "parseInput") synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
             gatedQueue.removeFirstOrNull()?.let { reply ->
-                synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
                 return reply.await()
             }
             return delegate.send(call)
@@ -179,7 +179,7 @@ class FollowupAnd0714ClipboardTest {
             object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.path.orEmpty()
-                    synchronized(requests) { requests += path to request.body.readUtf8() }
+                    if (!path.startsWith(PARSE_PATH)) synchronized(requests) { requests += path to request.body.readUtf8() }
                     return when {
                         path.startsWith(PARSE_PATH) -> envelope(0, singleCard())
 

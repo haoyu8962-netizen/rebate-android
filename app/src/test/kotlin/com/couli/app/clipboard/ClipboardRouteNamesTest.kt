@@ -1,6 +1,6 @@
 package com.couli.app.clipboard
 
-import com.couli.core.clipboard.ClipboardSensitive
+import com.couli.core.clipboard.ImportGates
 import com.couli.generated.Routes
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,7 +16,8 @@ class ClipboardRouteNamesTest {
         listOf(AppClipboard.SEARCH_ROUTE, AppClipboard.PRODUCT_DETAIL_ROUTE, "Login", "Settings").forEach { name ->
             assertTrue("$name 不在 routes.json", name in Routes.all)
         }
-        ClipboardSensitive.routes.forEach { name -> assertTrue("敏感清单 $name 不在 routes.json", name in Routes.all) }
+        assertTrue("InviteBackfill 即使未登记路由也必须敏感", "InviteBackfill" in ImportGates.sensitiveRoutes)
+        (ImportGates.sensitiveRoutes - "InviteBackfill").forEach { name -> assertTrue("敏感清单 $name 不在 routes.json", name in Routes.all) }
         assertFalse("InviteBackfill 没有登记，不能打开", "InviteBackfill" in Routes.all)
     }
 }

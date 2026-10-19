@@ -49,6 +49,9 @@ internal object ClipboardDraftTexts {
             // ---- 粘贴入口（BR-TEXT-14 表 C clipboard.paste_hint / .agent；首页与 AgentChat 的接入在 FU-AND-0724 / 0725）
             "clipboard.paste_hint" to "粘贴查返利",
             "clipboard.paste_hint.agent" to "让 AI 查返利",
+            // ---- FU-AND-0724：手动粘贴命中被服务端关闭的平台（R09 ①，G18 草稿键 clipboard.platform_off，登记 N-30）；网络异常结果上的显式重试（R24）
+            "clipboard.platform_off" to "该平台暂不支持",
+            "clipboard.retry" to "重试",
             // ---- FU-CLIP C6 / C7：系统分享提示条与「上传前可见平台」（K26、K28；TODO(N-34) 待契约补键，提审前替换；与鸿蒙同键同字）
             "clipboard.share_prompt" to "收到分享的{platform_name}商品，查返利？",
             "clipboard.share_prompt.action" to "查返利",

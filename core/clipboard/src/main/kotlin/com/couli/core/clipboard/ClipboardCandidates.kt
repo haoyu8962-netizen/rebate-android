@@ -361,7 +361,7 @@ object ClipboardBridgeRead {
         rules: ClipboardRules,
         shareDomains: List<String>,
     ): String {
-        if (consentRaw != ClipboardReadPolicy.CONSENT_AGREED) return ""
+        if (consentRaw != ClipboardConsentRaw.AGREED) return ""
         val text = read()
         if (text.isNullOrEmpty()) return ""
         return ClipboardCandidates.uploadText(text, rules, shareDomains).orEmpty()
@@ -442,7 +442,7 @@ object ShareImportAction {
         payload: ShareImportPayload,
     ): ShareImportDecision {
         if (!payload.mimeOk) return ShareImportDecision(IGNORE_MIME)
-        if (state.text("consent") != ClipboardReadPolicy.CONSENT_AGREED) return ShareImportDecision(DROP)
+        if (state.text("consent") != ClipboardConsentRaw.AGREED) return ShareImportDecision(DROP)
         val overlay = state.text("overlay") ?: ClipboardSensitive.OVERLAY_NONE
         if (ClipboardSensitive.sensitive(state.text("route"), overlay)) return ShareImportDecision(DROP)
         val busy = (state["parseInFlight"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull == true

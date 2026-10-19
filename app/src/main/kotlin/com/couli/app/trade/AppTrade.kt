@@ -34,6 +34,9 @@ import javax.inject.Provider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -137,8 +140,22 @@ class AppTrade(
             browserNoticeMillis = browserNoticeMillis,
         ).also {
             it.onAuthOverlay = { onSensitiveOverlay() }
+            it.onJumpingChanged = ::refreshJumpInProgress
             live = live + it
+            refreshJumpInProgress()
         }
+
+    private val mutableJumpInProgress = MutableStateFlow(false)
+
+    /**
+     * 外跳进行中（FU-AND-0724 G10 / G28：剪贴板自动识别的普通互斥模态 trade_jump）：任一活着的发起页执行器正在执行购买外跳（含「将通过浏览器
+     * 打开」提示的停留，见 [OpenPurchaseController.jumping]）。执行器状态变化时同步汇总（不经 Handler / 协程二次投递）；发起页出栈即不再计入。
+     */
+    val jumpInProgress: StateFlow<Boolean> = mutableJumpInProgress.asStateFlow()
+
+    private fun refreshJumpInProgress() {
+        mutableJumpInProgress.value = live.any { it.jumping.value }
+    }
 
     /** 敏感浮层（AuthSheet）出现的同步出口（APP-07：AppModule 接剪贴板的作废，A-R1-04）。 */
     var onSensitiveOverlay: () -> Unit = {}
@@ -149,6 +166,7 @@ class AppTrade(
     fun release(controller: OpenPurchaseController) {
         controller.leave()
         live = live - controller
+        refreshJumpInProgress()
     }
 
     fun authManageController(scope: CoroutineScope): AuthManageController =

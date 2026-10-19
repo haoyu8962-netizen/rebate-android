@@ -274,6 +274,24 @@ class OpenPurchaseController(
     private val mutableState = MutableStateFlow(PurchaseState())
     val state: StateFlow<PurchaseState> = mutableState.asStateFlow()
 
+    private val mutableJumping = MutableStateFlow(false)
+
+    /**
+     * 外跳执行中（FU-AND-0724 G10 / G28：剪贴板互斥模态「外跳进行中」的来源）：从执行器开始执行购买外跳方案起（含「将通过浏览器打开」提示
+     * 的停留），到执行器返回（拉起成功、失败、取消、被离开打断）止。open 请求在途那一段不算（还没有外跳，结果可能是确认框等站内弹窗）。
+     * 授权跳转（auth_jump）另按敏感浮层处理，不在这里。
+     */
+    val jumping: StateFlow<Boolean> = mutableJumping.asStateFlow()
+
+    /** [jumping] 变化的同步通知（App 层汇总各发起页的外跳状态；在设置 [jumping] 的同一线程、同一步里调用）。 */
+    var onJumpingChanged: () -> Unit = {}
+
+    private fun setJumping(value: Boolean) {
+        if (mutableJumping.value == value) return
+        mutableJumping.value = value
+        onJumpingChanged()
+    }
+
     /** 点击编号：每次新的点击（含授权后、登录后的自动执行）加 1。 */
     private var click = 0L
 
@@ -936,16 +954,21 @@ class OpenPurchaseController(
         scope.launch {
             // 执行器的两种许可分开（共性第 40 条）：「允许开始下一步」每个新步骤前（含 scheme 等系统返回、浏览器提示停留之后）复核续执行
             // 许可 + 最新平台购买状态与可购状态；「允许上报已执行步骤」只看尝试与取消，已执行的步骤照常上报
+            setJumping(true)
             val outcome =
-                executor.execute(
-                    jump.plan,
-                    jump.attempt.platform,
-                    jump.attempt.installed,
-                    jump.identity,
-                    allowed = { continuable(granted) },
-                    confirmBrowser = { confirmBrowser(granted) },
-                    reportable = { reportable(granted) },
-                )
+                try {
+                    executor.execute(
+                        jump.plan,
+                        jump.attempt.platform,
+                        jump.attempt.installed,
+                        jump.identity,
+                        allowed = { continuable(granted) },
+                        confirmBrowser = { confirmBrowser(granted) },
+                        reportable = { reportable(granted) },
+                    )
+                } finally {
+                    setJumping(false)
+                }
             if (left) return@launch
             afterJump(jump, outcome)
         }

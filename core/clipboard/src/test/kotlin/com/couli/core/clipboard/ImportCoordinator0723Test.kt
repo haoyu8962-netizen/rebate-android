@@ -45,6 +45,8 @@ class ImportCoordinator0723Test {
                 assertEquals(event.name, first.epoch, epoch)
                 assertEquals(event.name, 1, reads)
             }
+            // G27：噪声可以切到 AgentChat，但下一轮的有效读取对照要回到 Home（0725 再恢复 Agent）。
+            f.environment = f.environment.copy(page = f.environment.page.copy(route = "Home", homeRoot = true))
             // G13：真退后台后 1ms 就回来仍是一轮；不把 ProcessLifecycleOwner 的延迟当节流。
             repeat(3) { index ->
                 f.background()
