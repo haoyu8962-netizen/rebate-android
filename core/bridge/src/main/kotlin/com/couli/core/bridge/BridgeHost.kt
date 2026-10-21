@@ -9,6 +9,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -35,8 +38,10 @@ sealed interface BridgeOutcome {
         val boundSessionEpoch: Long? = null,
     ) : BridgeOutcome
 
+    /** [data]：失败响应附带的 data（等待后复核命中远程禁用时的 `{reason: method_disabled}`），其余为 null。 */
     data class Fail(
         val code: Int,
+        val data: JsonObject? = null,
     ) : BridgeOutcome
 }
 
@@ -202,7 +207,7 @@ interface BridgeUi {
  * - 归属（lessons 1、14、22）：每次调用开始时记下账号与宿主世代；[invalidate]（撤回同意、切换环境、容器销毁、页面换了文档）
  *   让世代加一并取消在途调用，晚到的结果一律不交回（回 90500）；会话世代变了同样不交回（第 15 条）。
  */
-@Suppress("TooManyFunctions") // 入口、结算、守卫与一个方法一个分支的分派
+@Suppress("TooManyFunctions", "LongParameterList") // 入口、结算、守卫与一个方法一个分支的分派；依赖逐项注入
 class BridgeHost(
     private val protocol: () -> BridgeProtocol,
     private val caller: () -> BridgeCallerState,
@@ -210,18 +215,40 @@ class BridgeHost(
     private val ui: BridgeUi,
     private val awaitUpdate: suspend () -> String,
     private val scope: CoroutineScope,
+    /**
+     * 生效配置的变化信号（F-X-24 三端口径 A；App 传 ConfigStore.snapshots）：每次变化后重算 [declaredMethods]，经
+     * [watchDeclaredMethods] 交给传输层推进已打开的页面。缺省没有信号（单测、一致性页之外的替身）。
+     */
+    private val configChanges: Flow<*> = emptyFlow<Unit>(),
 ) {
     private val lock = Any()
     private val inFlight = mutableMapOf<String, Job>()
     private var generation = 0L
     private val calls = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
-    /** 本端声明给 H5 的方法（`__REBATE_BRIDGE__.methods`）：契约里 since.android 不为 null 的方法。 */
+    /**
+     * 本端声明给 H5 的方法（`__REBATE_BRIDGE__.methods`，H5 SDK has() 据此判断）：契约里 since.android 不为 null、且不在当前
+     * 生效配置远程禁用名单里的方法（每次读取都取最新协议配置）。
+     */
     val declaredMethods: List<String>
-        get() =
-            BridgeContract.methods.values
-                .filter { it.sinceAndroid != null }
+        get() {
+            val disabled = protocol().disabledMethods
+            return BridgeContract.methods.values
+                .filter { it.sinceAndroid != null && it.name !in disabled }
                 .map { it.name }
+        }
+
+    /**
+     * 订阅 [declaredMethods]：生效配置每变一次就重算并交出一次（列表相同也交出——可信源等其他键的变化可能让此前被跳过的推送
+     * 需要补上，去重由订阅方按自己的推送状态做）。[onChange] 在宿主作用域里调用（App 是主线程），订阅时先交出一次当前列表。
+     * 返回的 Job 取消即退订；宿主 [dispose] 后自动结束。
+     */
+    fun watchDeclaredMethods(onChange: (List<String>) -> Unit): Job =
+        calls.launch {
+            configChanges
+                .map { declaredMethods }
+                .collect { onChange(it) }
+        }
 
     val bridgeVersion: Int get() = BridgeContract.version
 
@@ -254,7 +281,7 @@ class BridgeHost(
         val params = envelope.params ?: JsonObject(emptyMap())
         val ctx = BridgeContext(method, origin, isMainFrame, userGesture, state.privacy, state.loggedIn, params)
         val decision = protocol().decide(ctx)
-        if (!decision.allow) return reject(id, method, decision.errorCode ?: BridgeCode.NOT_ALLOWED, reply)
+        if (!decision.allow) return reject(id, method, decision.errorCode ?: BridgeCode.NOT_ALLOWED, reply, decision.data)
         val contract = BridgeContract.methods.getValue(method)
         if (contract.sinceAndroid == null || method !in IMPLEMENTED) return reject(id, method, BridgeCode.NOT_SUPPORTED, reply)
         start(id, contract, params, state, Reply(reply, deliver))
@@ -331,9 +358,10 @@ class BridgeHost(
         method: String,
         code: Int,
         reply: (String) -> Unit,
+        data: JsonObject? = null,
     ) {
         if (method in BridgeContract.methods) services.reportRejected(method, code)
-        reply(BridgeProtocol.response(id, code))
+        reply(BridgeProtocol.response(id, code, data))
     }
 
     private fun start(
@@ -409,7 +437,7 @@ class BridgeHost(
             }
 
             outcome is BridgeOutcome.Fail -> {
-                reject(id, owner.method, outcome.code, reply)
+                reject(id, owner.method, outcome.code, reply, outcome.data)
             }
         }
     }
@@ -508,8 +536,8 @@ class BridgeHost(
         return BridgeOutcome.Fail(BridgeCode.TIMEOUT)
     }
 
-    /** 强更等待 → 归属核对 → 强更守卫 → 分派。 */
-    @Suppress("LongParameterList", "ReturnCount") // 归属失效、强更守卫、执行三个出口
+    /** 强更等待 → 归属核对 → 远程禁用复核 → 强更守卫 → 分派。 */
+    @Suppress("LongParameterList", "ReturnCount") // 归属失效、远程禁用、强更守卫、执行四个出口
     private suspend fun guarded(
         contract: BridgeMethodContract,
         params: JsonObject,
@@ -522,6 +550,11 @@ class BridgeHost(
         // 等待之后、执行任何副作用之前再核对一次归属（APP-04 三端共性第 4 条）：宿主世代（撤回同意、切换环境、页面换文档、容器销毁）、
         // 隐私状态与账号都没变才执行；变了就不执行，以 90500 结束（不排队、不补执行）
         if (!stillOwned(startGeneration, state)) return BridgeOutcome.Fail(BridgeCode.NATIVE_ERROR)
+        // 准入（handle → decide）之后可能等过强更（最多 5 秒），其间配置可能已把本方法远程禁用：进入处理器前按此刻的生效名单再判一次，
+        // 命中与准入同口径（90403 + reason=method_disabled，经结算记 bridge_call），处理器不执行
+        if (contract.name in protocol().disabledMethods) {
+            return BridgeOutcome.Fail(BridgeCode.NOT_ALLOWED, BridgeDecision.METHOD_DISABLED.data)
+        }
         val guard = updateGuard(contract.name, update, state.fromForceUpdatePage)
         if (guard != null) return BridgeOutcome.Fail(guard)
         if (contract.name == AUTH_LOGIN) {

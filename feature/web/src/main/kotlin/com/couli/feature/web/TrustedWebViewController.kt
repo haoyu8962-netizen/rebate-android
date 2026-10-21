@@ -248,6 +248,14 @@ class TrustedWebViewController(
             callbacks.onPageStarted()
         }
 
+        override fun onPageFinished(
+            view: WebView,
+            url: String?,
+        ) {
+            // 方法列表在页面打开后可能变过（远程禁用名单）：加载完成时按当前生效列表补推一次（F-X-24 三端口径 A）
+            transport?.onPageFinished()
+        }
+
         override fun onReceivedSslError(
             view: WebView,
             handler: SslErrorHandler,

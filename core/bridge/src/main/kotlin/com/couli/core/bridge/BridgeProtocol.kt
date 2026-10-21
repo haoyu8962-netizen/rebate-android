@@ -53,15 +53,20 @@ data class BridgeContext(
     val params: JsonObject,
 )
 
-/** 判定结果：放行时 [errorCode] 为 null。 */
+/** 判定结果：放行时 [errorCode] 为 null。[data] 是拒绝响应附带的 data（远程禁用的 `{reason: method_disabled}`），其余为 null。 */
 data class BridgeDecision(
     val allow: Boolean,
     val errorCode: Int?,
+    val data: JsonObject? = null,
 ) {
     companion object {
         val ALLOW = BridgeDecision(true, null)
 
         fun deny(code: Int) = BridgeDecision(false, code)
+
+        /** 方法被远程禁用（03 §5.3「方法远程禁用（试行）」）：90403，data.reason = method_disabled。 */
+        val METHOD_DISABLED =
+            BridgeDecision(false, BridgeCode.NOT_ALLOWED, buildJsonObject { put("reason", "method_disabled") })
     }
 }
 
@@ -72,6 +77,8 @@ data class BridgeDecision(
  * [decide] 的判定顺序（同一处判定，H5 不能绕开）：
  * 1. origin 与框架：只认白名单里的完整 origin（https、主机转小写逐字相等、不通配子域、443 规范化）且是主框架，否则 90403；
  *    [loopbackOrigins] 是 Debug 构建另加的本机一致性测试源（允许 http，逐字相等），Release 传空；
+ * 1a. 远程禁用：方法名逐字在 [disabledMethods]（生效配置的 bridge_disabled_methods）里 → 90403 + data.reason=method_disabled，
+ *    排在 origin 之后、其余判定之前，处理器（含 net.signedRequest 代发）不执行；不核对名字是否在契约里，列表里的未知名同样按禁用拒绝；
  * 2. 方法：契约里没有的（含 not_exposed 的类别标签、大小写不同的名字）90001；
  * 3. 隐私：未同意或基本模式时只放行 [PRIVACY_LIMITED_METHODS]，其余拒绝。TODO(N-22)：契约没有逐方法的基本模式白名单，也没有
  *    隐私拒绝专用的桥码；这里保守地只放行不读写账号、不外跳、不发写请求的方法，拒绝暂用 90403；
@@ -88,6 +95,8 @@ class BridgeProtocol(
     linkPatterns: JsonObject,
     shareDomains: Set<String>,
     loopbackOrigins: Set<String> = emptySet(),
+    /** 远程禁用的方法名（已按整键校验，见 ConfigResolver.bridgeDisabledMethodsIn）；能力声明（[BridgeHost.declaredMethods]）同样排除。 */
+    val disabledMethods: Set<String> = emptySet(),
 ) {
     private val trusted: Set<String> = trustedOrigins.mapNotNull { normalizeOrigin(it, allowHttp = false) }.toSet()
     private val loopback: Set<String> = loopbackOrigins.mapNotNull { normalizeOrigin(it, allowHttp = true) }.toSet()
@@ -103,9 +112,10 @@ class BridgeProtocol(
         return (https != null && https in trusted) || (any != null && any in loopback)
     }
 
-    @Suppress("ReturnCount") // 判定顺序逐步返回（见类说明）
+    @Suppress("ReturnCount", "CyclomaticComplexMethod") // 判定顺序逐步返回（见类说明）
     fun decide(ctx: BridgeContext): BridgeDecision {
         if (!ctx.isMainFrame || !isTrustedOrigin(ctx.origin)) return BridgeDecision.deny(BridgeCode.NOT_ALLOWED)
+        if (ctx.method in disabledMethods) return BridgeDecision.METHOD_DISABLED
         val method = BridgeContract.methods[ctx.method] ?: return BridgeDecision.deny(BridgeCode.NOT_SUPPORTED)
         val denied =
             when {

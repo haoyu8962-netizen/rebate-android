@@ -2,6 +2,7 @@ package com.couli.app.web
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import com.couli.app.BuildConfig
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clientcore.clientPrivacyRaw
@@ -161,12 +162,29 @@ class AppWeb(
                 linkPatterns = patterns ?: linkPatterns() ?: JsonObject(emptyMap()),
                 shareDomains = shareDomains ?: WebConfigReader.shareDomains(current),
                 loopbackOrigins = loopback,
+                disabledMethods = disabledMethods(current),
             )
         }
         val override = callerOverride?.takeIf { BuildConfig.DEBUG_FEATURES }
         val caller = override?.let { adjust -> { adjust(callerState()) } } ?: ::callerState
-        return BridgeHost(protocol, caller, Services(entryId), ui, ::awaitUpdate, scope).also(hosts::add)
+        // 生效配置一变（含远程禁用名单），传输层把新的方法列表推进已打开的页面（F-X-24 三端口径 A）
+        return BridgeHost(protocol, caller, Services(entryId), ui, ::awaitUpdate, scope, config.store.snapshots).also(hosts::add)
     }
+
+    /** 上次记过 warn 的那份生效配置：协议每次调用都重建，同一份坏配置只记一条（换了配置再判）。 */
+    @Volatile private var disabledWarnedFor: JsonObject? = null
+
+    /**
+     * 生效配置（与可信源、分享域同一份 current → LKG → 包内）里的远程禁用名单；每次桥调用与能力声明都现取，配置更新后下一次调用
+     * 即生效。形状不对整键按空并记一条 warn（只含键名）。
+     */
+    private fun disabledMethods(current: JsonObject): Set<String> =
+        ConfigResolver.bridgeDisabledMethodsIn(current) { key ->
+            if (disabledWarnedFor !== current) {
+                disabledWarnedFor = current
+                Log.w(TAG, "invalid config key: $key")
+            }
+        }
 
     private fun privacyRaw(): String =
         when (clientPrivacyRaw(privacy.conclusion, privacy.credentialAccess.cleanupPending)) {
@@ -351,6 +369,7 @@ class AppWeb(
 
     companion object {
         private const val PAGE = "WebPage"
+        private const val TAG = "AppWeb"
         private const val ISSUE_H5_TOKEN = "issueH5Token"
         private const val SCOPE_READ_ONLY = "read_only"
         private const val SCOPE_STANDARD = "standard"
