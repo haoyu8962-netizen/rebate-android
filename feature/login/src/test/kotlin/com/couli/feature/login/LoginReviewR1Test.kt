@@ -73,7 +73,7 @@ class LoginReviewR1Test {
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
             )
-        return LoginService(api, MemorySessionTokens(), NoHost, clock = { now })
+        return LoginService(api, MemorySessionTokens(), NoHost, clock = { now }, pendingInvite = PendingInviteCode())
     }
 
     private fun model(): LoginViewModel = LoginViewModel(LoginPageConfig(service(), KeyTexts, restricted = false, clock = { now }))

@@ -57,6 +57,7 @@ import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import java.net.URLDecoder
 import java.time.Duration
 import java.time.OffsetDateTime
@@ -372,7 +373,10 @@ class AgentTransportIntegrationTest {
         port = ApiAgentContractPort(api, { runnable -> main.post(runnable) }, allowed = { built?.requestsAllowed() == true })
         composeRule.runOnUiThread {
             routing.updateSession(if (user == null) SessionState.GUEST else SessionState.PHONE_BOUND, resumePending = false)
-            login = AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(3, 2))
+            login =
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(3, 2), pendingInvite = PendingInviteCode())
             login.syncSession()
             me =
                 AppMe(

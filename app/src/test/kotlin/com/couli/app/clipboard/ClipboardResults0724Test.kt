@@ -191,7 +191,7 @@ class ClipboardResults0724Test {
                         ?.inviteCode,
                 )
                 assertEquals(0, f.requests.size)
-                assertFalse(f.clipboard.invitePrefill.pending)
+                assertFalse((f.clipboard.pendingInvite.peek() != null))
                 f.clipboard.onPromptClose(checkNotNull(f.clipboard.prompt.value).id)
                 f.settle()
                 f.clipboard.paste(ManualPasteAction.ENTRY_HOME)
@@ -213,7 +213,7 @@ class ClipboardResults0724Test {
                 assertEquals(0, f.requests.size)
                 f.clipboard.onPromptAction(checkNotNull(f.clipboard.prompt.value).id)
                 f.settle()
-                assertTrue("确认后才保存待绑定码", f.clipboard.invitePrefill.pending)
+                assertTrue("确认后才保存待绑定码", (f.clipboard.pendingInvite.peek() != null))
                 assertEquals(0, f.parseBodies().size)
                 f.nextRound("$LINK 邀请码 K7M2QX")
                 f.card()

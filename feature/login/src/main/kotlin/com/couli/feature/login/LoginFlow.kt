@@ -330,17 +330,28 @@ object InviteField {
 
     /** openapi LoginBySmsRequest.invite_code maxLength。 */
     private const val MAX_WIRE_LENGTH = 32
-    private val STRIP = Regex("[\\s\\p{Z}\\u200B-\\u200D\\uFEFF]")
+
+    /**
+     * BR-INV-02「删全部 Unicode 空白」：Java 正则的 `\\s` 只含 ASCII 空白，`\\p{Z}` 补齐 Zs/Zl/Zp；Unicode White_Space 里剩下的 U+0085（NEL）
+     * 单独列出（APP-17 三端共性 2026-10-22）；另删零宽 U+200B–U+200D、U+FEFF。
+     */
+    private val STRIP = Regex("[\\s\\p{Z}\\u0085\\u200B-\\u200D\\uFEFF]")
     private val PATTERN = Regex("[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}")
 
     fun normalize(raw: String): String = PhoneNumber.nfkc(raw).replace(STRIP, "").uppercase()
+
+    /**
+     * 规范化之后的码是否合格（BR-INV-01：恰好 6 位、字符集 23456789ABCDEFGHJKLMNPQRSTUVWXYZ；空串不合格）。待绑定码写入
+     * （[PendingInviteCode.set]，D10-107）与邀请链接分流（[InviteLinkDispatcher]）共用这一个 PATTERN，不另写正则。
+     */
+    fun isValidCode(normalized: String): Boolean = PATTERN.matches(normalized)
 
     fun decide(
         raw: String,
         context: JsonObject,
     ): InviteDecision {
         val normalized = normalize(raw)
-        val valid = normalized.isEmpty() || PATTERN.matches(normalized)
+        val valid = normalized.isEmpty() || isValidCode(normalized)
         val restricted = (context["restricted"] as? JsonPrimitive)?.booleanOrNull == true
         if (restricted) return InviteDecision(false, valid, "", null)
         return InviteDecision(true, valid, normalized, NOTICE_KEY)

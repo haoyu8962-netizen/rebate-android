@@ -89,7 +89,7 @@ class BindPhoneLateOwnerTest {
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
             )
-        val login = LoginService(api, tokens, host, LegalVersions(1, 1)) { now }
+        val login = LoginService(api, tokens, host, LegalVersions(1, 1), pendingInvite = PendingInviteCode()) { now }
         bind = BindPhoneService(api, tokens, login, phoneBinding, host) { now }
     }
 

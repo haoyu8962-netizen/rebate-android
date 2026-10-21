@@ -101,6 +101,7 @@ import com.couli.core.router.SessionState
 import com.couli.core.router.SharedPreferencesPendingBackend
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.orders.OrderTags
 import com.couli.generated.DefaultTexts
 import java.io.File
@@ -359,7 +360,10 @@ class AppOrdersIntegrationTest {
                 context.getSharedPreferences("couli_permission", Context.MODE_PRIVATE),
             )
         composeRule.runOnUiThread {
-            login = AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(1, 1))
+            login =
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(1, 1), pendingInvite = PendingInviteCode())
             login.syncSession()
             orders =
                 AppOrders(

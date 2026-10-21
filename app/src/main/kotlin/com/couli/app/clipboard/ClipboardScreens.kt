@@ -201,8 +201,8 @@ fun SearchTypingPasteResult(
 }
 
 /**
- * 手动粘贴到只有邀请内容（游客，A-R3-01）：在发起页内联出与首页邀请提示条同一样式的确认条（文案同 clipboard.invite_prompt）；点确认预填
- * 登录页，关闭即放弃。只在发起页仍是当前页时显示。
+ * 手动粘贴到只有邀请内容（游客，A-R3-01）：在发起页内联出与首页邀请提示条同一样式的确认条（文案同 clipboard.invite_prompt）；点确认记为
+ * 待绑定码（APP-17c，不打开登录页），关闭即放弃。只在发起页仍是当前页时显示。
  */
 @Composable
 fun InviteConfirmInline(

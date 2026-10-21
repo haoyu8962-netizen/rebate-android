@@ -209,6 +209,11 @@ class LoginService(
      * Router）；缺省是独立的后台作用域（单测）。
      */
     private val sessionScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    /**
+     * 待绑定邀请码（APP-17c，G21）：App 由 Hilt 单例提供，与剪贴板、登录页小字行是同一个实例；必填、没有缺省值（不得另建第二份）。
+     * 短信登录在发出前取走（[login]）；第三方登录、绑手机、受限登录都不读不清。
+     */
+    val pendingInvite: PendingInviteCode,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** 某个号码的发码截止时刻与种类（code_sent：成功发码后的重发倒计时；rate_limited：42901 的 Retry-After）。 */
@@ -492,9 +497,14 @@ class LoginService(
 
     /**
      * 短信登录。[consentAtMillis]：勾选或确认框同意的时刻（[AgreementState.consentAtMillis]）；[restricted]：从强更页进入的受限登录
-     * （APP-02c 已有的来源标记，不进路由参数，rule-gaps ROUTE-01）。
+     * （APP-02c 已有的来源标记，不进路由参数，rule-gaps ROUTE-01）。[inviteRaw]：旧手填邀请码框的值，APP-17c 起忽略（请求只带待绑定码
+     * [pendingInvite]，G18），签名留给 APP-17a 删手填框时一并删除。
+     *
+     * 待绑定码（G07、G18）：号码、验证码、同意时刻、BUSY 全部本地判定通过之后，在交给 ApiClient 之前的同一同步段里 [PendingInviteCode.consumeForRequest]
+     * 取走本次那一份（之后到 ApiClient 的第一步之间没有挂起点），带码前仍过 [InviteField.wireValue] 的长度兜底；结算后不论结果都不再清理或放回
+     * （请求在途时新写入的码留给下一次；ApiClient 发送前本地拒绝也不放回，Q4 / F-IOS-33 待三端统一）。受限登录不读也不清。
      */
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "UnusedParameter")
     suspend fun login(
         rawPhone: String,
         code: String,
@@ -520,7 +530,12 @@ class LoginService(
                     JsonObject(mapOf("privacy" to JsonPrimitive(legal.privacy), "agreement" to JsonPrimitive(legal.agreement))),
                 "consent_at" to JsonPrimitive(Instant.ofEpochMilli(consentAtMillis).toString()),
             )
-        InviteField.wireValue(inviteRaw, restricted)?.let { fields["invite_code"] = JsonPrimitive(it) }
+        // 取走与发出之间不得有挂起点（ownerFor、client.send 的第一步都是同步的）
+        if (!restricted) {
+            pendingInvite.consumeForRequest()?.let { InviteField.wireValue(it, restricted = false) }?.let {
+                fields["invite_code"] = JsonPrimitive(it)
+            }
+        }
         // 共性第 1 条：归属。作废后 ApiClient 在保存令牌之前就结束这次调用（call_cancelled），旧响应不保存会话
         val owner = ownerFor(issued)
         loggingIn = true

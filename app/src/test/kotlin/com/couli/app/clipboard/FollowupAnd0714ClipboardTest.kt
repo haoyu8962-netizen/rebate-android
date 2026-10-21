@@ -63,6 +63,7 @@ import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SharedPreferencesPendingBackend
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -215,6 +216,7 @@ class FollowupAnd0714ClipboardTest {
             sessionEpoch = { sessionEpoch },
             clock = { now },
             randomSalt = { SAMPLE_SALT.copyOf() },
+            pendingInvite = PendingInviteCode(),
         ).also { it.connect(privacy, routing, cleaners = null) }
 
     @Suppress("LongMethod") // 与 AppModule 同一套接线

@@ -109,7 +109,7 @@ class BindPhoneScreenTest {
     fun stop() = server.shutdown()
 
     private fun showBind() {
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost)
         val config =
             BindPhonePageConfig(
@@ -227,7 +227,7 @@ class BindPhoneScreenTest {
 
     @Test
     fun theLoginPageShowsTheWechatButtonOnlyWhenAProviderIsAvailable() {
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val oauth = OAuthLoginService(api, tokens, login, listOf(UnavailableWechatAdapter()), PhoneBindingState())
         val providers = mutableListOf<String>()
         composeRule.setContent {
@@ -241,7 +241,7 @@ class BindPhoneScreenTest {
 
     @Test
     fun theWechatButtonHasItsAccessibleNameWhenShown() {
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val oauth = OAuthLoginService(api, tokens, login, emptyList(), PhoneBindingState())
         composeRule.setContent {
             LoginScreen(
@@ -265,7 +265,7 @@ class BindPhoneScreenTest {
      */
     @Test
     fun fuand0716_28_theRestrictedLoginKeepsTheThirdPartyEntryAndItsAgreementCheck() {
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val oauth = OAuthLoginService(api, tokens, login, emptyList(), PhoneBindingState())
         composeRule.setContent {
             LoginScreen(
@@ -309,7 +309,10 @@ class BindPhoneScreenTest {
             held.await(WAIT_NS, TimeUnit.NANOSECONDS)
             envelope(code, "null")
         }
-        val model = LoginViewModel(LoginPageConfig(LoginService(api, tokens, NoHost), KeyTexts, restricted = false))
+        val model =
+            LoginViewModel(
+                LoginPageConfig(LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode()), KeyTexts, restricted = false),
+            )
         model.onToggleAgreement()
         model.onPhoneChange(PHONE)
         model.onGetCode()
@@ -350,7 +353,7 @@ class BindPhoneScreenTest {
             held.await(WAIT_NS, TimeUnit.NANOSECONDS)
             envelope(code, "null")
         }
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost)
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat"), SavedStateHandle())
         model.onPageVisible()
@@ -387,7 +390,7 @@ class BindPhoneScreenTest {
         bindBodies.clear()
         val replay = AtomicBoolean(false)
         bindAnswer = { if (replay.get()) envelope(20002, "null") else envelope(50001, "null") }
-        val login = LoginService(api, tokens, NoHost)
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode())
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost)
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat"), SavedStateHandle())
         model.onPageVisible()
@@ -422,7 +425,7 @@ class BindPhoneScreenTest {
     @Test
     fun sendingAnnouncesTheMaskedTargetOnceAndTheEndOfTheCountdownOnce() {
         var now = 1_000_000L
-        val login = LoginService(api, tokens, NoHost) { now }
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode()) { now }
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
         // 页面已显示（生产里用户能点【获取验证码】时页面必已 RESUMED；FU-AND-0716 ④ 起发码结果的播报核对发起时的页面许可）
@@ -455,7 +458,7 @@ class BindPhoneScreenTest {
     @Test
     fun fuand0716_04_aCodeSentAnswerAfterThePageWasHiddenIsSettledButNotAnnounced() {
         val now = 1_000_000L
-        val login = LoginService(api, tokens, NoHost) { now }
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode()) { now }
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
         model.onPageVisible()
@@ -489,7 +492,7 @@ class BindPhoneScreenTest {
             smsAnswer = answer
             paths.clear()
             val now = 1_000_000L
-            val login = LoginService(api, tokens, NoHost) { now }
+            val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode()) { now }
             val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { now }
             val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { now }), SavedStateHandle())
             model.onPageVisible()
@@ -516,7 +519,7 @@ class BindPhoneScreenTest {
 
     /** 发码成功（号码 [PHONE]）并等到发码播报；返回 ViewModel 与可调的时钟。 */
     private fun sentModel(clock: LongArray): BindPhoneViewModel {
-        val login = LoginService(api, tokens, NoHost) { clock[0] }
+        val login = LoginService(api, tokens, NoHost, pendingInvite = PendingInviteCode()) { clock[0] }
         val service = BindPhoneService(api, tokens, login, PhoneBindingState(), NoHost) { clock[0] }
         val model = BindPhoneViewModel(BindPhonePageConfig(service, KeyTexts, "wechat", clock = { clock[0] }), SavedStateHandle())
         // 页面已显示（生产里用户能点【获取验证码】时页面必已 RESUMED；FU-AND-0716 ④ 起发码结果的播报核对发起时的页面许可）

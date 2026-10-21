@@ -65,6 +65,7 @@ import com.couli.core.update.UpdateCheckOutcome
 import com.couli.core.update.UpdateGate
 import com.couli.feature.login.BindPhoneViewModel
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
 import java.net.URLDecoder
@@ -533,6 +534,7 @@ abstract class AccountHarness {
                     legal = LegalVersions(3, 2),
                     // FU-AND-0716 窄修四：与缺省值同一种作用域（SupervisorJob + Main.immediate），只是由测试持有，用来等会话级任务（绑定 / 确认）结束
                     sessionScope = loginSessionScope,
+                    pendingInvite = PendingInviteCode(),
                 )
             login.syncSession()
             me =

@@ -50,6 +50,7 @@ import com.couli.core.update.UpdateCheckResult
 import com.couli.core.update.UpdateGate
 import com.couli.core.update.UpdateStore
 import com.couli.core.update.UpdateStoreListing
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.TimeUnit
 import javax.inject.Provider
 import kotlinx.coroutines.CompletableDeferred
@@ -195,6 +196,7 @@ internal class Fx24BridgeFixture : AutoCloseable {
                 sessionEpoch = { tokens.loginEpoch },
                 clock = { now },
                 randomSalt = { SAMPLE_SALT.copyOf() },
+                pendingInvite = PendingInviteCode(),
             )
         val tracker = tracker()
         // 本进程一次成功检查（最低版本 1.0.0）：强更状态为 OK，桥的强更守卫不拦写操作（否则一律 90500，测不到代发这一步）

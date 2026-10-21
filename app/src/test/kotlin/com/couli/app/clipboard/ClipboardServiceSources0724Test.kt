@@ -34,6 +34,7 @@ import com.couli.core.update.UpdateGate
 import com.couli.core.update.UpdateStoreListing
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginOutcome
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.trade.JumpPorts
 import com.couli.feature.trade.PurchaseEnv
 import com.couli.feature.trade.TradeOperations
@@ -341,6 +342,7 @@ class ClipboardServiceSources0724Test {
             {},
             LegalVersions(1, 1),
             sessionScope = scope,
+            pendingInvite = PendingInviteCode(),
         )
     }
 

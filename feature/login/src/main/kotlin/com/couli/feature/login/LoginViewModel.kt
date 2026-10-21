@@ -24,14 +24,12 @@ interface LoginTexts {
 }
 
 /**
- * 邀请码的剪贴板来源（APP-07，App 给；BR-INV-04、BR-ID-16）：
- * - [takePrefill]：游客在首页邀请提示条点了确认、码放在进程内的预填容器里；进入验证码页时取一次（取走即丢弃，之后以用户输入为准，G16）；
+ * 邀请码的剪贴板来源（APP-07，App 给；BR-INV-04、BR-ID-16）。游客在提示条点确认后的码不再经这里预填输入框：APP-17c 起写进待绑定码
+ * （[PendingInviteCode]），登录页以小字行显示（[LoginViewModel.pendingInviteRow]），提交时由 [LoginService] 取走。
  * - [paste]：邀请码行【粘贴】（用户点击才读剪贴板）：只抽 6 位码，抽不到返回 null（页面轻提示「未识别到邀请码」，不清空已有输入）；
  * - [blocked]：parse 收到 42901 后的共享禁用期（与首页、SearchTyping 的粘贴入口同一个，A-R1-06）：【粘贴】置灰，点击也不读。
  */
 interface InvitePasteSource {
-    fun takePrefill(): String?
-
     fun paste(): String?
 
     /**
@@ -83,7 +81,7 @@ class LoginPageConfig(
     val thirdParty: List<String> = emptyList(),
     val clock: () -> Long = System::currentTimeMillis,
     val actions: LoginPageActions = LoginPageActions(),
-    /** 邀请码的剪贴板来源（APP-07）；没有时不显示【粘贴】、不预填。受限登录不用。 */
+    /** 邀请码的剪贴板来源（APP-07）；没有时不显示【粘贴】。受限登录不用。 */
     val invite: InvitePasteSource? = null,
 )
 
@@ -253,11 +251,20 @@ class LoginViewModel(
         }
     }
 
-    /** 进入验证码页：取一次首页邀请提示条留下的预填码（G16）；输入框已有内容时以用户输入为准，预填仍丢弃。 */
-    private fun fillInvitePrefill() {
+    /**
+     * 待绑定码小字行（APP-17c，R04、G20）：每次现读 [LoginService.pendingInvite]（读取不取走）；没有码或受限登录为 null。
+     * 只有码、文案键与【移除】键，不含告知句（10-19 口径）；渲染属视觉闸后，刷新随 [pendingInviteChanges]。
+     */
+    val pendingInviteRow: PendingInviteRow?
+        get() = if (config.restricted) null else service.pendingInvite.peek()?.let { PendingInviteRow(it) }
+
+    /** 小字行的变化通知（容器的 [PendingInviteCode.state]）：闸后渲染订阅它、再读 [pendingInviteRow]。 */
+    val pendingInviteChanges: StateFlow<String?> get() = service.pendingInvite.state
+
+    /** 小字行【移除】：清掉共享容器里的码（之后的登录请求不带）。受限登录不显示小字行，也不动容器。 */
+    fun removePendingInvite() {
         if (config.restricted) return
-        val code = config.invite?.takePrefill() ?: return
-        mutableState.update { if (it.invite.isEmpty()) it.copy(invite = code, inviteExpanded = true) else it }
+        service.pendingInvite.remove()
     }
 
     fun onCodeChange(raw: String) {
@@ -281,7 +288,6 @@ class LoginViewModel(
         mutableState.update {
             it.copy(step = LoginStep.CODE, maskedPhone = PhoneNumber.masked(phone), resendSec = entry.countdownSec, phoneError = null)
         }
-        fillInvitePrefill()
     }
 
     fun onResend() = requireAgreement { send(fromCodePage = true) }
@@ -386,7 +392,6 @@ class LoginViewModel(
                         codeError = null,
                     )
                 }
-                fillInvitePrefill()
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {

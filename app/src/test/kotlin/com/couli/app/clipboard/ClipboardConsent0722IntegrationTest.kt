@@ -68,6 +68,7 @@ import com.couli.core.update.UpdateCheckResult
 import com.couli.core.update.UpdateGate
 import com.couli.core.update.UpdateStoreListing
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -247,6 +248,7 @@ class ClipboardConsent0722IntegrationTest {
                     markBelow = {},
                     legal = LegalVersions(1, 1),
                     sessionScope = loginScope,
+                    pendingInvite = PendingInviteCode(),
                 )
             store = importStore ?: productionPrefs?.importPreferences(clock = { now }) ?: reopen()
             clipboard =
@@ -266,6 +268,7 @@ class ClipboardConsent0722IntegrationTest {
                         onAutoReadDisabled = { offObserved += !clipboard.autoReadAllowed() },
                         onImportConsentWithdrawn = { withdrawalObserved += (store.snapshot().enabled == null) },
                         workScope = scope,
+                        pendingInvite = login.pendingInvite,
                     )
                 } else {
                     AppClipboard(
@@ -283,6 +286,7 @@ class ClipboardConsent0722IntegrationTest {
                         onAutoReadDisabled = { offObserved += !store.isAutoReadAllowed("purpose-02") },
                         onImportConsentWithdrawn = { withdrawalObserved += (store.snapshot().enabled == null) },
                         workScope = scope,
+                        pendingInvite = login.pendingInvite,
                     )
                 }
             // 与 AppModule 相同的生产订阅入口；不另加测试版清理/弹层监听器。

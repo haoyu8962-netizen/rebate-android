@@ -36,6 +36,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.FlowWait
 import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -92,6 +93,7 @@ import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginTags
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.search.SearchTags
 import com.couli.feature.trade.TradeTags
 import com.couli.feature.trade.UnavailableWebCodeAuthorizer
@@ -103,6 +105,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Provider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -187,6 +194,17 @@ class AppClipboardIntegrationTest {
     /** R1-05：依次给每个 parse 的回答（不为空时优先于 [gated]）。 */
     private val gatedQueue = ArrayDeque<CompletableDeferred<ApiResult>>()
     private val activeApiCalls = AtomicInteger()
+    private val requestEntries = AtomicInteger()
+    private val clipboardWork = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private fun settleInviteAction() {
+        FlowWait.until(pump = {
+            shadowOf(Looper.getMainLooper()).idle()
+            composeRule.waitForIdle()
+        }) {
+            clipboardWork.coroutineContext[Job]!!.children.none { it.isActive }
+        }
+    }
 
     /** 剪贴板用的 PageApi：缺省原样交给 ApiClient；[gated] 不为 null 时这一次 parse 等测试给回答。 */
     private inner class GatedPageApi(
@@ -194,6 +212,7 @@ class AppClipboardIntegrationTest {
     ) : PageApi by delegate {
         @Suppress("ReturnCount") // 依次闸门、单次闸门、原样转发
         override suspend fun send(call: ApiCall): ApiResult {
+            requestEntries.incrementAndGet()
             activeApiCalls.incrementAndGet()
             try {
                 if (call.operationId == "parseInput") synchronized(requests) { requests += PARSE_PATH to call.body.orEmpty() }
@@ -281,7 +300,10 @@ class AppClipboardIntegrationTest {
     }
 
     @After
-    fun tearDown() = server.shutdown()
+    fun tearDown() {
+        clipboardWork.cancel()
+        server.shutdown()
+    }
 
     private fun prefs() = context.getSharedPreferences(CouliPreferenceNamespaces.CLIPBOARD, Context.MODE_PRIVATE)
 
@@ -354,6 +376,7 @@ class AppClipboardIntegrationTest {
                 AppClipboard(
                     system = system,
                     api = GatedPageApi(ApiClientPageApi(api)),
+                    workScope = clipboardWork,
                     routing = routing,
                     privacy = { privacy.conclusion },
                     promptShowing = {
@@ -367,6 +390,7 @@ class AppClipboardIntegrationTest {
                     sessionEpoch = { sessionEpoch },
                     clock = { now },
                     randomSalt = { SAMPLE_SALT.copyOf() },
+                    pendingInvite = PendingInviteCode(),
                 )
             clipboard.overlay = {
                 countOffMain()
@@ -401,13 +425,13 @@ class AppClipboardIntegrationTest {
         val search = AppSearch(api, store, routing, privacy = { privacy.conclusion }, trade = trade, clipboard = clipboard)
         composeRule.runOnUiThread {
             login =
-                AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(1, 1))
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(1, 1), pendingInvite = clipboard.pendingInvite)
             login.syncSession()
             // 与 AppModule 同一个邀请码来源
             login.invite =
                 object : InvitePasteSource {
-                    override fun takePrefill(): String? = clipboard.invitePrefill.take()
-
                     override fun paste(): String? = clipboard.pasteInviteCode()
 
                     override val blocked: StateFlow<Boolean> get() = clipboard.blocked
@@ -707,7 +731,7 @@ class AppClipboardIntegrationTest {
     // ---------------------------------------------------------------- AC-S1-63 邀请口令
 
     @Test
-    fun ac_s1_63_guestConfirmPrefillsLoginWithoutAnyRequest() {
+    fun ac_s1_63_guestConfirmKeepsPendingWithoutOpeningLogin() {
         launch()
         copy("好友邀请你加入凑狸 https://share.example.test/i/K7M2QX")
         foreground(cold = true)
@@ -715,10 +739,12 @@ class AppClipboardIntegrationTest {
         composeRule.onNodeWithText("检测到好友邀请码 K7M2QX，绑定为邀请人？").assertIsDisplayed()
         composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
         composeRule.waitForIdle()
-        assertEquals("经 Router 打开 Login", RouteNames.LOGIN, routes().last())
-        assertTrue(clipboard.invitePrefill.pending)
-        assertEquals("游客只预填，不发任何请求", 0, synchronized(requests) { requests.size })
-        assertEquals("K7M2QX", clipboard.invitePrefill.take())
+        settleInviteAction()
+        assertEquals("PageApi 入口无请求，包括可能被本地拒绝的操作", 0, requestEntries.get())
+        assertFalse("确认后不打开 Login", RouteNames.LOGIN in routes())
+        assertTrue((clipboard.pendingInvite.peek() != null))
+        assertEquals("游客只记待绑定码，不发任何请求", 0, synchronized(requests) { requests.size })
+        assertEquals("K7M2QX", clipboard.pendingInvite.peek())
         assertEquals(0, system.writes)
     }
 
@@ -945,7 +971,7 @@ class AppClipboardIntegrationTest {
 
     /** 已同意的游客关掉自动识别，手动粘贴纯邀请落地页：不发 parse，只本地抽码；确认后经 Router 预填登录页，全程不发请求。 */
     @Test
-    fun manualPasteOfAPureInviteLinkNeverUploadsAndPrefillsLoginAfterConfirm() {
+    fun manualPasteOfAPureInviteLinkKeepsPendingWithoutOpeningLogin() {
         launch(autoReadEnabled = false)
         copy("邀请码 K7M2QX https://share.example.test/i/K7M2QX")
         foreground(cold = true)
@@ -958,13 +984,15 @@ class AppClipboardIntegrationTest {
         assertEquals("邀请码只在本地抽取", "K7M2QX", (clipboard.result.value as ClipboardResult.InviteConfirm).code)
         composeRule.onNodeWithTag(ClipboardScreens.INVITE_CONFIRM).assertIsDisplayed()
         composeRule.onNodeWithText("检测到好友邀请码 K7M2QX，绑定为邀请人？").assertIsDisplayed()
-        assertFalse("确认前不预填", clipboard.invitePrefill.pending)
+        assertFalse("确认前不预填", (clipboard.pendingInvite.peek() != null))
 
         composeRule.onNodeWithTag(ClipboardUi.PROMPT_ACTION).performClick()
         composeRule.waitForIdle()
-        assertEquals("经 Router 打开 Login", RouteNames.LOGIN, routes().last())
-        assertEquals("K7M2QX", clipboard.invitePrefill.take())
-        assertEquals("游客只预填，不发任何请求", 0, synchronized(requests) { requests.size })
+        settleInviteAction()
+        assertEquals("PageApi 入口无请求，包括可能被本地拒绝的操作", 0, requestEntries.get())
+        assertFalse("确认后不打开 Login", RouteNames.LOGIN in routes())
+        assertEquals("K7M2QX", clipboard.pendingInvite.peek())
+        assertEquals("游客只记待绑定码，不发任何请求", 0, synchronized(requests) { requests.size })
         assertEquals(0, system.writes)
     }
 
@@ -997,7 +1025,7 @@ class AppClipboardIntegrationTest {
             // 同一条消息里、下一次重组之前：旧确认条的按钮回调
             replaced = clipboard.blocked.value && clipboard.result.value !== confirm
             clipboard.confirmManualInvite(confirm)
-            prefilled = clipboard.invitePrefill.pending
+            prefilled = (clipboard.pendingInvite.peek() != null)
         }
         assertTrue("前提：42901 已启动禁用期、结果已被替换", replaced)
         assertFalse("不预填", prefilled)
@@ -1164,7 +1192,7 @@ class AppClipboardIntegrationTest {
         pasteHome()
         assertEquals(0, parseRequests().size)
         assertNull("不出「识别不了」", clipboard.result.value)
-        assertFalse(clipboard.invitePrefill.pending)
+        assertFalse((clipboard.pendingInvite.peek() != null))
     }
 
     /** 第 20 条：parse 外层成功、单条结果 error_code=10405：主动进入强更分流；多结果里有 10405 同理。 */
@@ -1265,11 +1293,11 @@ class AppClipboardIntegrationTest {
         assertTrue(oldConfirm.id != newConfirm.id)
         composeRule.runOnUiThread { clipboard.confirmManualInvite(oldConfirm) }
         composeRule.waitForIdle()
-        assertFalse("旧确认回调不预填", clipboard.invitePrefill.pending)
+        assertFalse("旧确认回调不预填", (clipboard.pendingInvite.peek() != null))
         assertTrue(clipboard.result.value === newConfirm)
         composeRule.runOnUiThread { clipboard.confirmManualInvite(newConfirm) }
         composeRule.waitForIdle()
-        assertTrue("当前确认回调照常预填", clipboard.invitePrefill.pending)
+        assertTrue("当前确认回调照常预填", (clipboard.pendingInvite.peek() != null))
     }
 
     /** SearchTyping 的「粘贴查返利」同一套过滤：纯邀请落地页不上传。 */

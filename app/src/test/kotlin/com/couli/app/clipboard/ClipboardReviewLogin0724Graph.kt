@@ -65,7 +65,7 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
     private val scope = CoroutineScope(job + queue)
     val tokens = MemorySessionTokens()
     private val environment = EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED }.also { it.settleAtStartup() }
-    private val cleaners = EnvironmentSwitchCleanerRegistry()
+    val cleaners = EnvironmentSwitchCleanerRegistry()
     private val inFlight = InFlightCalls()
     val privacy =
         AppPrivacy(
@@ -76,13 +76,14 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
             { true },
             { NOW },
         ).also { it.coldStart() }
+    val pendingInvite = AppModule.pendingInviteCode(privacy, cleaners)
     val routing = AppRouting(context, environment, clock = { NOW }, initialPrivacy = PrivacyState.CONSENTED)
     private val update = updateService()
     private val config = AppConfig(ConfigStore({ null }, {}, { _, _ -> }, { NOW }, ClipboardReview0724Harness.CONFIG), { true })
     val client: ApiClient
     var board: AppClipboard
         private set
-    private val login: AppLogin
+    val login: AppLogin
     private val trade: AppTrade
     private val orders by lazy { ordersService() }
     private val wallet by lazy { walletService() }
@@ -139,7 +140,18 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
                 canUpload = { false },
             )
         trade = AppModule.appTrade(context, client, config, routing, Provider { tracker }, Provider { privacy }, board)
-        login = AppModule.appLogin(context, client, tokens, routing, update, privacy, Provider { board }, Provider { trade })
+        login =
+            AppModule.appLogin(
+                context,
+                client,
+                tokens,
+                routing,
+                update,
+                privacy,
+                Provider { board },
+                Provider { trade },
+                pendingInvite = pendingInvite,
+            )
         settle()
     }
 
@@ -155,13 +167,15 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
             Provider { trade },
             Provider { login },
             Provider { update },
+            pendingInvite = pendingInvite,
         )
 
     fun settle() {
-        repeat(4) {
-            shadowOf(Looper.getMainLooper()).idle()
+        val main = shadowOf(Looper.getMainLooper())
+        do {
+            main.idle()
             queue.drain()
-        }
+        } while (queue.size > 0 || !main.isIdle)
     }
 
     fun loginAs(phone: String) {
@@ -180,9 +194,9 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
         settle()
     }
 
-    fun recognize() {
+    fun recognize(text: String = Clipboard0724Fixture.LINK) {
         val system = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        system.setPrimaryClip(ClipData.newPlainText("fixture", Clipboard0724Fixture.LINK))
+        system.setPrimaryClip(ClipData.newPlainText("fixture", text))
         board.onShellAttached()
         board.onShell("Home", false)
         board.onBackStack(null, null, emptySet())

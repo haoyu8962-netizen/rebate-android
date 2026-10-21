@@ -81,7 +81,7 @@ class LoginServiceIntegrationTest {
                 // 要验证「不等」的用例（取消、作废）本来就不靠超时结束
                 retryPolicy = { RetryPolicy.forOperation(it).copy(timeoutMillis = LOCAL_BUDGET_MS) },
             )
-        service = LoginService(api, tokens, host, LegalVersions(3, 2)) { now }
+        service = LoginService(api, tokens, host, LegalVersions(3, 2), pendingInvite = PendingInviteCode()) { now }
     }
 
     @After
@@ -181,7 +181,8 @@ class LoginServiceIntegrationTest {
             host.pending = true
             host.onEvent = { event -> if (event == "resume_pending") host.sessionAtResume = tokens.accessToken }
             answer = { loggedIn(SessionScopeRaw.FULL, invite = ""","invite_bind":{"result":"bound","code":null}""") }
-            val outcome = service.login("13800138000", "123456", CONSENT_AT, " k7m3qx ", restricted = false)
+            service.pendingInvite.set(" k7m3qx ")
+            val outcome = service.login("13800138000", "123456", CONSENT_AT, "IGNORED", restricted = false)
 
             assertEquals(LoginOutcome.LOGGED_IN, outcome.stateRaw)
             assertEquals(listOf(AfterLoginAction.SAVE_SESSION, AfterLoginAction.RESUME_PENDING), outcome.actions)
@@ -191,7 +192,8 @@ class LoginServiceIntegrationTest {
             val sent = body(requests.single())
             assertEquals("""{"privacy":3,"agreement":2}""", sent["legal_versions"])
             assertEquals("2023-11-14T22:13:20Z", sent["consent_at"])
-            assertEquals("邀请码规范化后上送", "K7M3QX", sent["invite_code"])
+            assertEquals("待绑定码规范化后上送", "K7M3QX", sent["invite_code"])
+            assertNull(service.pendingInvite.peek())
         }
 
     @Test
@@ -200,7 +202,9 @@ class LoginServiceIntegrationTest {
             answer = { loggedIn(SessionScopeRaw.DELETION_ONLY) }
             update = UpdateRaw.BELOW
             host.update = AfterLoginUpdate.BELOW
+            service.pendingInvite.set("K7M3QX")
             service.login("13800138000", "123456", now, "K7M3QX", restricted = true)
+            assertEquals("K7M3QX", service.pendingInvite.peek())
             assertFalse(body(requests.single()).containsKey("invite_code"))
         }
 

@@ -38,6 +38,7 @@ import com.couli.feature.login.OAuthLoginOutcome
 import com.couli.feature.login.OAuthLoginRoute
 import com.couli.feature.login.OAuthLoginService
 import com.couli.feature.login.OAuthProvider
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.login.PhoneBindingState
 import com.couli.feature.login.ThirdPartyAuthAdapter
 import com.couli.feature.login.UnavailableWechatAdapter
@@ -117,9 +118,14 @@ class AppLogin(
      * 页面（AppMe 的 MeGates.read 就是这一个）共用同一个截止时间。AppLogin 先于 AppMe 建，所以由这里持有。
      */
     val meReadGate: WalletRateGate = WalletRateGate(sessionScope),
+    /**
+     * 待绑定邀请码（APP-17c，G21）：进程内唯一的一份，AppModule 的 Hilt 单例（与剪贴板同一个实例）；必填、没有缺省值。交给 [service]
+     * （短信登录提交时取走、登录页小字行现读）。离开登录页、会话变化、进出后台都不清；隐私与环境的清理由容器的提供函数自己登记。
+     */
+    val pendingInvite: PendingInviteCode,
 ) : LoginHost,
     BindPhoneHost {
-    val service: LoginService = LoginService(client, tokens, this, legal, sessionScope)
+    val service: LoginService = LoginService(client, tokens, this, legal, sessionScope, pendingInvite)
 
     /**
      * 登录任务进行中（FU-AND-0724 G28：剪贴板自动识别的普通互斥模态 login，首页等非登录页上发起的登录任务）：真实 [LoginService] 的发码、
@@ -407,7 +413,7 @@ class AppLogin(
         return wait.result.await()
     }
 
-    /** 邀请码的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
+    /** 邀请码行【粘贴】的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
     var invite: InvitePasteSource? = null
 
     /** 会话保存、刷新、清理通知的转发（AppModule 接剪贴板，按登录世代判断换号）；在 Router 同步之后调。 */
@@ -432,7 +438,7 @@ class AppLogin(
             oauth = oauth,
             // 共性第 28 条（FU-AND-0716 第 2 轮）：受限登录也保留第三方入口——仅第三方身份的已有账号要能登进 deletion_only 去注销（BR-ID-01）
             thirdParty = oauth.visibleProviders(),
-            // 邀请码的剪贴板来源（APP-07：游客邀请预填、邀请码行【粘贴】）；受限登录不用
+            // 邀请码行【粘贴】的剪贴板来源（APP-07）；受限登录不用。游客邀请确认的码在待绑定码里（APP-17c），不再预填
             invite = if (restricted) null else invite,
             actions =
                 LoginPageActions(

@@ -71,6 +71,7 @@ import com.couli.core.router.RouteSource
 import com.couli.core.router.UpdateCheck
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
 import com.couli.feature.wallet.LaborBackend
 import com.couli.feature.wallet.RealNameBackend
@@ -278,7 +279,10 @@ class AppWalletIntegrationTest {
             )
         mask = AmountMaskStore(context)
         composeRule.runOnUiThread {
-            login = AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(1, 1))
+            login =
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(1, 1), pendingInvite = PendingInviteCode())
             login.syncSession()
             wallet =
                 AppWallet(

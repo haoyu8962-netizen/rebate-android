@@ -52,6 +52,7 @@ import com.couli.core.router.SharedPreferencesPendingBackend
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginOutcome
+import com.couli.feature.login.PendingInviteCode
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -162,7 +163,10 @@ class BridgeAuthLoginTest {
                 sleeper = {},
             )
         composeRule.runOnUiThread {
-            login = AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(1, 1))
+            login =
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(1, 1), pendingInvite = PendingInviteCode())
             host = bridgeHost()
         }
         composeRule.setContent {

@@ -29,6 +29,7 @@ import com.couli.app.home.variantEnvironmentKey
 import com.couli.app.home.variantHomePort
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
+import com.couli.app.login.registerCleanup
 import com.couli.app.login.variantWechatAdapter
 import com.couli.app.me.AndroidMeSystem
 import com.couli.app.me.AppMe
@@ -120,6 +121,7 @@ import com.couli.core.update.UpdateStatus
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
 import com.couli.generated.ClientPlatform
 import com.couli.generated.InstallChannel
@@ -689,6 +691,17 @@ object AppModule {
         }
 
     /**
+     * 待绑定邀请码（APP-17c，G21）：进程内唯一的一份，同时交给 AppLogin（LoginService、登录页小字行）与 AppClipboard（游客确认邀请）。
+     * 清理由容器自己登记（隐私不再是已同意、切换环境），不依赖剪贴板是否建出来。
+     */
+    @Provides
+    @Singleton
+    fun pendingInviteCode(
+        privacy: AppPrivacy,
+        cleaners: EnvironmentSwitchCleanerRegistry,
+    ): PendingInviteCode = PendingInviteCode().registerCleanup(privacy, cleaners)
+
+    /**
      * 登录（APP-05a）：LoginService（ApiClient 保存会话、Router 恢复 pending_action）、守卫的会话状态、登出。协议版本取包内默认配置的
      * legal.*.version（BR-ID-04）。隐私结论、强更状态变化后重新同步会话状态（撤回清理、受限会话刷新会改变它）。
      */
@@ -704,6 +717,7 @@ object AppModule {
         privacy: AppPrivacy,
         clipboard: Provider<AppClipboard>,
         trade: Provider<AppTrade>,
+        pendingInvite: PendingInviteCode,
     ): AppLogin =
         AppLogin(
             client = client,
@@ -714,14 +728,13 @@ object AppModule {
             legal = LegalVersions.parse(BundledConfig.dataJson),
             // 第三方登录（APP-05b）：Release 微信适配器恒不可用；Debug / Staging 本机假服务打开时是假适配器
             adapters = listOf(variantWechatAdapter(context, AndroidInstalledAppProbe(context))),
+            pendingInvite = pendingInvite,
         ).also { login ->
             privacy.onConclusionChanged { login.syncSession() }
             update.onRouterUpdate { login.syncSession() }
-            // 邀请码的剪贴板来源（APP-07）：游客邀请预填、邀请码行【粘贴】
+            // 邀请码行【粘贴】的剪贴板来源（APP-07）。游客邀请确认的码在共享的待绑定码里（APP-17c），不再经这里预填
             login.invite =
                 object : InvitePasteSource {
-                    override fun takePrefill(): String? = clipboard.get().invitePrefill.take()
-
                     override fun paste(): String? = clipboard.get().pasteInviteCode()
 
                     // G15：还没看过用途说明时先出弹层，关掉后同一次点击读一次、抽码填回这个输入框
@@ -1152,6 +1165,7 @@ object AppModule {
         trade: Provider<AppTrade>,
         login: Provider<AppLogin>,
         update: Provider<AppUpdate>,
+        pendingInvite: PendingInviteCode,
     ): AppClipboard =
         AppClipboard(
             system = AndroidSystemClipboard(context),
@@ -1162,6 +1176,7 @@ object AppModule {
             configData = { config.store.snapshots.value.data },
             prefs = ClipboardPreferences(context),
             sessionEpoch = { tokens.loginEpoch },
+            pendingInvite = pendingInvite,
         ).also { board ->
             // 前台轮次只由进程级生命周期决定（FU-AND-0724，R12）：ON_START / ON_STOP 在观察者回调里同步转给协调器
             board.bindProcessLifecycle(ProcessLifecycleOwner.get().lifecycle)

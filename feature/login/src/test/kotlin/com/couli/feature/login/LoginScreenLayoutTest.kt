@@ -76,7 +76,7 @@ class LoginScreenLayoutTest {
                 tokens = MemorySessionTokens(),
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
             )
-        val service = LoginService(api, MemorySessionTokens(), NoHost)
+        val service = LoginService(api, MemorySessionTokens(), NoHost, pendingInvite = PendingInviteCode())
         val config =
             LoginPageConfig(
                 service = service,

@@ -64,6 +64,7 @@ import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SharedPreferencesPendingBackend
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -209,6 +210,7 @@ class FuClipIntegrationTest {
             sessionEpoch = { sessionEpoch },
             clock = { now },
             randomSalt = { SAMPLE_SALT.copyOf() },
+            pendingInvite = PendingInviteCode(),
         ).also { it.connect(privacy, routing, cleaners = null) }
 
     @Suppress("LongMethod") // 与 AppModule 同一套接线
@@ -1016,7 +1018,7 @@ class FuClipIntegrationTest {
             clipboard.onPromptAction(invite.id)
         }
         composeRule.waitForIdle()
-        assertFalse("不预填邀请码", clipboard.invitePrefill.pending)
+        assertFalse("不预填邀请码", (clipboard.pendingInvite.peek() != null))
         assertTrue("不打开登录页", routes().isEmpty())
         assertTrue("在途识别不被打断", clipboard.busy.value)
         assertEquals(1, parseBodies().size)

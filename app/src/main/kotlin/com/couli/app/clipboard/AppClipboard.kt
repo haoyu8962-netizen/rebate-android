@@ -59,6 +59,7 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
+import com.couli.feature.login.PendingInviteCode
 import java.security.SecureRandom
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -149,8 +150,8 @@ sealed interface ClipboardResult {
     ) : ClipboardResult
 
     /**
-     * 游客在商品粘贴入口粘到的只有邀请内容（A-R3-01，BR-ID-16）：本地抽出的码（[code]），在发起页内联出邀请确认条；点确认才预填登录页，
-     * 不发任何请求、不持久化。
+     * 游客在商品粘贴入口粘到的只有邀请内容（A-R3-01，BR-ID-16）：本地抽出的码（[code]），在发起页内联出邀请确认条；点确认才记为待绑定码
+     * （APP-17c，G19：不打开登录页），不发任何请求、不持久化。
      */
     data class InviteConfirm(
         override val origin: String,
@@ -208,7 +209,11 @@ class AppClipboard(
     private val configData: () -> JsonObject,
     private val prefs: ClipboardPreferences,
     val seeds: ProductSeeds = ProductSeeds(),
-    val invitePrefill: InvitePrefill = InvitePrefill(),
+    /**
+     * 待绑定邀请码（APP-17c，G21）：AppModule 的 Hilt 单例，与 AppLogin / LoginService 同一个实例；必填、没有缺省值（不得另建第二份）。
+     * 游客确认邀请时只写入（G19），本组件不清它：隐私、环境的清理由容器的提供函数自己登记，会话变化、进出后台都不清。
+     */
+    val pendingInvite: PendingInviteCode,
     private val sessionEpoch: () -> Long = { 0L },
     private val clock: () -> Long = System::currentTimeMillis,
     /** 本机盐的随机源（FU-CLIP C3：生产为系统 CSPRNG；测试注入样例字节）。 */
@@ -1345,7 +1350,7 @@ class AppClipboard(
             api.epochs() == t.epochs
 
     /**
-     * 提示条的按钮：系统分享 → 这时才上传分享里抽出的片段（G19）；邀请（游客）→ 预填登录页，不发请求。[id] 是渲染时这条提示的编号（APP-07 共性
+     * 提示条的按钮：系统分享 → 这时才上传分享里抽出的片段（G19）；邀请（游客）→ 记为待绑定码，不打开登录页、不发请求（APP-17c）。[id] 是渲染时这条提示的编号（APP-07 共性
      * 第 18 条）：已不是当前提示（被新提示替换）的旧回调直接返回，不执行新提示；缺省（null）只给测试直接调用。
      */
     @Suppress("ReturnCount") // 归属失效、限流、邀请、没有片段逐项短路
@@ -1398,10 +1403,8 @@ class AppClipboard(
         val session = if (guest()) InviteConfirmAction.SESSION_GUEST else InviteConfirmAction.SESSION_PHONE
         val decision = InviteConfirmAction.decide(session, me = null)
         clearPrompt()
-        if (decision.actionRaw == InviteConfirmAction.PREFILL_LOGIN) {
-            invitePrefill.set(code)
-            open(RouteNames.LOGIN, JsonObject(emptyMap()))
-        }
+        // APP-17c（G19、AC-S1-63 ①）：游客只记待绑定码，留在当前页；登录页以小字行显示，短信登录提交时带上。共享判定值 prefill_login 不改
+        if (decision.actionRaw == InviteConfirmAction.PREFILL_LOGIN) pendingInvite.set(code)
         // TODO(N-30) G01：已登录用户的补填绑定等契约补 POST /v1/me/inviter 与 InviteBackfill 路由
     }
 
@@ -1429,7 +1432,7 @@ class AppClipboard(
     }
 
     /**
-     * 手动粘贴的邀请确认条点确认（游客）：发起页仍是当前页才预填登录页；不发请求。执行层先核对共享限流与「该结果仍是当前结果」
+     * 手动粘贴的邀请确认条点确认（游客）：发起页仍是当前页才记为待绑定码（APP-17c，G19：不打开登录页）；不发请求。执行层先核对共享限流与「该结果仍是当前结果」
      * （APP-07 共性第 16 条，F-AND-22）。
      */
     fun confirmManualInvite(result: ClipboardResult.InviteConfirm) {
@@ -1438,10 +1441,7 @@ class AppClipboard(
         if (result.origin != currentOrigin() || privacy() != PrivacyState.CONSENTED || !overlayClear()) return
         val session = if (guest()) InviteConfirmAction.SESSION_GUEST else InviteConfirmAction.SESSION_PHONE
         val decision = InviteConfirmAction.decide(session, me = null)
-        if (decision.actionRaw == InviteConfirmAction.PREFILL_LOGIN) {
-            invitePrefill.set(result.code)
-            open(RouteNames.LOGIN, JsonObject(emptyMap()))
-        }
+        if (decision.actionRaw == InviteConfirmAction.PREFILL_LOGIN) pendingInvite.set(result.code)
     }
 
     private fun guest(): Boolean = routing.session.value == SessionState.GUEST

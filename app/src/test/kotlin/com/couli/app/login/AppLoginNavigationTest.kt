@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
@@ -40,10 +41,12 @@ import com.couli.core.router.SharedPreferencesPendingBackend
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginOutcome
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -130,7 +133,9 @@ class AppLoginNavigationTest {
             )
         composeRule.runOnUiThread {
             login =
-                AppLogin(api, tokens, routing, updateCheck = { updateCheck }, markBelow = { markedBelow++ }, legal = LegalVersions(1, 1))
+                AppLogin(api, tokens, routing, updateCheck = {
+                    updateCheck
+                }, markBelow = { markedBelow++ }, legal = LegalVersions(1, 1), pendingInvite = PendingInviteCode())
         }
         composeRule.setContent {
             navController = rememberNavController()
@@ -204,6 +209,27 @@ class AppLoginNavigationTest {
         assertEquals(LoginOutcome.LOGGED_IN, outcome.stateRaw)
         assertFalse("受限登录成功后 Login 同样出栈", RouteNames.LOGIN in routes())
         assertEquals(SessionState.RESTRICTED, routing.session.value)
+    }
+
+    @Test
+    fun app17cLeavingAndReenteringRealLoginStackKeepsPendingCode() {
+        login.pendingInvite.set("K7M2QX")
+        openOrders()
+        assertTrue(RouteNames.LOGIN in routes())
+        composeRule.runOnUiThread { login.pageConfig(false).actions.onClose() }
+        composeRule.waitForIdle()
+        assertFalse(RouteNames.LOGIN in routes())
+        assertEquals("离开登录页不清码", "K7M2QX", login.pendingInvite.peek())
+        openOrders()
+        assertTrue(RouteNames.LOGIN in routes())
+        val model =
+            com.couli.feature.login
+                .LoginViewModel(login.pageConfig(false))
+        try {
+            assertEquals("K7M2QX", model.pendingInviteRow?.code)
+        } finally {
+            model.viewModelScope.cancel()
+        }
     }
 
     @Test

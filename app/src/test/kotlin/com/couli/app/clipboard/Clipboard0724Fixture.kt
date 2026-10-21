@@ -23,6 +23,7 @@ import com.couli.core.router.GuardDecision
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteNavigator
 import com.couli.core.router.RouteRequest
+import com.couli.feature.login.PendingInviteCode
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -142,6 +143,7 @@ internal class Clipboard0724Fixture(
                 clock = { now },
                 randomSalt = { SAMPLE_SALT.copyOf() },
                 workScope = clipboardScope,
+                pendingInvite = PendingInviteCode(),
             )
         // 生产绑定函数必须同时供 AppModule 使用；测试不得在这里翻译 ON_START/ON_STOP。
         clipboard.bindProcessLifecycle(lifecycle ?: process.lifecycle)

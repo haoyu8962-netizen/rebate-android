@@ -86,7 +86,7 @@ class OAuthLoginIntegrationTest {
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
             )
-        login = LoginService(api, tokens, host, LegalVersions(1, 1)) { now }
+        login = LoginService(api, tokens, host, LegalVersions(1, 1), pendingInvite = PendingInviteCode()) { now }
         oauth = OAuthLoginService(api, tokens, login, listOf(adapter), phoneBinding, LegalVersions(1, 1), timeoutMillis = TIMEOUT_MS)
         bind = BindPhoneService(api, tokens, login, phoneBinding, host) { now }
     }
@@ -221,6 +221,7 @@ class OAuthLoginIntegrationTest {
     @Test
     fun aNewThirdPartyUserGoesToTheBindPhoneGuideWithThePendingActionHeld() =
         runBlocking {
+            login.pendingInvite.set("K7M2QX")
             host.pending = true
             adapter.immediate = credential(NONCE)
             answer = { request -> if (request.path == WECHAT) envelope(0, loggedIn(isNew = true)) else defaultAnswer(request) }
@@ -231,8 +232,21 @@ class OAuthLoginIntegrationTest {
             assertTrue(outcome.held)
             assertEquals(false, phoneBinding.get(memory.loginEpoch))
             assertEquals("新号不查 getMe", listOf(ATTEMPTS, WECHAT), paths())
+            assertEquals("第三方登录不消费", "K7M2QX", login.pendingInvite.peek())
+            requests.forEach { request ->
+                assertFalse(Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject.containsKey("invite_code"))
+            }
             assertTrue("登录这一步完成：重置计时", "prerequisite_done_held" in host.events)
             assertFalse("引导结束前不恢复待办", "resume_pending" in host.events || "held_ready" in host.events)
+            answer = { request ->
+                if (request.path == SMS) envelope(0, """{"resend_after_sec":60,"expires_in_sec":300}""") else defaultAnswer(request)
+            }
+            assertEquals(SmsCountdown.STATE_SENT, bind.sendCode(PHONE).stateRaw)
+            assertEquals(BindPhoneAction.DONE, bind.bind(PHONE, "123456").actionRaw)
+            assertEquals("同一次第三方登录接绑手机后仍保留", "K7M2QX", login.pendingInvite.peek())
+            requests.filter { it.path == SMS || it.path == BIND }.forEach { request ->
+                assertFalse(Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject.containsKey("invite_code"))
+            }
         }
 
     @Test
@@ -343,6 +357,7 @@ class OAuthLoginIntegrationTest {
     @Test
     fun bindingSendsABindCodeThenRefreshesMeAndCompletesThePrerequisite() =
         runBlocking {
+            login.pendingInvite.set("K7M2QX")
             memory.save("access-one", "refresh-one", SessionScopeRaw.FULL, "user-one")
             phoneBinding.set(memory.loginEpoch, false)
             answer = { request ->
@@ -363,6 +378,9 @@ class OAuthLoginIntegrationTest {
             assertNull("首次绑定不带 step-up", requests[1].getHeader("X-Step-Up-Token"))
             assertEquals(true, phoneBinding.get(memory.loginEpoch))
             assertTrue("phone_bound" in host.events)
+            assertEquals("绑手机不消费待绑定码", "K7M2QX", login.pendingInvite.peek())
+            assertFalse(Json.parseToJsonElement(requests[1].body.clone().readUtf8()).jsonObject.containsKey("invite_code"))
+            assertFalse(sms.containsKey("invite_code"))
         }
 
     @Test

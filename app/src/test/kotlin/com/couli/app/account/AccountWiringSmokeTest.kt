@@ -51,6 +51,7 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
 import java.util.concurrent.TimeUnit
@@ -228,7 +229,10 @@ class AccountWiringSmokeTest {
             )
         lateinit var login: AppLogin
         composeRule.runOnUiThread {
-            login = AppLogin(api, tokens, routing, updateCheck = { UpdateCheck.OK }, markBelow = {}, legal = LegalVersions(3, 2))
+            login =
+                AppLogin(api, tokens, routing, updateCheck = {
+                    UpdateCheck.OK
+                }, markBelow = {}, legal = LegalVersions(3, 2), pendingInvite = PendingInviteCode())
             login.syncSession()
             me =
                 AppMe(

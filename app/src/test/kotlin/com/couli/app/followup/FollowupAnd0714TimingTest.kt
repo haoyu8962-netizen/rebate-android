@@ -33,6 +33,7 @@ import com.couli.core.privacy.PrivacyGate
 import com.couli.core.privacy.PrivacyStore
 import com.couli.feature.login.LoginHost
 import com.couli.feature.login.LoginService
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
@@ -318,7 +319,7 @@ class FollowupAnd0714TimingTest {
     fun fx03_withdraw_cancelled_logout_resumes_without_reading_tokens() {
         val api = client()
         val hold = CountDownLatch(1).also { logoutHold = it }
-        val service = LoginService(api, tokens, NoopHost())
+        val service = LoginService(api, tokens, NoopHost(), pendingInvite = PendingInviteCode())
         // 撤回同意：竖屏障 → 第一个清理器作废并取消在途（logout 请求随之结束）→ 令牌清理器清掉令牌 → 之后的清理器失败（待清理保留）
         privacy.withdrawalCleanup = {
             inFlight.onPrivacyRevoked()
@@ -341,7 +342,7 @@ class FollowupAnd0714TimingTest {
     fun fx03_switch_cancelled_logout_resumes_clears_by_epoch_without_reading_tokens() {
         val api = client()
         val hold = CountDownLatch(1).also { logoutHold = it }
-        val service = LoginService(api, tokens, NoopHost())
+        val service = LoginService(api, tokens, NoopHost(), pendingInvite = PendingInviteCode())
         val running = CompletableFuture.supplyAsync { runBlocking { service.logout() } }
         awaitPath("/v1/auth/logout")
         // AppModule 的切换监听：屏障里关闸门，同一同步区作废在途（logout 请求随之取消）；清理器还没运行（令牌仍在）

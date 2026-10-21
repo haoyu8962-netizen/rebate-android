@@ -1,7 +1,6 @@
 package com.couli.feature.login
 
 import android.app.Application
-import android.os.Looper
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -18,11 +17,7 @@ import com.couli.core.network.NetworkContext
 import com.couli.core.network.PendingKeyStore
 import com.couli.core.network.PrivacyRaw
 import com.couli.core.network.UpdateRaw
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -30,18 +25,16 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
  * 登录页的邀请码剪贴板来源（APP-07；BR-INV-04、AC-S1-63 b；G16）：
- * - 游客在首页邀请提示条点了确认：进入验证码页时预填一次（取走即丢弃），随登录提交 LoginBySmsRequest.invite_code；输入框已有内容时以用户输入为准；
+ * - APP-17c 待绑定码不再预填旧输入框，相关覆盖迁至 PendingInviteRow17cTest；
  * - 邀请码行【粘贴】：抽到码填入；抽不到轻提示「未识别到邀请码」，不清空已有输入；
  * - 受限登录（从强更页进入）不显示【粘贴】、不预填。
  */
@@ -56,14 +49,11 @@ class LoginInvitePasteTest {
     private var now = 1_700_000_000_000L
 
     private class Source(
-        var prefill: String? = null,
         var pasted: String? = null,
     ) : InvitePasteSource {
         var pastes = 0
 
         override val blocked = MutableStateFlow(false)
-
-        override fun takePrefill(): String? = prefill.also { prefill = null }
 
         override fun paste(): String? {
             pastes += 1
@@ -107,58 +97,13 @@ class LoginInvitePasteTest {
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
             )
-        return LoginService(api, MemorySessionTokens(), NoHost, clock = { now })
+        return LoginService(api, MemorySessionTokens(), NoHost, clock = { now }, pendingInvite = PendingInviteCode())
     }
 
     private fun model(
         source: Source,
         restricted: Boolean = false,
     ): LoginViewModel = LoginViewModel(LoginPageConfig(service(), KeyTexts, restricted = restricted, clock = { now }, invite = source))
-
-    private fun idleUntil(condition: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WAIT_MS)
-        while (!condition() && System.nanoTime() < deadline) {
-            shadowOf(Looper.getMainLooper()).idle()
-            Thread.sleep(POLL_MS)
-        }
-        assertTrue(condition())
-    }
-
-    private fun toCodeStep(model: LoginViewModel) {
-        model.onToggleAgreement()
-        model.onPhoneChange("13800138000")
-        model.onGetCode()
-        idleUntil { model.state.value.step == LoginStep.CODE }
-    }
-
-    @Test
-    fun guestPrefillIsFilledOnceOnTheCodeStepAndSubmittedWithLogin() {
-        val source = Source(prefill = "K7M2QX")
-        val model = model(source)
-        assertEquals("手机号页不预填", "", model.state.value.invite)
-        toCodeStep(model)
-        assertEquals("进入验证码页时预填", "K7M2QX", model.state.value.invite)
-        assertNull("预填取走即丢弃", source.prefill)
-
-        model.onCodeChange("123456")
-        model.onLogin()
-        idleUntil { synchronized(requests) { requests.any { it.first.startsWith("/v1/auth/login/sms") } } }
-        val body = synchronized(requests) { requests.first { it.first.startsWith("/v1/auth/login/sms") }.second }
-        val json = Json.parseToJsonElement(body) as JsonObject
-        assertEquals("随登录提交 invite_code", "K7M2QX", (json["invite_code"] as JsonPrimitive).content)
-        assertEquals("预填不发任何别的请求（发码、登录各一次）", 2, synchronized(requests) { requests.size })
-    }
-
-    @Test
-    fun userInputWinsOverThePrefill() {
-        val source = Source(prefill = "K7M2QX")
-        val model = model(source)
-        model.onExpandInvite()
-        model.onInviteChange("AB23CD")
-        toCodeStep(model)
-        assertEquals("已有输入以用户为准", "AB23CD", model.state.value.invite)
-        assertNull("预填仍然丢弃", source.prefill)
-    }
 
     @Test
     fun pasteFillsTheCodeOrKeepsInputWithANotice() {
@@ -208,8 +153,8 @@ class LoginInvitePasteTest {
     }
 
     @Test
-    fun restrictedLoginNeitherPastesNorPrefills() {
-        val source = Source(prefill = "K7M2QX", pasted = "K7M2QX")
+    fun restrictedLoginDoesNotPaste() {
+        val source = Source(pasted = "K7M2QX")
         val model = model(source, restricted = true)
         assertFalse(model.invitePasteAvailable)
         model.onPasteInvite()
@@ -268,10 +213,5 @@ class LoginInvitePasteTest {
     private object FixtureDevice : DeviceCredentials {
         override val deviceId: String = "device-fixture"
         override val installSecret: String = "install-fixture"
-    }
-
-    private companion object {
-        const val WAIT_MS = 5_000L
-        const val POLL_MS = 10L
     }
 }

@@ -83,6 +83,7 @@ import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
 import com.couli.feature.login.LegalVersions
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.me.MeTags
 import com.couli.feature.me.NicknameBackend
 import com.couli.feature.me.NotifyBackend
@@ -478,6 +479,7 @@ class AppMeIntegrationTest {
                             com.couli.feature.login
                                 .UnavailableWechatAdapter(),
                         ),
+                    pendingInvite = PendingInviteCode(),
                 )
             login.syncSession()
             clipboard =
@@ -494,6 +496,7 @@ class AppMeIntegrationTest {
                     sessionEpoch = { tokens.loginEpoch },
                     clock = { clock },
                     randomSalt = { SAMPLE_SALT.copyOf() },
+                    pendingInvite = login.pendingInvite,
                 )
             me =
                 AppMe(

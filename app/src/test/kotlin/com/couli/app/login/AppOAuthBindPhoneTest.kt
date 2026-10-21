@@ -55,6 +55,7 @@ import com.couli.feature.login.BindPhoneTags
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginTags
 import com.couli.feature.login.OAuthProvider
+import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.login.ThirdPartyAuthAdapter
 import com.couli.feature.login.ThirdPartyAuthKind
 import com.couli.feature.login.ThirdPartyAuthResult
@@ -218,6 +219,7 @@ class AppOAuthBindPhoneTest {
                     markBelow = {},
                     legal = LegalVersions(1, 1),
                     adapters = adapters,
+                    pendingInvite = PendingInviteCode(),
                 )
         }
         composeRule.setContent {

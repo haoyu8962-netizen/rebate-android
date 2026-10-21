@@ -233,19 +233,3 @@ class ProductSeeds {
         claimed.keys.retainAll(ids)
     }
 }
-
-/**
- * 游客邀请预填（brief §2.7；G16）：游客在邀请提示条点确认，码放进这里，经 Router 打开 Login；进入验证码页时填一次（之后以用户输入为准），
- * 取走即丢弃。只在进程内，不持久化、不上传（随登录提交 LoginBySmsRequest.invite_code）。
- */
-class InvitePrefill {
-    private var code: String? = null
-
-    fun set(value: String) {
-        code = value
-    }
-
-    fun take(): String? = code.also { code = null }
-
-    val pending: Boolean get() = code != null
-}

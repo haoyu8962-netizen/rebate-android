@@ -75,7 +75,7 @@ class LoginServiceReviewR2Test {
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 sleeper = {},
             )
-        service = LoginService(api, tokens, RecordingHost(events), LegalVersions(1, 1)) { now }
+        service = LoginService(api, tokens, RecordingHost(events), LegalVersions(1, 1), pendingInvite = PendingInviteCode()) { now }
     }
 
     @After

@@ -46,6 +46,7 @@ import com.couli.core.router.PrivacyState
 import com.couli.core.update.MemoryUpdateStore
 import com.couli.core.update.UpdateCheckOutcome
 import com.couli.core.update.UpdateGate
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.TimeUnit
 import javax.inject.Provider
 import kotlinx.coroutines.CompletableDeferred
@@ -209,6 +210,7 @@ class ClipboardBridgeReadTest {
                 sessionEpoch = { tokens.loginEpoch },
                 clock = { now },
                 randomSalt = { SAMPLE_SALT.copyOf() },
+                pendingInvite = PendingInviteCode(),
             )
         val updateStore = MemoryUpdateStore()
         val update =

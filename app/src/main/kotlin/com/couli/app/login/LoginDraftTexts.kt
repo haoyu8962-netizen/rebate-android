@@ -98,6 +98,9 @@ internal object LoginDraftTexts : LoginTexts {
             "login.invite_failed.rate_limited" to "尝试次数过多，请明天再试",
             "login.invite_failed.ok" to "知道了",
             "login.invite_failed.backfill" to "去补填",
+            // ---- APP-17c：待绑定码小字行（BR-TEXT-14 表 C 原文；10-19 口径不带告知句）。渲染属视觉闸后
+            "login.pending_invite" to "已识别好友邀请码 {code}",
+            "login.pending_invite.remove" to "移除",
             // ---- 设置页·退出登录（BR-TEXT-14 表 C settings.logout.*，契约快照未同步）
             "settings.logout" to "退出登录",
             "settings.logout.confirm" to "确定退出登录？",

@@ -12,6 +12,7 @@ import com.couli.core.network.CallEpochs
 import com.couli.core.network.CallOwnership
 import com.couli.core.network.PageApi
 import com.couli.core.router.PrivacyState
+import com.couli.feature.login.PendingInviteCode
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CompletableDeferred
@@ -80,6 +81,7 @@ internal class ClipboardReview0724Harness(
             prefs = prefs,
             clock = { NOW },
             workScope = CoroutineScope(job + queue),
+            pendingInvite = PendingInviteCode(),
         )
 
     init {
