@@ -108,12 +108,26 @@ class WebContainersLessonsTest {
         return controller
     }
 
+    /**
+     * 等 [url] 的文档就绪。只认没有 [OLD_DOCUMENT] 记号的文档：文档导航（reload、给 location.href 赋值）发出后，
+     * 旧文档在新文档提交前仍然满足 ready、桥在、地址相同（reload 到 `page#part` 时旧文档也是 `page#part`），
+     * 不排除它就会在旧文档上「就绪」，随后的导航在旧文档里发出、被 reload 的提交盖掉（F-AND-56：页面停在 #part）。
+     */
     private fun waitUntilReady(
         webView: WebView,
         url: String,
-    ) = probe(webView).await("page $url ready", "window.ready === true && !!window.__REBATE_BRIDGE__ && location.href") {
+    ) = probe(webView).await(
+        "page $url ready",
+        "window.ready === true && window.$OLD_DOCUMENT !== true && !!window.__REBATE_BRIDGE__ && location.href",
+    ) {
         it == "\"$url\""
     }
+
+    /** 发一次文档导航：同一段脚本里先给当前文档做记号，[waitUntilReady] 之后只认新文档。 */
+    private fun navigate(
+        webView: WebView,
+        script: String,
+    ) = probe(webView).fire("window.$OLD_DOCUMENT = true; $script")
 
     /** 发一条 auth.getUser（桥消息）：不等回调，由随后等 [Recorded.validities] 确认到达原生。 */
     private fun startGetUser(webView: WebView) {
@@ -139,7 +153,7 @@ class WebContainersLessonsTest {
 
         // location.reload()：同一地址重新载入，旧调用在放行时就作废——新文档的响应还压着、没有提交（onPageStarted 之前）
         val reload = hold()
-        probe(webView).fire("location.reload()")
+        navigate(webView, "location.reload()")
         WebWait.latch("reload request reached the server", reload.requested)
         // 上限是被测语义：作废必须在 INVALIDATE_MS 之内发生（不能放宽到通用上限）
         WebWait.until("reload invalidates the call before the new document commits", INVALIDATE_MS) {
@@ -149,12 +163,12 @@ class WebContainersLessonsTest {
         waitUntilReady(webView, "$PAGE_URL#part")
 
         // 回到没有片段的地址，再对同一地址赋值（location.href = location.href，不带片段）：同样是文档导航
-        probe(webView).fire("location.href = '$PAGE_URL'")
+        navigate(webView, "location.href = '$PAGE_URL'")
         waitUntilReady(webView, PAGE_URL)
         startGetUser(webView)
         WebWait.until("second call in flight", detail = { "validities=${services.validities.size}" }) { services.validities.size == 2 }
         val again = hold()
-        probe(webView).fire("location.href = location.href")
+        navigate(webView, "location.href = location.href")
         WebWait.latch("the same address was requested again", again.requested)
         // 上限是被测语义：作废必须在 INVALIDATE_MS 之内发生（不能放宽到通用上限）
         WebWait.until("same-address navigation invalidates the call before it commits", INVALIDATE_MS) {
@@ -345,6 +359,9 @@ class WebContainersLessonsTest {
         const val PAGE_URL = "$TRUSTED/page"
         const val MATCH = FrameLayout.LayoutParams.MATCH_PARENT
         const val NEGATIVE_WINDOW_MS = 800L
+
+        /** 旧文档的记号（见 [waitUntilReady]）；新文档里没有这个全局变量。 */
+        const val OLD_DOCUMENT = "__couliOldDocument"
 
         /** 作废要在这之内看到：远小于 auth.getUser 的契约超时（10 秒），不会因为调用到期而碰巧满足。 */
         const val INVALIDATE_MS = 1_500L
