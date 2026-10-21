@@ -464,7 +464,8 @@ private fun platformBadgeIconWidth(
 
 /**
  * 标题最前放平台来源标签（行内，GUIDE §7.2.1）；标题按 [maxLines] 截断（标题是唯一允许省略的文字）。
- * 读屏把来源与标题合成一项，来源在前（adaptation-a11y-spec §8）。
+ * 读屏把来源与标题合成一项，来源在前（adaptation-a11y-spec §8）。[description] 给了就替代这句读屏（详情下架「商品已下架，淘宝 …」）；
+ * [color] 是标题字色（下架次要色）。两者默认与原来一样。
  */
 @Composable
 fun BadgedTitle(
@@ -474,6 +475,8 @@ fun BadgedTitle(
     style: TextStyle = CouliTypography.footnote,
     maxLines: Int = 2,
     platformCode: String? = null,
+    color: Color = CouliColors.textPrimary,
+    description: String? = null,
 ) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -501,7 +504,7 @@ fun BadgedTitle(
     Text(
         text = text,
         style = style,
-        color = CouliColors.textPrimary,
+        color = color,
         maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         inlineContent =
@@ -514,7 +517,7 @@ fun BadgedTitle(
                     },
             ),
         // 唯一允许省略的文字：标签让 200% 字号布局检查只对商品标题放行省略（不得含金额，DS-02）
-        modifier = modifier.semantics { contentDescription = "$platformName $title" }.testTag(TITLE_ELLIPSIS_TAG),
+        modifier = modifier.semantics { contentDescription = description ?: "$platformName $title" }.testTag(TITLE_ELLIPSIS_TAG),
     )
 }
 

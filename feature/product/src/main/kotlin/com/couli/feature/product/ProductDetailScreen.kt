@@ -6,20 +6,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -28,9 +26,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -42,28 +37,24 @@ import com.couli.core.designsystem.BuyButton
 import com.couli.core.designsystem.BuyButtonModel
 import com.couli.core.designsystem.BuyButtonOverride
 import com.couli.core.designsystem.BuyButtonState
-import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
-import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
-import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
-import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
-import com.couli.core.designsystem.CouliTextStyles
-import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.DisclaimerFooter
 import com.couli.core.designsystem.DisclaimerLine
 import com.couli.core.designsystem.DisclaimerStyle
+import com.couli.core.designsystem.EmptyState
 import com.couli.core.designsystem.ErrorAnnouncement
+import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.MappedProductCard
+import com.couli.core.designsystem.NavBar
 import com.couli.core.designsystem.ProductCardKeys
 import com.couli.core.designsystem.ProductCardLarge
 import com.couli.core.designsystem.ProductCardMapper
 import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.designsystem.ProductDetailView
-import com.couli.core.designsystem.ProductThumbnail
-import com.couli.core.designsystem.Skeleton
+import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
@@ -239,9 +230,12 @@ private object ProductKeys {
     const val LOADING = "search.loading"
     const val COMPARE_REASON = "no_rebate.price_compare"
     const val COMPARE_SIMILAR = "no_rebate.price_compare.similar"
+
+    /** 原位置灰的状态胶囊「商品已下架」（契约字典 error.30141，D6）。 */
+    const val OFF_SHELF = "error.30141"
 }
 
-/** 商品详情（设计稿 Product、ProductPublic、ProductCardStress、A11yFocusProduct）。 */
+/** 商品详情（设计稿 Product-v2、ProductJd、ProductDark、ProductOffShelf-v3、ProductPublic-v2 底栏、A11yFocusProduct；APP-06v-a）。 */
 @Composable
 fun ProductDetailScreen(config: ProductPageConfig) {
     val model: ProductDetailViewModel = viewModel { ProductDetailViewModel(config, createSavedStateHandle()) }
@@ -255,63 +249,39 @@ fun ProductDetailScreen(config: ProductPageConfig) {
         onDispose(unsubscribe)
     }
     val buyFocus = remember { FocusRequester() }
+    // 顶部安全区整页让出；底部由底栏按 max(导航栏, 16) 处理（D9），左右由内容列与底栏内层各自让出（底栏白底铺满整宽，D14）
     Column(
         modifier =
             Modifier
                 .fillMaxSize()
                 .background(CouliColors.backgroundCanvas)
-                .safeDrawingPadding()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
                 .testTag(ProductTags.PAGE),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH.dp).fillMaxWidth().weight(1f)) {
-            TitleBar(texts, config.actions.onBack)
-            when (state.phase) {
-                ProductPhase.LOADING -> Loading(texts)
-                ProductPhase.ERROR -> ErrorContent(state, model, texts)
-                else -> Content(state, model, texts, buyFocus)
-            }
+        // 系统导航栏（D1）；页面已有 BackHandler，NavBar 只管图标
+        NavBar(
+            title = texts.text(ProductKeys.TITLE),
+            backLabel = texts.text(ProductKeys.BACK),
+            onBack = config.actions.onBack,
+            handleSystemBack = false,
+            modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH.dp).windowInsetsPadding(horizontalSafeArea),
+        )
+        when (state.phase) {
+            ProductPhase.LOADING -> LoadingSkeleton(texts.text(ProductKeys.LOADING), Modifier.weight(1f))
+            ProductPhase.ERROR -> ErrorContent(state, model, texts)
+            else -> Content(state, model, texts, buyFocus)
         }
     }
     if (state.phase == ProductPhase.CONTENT) config.purchase.overlay(buyFocus)
 }
 
-@Composable
-private fun TitleBar(
-    texts: ProductTexts,
-    onBack: () -> Unit,
-) {
-    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = CouliSpacing.space1), contentAlignment = Alignment.Center) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            CouliIconButton(icon = CouliIcons.back, label = texts.text(ProductKeys.BACK), onClick = onBack)
-        }
-        Text(
-            text = texts.text(ProductKeys.TITLE),
-            style = CouliTextStyles.bodySemibold,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.semantics { heading() },
-        )
-    }
-}
-
-@Composable
-private fun Loading(texts: ProductTexts) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space4).testTag(ProductTags.LOADING),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Skeleton(Modifier.fillMaxWidth().aspectRatio(IMAGE_RATIO))
-        Skeleton(Modifier.fillMaxWidth().height(CouliSpacing.space16))
-        Text(text = texts.text(ProductKeys.LOADING), style = CouliTypography.caption, color = CouliColors.textSecondary)
-    }
-}
-
 /**
- * 错误态：30141 商品已下架（置灰、不给购买，BR-PRICE-21）；30143 商品信息已失效 +【重新搜索】；其余通用错误态（文案带 trace6，共性第 6 条）
- * +【重试】（42901 限时禁用期间置灰，共性第 4 条）。
+ * 错误态（D11，GUIDE 空态 / 错误态版式）：30141 进页即下架用空态（警示图标 + 「商品已下架」，无按钮，只播报，BR-PRICE-21，G-D05）；
+ * 30143 商品信息已失效 +【重新搜索】；其余通用错误态（文案带 trace6，共性第 6 条）+【重试】（42901 限时禁用期间置灰，共性第 4 条）。
  */
 @Composable
-private fun ErrorContent(
+private fun ColumnScope.ErrorContent(
     state: ProductSnapshot,
     model: ProductDetailViewModel,
     texts: ProductTexts,
@@ -328,45 +298,38 @@ private fun ErrorContent(
             texts.format(state.errorTextKey ?: ProductKeys.GENERIC_ERROR, vars).ifEmpty { texts.format(ProductKeys.GENERIC_ERROR, vars) },
             state.traceId,
         )
-    // 加载失败：立即播报，读完后焦点到【重试】/【重新搜索】；下架没有动作，只播报（adaptation-a11y-spec §10，03 §10.5，A-R1-09）
-    val actionFocus = remember { FocusRequester() }
-    ErrorAnnouncement(message, actionFocus.takeIf { state.errorCode != ProductDetailController.OFF_SHELF })
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space6).testTag(ProductTags.ERROR),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    Box(
+        modifier =
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Icon(CouliIcons.alert, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSpacing.space8))
-        Text(
-            text = message,
-            style = CouliTypography.body,
-            color = CouliColors.textPrimary,
-            textAlign = TextAlign.Center,
-        )
-        // 30141 商品已下架：置灰、不给购买，也没有重试（BR-PRICE-21）
+        val stateModifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH.dp).padding(top = CouliSpacing.space16).testTag(ProductTags.ERROR)
+        // 加载失败：立即播报，读完后焦点到【重试】/【重新搜索】（ErrorState 自带）；下架没有动作，只播报（adaptation-a11y-spec §10，A-R1-09）
         when (state.errorCode) {
+            ProductDetailController.OFF_SHELF -> {
+                ErrorAnnouncement(message, null)
+                EmptyState(title = message, icon = CouliIcons.alert, modifier = stateModifier)
+            }
+
             ProductDetailController.REF_EXPIRED -> {
-                CouliButton(
-                    text = texts.text(ProductKeys.RESEARCH),
-                    onClick = model.config.actions.onResearch,
-                    variant = CouliButtonVariant.SECONDARY,
-                    size = CouliButtonSize.COMPACT,
-                    modifier = Modifier.couliFocusTarget(actionFocus).testTag(ProductTags.RESEARCH),
+                ErrorState(
+                    title = message,
+                    retry = StateAction(texts.text(ProductKeys.RESEARCH), onClick = model.config.actions.onResearch),
+                    modifier = stateModifier,
+                    actionModifier = Modifier.testTag(ProductTags.RESEARCH),
                 )
             }
 
-            ProductDetailController.OFF_SHELF -> {
-                Spacer(Modifier.height(CouliSpacing.space1))
-            }
-
             else -> {
-                CouliButton(
-                    text = texts.text(ProductKeys.RETRY),
-                    onClick = { model.controller.retry() },
-                    variant = CouliButtonVariant.SECONDARY,
-                    size = CouliButtonSize.COMPACT,
-                    enabled = !state.retryBlocked,
-                    modifier = Modifier.couliFocusTarget(actionFocus).testTag(ProductTags.RETRY),
+                ErrorState(
+                    title = message,
+                    retry = StateAction(texts.text(ProductKeys.RETRY), enabled = !state.retryBlocked) { model.controller.retry() },
+                    modifier = stateModifier,
+                    actionModifier = Modifier.testTag(ProductTags.RETRY),
                 )
             }
         }
@@ -390,75 +353,75 @@ private fun ColumnScope.Content(
             buyEnabled = view.buyEnabled,
             purchaseStatus = view.purchaseStatus,
         )
-    Column(
-        modifier =
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(CouliSpacing.space4),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        ProductThumbnail(
-            label = card.data.imageLabel,
-            modifier = Modifier.fillMaxWidth().aspectRatio(IMAGE_RATIO),
-            description = texts.format(ProductKeys.IMAGE, mapOf("title" to card.data.title)),
-            imageUrl = card.data.imageUrl,
-        )
-        ProductCardLarge(data = card.data)
-        // 比价无返利（open 复核后卡片的 no_rebate_cause=price_compare）：原因行 +【看看相似商品】（ProductPriceCompareCancelled，BR-PRICE-08）
+    // 原位置灰（availability=off_shelf，D6）：判定口径不变（按钮仍由映射置灰），这里只换展示
+    val offShelfLabel = if (product.textOf("availability") == OFF_SHELF) texts.text(ProductKeys.OFF_SHELF) else null
+    // 比价无返利（open 复核后卡片的 no_rebate_cause=price_compare）：原因行 +【看看相似商品】在价格卡内（ProductPriceCompareCancelled-v2，BR-PRICE-08，D5）
+    val compareReason: (@Composable () -> Unit)? =
         if (product.textOf("no_rebate_cause") == PRICE_COMPARE) {
-            CompareReasonRow(texts) { model.config.actions.onSimilar(product) }
+            {
+                CompareReasonRow(texts.text(ProductKeys.COMPARE_REASON), texts.text(ProductKeys.COMPARE_SIMILAR)) {
+                    model.config.actions.onSimilar(product)
+                }
+            }
+        } else {
+            null
         }
-        // 口径说明常驻全文（BR-PRICE-03：详情常驻）+ 入账说明（BR-TEXT-04、F-PROD-05）
-        val credit =
-            texts
-                .text(CreditNote.TEXT_KEY)
-                .takeIf { it.isNotEmpty() && CreditNote.visible(product, model.config.creditEnabled(model.controller.platformRaw)) }
-        val lines = card.data.disclaimer + listOfNotNull(credit)
-        if (lines.isNotEmpty()) {
-            DisclaimerFooter(
-                lines = lines.map { DisclaimerLine(it) },
-                style = DisclaimerStyle.DETAIL_PANEL,
-                modifier = Modifier.testTag(ProductTags.DISCLAIMER),
+    Column(
+        modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .widthIn(
+                        max = CONTENT_MAX_WIDTH.dp,
+                    ).fillMaxWidth()
+                    .windowInsetsPadding(horizontalSafeArea)
+                    .detailContentPadding(),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        ) {
+            ProductHero(
+                data = card.data,
+                description = texts.format(ProductKeys.IMAGE, mapOf("title" to card.data.title)),
+                grayscale = offShelfLabel != null,
             )
+            ProductCardLarge(data = card.data, rebateOverride = compareReason, offShelfLabel = offShelfLabel)
+            // 口径说明常驻全文（BR-PRICE-03：详情常驻）+ 入账说明（钟表图标，BR-TEXT-04、F-PROD-05，D7）；下架不显示
+            if (offShelfLabel == null) DetailDisclaimer(product, card, model, texts)
         }
     }
-    model.config.purchase.banner()
+    Box(modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH.dp).fillMaxWidth().windowInsetsPadding(horizontalSafeArea)) {
+        model.config.purchase.banner()
+    }
     BottomBar(card, view, model, texts, buyFocus)
 }
 
-/** 比价无返利的原因行（no_rebate.price_compare +【看看相似商品】）。 */
 @Composable
-private fun CompareReasonRow(
+private fun DetailDisclaimer(
+    product: JsonObject,
+    card: MappedProductCard,
+    model: ProductDetailViewModel,
     texts: ProductTexts,
-    onSimilar: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().testTag(ProductTags.COMPARE_REASON),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Text(
-            text = texts.text(ProductKeys.COMPARE_REASON),
-            style = CouliTypography.footnote,
-            color = CouliColors.textSecondary,
-            modifier = Modifier.weight(1f),
-        )
-        CouliButton(
-            text = texts.text(ProductKeys.COMPARE_SIMILAR),
-            onClick = onSimilar,
-            variant = CouliButtonVariant.TEXT,
-            size = CouliButtonSize.COMPACT,
-        )
+    val credit =
+        texts
+            .text(CreditNote.TEXT_KEY)
+            .takeIf { it.isNotEmpty() && CreditNote.visible(product, model.config.creditEnabled(model.controller.platformRaw)) }
+    val lines = card.data.disclaimer.map { DisclaimerLine(it) } + listOfNotNull(credit?.let { DisclaimerLine(it, icon = CouliIcons.clock) })
+    if (lines.isNotEmpty()) {
+        DisclaimerFooter(lines = lines, style = DisclaimerStyle.DETAIL_PANEL, modifier = Modifier.testTag(ProductTags.DISCLAIMER))
     }
 }
 
 private fun JsonObject.textOf(key: String): String? = (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
 
 private const val PRICE_COMPARE = "price_compare"
+private const val OFF_SHELF = "off_shelf"
 
-/** 底栏：【问问 AI】+【购买】（价格不可用为「稍后再试」禁用，下架 / 没有按钮键时禁用）。读屏按可见文字 + 返利区间（A11yFocusProduct）。 */
+/**
+ * 底栏（D9）：【问问 AI】图标入口 +【购买】（价格不可用为「稍后再试」禁用，下架 / 没有按钮键时禁用）。读屏按可见文字 + 返利区间
+ * （A11yFocusProduct）。收藏位不绘制（G-D01，APP-16 插入）。
+ */
 @Composable
 private fun BottomBar(
     card: MappedProductCard,
@@ -484,41 +447,34 @@ private fun BottomBar(
     val buyState = override?.state ?: cardState
     val retryLater = override?.text?.takeIf { buyState == BuyButtonState.RETRY_LATER } ?: card.retryLaterText
     val base = override?.text?.takeIf { buyState == BuyButtonState.NORMAL } ?: card.data.buyBase
-    Box(Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
-    Row(
-        modifier = Modifier.fillMaxWidth().background(CouliColors.backgroundSurface).padding(CouliSpacing.space3),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        val ask = model.config.actions.onAskAi
-        val askShown by (model.config.actions.askAiVisible ?: ASK_AI_ALWAYS).collectAsStateWithLifecycle()
-        // 入口关闭（agent.entry.visible=false、Agent 不可用）时不绘制、不回退成打开 AgentChat（R1-04、G56）
-        if (ask != null && askShown) {
-            CouliButton(
-                text = texts.text(ProductKeys.ASK_AI),
-                onClick = ask,
-                variant = CouliButtonVariant.TEXT,
-                size = CouliButtonSize.COMPACT,
-                modifier = Modifier.testTag(ProductTags.ASK_AI),
+    val ask = model.config.actions.onAskAi
+    val askShown by (model.config.actions.askAiVisible ?: ASK_AI_ALWAYS).collectAsStateWithLifecycle()
+    BottomBarFrame { inner ->
+        BottomBarLayout(
+            modifier = inner,
+            // 入口关闭（agent.entry.visible=false、Agent 不可用）时不绘制、不回退成打开 AgentChat（R1-04、G56）
+            entries =
+                if (ask != null && askShown) {
+                    { BottomEntry(label = texts.text(ProductKeys.ASK_AI), onClick = ask, modifier = Modifier.testTag(ProductTags.ASK_AI)) }
+                } else {
+                    null
+                },
+        ) {
+            BuyButton(
+                base = base,
+                rebate = card.data.displayedRebate,
+                onClick = {
+                    model.controller.state.value.product
+                        ?.let { model.config.actions.onBuyIntent(it, view.publicMode) }
+                },
+                modifier = Modifier.couliFocusTarget(buyFocus).testTag(ProductTags.BUY),
+                context = BuyButtonModel.CONTEXT_DETAIL,
+                state = buyState,
+                // 覆盖文字（如「安装X后下单才有返利」）时不拼返利金额
+                amountHidden = override?.text != null,
+                retryLaterText = retryLater,
+                size = CouliButtonSize.STANDARD,
             )
         }
-        BuyButton(
-            base = base,
-            rebate = card.data.displayedRebate,
-            onClick = {
-                model.controller.state.value.product
-                    ?.let { model.config.actions.onBuyIntent(it, view.publicMode) }
-            },
-            modifier = Modifier.weight(1f).couliFocusTarget(buyFocus).testTag(ProductTags.BUY),
-            context = BuyButtonModel.CONTEXT_DETAIL,
-            state = buyState,
-            // 覆盖文字（如「安装X后下单才有返利」）时不拼返利金额
-            amountHidden = override?.text != null,
-            retryLaterText = retryLater,
-            size = CouliButtonSize.STANDARD,
-        )
     }
 }
-
-private const val CONTENT_MAX_WIDTH = 600
-private const val IMAGE_RATIO = 1.4f

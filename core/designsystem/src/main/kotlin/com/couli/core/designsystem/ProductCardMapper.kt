@@ -129,6 +129,9 @@ object ProductCardMapper {
                 priceUnavailableText = if (unavailable) texts.text(ProductCardKeys.PRICE_UNAVAILABLE) else null,
                 staleNote = if (stale && !unavailable) texts.text(ProductCardKeys.PRICE_STALE).takeIf(String::isNotEmpty) else null,
                 imageUrl = card.text("image")?.takeIf { it.startsWith(HTTPS) },
+                platformCode = platform,
+                // 推广标识原样（BR-TEXT-17）；空串没有可显示的字，按没有
+                adLabel = card.text("ad_label")?.takeIf(String::isNotEmpty),
             )
         val buyState =
             when {

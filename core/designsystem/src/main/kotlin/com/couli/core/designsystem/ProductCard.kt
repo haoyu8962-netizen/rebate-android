@@ -35,13 +35,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -92,6 +96,13 @@ data class ProductCardData(
     val staleNote: String? = null,
     /** 商品图地址（契约 image，https；没有为 null → 占位，APP-06a 共性第 22 条）。 */
     val imageUrl: String? = null,
+    /**
+     * 契约平台编码（ProductCard.platform）：给了就按它取来源徽标的官方图（F-X-05a）；null 的旧数据按 [platformName] 中文名兼容取图。
+     * [ProductCardMapper] 原样带入。
+     */
+    val platformCode: String? = null,
+    /** 推广标识（契约 ad_label，BR-TEXT-17）：非 null 时原样显示为角标（详情头图左上，APP-06v G-D04）；不 trim、不换字。 */
+    val adLabel: String? = null,
 ) {
     /** 价格不可用：不显示任何金额（[priceUnavailableText]）。 */
     val priceUnavailable: Boolean get() = priceUnavailableText != null
@@ -331,6 +342,8 @@ private fun BenefitTagRow(tags: List<BenefitTag>) {
 /**
  * 商品图（契约 ProductCard.image，APP-06a 共性第 22 条）：有 [imageUrl] 且 App 给了 [LocalProductImageLoader] 时加载显示；加载中、字段为空
  * 或加载失败时显示占位（GUIDE §7.1：占位底 #E9E2D9 + 1 描边，圆角 8）。列表里是装饰，读屏跳过。
+ * 详情头图（APP-06v D2 / D6）传 [contentScale] = Fit（整图可见，空白处露出占位底色）与 [grayscale] = true（下架去色）；
+ * 默认值保持列表 / 网格的旧行为（居中裁切、圆角 8、不去色）。
  */
 @Composable
 fun ProductThumbnail(
@@ -339,8 +352,10 @@ fun ProductThumbnail(
     size: Dp? = null,
     description: String? = null,
     imageUrl: String? = null,
+    contentScale: ContentScale = ContentScale.Crop,
+    shape: Shape = RoundedCornerShape(CouliRadius.small),
+    grayscale: Boolean = false,
 ) {
-    val shape = RoundedCornerShape(CouliRadius.small)
     val loader = LocalProductImageLoader.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, imageUrl, loader) {
         value = if (imageUrl.isNullOrEmpty() || loader == null) null else runCatching { loader.load(imageUrl) }.getOrNull()
@@ -363,12 +378,21 @@ fun ProductThumbnail(
     ) {
         val image = bitmap
         if (image != null) {
-            Image(bitmap = image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                contentScale = contentScale,
+                colorFilter = if (grayscale) GRAYSCALE else null,
+                modifier = Modifier.matchParentSize(),
+            )
         } else {
             Text(text = label, style = CouliTypography.caption, color = CouliColors.textSecondary)
         }
     }
 }
+
+/** 去色滤镜（饱和度 0；下架商品图，ProductOffShelf-v3）。 */
+private val GRAYSCALE = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
 
 /** 商品图加载（App 给：经 App 的 HTTP 客户端取 https 图片并解码；没给时一律占位）。 */
 fun interface ProductImageLoader {
@@ -539,24 +563,36 @@ fun GridRebateBlock(
  * 详情页头部大卡（Product 画板）：价格大数字（34/700 墨棕）→ 券前副行 → 大号返利标签（+ 比价「以结算为准」）
  * → 预估返后与取价时间 → 优惠标签 → 分隔线 → 来源 + 标题（17/600 两行）→ 店铺。
  * 金额未知（[ProductCardData.price] 为 null）时不显示价格区与预估返后、取价，只显示返利文案。
+ * [rebateOverride]：给了就替代返利标签那一行（详情比价无返利的原因行 +【看看相似商品】，ProductPriceCompareCancelled-v2）。
+ * [offShelfLabel]：给了就是原位置灰（ProductOffShelf-v3）：卡顶灰胶囊写这句，只留标题（次要色）与店铺，不显示任何金额、返利、
+ * 优惠标签；读屏把它读在标题前。两者默认 null，与原来完全一样。
  */
 @Composable
 fun ProductCardLarge(
     data: ProductCardData,
     modifier: Modifier = Modifier,
+    rebateOverride: (@Composable () -> Unit)? = null,
+    offShelfLabel: String? = null,
 ) {
     Column(
         modifier = modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        if (data.priceUnavailableText != null) {
-            // 价格不可用：不显示任何金额（价格、返利、预估返后、取价），只有提示（BR-PRICE-01）
-            Text(text = data.priceUnavailableText, style = CouliTextStyles.bodySemibold, color = CouliColors.textSecondary)
+        if (offShelfLabel != null) {
+            // 下架：只有状态胶囊（读屏随标题读出，这里不重复）、标题与店铺（BR-PRICE-14，不留旧价）
+            StatusCapsule(text = offShelfLabel, modifier = Modifier.semantics { hideFromAccessibility() })
         } else {
-            LargePriceBlock(data)
+            if (data.priceUnavailableText != null) {
+                // 价格不可用：不显示任何金额（价格、返利、预估返后、取价），只有提示（BR-PRICE-01）；替代行（不含金额）照常
+                Text(text = data.priceUnavailableText, style = CouliTextStyles.bodySemibold, color = CouliColors.textSecondary)
+                rebateOverride?.invoke()
+            } else {
+                LargePriceBlock(data, rebateOverride)
+            }
+            BenefitTagRow(tags = data.benefitTags)
+            Box(modifier = Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
         }
-        BenefitTagRow(tags = data.benefitTags)
-        Box(modifier = Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
+        val muted = offShelfLabel != null
         Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
             // 详情的「平台 + 商品名」合为一项、读屏标题角色（A11yFocusProduct 第 10 项，APP-06a 共性第 30 条）
             // 标题角色与测试标记放外层合并节点：标题 Text 本身留给「唯一允许省略的文字」标记（DS-02）
@@ -565,6 +601,9 @@ fun ProductCardLarge(
                     platformName = data.platformName,
                     title = data.title,
                     style = CouliTextStyles.bodySemibold,
+                    platformCode = data.platformCode,
+                    color = if (muted) CouliColors.textSecondary else CouliColors.textPrimary,
+                    description = offShelfLabel?.let { "$it${PriceTerms.SPOKEN_PAUSE}${data.platformName} ${data.title}" },
                 )
             }
             if (data.shopName != null) {
@@ -574,9 +613,31 @@ fun ProductCardLarge(
     }
 }
 
-/** 详情大卡的价格与返利区：价格（金额未知时没有）→ 大号返利标签 → 预估返后、取价时间与价格变化提示。 */
+/** 灰底状态胶囊（高 32、14 字次要色，ProductOffShelf-v3「商品已下架」、比价原因行同款）。 */
 @Composable
-private fun LargePriceBlock(data: ProductCardData) {
+fun StatusCapsule(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier =
+            modifier
+                .heightIn(min = CouliSpacing.space8)
+                .clip(RoundedCornerShape(CouliRadius.pill))
+                .background(CouliColors.backgroundMuted)
+                .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(text = text, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+    }
+}
+
+/** 详情大卡的价格与返利区：价格（金额未知时没有）→ 大号返利标签（或 [rebateOverride]）→ 预估返后、取价时间与价格变化提示。 */
+@Composable
+private fun LargePriceBlock(
+    data: ProductCardData,
+    rebateOverride: (@Composable () -> Unit)?,
+) {
     if (data.price != null) {
         Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
             PriceTagMain(content = data.price, size = PriceTagSize.LARGE)
@@ -584,14 +645,18 @@ private fun LargePriceBlock(data: ProductCardData) {
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            RebateTag(content = data.displayedRebate, size = RebateTagSize.LARGE)
-            if (data.rebate.kind == RebateKind.RANGE) {
-                Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
+        if (rebateOverride != null) {
+            rebateOverride()
+        } else {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                RebateTag(content = data.displayedRebate, size = RebateTagSize.LARGE)
+                if (data.rebate.kind == RebateKind.RANGE) {
+                    Text(text = PriceTerms.SETTLE_BASIS, style = CouliTypography.caption, color = CouliColors.textSecondary)
+                }
             }
         }
         val meta = if (data.price == null) emptyList() else listOfNotNull(data.visibleEstNet, data.quotedAt)

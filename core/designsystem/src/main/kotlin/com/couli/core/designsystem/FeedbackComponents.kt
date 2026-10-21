@@ -97,7 +97,7 @@ fun EmptyState(
 
 /**
  * 错误态：同空态布局，图标为警示三角。出现时立即播报整句（adaptation-a11y-spec §10），播报读完后读屏焦点移到【重试】
- * （F-AND-06，[ErrorStateFocus]）；同一内容重绘不重复，换了内容重新播报、重新移焦。
+ * （F-AND-06，[ErrorStateFocus]）；同一内容重绘不重复，换了内容重新播报、重新移焦。[actionModifier] 挂在按钮上（页面的测试标记等，默认无）。
  */
 @Composable
 fun ErrorState(
@@ -105,6 +105,7 @@ fun ErrorState(
     retry: StateAction,
     modifier: Modifier = Modifier,
     message: String? = null,
+    actionModifier: Modifier = Modifier,
 ) {
     val retryFocus = remember { FocusRequester() }
     ErrorAnnouncement(ErrorStateFocus.announcement(title, message), retryFocus)
@@ -114,7 +115,7 @@ fun ErrorState(
         icon = CouliIcons.alert,
         action = retry,
         modifier = modifier,
-        actionModifier = Modifier.couliFocusTarget(retryFocus),
+        actionModifier = Modifier.couliFocusTarget(retryFocus).then(actionModifier),
     )
 }
 
