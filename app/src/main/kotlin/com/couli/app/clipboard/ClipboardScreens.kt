@@ -85,26 +85,23 @@ object ClipboardScreens {
 }
 
 /**
- * 首页根页的剪贴板区（HomeClipboard / HomeClipboardInvite / Main）：搜索框下面依次是提示条（邀请、系统分享；商品自 FU-AND-0724 起直接出卡，
- * 不出提示条）、30132 与网络异常重试的内联提示、Android 开关关闭时的常驻粘贴按钮、「粘贴链接，先查返利 · 去粘贴」卡。42901 限流中按钮与卡置灰。
+ * 首页根页的剪贴板区上半（HomeClipboard / HomeClipboardInvite / Main-v3）：提示条（邀请、系统分享；商品自 FU-AND-0724 起直接出卡，不出提示条）与 30132、
+ * 网络异常重试、邀请确认的内联提示。APP-11v（G-V02）起作为首页列表的头部项（不再单独滚动），每块只在显示时带下方 12 间距，没有内容时不占高度。
+ * 42901 限流中按钮置灰。
  */
 @Composable
 @Suppress("CyclomaticComplexMethod") // 剪贴板、邀请、分享三种提示条的文案逐项选择
-fun HomeClipboardArea(clipboard: AppClipboard) {
+fun HomeClipboardTop(
+    clipboard: AppClipboard,
+    modifier: Modifier = Modifier,
+) {
     val prompt by clipboard.prompt.collectAsStateWithLifecycle()
     val blocked by clipboard.blocked.collectAsStateWithLifecycle()
     // 共享 busy（R1-05）：商品 parse 在途时提示条按钮与粘贴入口一起置灰
     val busy by clipboard.busy.collectAsStateWithLifecycle()
-    val autoSwitch by clipboard.autoSwitch.collectAsStateWithLifecycle()
     val texts = ClipboardDraftTexts
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
-                .testTag(ClipboardScreens.HOME_AREA),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
+    val gap = Modifier.padding(bottom = CouliSpacing.space3)
+    Column(modifier = modifier.fillMaxWidth().testTag(ClipboardScreens.HOME_AREA)) {
         prompt?.let { current ->
             // 每条提示一个独立节点（按编号 key）：换成新提示时旧节点整体丢弃，旧节点上已捕获的点击 / 关闭回调只带旧编号，执行时与当前提示比较后
             // 无效果，不会转调新提示的回调（FU-CLIP 共性第 3 条、APP-09 第 63 条）
@@ -112,61 +109,70 @@ fun HomeClipboardArea(clipboard: AppClipboard) {
                 val invite = current.kind == ClipboardClassifier.KIND_INVITE
                 val platform = current.display?.let { PromptPlatformTexts.of(it, current.share) }
                 val id = current.id
-                ClipboardPromptBar(
-                    message =
-                        when {
-                            invite -> texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.inviteCode.orEmpty()))
-                            platform != null && current.share -> platform.title
-                            else -> texts.text(PROMPT_KEY)
-                        },
-                    actionText =
-                        texts.text(
+                Box(modifier = gap) {
+                    ClipboardPromptBar(
+                        message =
                             when {
-                                invite -> "clipboard.invite_prompt.action"
-                                current.share -> "clipboard.share_prompt.action"
-                                else -> "clipboard.prompt.action"
+                                invite -> texts.format(INVITE_PROMPT_KEY, mapOf("invite_code" to current.inviteCode.orEmpty()))
+                                platform != null && current.share -> platform.title
+                                else -> texts.text(PROMPT_KEY)
                             },
-                        ),
-                    // 分享条按钮读屏名与可见字一致「查返利」（分享不是粘贴）；剪贴板与邀请条的读屏名不变
-                    actionLabel =
-                        texts.text(
-                            when {
-                                invite -> "clipboard.invite_prompt.action_label"
-                                current.share -> "clipboard.share_prompt.action"
-                                else -> "clipboard.prompt.action_label"
-                            },
-                        ),
-                    closeLabel = texts.text("clipboard.prompt.close"),
-                    // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
-                    onAction = { clipboard.onPromptAction(id) },
-                    onClose = { clipboard.onPromptClose(id) },
-                    enabled = !blocked && (current.busy || !busy),
-                    busy = current.busy,
-                    detail = platform?.detail,
-                    badge = platform?.badge,
-                    messageLabel = platform?.label,
-                )
+                        actionText =
+                            texts.text(
+                                when {
+                                    invite -> "clipboard.invite_prompt.action"
+                                    current.share -> "clipboard.share_prompt.action"
+                                    else -> "clipboard.prompt.action"
+                                },
+                            ),
+                        // 分享条按钮读屏名与可见字一致「查返利」（分享不是粘贴）；剪贴板与邀请条的读屏名不变
+                        actionLabel =
+                            texts.text(
+                                when {
+                                    invite -> "clipboard.invite_prompt.action_label"
+                                    current.share -> "clipboard.share_prompt.action"
+                                    else -> "clipboard.prompt.action_label"
+                                },
+                            ),
+                        closeLabel = texts.text("clipboard.prompt.close"),
+                        // 回调绑定渲染时这条提示的编号（APP-07 共性第 18 条）
+                        onAction = { clipboard.onPromptAction(id) },
+                        onClose = { clipboard.onPromptClose(id) },
+                        enabled = !blocked && (current.busy || !busy),
+                        busy = current.busy,
+                        detail = platform?.detail,
+                        badge = platform?.badge,
+                        messageLabel = platform?.label,
+                    )
+                }
             }
         }
-        UnrecognizedInline(clipboard, origin = AppClipboard::isHomeOrigin)
-        RetryInline(clipboard, origin = AppClipboard::isHomeOrigin)
-        InviteConfirmInline(clipboard, origin = AppClipboard::isHomeOrigin, enabled = !blocked)
-        if (!autoSwitch) {
-            PasteEntry(
-                text = texts.text("clipboard.paste_entry"),
-                onClick = { clipboard.paste(ManualPasteAction.ENTRY_HOME) },
-                enabled = !blocked && !busy,
-                modifier = Modifier.testTag(ClipboardScreens.HOME_PASTE_BUTTON),
-            )
-        }
-        HomePasteCard(
-            title = texts.text("clipboard.home_card.title"),
-            subtitle = texts.text("clipboard.home_card.subtitle"),
-            actionText = texts.text("clipboard.home_card.action"),
-            onClick = { clipboard.paste(ManualPasteAction.ENTRY_HOME) },
-            enabled = !blocked && !busy,
-        )
+        UnrecognizedInline(clipboard, origin = AppClipboard::isHomeOrigin, modifier = gap)
+        RetryInline(clipboard, origin = AppClipboard::isHomeOrigin, modifier = gap)
+        InviteConfirmInline(clipboard, origin = AppClipboard::isHomeOrigin, enabled = !blocked, modifier = gap)
     }
+}
+
+/**
+ * 首页常驻粘贴卡（Main-v3，G-V03）：一张卡、一个按钮——卡标题「粘贴查返利」（clipboard.paste_hint），按钮文字「粘贴查返利」（BR-ID-16 Android 自绘，
+ * clipboard.paste_entry）。自动识别开关开或关都只有这一个入口；首次点击未看过用途说明先出用途说明（[AppClipboard.paste] 内，行为不变）。
+ * 42901 禁用期 / 在途置灰。
+ */
+@Composable
+fun HomeClipboardPaste(
+    clipboard: AppClipboard,
+    modifier: Modifier = Modifier,
+) {
+    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    HomePasteCard(
+        title = ClipboardDraftTexts.text("clipboard.paste_hint"),
+        actionText = ClipboardDraftTexts.text("clipboard.paste_entry"),
+        onClick = { clipboard.paste(ManualPasteAction.ENTRY_HOME) },
+        enabled = !blocked && !busy,
+        modifier = modifier.padding(bottom = CouliSpacing.space3),
+        buttonModifier = Modifier.testTag(ClipboardScreens.HOME_PASTE_BUTTON),
+    )
 }
 
 /** SearchTyping「粘贴查返利」（自绘按钮 + 说明文字）；42901 禁用期置灰（执行层另在 [AppClipboard.paste] 拦）。结果绑定当前页（发起页）。 */

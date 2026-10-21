@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -265,6 +266,28 @@ internal fun ProductCardData.gridMinWidth(
     return cardPadding + maxOf(metrics.priceMain(price, PriceTagSize.AI), rebate, metrics.subLineAmounts(priceSubLines(estNet = null)))
 }
 
+/**
+ * 网格返利块第一行（钟表 + 「预估返」+ 口径 i）的最窄宽度（px，含卡内边距）：这一行也不拆（GUIDE §6 窄卡两行结构）。
+ * 只给 [rememberProductGridColumns] 的 includeRebateHeader 用（首页，返利块是紧凑变体：i 在行内只占 16 图标位，48 命中区向外溢出）；
+ * [ProductCardGridLayout] 口径不变。
+ */
+internal fun ProductCardData.gridRebateHeaderMinWidth(
+    metrics: AmountMetrics,
+    density: Density,
+): Int {
+    if (rebate.kind == RebateKind.NONE) return 0
+    val shown = displayedRebate
+    val fixed =
+        with(density) {
+            val cardPadding = (CouliSpacing.space2 + CouliSpacing.space1) * 2
+            val blockPadding = CouliSpacing.space2 * 2
+            val icon = if (shown.usesRebateAccent) CouliSizes.iconTiny + CouliSpacing.space1 else CouliSpacing.space0
+            val info = if (showsDisclaimerButton) CouliSizes.iconSmall else CouliSpacing.space0
+            (cardPadding + blockPadding + icon + info).roundToPx()
+        }
+    return fixed + metrics.textWidth(shown.label, CouliTypography.caption)
+}
+
 /** 副行：没有价格（金额未知）时一行都没有——规格说明与预估返后也是价格信息（BR-PRICE-08）。 */
 private fun ProductCardData.priceSubLines(estNet: String?): List<String> = price?.subLines(specNote = specNote, estNet = estNet).orEmpty()
 
@@ -364,9 +387,12 @@ fun ProductCardGrid(
     data: ProductCardData,
     modifier: Modifier = Modifier,
     onInfo: (() -> Unit)? = null,
+    framed: Boolean = true,
+    compactRebate: Boolean = false,
 ) {
     Column(
-        modifier = modifier.couliCard().padding(CouliSpacing.space2),
+        // [framed] = false：放进已有白卡（首页「超市百货」段卡）里时不再自带卡底与内边距（APP-11v Main-v3）
+        modifier = if (framed) modifier.couliCard().padding(CouliSpacing.space2) else modifier,
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
         ProductThumbnail(
@@ -392,7 +418,7 @@ fun ProductCardGrid(
                 }
             }
             PriceSubLines(lines = data.priceSubLines(estNet = null))
-            if (rebateShown) GridRebateBlock(data = data, onInfo = info)
+            if (rebateShown) GridRebateBlock(data = data, onInfo = info, compactInfo = compactRebate)
         }
     }
 }
@@ -408,13 +434,9 @@ fun ProductCardGridLayout(
     columns: Int = 2,
     onInfo: ((ProductCardData) -> Unit)? = null,
 ) {
-    val metrics = rememberAmountMetrics()
-    val density = LocalDensity.current
-    val required = remember(items, metrics, density) { items.maxOfOrNull { it.gridMinWidth(metrics, density) } ?: 0 }
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val gap = CouliSpacing.space3
-        val columnWidth = (maxWidth - gap * (columns - 1)) / columns
-        val effective = if (required > with(density) { columnWidth.roundToPx() }) 1 else columns
+        val effective = rememberProductGridColumns(items, maxWidth, columns)
         Column(verticalArrangement = Arrangement.spacedBy(gap)) {
             items.chunked(effective).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
@@ -432,39 +454,84 @@ fun ProductCardGridLayout(
     }
 }
 
+/**
+ * 网格列数判定（与 [ProductCardGridLayout] 同一口径，R2-01）：在 [width] 宽、列距 space3 下，任一张卡的不可拆分金额段放不下时返回 1（整组单列），
+ * 否则返回 [columns]。给需要自定义每格外层（点击、角标、测试标记）的调用方（首页网格 / 信息流）用，保证同一套回退规则。
+ */
 @Composable
-private fun GridRebateBlock(
+fun rememberProductGridColumns(
+    items: List<ProductCardData>,
+    width: Dp,
+    columns: Int = 2,
+    includeRebateHeader: Boolean = false,
+): Int {
+    val metrics = rememberAmountMetrics()
+    val density = LocalDensity.current
+    val required =
+        remember(items, metrics, density, includeRebateHeader) {
+            items.maxOfOrNull {
+                val header = if (includeRebateHeader) it.gridRebateHeaderMinWidth(metrics, density) else 0
+                maxOf(it.gridMinWidth(metrics, density), header)
+            } ?: 0
+        }
+    val gap = CouliSpacing.space3
+    val columnWidth = (width - gap * (columns - 1)) / columns
+    return if (columns > 1 && required > with(density) { columnWidth.roundToPx() }) 1 else columns
+}
+
+/**
+ * 网格卡 / 首页横滑卡的返利块（GUIDE §6 窄卡两行结构）：第一行「钟表 + 预估返 + 口径 i」，第二行完整金额（只在破折号处折行）。
+ * 读屏读完整一句；[onInfo] 为 null 时不显示 i。
+ * [compactInfo] = true（首页紧凑变体，APP-11v r1 S2-5）：i 在行内只占图标大小（16），不把首行撑到 48；48 的命中区以图标为中心
+ * 向外溢出（块底只画圆角、不裁剪，溢出部分仍能点到）。默认 false 时与原来完全一样。
+ */
+@Composable
+fun GridRebateBlock(
     data: ProductCardData,
     onInfo: (() -> Unit)?,
+    mergeSemantics: Boolean = true,
+    compactInfo: Boolean = false,
 ) {
     val rebate = data.displayedRebate
     val accent = rebate.usesRebateAccent
     val color = if (accent) CouliColors.rebateText else CouliColors.textSecondary
+    // [mergeSemantics] = false：外层整卡已读出返利句（首页横滑卡），块内文字读屏隐藏，只留口径 i 按钮
+    val silent = if (mergeSemantics) Modifier else Modifier.clearAndSetSemantics {}
+    val shape = RoundedCornerShape(CouliRadius.small)
+    val fill = if (accent) CouliColors.rebateBackground else CouliColors.backgroundMuted
     Column(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(CouliRadius.small))
-                .background(if (accent) CouliColors.rebateBackground else CouliColors.backgroundMuted)
+                // 紧凑变体不裁剪：i 的 48 命中区溢出块边时仍要能点到（裁剪层会挡住块外的触摸）
+                .then(if (compactInfo) Modifier.background(fill, shape) else Modifier.clip(shape).background(fill))
                 .padding(horizontal = CouliSpacing.space2, vertical = CouliSpacing.space1)
-                .semantics(mergeDescendants = true) { contentDescription = rebate.spoken },
+                .then(
+                    if (mergeSemantics) Modifier.semantics(mergeDescendants = true) { contentDescription = rebate.spoken } else Modifier,
+                ),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (accent) {
                 Icon(CouliIcons.clock, contentDescription = null, tint = color, modifier = Modifier.size(CouliSizes.iconTiny))
                 Spacer(Modifier.width(CouliSpacing.space1))
             }
-            Text(text = rebate.label, style = CouliTypography.caption, color = color, modifier = Modifier.weight(1f))
+            Text(text = rebate.label, style = CouliTypography.caption, color = color, modifier = Modifier.weight(1f).then(silent))
             if (onInfo != null) {
                 DisclaimerInfoButton(
                     label = data.infoLabel,
                     expanded = false,
                     onToggle = onInfo,
-                    modifier = Modifier.height(CouliSizes.touchTarget),
+                    modifier =
+                        if (compactInfo) {
+                            // 行内只占 16 × 16；按钮仍按 48 × 48 量、以图标为中心摆放（命中区 ≥48，不撑高首行）
+                            Modifier.size(CouliSizes.iconSmall).wrapContentSize(unbounded = true)
+                        } else {
+                            Modifier.height(CouliSizes.touchTarget)
+                        },
                 )
             }
         }
-        RebateAmountSegments(content = rebate, style = CouliTextStyles.amountBody, color = color)
+        RebateAmountSegments(content = rebate, style = CouliTextStyles.amountBody, color = color, modifier = silent)
     }
 }
 

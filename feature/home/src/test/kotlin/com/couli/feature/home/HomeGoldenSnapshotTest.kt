@@ -29,6 +29,7 @@ import com.github.takahirom.roborazzi.captureScreenRoboImage
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -53,14 +54,27 @@ class HomeGoldenSnapshotTest {
     /** 同一个测试里多次渲染：内容只设置一次，之后换掉槽位里的画面（setContent 每个测试只能调一次）。 */
     private var frame by mutableStateOf<(@Composable () -> Unit)?>(null)
     private var contentSet = false
+    private var activeController: HomeController? = null
+
+    @After
+    fun close() {
+        composeRule.runOnUiThread { activeController?.invalidate() }
+    }
 
     private fun render(
         page: JsonObject,
         widthDp: Int = 390,
         fontScale: Float = 1f,
         grayscale: Boolean = false,
+        dark: Boolean = false,
     ): HomeController {
         val port = FakePort(page = { HomeTestKit.ok(page) })
+        if ("sectionItems" in page) {
+            port.items = { section, cursor ->
+                check(cursor == null) { "视觉 fixture 不应翻页" }
+                HomeTestKit.ok(page.getValue("sectionItems").jsonObject.getValue(section))
+            }
+        }
         val signals = FakeSignals()
         val controller = HomeController(FakeHost.IDENTITY, testDeps(signals = signals, port = port))
         if (!contentSet) {
@@ -68,7 +82,9 @@ class HomeGoldenSnapshotTest {
             composeRule.setContent { frame?.invoke() }
         }
         composeRule.runOnIdle {
-            frame = { key(controller.id) { Frame(controller, signals, widthDp, fontScale, grayscale) } }
+            activeController?.invalidate()
+            activeController = controller
+            frame = { key(controller.id) { Frame(controller, signals, widthDp, fontScale, grayscale, dark) } }
             controller.start()
         }
         idle()
@@ -82,13 +98,14 @@ class HomeGoldenSnapshotTest {
         widthDp: Int,
         fontScale: Float,
         grayscale: Boolean,
+        dark: Boolean,
     ) {
         val density = LocalDensity.current
         CompositionLocalProvider(
             LocalDensity provides Density(density.density, fontScale),
             LocalProductImageLoader provides HomeTestKit.images,
         ) {
-            CouliTheme {
+            CouliTheme(darkTheme = dark) {
                 Box(
                     modifier =
                         Modifier
@@ -115,7 +132,7 @@ class HomeGoldenSnapshotTest {
     @Test
     fun everyGoldenPageRendersThroughTheSameRenderer() {
         val pages = HomeTestKit.vectors().getValue("goldenPages").jsonObject
-        assertEquals(15, pages.size)
+        assertEquals(17, pages.size)
         pages.keys.filter { it != "popup" }.forEach { name ->
             val controller = render(pages.getValue(name).jsonObject)
             assertTrue(name, controller.state.value.render.renderGen > 0)
@@ -132,16 +149,19 @@ class HomeGoldenSnapshotTest {
 
     @Test
     fun mainAtDesignFontScalesAndWidths() {
-        render(MAIN)
-        shot("Main")
-        render(MAIN, fontScale = 1.3f)
-        shot("Main130")
-        render(MAIN, fontScale = 2f)
-        shot("Main200")
-        render(MAIN, widthDp = 320)
-        shot("Main320")
-        render(MAIN, widthDp = 320, fontScale = 2f)
-        shot("Main320-200")
+        listOf(false, true).forEach { dark ->
+            val suffix = if (dark) "-dark" else ""
+            render(MAIN, dark = dark)
+            shot("Main$suffix")
+            render(MAIN, fontScale = 1.3f, dark = dark)
+            shot("Main130$suffix")
+            render(MAIN, fontScale = 2f, dark = dark)
+            shot("Main200$suffix")
+            render(MAIN, widthDp = 320, dark = dark)
+            shot("Main320$suffix")
+            render(MAIN, widthDp = 320, fontScale = 2f, dark = dark)
+            shot("Main320-200$suffix")
+        }
     }
 
     @Test
@@ -149,15 +169,25 @@ class HomeGoldenSnapshotTest {
     fun largeScreenKeepsContentWidthAndColumns() {
         render(MAIN, widthDp = 840)
         shot("MainLarge")
+        render(MAIN, widthDp = 840, dark = true)
+        shot("MainLarge-dark")
     }
 
     @Test
     fun noticeBeforeAndAfterClose() {
-        render(MAIN)
+        render(LEGACY_MAIN)
         shot("NoticeBar-before")
         composeRule.onNodeWithTag("${HomeTags.NOTICE_CLOSE_PREFIX}notice_main_n1", useUnmergedTree = true).performClick()
         idle()
         shot("NoticeBar-after")
+    }
+
+    @Test
+    fun bannerAndNoticesUseExplicitDarkTokens() {
+        listOf("banner", "notice_static", "notice_api").forEach { name ->
+            render(HomeTestKit.golden(name), dark = true)
+            shot("golden-$name-dark")
+        }
     }
 
     @Test
@@ -169,10 +199,13 @@ class HomeGoldenSnapshotTest {
     @Test
     @Config(qualifiers = "w390dp-h480dp-xhdpi")
     fun popupOnShortViewportKeepsCloseVisible() {
-        val controller = render(MAIN_WITH_POPUP)
-        assertTrue(controller.state.value.popup != null)
-        composeRule.onNodeWithTag(HomeTags.POPUP_CLOSE, useUnmergedTree = true).assertExistsAndDisplayed()
-        captureScreenRoboImage("src/test/snapshots/MainPopup-short.png")
+        listOf(false, true).forEach { dark ->
+            val controller = render(MAIN_WITH_POPUP, dark = dark)
+            assertTrue(controller.state.value.popup != null)
+            composeRule.onNodeWithTag(HomeTags.POPUP_CLOSE, useUnmergedTree = true).assertExistsAndDisplayed()
+            val suffix = if (dark) "-dark" else ""
+            captureScreenRoboImage("src/test/snapshots/MainPopup-short$suffix.png")
+        }
     }
 
     private fun androidx.compose.ui.test.SemanticsNodeInteraction.assertExistsAndDisplayed() {
@@ -183,8 +216,10 @@ class HomeGoldenSnapshotTest {
     companion object {
         private const val ROUNDS = 6
 
-        /** Main 稿的组合页（公告、轮播、金刚区、今日精选、双入口、超市百货、商品流）；结构与 goldenPages 同一套字段。 */
-        val MAIN: JsonObject =
+        /** Main-v3 的共用视觉页；旧组合仅用于保留公告关闭与弹窗回归。 */
+        val MAIN: JsonObject get() = HomeTestKit.golden("main_v3")
+
+        val LEGACY_MAIN: JsonObject =
             Json
                 .parseToJsonElement(
                     """{"page_key":"home","version":31,"sections":[""" +

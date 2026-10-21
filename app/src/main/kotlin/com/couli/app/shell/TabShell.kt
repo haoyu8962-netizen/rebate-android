@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.couli.app.home.HomeTonalButton
 import com.couli.app.login.LoginDraftTexts
 import com.couli.app.trade.AuthManageEntry
 import com.couli.core.designsystem.CouliButton
@@ -41,6 +42,7 @@ import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.SearchEntry as CouliSearchEntry
 import com.couli.core.designsystem.TabBar
 import com.couli.core.designsystem.TabItem
 import com.couli.core.home.HomeDraftTexts
@@ -134,9 +136,17 @@ fun BasicModePage(
     onEnableFullFunction: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().testTag(BASIC_MODE_PAGE_TAG)) {
+    // 大屏与首页同一内容列（r1 S2-4）：搜索行、提示区限宽 600 居中，与下面的价值卡 / SDUI 卡边界一致（03 §10.4）
+    Column(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().testTag(BASIC_MODE_PAGE_TAG),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = CouliSpacing.space4, end = CouliSpacing.space2, top = CouliSpacing.space2),
+            modifier =
+                Modifier
+                    .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
+                    .fillMaxWidth()
+                    .padding(start = CouliSpacing.space4, end = CouliSpacing.space2, top = CouliSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
@@ -151,6 +161,7 @@ fun BasicModePage(
         Column(
             modifier =
                 Modifier
+                    .widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
                     .fillMaxWidth()
                     .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space3),
         ) {
@@ -160,43 +171,27 @@ fun BasicModePage(
     }
 }
 
-/** 搜索入口（只是入口，点了经 Router 打开 Search）：白底、1 描边、圆角 12，图标 + 占位字 17。 */
+/** 搜索入口（只是入口，点了经 Router 打开 Search）：组件库 [CouliSearchEntry]（按钮语义），占位「搜商品名，或粘贴商品链接」（G-V09，首页与基本模式同键）。 */
 @Composable
 private fun SearchEntry(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(CouliRadius.button)
-    Row(
-        modifier =
-            modifier
-                .heightIn(min = CouliSizes.touchTarget)
-                .border(CouliSizes.hairline, CouliColors.borderControl, shape)
-                .background(CouliColors.backgroundSurface, shape)
-                .clickable(role = Role.Button, onClick = onClick)
-                .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Icon(
-            CouliIcons.search,
-            contentDescription = null,
-            tint = CouliColors.textSecondary,
-            modifier = Modifier.size(CouliSizes.iconMedium),
-        )
-        Text(text = ShellDraftTexts.BASIC_SEARCH_PLACEHOLDER, style = CouliTypography.body, color = CouliColors.textSecondary)
-    }
+    CouliSearchEntry(
+        placeholder = HomeDraftTexts.text(HomeDraftTexts.SEARCH_PLACEHOLDER),
+        onClick = onClick,
+        modifier = modifier,
+    )
 }
 
 /**
- * 首页 Tab（已同意）：顶部搜索入口，下面是 [header]（剪贴板提示条与「粘贴链接，先查返利」卡，APP-07）与首页内容（[content]，占位；
- * 首页 SDUI 在 APP-11）。大屏（03 §10.4，A-R1-08）：搜索入口与 [header] 限宽 600dp、水平居中（与搜索、详情页同一最大宽度）；[header]
- * 放在可滚动容器里，最多占剩余高度的 3/4，大字号或窗口变矮时滚动查看，主要操作都可达。
+ * 首页 Tab（已同意）：顶部搜索行吸顶（APP-11v G-V02：搜索入口 +【问 AI】浅底次按钮，限宽 600 居中，03 §10.4），下面是首页内容（[content]：
+ * 首页 SDUI 列表，剪贴板提示条、游客价值卡、粘贴卡作为同一列表的头部项，经 [com.couli.app.home.LocalHomeNativeHeader] 传入，与 SDUI 卡一起滚动、
+ * 一起下拉刷新）。
  */
 @Composable
 fun HomeWithSearch(
     onSearch: () -> Unit,
-    header: @Composable () -> Unit = {},
     onAskAi: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
@@ -214,42 +209,22 @@ fun HomeWithSearch(
                 onClick = onSearch,
                 modifier = Modifier.weight(1f).testTag(HOME_SEARCH_ENTRY_TAG),
             )
-            // 【问 AI】（G26 固定区，照 Main 稿；经 Router 打开 AgentChat，APP-11）
+            // 【问 AI】（G26 固定区，Main-v3 浅底次按钮 + 对话图标；经 Router 打开 AgentChat，APP-11）
             if (onAskAi != null) {
-                CouliButton(
+                HomeTonalButton(
                     text = HomeDraftTexts.text(HomeDraftTexts.ASK_AI),
                     onClick = onAskAi,
-                    size = CouliButtonSize.COMPACT,
+                    icon = CouliIcons.chat,
                     modifier = Modifier.testTag(HOME_ASK_AI_TAG),
                 )
             }
         }
-        Box(
-            modifier =
-                Modifier
-                    // 最多占剩余高度的 3/4（按实际高度，不预留空白：首页 SDUI 区拿到其余全部高度，APP-11）
-                    .layout { measurable, constraints ->
-                        val cap =
-                            if (constraints.hasBoundedHeight) (constraints.maxHeight * HOME_HEADER_SHARE).toInt() else constraints.maxHeight
-                        val placeable = measurable.measure(constraints.copy(maxHeight = cap))
-                        layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-                    }.widthIn(max = HOME_CONTENT_MAX_WIDTH.dp)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .testTag(HOME_HEADER_TAG),
-        ) { header() }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) { content() }
     }
 }
 
-/** 首页搜索入口下的剪贴板区滚动容器（A-R1-08）。 */
-const val HOME_HEADER_TAG = "home_header"
-
 /** 首页内容的最大宽度（与搜索、商品详情页同为 600dp，03 §10.4）。 */
 private const val HOME_CONTENT_MAX_WIDTH = 600
-
-/** 剪贴板区与首页内容分剩余高度：剪贴板区最多占 3/4（内容不够时按实际高度）。 */
-private const val HOME_HEADER_SHARE = 0.75f
 
 /** 「我的」Tab 的入口行：设置（ME_SETTINGS_ENTRY_TAG）。 */
 const val ME_SETTINGS_ENTRY_TAG = "me_settings_entry"

@@ -49,6 +49,9 @@ object ClipboardUi {
     const val PROMPT_DETAIL = "clipboard_prompt_detail"
     const val PASTE_ENTRY = "clipboard_paste_entry"
     const val HOME_PASTE_CARD = "clipboard_home_paste_card"
+
+    /** 首页粘贴卡右侧的示意插图（装饰，读屏隐藏）。 */
+    const val HOME_PASTE_ILLUSTRATION = "home_paste_illustration"
 }
 
 /**
@@ -234,63 +237,6 @@ fun PasteEntry(
                 text = text,
                 style = CouliTextStyles.bodySemibold,
                 color = if (enabled) CouliColors.brandEmphasis else CouliColors.textSecondary,
-            )
-        }
-    }
-}
-
-/**
- * 首页「粘贴链接，先查返利 · 去粘贴」卡（设计稿 HomeClipboard / Main 的首屏卡）：品牌浅底圆角 16，标题 17/600、副标题 12，下方白底胶囊
- * 「去粘贴 ›」。整卡是一个按钮（读屏名 = 标题 + 去粘贴），点了才读剪贴板。轮播的「推广」角标与圆点属于首页 SDUI（APP-11），这里不画。
- */
-@Composable
-fun HomePasteCard(
-    title: String,
-    subtitle: String,
-    actionText: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-) {
-    val shape = RoundedCornerShape(CouliRadius.card)
-    Column(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .clip(shape)
-                .background(CouliColors.brandSubtle, shape)
-                .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-                .semantics(mergeDescendants = true) { role = Role.Button }
-                .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space5)
-                .testTag(ClipboardUi.HOME_PASTE_CARD),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-    ) {
-        Text(text = title, style = CouliTextStyles.bodySemibold, color = CouliColors.textPrimary)
-        Text(text = subtitle, style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Row(
-            modifier =
-                Modifier
-                    .padding(top = CouliSpacing.space2)
-                    .clip(RoundedCornerShape(CouliRadius.pill))
-                    .background(CouliColors.backgroundSurface)
-                    .padding(
-                        start = CouliSpacing.space3,
-                        end = CouliSpacing.space2,
-                        top = CouliSpacing.space1,
-                        bottom = CouliSpacing.space1,
-                    ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = actionText,
-                style = CouliTextStyles.captionMedium,
-                color = if (enabled) CouliColors.brandEmphasis else CouliColors.textSecondary,
-            )
-            Icon(
-                CouliIcons.chevron,
-                contentDescription = null,
-                tint = if (enabled) CouliColors.brandEmphasis else CouliColors.textSecondary,
-                modifier = Modifier.size(CouliSizes.iconSmall),
             )
         }
     }

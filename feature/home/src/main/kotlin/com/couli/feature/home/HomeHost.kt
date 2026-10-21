@@ -306,6 +306,7 @@ object HomeListKeys {
     private const val FEED_MORE = "feed_more"
     private const val EXTRA = "extra"
     private const val PRODUCT = "product"
+    private const val HEADER = "header"
 
     fun card(sectionId: String): String = encode(CARD, sectionId)
 
@@ -326,6 +327,11 @@ object HomeListKeys {
         index: Int,
         productKey: String,
     ): String = encode(PRODUCT, productKey) + "#" + index
+
+    /**
+     * 列表头部的客户端原生项（APP-11v G-V02：剪贴板提示条、游客价值卡、粘贴卡；不属 SDUI）：独立种类，任何 section id 都撞不上（共性第 24 条）。
+     */
+    fun header(name: String): String = encode(HEADER, name)
 
     /** 页底口径说明。 */
     val DISCLAIMER: String = extra("disclaimer")
@@ -354,6 +360,9 @@ object HomeTags {
     const val FEED_MORE = "home_feed_more"
     const val MORE_PREFIX = "home_more_"
     const val BANNER_DOT = "home_banner_dot"
+
+    /** 金刚区平台格的图形（后接 builtin 名，如 `platform.taobao`；F-X-05a 换官方图的接入点）。 */
+    const val PLATFORM_CELL_PREFIX = "home_platform_cell_"
 
     /** 一个可点区域的标记：`home_tap_<section id>_<坑位>`。 */
     fun tap(

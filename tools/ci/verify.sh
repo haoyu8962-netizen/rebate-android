@@ -238,6 +238,7 @@ step "构建 debug / staging / release 与 androidTest" \
 step "单元测试（testDebugUnitTest，含 Robolectric 与格式向量）" $GRADLE testDebugUnitTest
 step "组件快照测试（Roborazzi verifyRoborazziDebug；含首页 golden 页 APP-11 G29、Agent 页流 fixture 快照 APP-10 G32）" $GRADLE :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug
 step "DS-02 目录组件浅 / 深快照（仅 golden 用例）" $GRADLE :app:verifyRoborazziDebug --tests "*Ds02CatalogSnapshotTest"
+step "首页视觉整页浅 / 深快照（APP-11v：Main-v3 / HomeGuest-v3 / MainDark-v3 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*HomeVisualSnapshotTest"
 # APP-04（Android 第 2 轮评审 R2-05、共性第 44、55 条）：真实系统 WebView 仪器测试，含加载锁定 H5 一致性页、逐项断言
 # window.__RESULT__ 的 ConformancePageTest。以 am instrument 输出的「OK (N tests)」为唯一成功判据；任何失败、没有在线的设备
 # 或模拟器都让本步失败（不跳过）

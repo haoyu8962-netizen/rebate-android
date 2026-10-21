@@ -4,11 +4,9 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
 import android.os.Looper
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -37,6 +35,8 @@ import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.FlowWait
+import com.couli.app.home.HomeRoute
+import com.couli.app.home.clipboardTestHome
 import com.couli.app.login.AppLogin
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -45,7 +45,6 @@ import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
 import com.couli.app.search.AppSearch
 import com.couli.app.shell.AppShell
-import com.couli.app.shell.HOME_HEADER_TAG
 import com.couli.app.shell.ShellDraftTexts
 import com.couli.app.trade.AndroidJumpPorts
 import com.couli.app.trade.AppTrade
@@ -90,6 +89,7 @@ import com.couli.core.router.SessionState
 import com.couli.core.router.SharedPreferencesPendingBackend
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
+import com.couli.feature.home.HomeTags
 import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginTags
@@ -437,6 +437,7 @@ class AppClipboardIntegrationTest {
                     override val blocked: StateFlow<Boolean> get() = clipboard.blocked
                 }
         }
+        val home = composeRule.runOnUiThread { clipboardTestHome(api, tokens, routing, privacy) }
         composeRule.setContent {
             navController = rememberNavController()
             androidx.compose.runtime.CompositionLocalProvider(
@@ -447,7 +448,8 @@ class AppClipboardIntegrationTest {
                 AppShell(
                     routing = routing,
                     privacy = privacy,
-                    homeContent = { Box(Modifier.fillMaxSize()) },
+                    homeContent = { HomeRoute(home) },
+                    home = home,
                     navController = navController,
                     search = search,
                     login = login,
@@ -647,6 +649,7 @@ class AppClipboardIntegrationTest {
         foreground(cold = true)
         assertEquals("开关关闭：回前台不读", 0, system.reads)
         assertFalse(promptShown())
+        composeRule.onAllNodesWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertCountEquals(1)
         composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsDisplayed()
 
         composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
@@ -885,7 +888,7 @@ class AppClipboardIntegrationTest {
         idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
         idleUntil { clipboard.blocked.value }
         val reads = system.reads
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         composeRule.waitForIdle()
         assertEquals("限流中点粘贴卡：不读、不发", reads, system.reads)
         assertEquals(1, parseRequests().size)
@@ -976,7 +979,7 @@ class AppClipboardIntegrationTest {
         copy("邀请码 K7M2QX https://share.example.test/i/K7M2QX")
         foreground(cold = true)
         assertEquals("开关关闭：回前台不读", 0, system.reads)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         composeRule.waitForIdle()
         idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
@@ -1048,14 +1051,14 @@ class AppClipboardIntegrationTest {
         pasteHome()
         idleUntil { clipboard.parseCount == 1 }
         assertTrue(clipboard.busy.value)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsNotEnabled()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsNotEnabled()
         val reads = system.reads
         pasteHome()
         assertEquals("同页同目的连点不能再次读", reads, system.reads)
         assertEquals(1, clipboard.parseCount)
         composeRule.runOnUiThread { reply.complete(transportFailure()) }
         idleUntil { !clipboard.busy.value }
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsEnabled()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsEnabled()
     }
 
     /** R1-05 反向：手动商品 parse 在途：已经退役的商品提示回调不得发请求，同页再次点击也不读不发。 */
@@ -1323,7 +1326,7 @@ class AppClipboardIntegrationTest {
         launch(session = SessionState.PHONE_BOUND)
         foreground(cold = true)
         copy("https://share.example.test/i/K7M2QX")
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         composeRule.waitForIdle()
         idleUntil { activeApiCalls.get() == 0 && !clipboard.busy.value }
         shadowOf(Looper.getMainLooper()).idle()
@@ -1339,7 +1342,7 @@ class AppClipboardIntegrationTest {
         // App 在前台（剪贴板还是空的：首页这次自动读取什么都不出）
         foreground(cold = true)
         copy("【淘宝】$LINK 「降噪蓝牙耳机」 好友邀请你 https://share.example.test/i/K7M2QX 邀请码 K7M2QX")
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         val body = parseRequests().single()
         assertEquals("只上传商品片段", "$LINK\n降噪蓝牙耳机", ((Json.parseToJsonElement(body) as JsonObject)["text"] as JsonPrimitive).content)
@@ -1473,7 +1476,7 @@ class AppClipboardIntegrationTest {
         composeRule.runOnUiThread { clipboard.consumeResult(checkNotNull(clipboard.result.value)) }
         composeRule.waitForIdle()
         val reads = system.reads
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsNotEnabled()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsNotEnabled()
         composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
         assertEquals("禁用期内执行层不读", reads, system.reads)
         assertEquals(1, parseRequests().size)
@@ -1535,24 +1538,24 @@ class AppClipboardIntegrationTest {
         val leftGap = area.left
         val rightGap = root.right - area.right
         assertTrue("水平居中：左 $leftGap、右 $rightGap", (leftGap - rightGap).value in -1f..1f)
-        composeRule.onNodeWithTag(HOME_HEADER_TAG).assert(hasScrollAction())
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag(HomeTags.LIST).assert(hasScrollAction())
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performScrollTo().assertIsDisplayed()
         copy(LINK)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performScrollTo().performClick()
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
         composeRule.onNodeWithTag(ClipboardScreens.CARD_PREFIX + 0).assertIsDisplayed()
     }
 
-    /** A-R1-08：窗口缩小（320×480dp）+ 200% 字号：剪贴板区可滚动，粘贴入口可滚到可见并点击，结果卡可见。 */
+    /** A-R1-08：窗口缩小（320×480dp）+ 200% 字号：整页同一列表可滚动，粘贴入口可滚到可见并点击，结果卡可见。 */
     @Test
     @Config(qualifiers = "w320dp-h480dp-mdpi", fontScale = 2f)
     fun smallWindowBigFontHomeClipboardAreaScrolls() {
         launchForManualPaste()
-        composeRule.onNodeWithTag(HOME_HEADER_TAG).assert(hasScrollAction())
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithTag(HomeTags.LIST).assert(hasScrollAction())
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performScrollTo().assertIsDisplayed()
         copy(LINK)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         idleUntil { clipboard.result.value is ClipboardResult.CardList }
         composeRule.onNodeWithTag(ClipboardScreens.CARD_LIST).assertIsDisplayed()
         composeRule.onNodeWithTag(ClipboardScreens.CARD_PREFIX + 0).assertIsDisplayed()

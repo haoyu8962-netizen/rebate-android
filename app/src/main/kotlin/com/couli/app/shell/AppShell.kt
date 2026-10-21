@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -34,8 +35,9 @@ import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardConsentHost
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardSettingsRow
-import com.couli.app.clipboard.HomeClipboardArea
 import com.couli.app.home.AppHome
+import com.couli.app.home.LocalHomeNativeHeader
+import com.couli.app.home.rememberHomeNativeHeader
 import com.couli.app.home.variantHomePreviewPages
 import com.couli.app.login.AppLogin
 import com.couli.app.login.BindPhoneRoute
@@ -505,31 +507,38 @@ private fun TabRoot(
     // 全局置灰只作用于首页根视图（含固定区与 SDUI 区，03 §6.2 第 8 步，G27）；配置变化即时应用或移除
     val noGray = remember { MutableStateFlow(false) }
     val gray by (home?.grayscale ?: noGray).collectAsStateWithLifecycle()
-    if (tab == ShellTab.HOME && basicMode) {
+    if (tab == ShellTab.HOME) {
+        // 首页列表的原生头部（APP-11v G-V02）：剪贴板提示条 → 游客价值卡（游客 / 基本模式，按可观察的会话状态，登录即撤）→ 粘贴卡；
+        // 基本模式不接剪贴板（只读模式，行为不变）
+        val session by routing.session.collectAsStateWithLifecycle()
+        val header =
+            rememberHomeNativeHeader(
+                clipboard = clipboard.takeIf { !basicMode },
+                guest = basicMode || session == SessionState.GUEST,
+                onLogin = { routing.router.open(inAppRequest(RouteNames.LOGIN)) },
+            )
         Box(modifier = Modifier.fillMaxSize().homeGrayscale(gray)) {
-            BasicModePage(
-                onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
-                onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
-                onEnableFullFunction = onEnableFullFunction,
-            ) { registry.Render(destination) }
-        }
-    } else if (tab == ShellTab.HOME) {
-        // 首页 Tab 顶部的原生固定区（G26）：搜索入口与【问 AI】（经 Router 打开 Search / AgentChat）、剪贴板区（APP-07：提示条、粘贴按钮、
-        // 「粘贴链接，先查返利」卡），下方是首页 SDUI 区（APP-11）
-        Box(modifier = Modifier.fillMaxSize().homeGrayscale(gray)) {
-            HomeWithSearch(
-                onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
-                header = { clipboard?.let { HomeClipboardArea(it) } },
-                // G56（FU-HM-0715 口径）：入口开关关闭时【问 AI】一并隐藏
-                onAskAi =
-                    home?.takeIf { agent?.entryVisible() != false }?.let {
-                        {
-                            routing.router.open(
-                                inAppRequest(ShellTab.AGENT.route),
-                            )
-                        }
-                    },
-            ) { registry.Render(destination) }
+            if (basicMode) {
+                BasicModePage(
+                    onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
+                    onSettings = { routing.router.open(inAppRequest(SETTINGS_ROUTE)) },
+                    onEnableFullFunction = onEnableFullFunction,
+                ) { CompositionLocalProvider(LocalHomeNativeHeader provides header) { registry.Render(destination) } }
+            } else {
+                // 首页 Tab 顶部吸顶的搜索行（G26）：搜索入口与【问 AI】（经 Router 打开 Search / AgentChat），下方是首页列表（APP-11）
+                HomeWithSearch(
+                    onSearch = { routing.router.open(inAppRequest(SEARCH_ROUTE)) },
+                    // G56（FU-HM-0715 口径）：入口开关关闭时【问 AI】一并隐藏
+                    onAskAi =
+                        home?.takeIf { agent?.entryVisible() != false }?.let {
+                            {
+                                routing.router.open(
+                                    inAppRequest(ShellTab.AGENT.route),
+                                )
+                            }
+                        },
+                ) { CompositionLocalProvider(LocalHomeNativeHeader provides header) { registry.Render(destination) } }
+            }
         }
     } else if (tab == ShellTab.AGENT && agent != null) {
         // Agent 页（APP-10）：控制器在 AppAgent 里按身份建立与作废，切 Tab 不销毁对话（只撤销本次进入世代）

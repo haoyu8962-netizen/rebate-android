@@ -19,10 +19,6 @@ internal object ClipboardDraftTexts {
             "clipboard.invite_prompt.action" to "粘贴",
             "clipboard.invite_prompt.action_label" to "粘贴并绑定邀请人",
             "clipboard.prompt.close" to "关闭",
-            // ---- 首页「粘贴链接，先查返利 · 去粘贴」卡（HomeClipboard / Main / HomeGuest）
-            "clipboard.home_card.title" to "粘贴链接，先查返利",
-            "clipboard.home_card.subtitle" to "支持淘宝、京东、拼多多",
-            "clipboard.home_card.action" to "去粘贴",
             // ---- Android 自绘粘贴按钮（BR-ID-16「粘贴查返利」）与 SearchTyping 的说明文字
             "clipboard.paste_entry" to "粘贴查返利",
             "clipboard.paste_entry.hint" to "复制了商品链接？点下方按钮识别并查返利",
@@ -46,7 +42,7 @@ internal object ClipboardDraftTexts {
                 "邀请码要你确认后才绑定。系统支持并允许时才会自动识别，否则可以用粘贴入口；可以随时在设置里关闭",
             "clipboard.consent.enable" to "开启",
             "clipboard.consent.not_now" to "暂不开启",
-            // ---- 粘贴入口（BR-TEXT-14 表 C clipboard.paste_hint / .agent；首页与 AgentChat 的接入在 FU-AND-0724 / 0725）
+            // ---- 粘贴入口（BR-TEXT-14 表 C clipboard.paste_hint / .agent；首页与 AgentChat 的接入在 FU-AND-0724 / 0725）。APP-11v 起 paste_hint 也是首页粘贴卡标题
             "clipboard.paste_hint" to "粘贴查返利",
             "clipboard.paste_hint.agent" to "让 AI 查返利",
             // ---- FU-AND-0724：手动粘贴命中被服务端关闭的平台（R09 ①，G18 草稿键 clipboard.platform_off，登记 N-30）；网络异常结果上的显式重试（R24）

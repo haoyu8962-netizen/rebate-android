@@ -55,9 +55,6 @@ internal object ShellDraftTexts {
     // TODO(N-16) 待法务定稿，不得提审
     const val TAB_ME = "我的"
 
-    // TODO(N-16) 待法务定稿，不得提审：基本模式页搜索框占位（BasicMode）
-    const val BASIC_SEARCH_PLACEHOLDER = "搜索商品"
-
     // TODO(N-16) 待法务定稿，不得提审：基本模式页【设置】图标按钮的读屏名称（BasicMode aria-label）
     const val SETTINGS_LABEL = "设置"
 }

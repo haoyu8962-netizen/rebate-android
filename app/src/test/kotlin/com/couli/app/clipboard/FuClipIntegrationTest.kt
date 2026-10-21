@@ -3,9 +3,6 @@ package com.couli.app.clipboard
 import android.app.Application
 import android.content.Context
 import android.os.Looper
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -23,6 +20,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.home.HomeRoute
+import com.couli.app.home.clipboardTestHome
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
@@ -239,6 +238,7 @@ class FuClipIntegrationTest {
                 privacyHooks = RoutingPrivacyHooks(promptShowing = { privacy.promptShowing }),
             )
         privacy.onConclusionChanged { routing.privacy.value = it }
+        val tokens = MemorySessionTokens()
         val api =
             ApiClient(
                 identity = ClientIdentity(appId = "couli", platform = "android", appVersion = "1.0.0", build = "1", channel = "official"),
@@ -252,7 +252,7 @@ class FuClipIntegrationTest {
                     )
                 },
                 device = FixtureDevice,
-                tokens = MemorySessionTokens(),
+                tokens = tokens,
                 pendingKeys = PendingKeyStore(MemoryPendingKeyBackend()) { 0L },
                 inFlight = inFlight,
                 sleeper = {},
@@ -268,6 +268,7 @@ class FuClipIntegrationTest {
         pageApi = GatedPageApi(ApiClientPageApi(api))
         composeRule.runOnUiThread { clipboard = newClipboard() }
         val search = AppSearch(api, store, routing, privacy = { privacy.conclusion }, trade = null, clipboard = clipboard)
+        val home = composeRule.runOnUiThread { clipboardTestHome(api, tokens, routing, privacy) }
         val content: @androidx.compose.runtime.Composable () -> Unit = {
             navController = rememberNavController()
             androidx.compose.runtime.CompositionLocalProvider(
@@ -278,7 +279,8 @@ class FuClipIntegrationTest {
                 AppShell(
                     routing = routing,
                     privacy = privacy,
-                    homeContent = { Box(Modifier.fillMaxSize()) },
+                    homeContent = { HomeRoute(home) },
+                    home = home,
                     navController = navController,
                     search = search,
                     clipboard = clipboard,
@@ -741,7 +743,7 @@ class FuClipIntegrationTest {
         composeRule.waitForIdle()
         assertEquals("在途时粘贴入口不读", reads, system.reads)
         assertEquals("在途时不再发", 1, parseBodies().size)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).assertIsNotEnabled()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).assertIsNotEnabled()
         composeRule.runOnUiThread { reply.complete(ApiResult.TransportFailure("io", null, null, false)) }
         idleUntil { !clipboard.busy.value }
     }
@@ -756,7 +758,7 @@ class FuClipIntegrationTest {
         val reply = CompletableDeferred<ApiResult>()
         gatedQueue += reply
         copy(LINK)
-        composeRule.onNodeWithTag(ClipboardUi.HOME_PASTE_CARD).performClick()
+        composeRule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
         idleUntil { parseBodies().size == 1 }
         assertTrue(clipboard.busy.value)
         composeRule.onNodeWithTag(ClipboardScreens.SEARCH_BY_NAME).assertIsNotEnabled()

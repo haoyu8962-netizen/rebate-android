@@ -112,7 +112,8 @@ class HomeVectorTest {
             (it["page"] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content
         }.toSet()
         assertTrue(golden.isNotEmpty())
-        assertEquals("每个 golden 都必须进入解码测试", golden.keys, references)
+        // APP-11v：新增两张视觉页由 HomeVisualFixtureTest 独立解码；原 15 页的判定向量一条不改。
+        assertEquals("既有 golden 必须全部进入原解码向量", golden.keys - setOf("main_v3", "guest_v3"), references)
     }
 
     @Test

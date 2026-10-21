@@ -281,7 +281,7 @@ internal object CouliIconMetrics {
     const val STROKE_WIDTH = 1.75f
 }
 
-private fun lineIcon(
+internal fun lineIcon(
     name: String,
     vararg paths: String,
 ): ImageVector {

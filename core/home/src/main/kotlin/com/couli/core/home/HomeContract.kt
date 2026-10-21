@@ -154,6 +154,13 @@ object HomeDraftTexts : HomeTexts {
     const val ACTIVITY_IMAGE = "home.activity.image"
     const val RETRY = "external_page.retry"
 
+    /** 首页 / 基本模式首页的搜索入口占位（G-V09：三端同键；08 未登记，并入 CT-16f 回写）。搜索页输入框占位不用这个键。 */
+    const val SEARCH_PLACEHOLDER = "search.placeholder"
+
+    /** 游客价值卡（BR-TEXT-14 表 C，TODO(CT-16f) 契约补键后改读 DefaultTexts）。 */
+    const val GUEST_VALUE_DESC = "home.guest_value.desc"
+    const val GUEST_VALUE_LOGIN = "home.guest_value.login"
+
     /** 读屏拼接多段文字的分隔（中文逗号，代拟）。 */
     const val SEPARATOR = "，"
 
@@ -179,6 +186,11 @@ object HomeDraftTexts : HomeTexts {
             ICON_IMAGE to "图标",
             // 代拟（G28，R1-08）：活动入口只有图片、没有标题时，整个入口的读屏名
             ACTIVITY_IMAGE to "活动入口",
+            // 照 Main-v3 / HomeGuest-v3 搜索入口占位（G-V09）
+            SEARCH_PLACEHOLDER to "搜商品名，或粘贴商品链接",
+            // 照 HomeGuest-v3 游客价值卡（08 表 C home.guest_value.desc / .login；TODO(CT-16f)）
+            GUEST_VALUE_DESC to "下单前先在凑狸查返利",
+            GUEST_VALUE_LOGIN to "登录领返利",
         )
 
     override fun text(key: String): String = DRAFTS[key] ?: DefaultTexts.text(key) ?: DefaultTexts.fallback(key).orEmpty()
