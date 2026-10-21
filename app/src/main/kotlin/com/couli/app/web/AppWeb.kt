@@ -262,12 +262,8 @@ class AppWeb(
             validity: BridgeCallValidity,
         ): BridgeOutcome {
             // signed_paths 已在协议层核对；按 method + path 找 openapi 的签名接口，由 ApiClient 签名代发。
-            // TODO(N-22)：openapi 9cd1e6f 没有 POST /v1/orders/claims，找不到时按「本端不支持」结束，不臆造请求。
-            val bare = path.substringBefore('?')
-            val operation =
-                com.couli.core.generated.ApiOperations.all.values
-                    .firstOrNull { it.method == method && it.pathTemplate == bare && it.signed }
-                    ?: return fail(BridgeCode.NOT_SUPPORTED)
+            // 契约即白名单（CT-LOCK-02 编排裁定）；找不到签名接口时按「本端不支持」结束、不臆造请求。
+            val operation = BridgeSignedOperations.operationFor(method, path) ?: return fail(BridgeCode.NOT_SUPPORTED)
             val call =
                 ApiCall(
                     operation.operationId,

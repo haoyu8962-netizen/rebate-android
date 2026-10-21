@@ -448,6 +448,7 @@ enum class ConsentType(
     ID_VERIFICATION("id_verification"),
     PERSONALIZATION("personalization"),
     LABOR_AGREEMENT("labor_agreement"),
+    CLIPBOARD_AUTO_IMPORT("clipboard_auto_import"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -461,6 +462,7 @@ enum class ConsentType(
                 ID_VERIFICATION,
                 PERSONALIZATION,
                 LABOR_AGREEMENT,
+                CLIPBOARD_AUTO_IMPORT,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, ConsentType> = known.associateBy { it.raw }
@@ -730,6 +732,57 @@ object RiskStateSerializer : KSerializer<RiskState> {
     override fun serialize(
         encoder: Encoder,
         value: RiskState,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `risk_reason_category`（contracts/enums/identity.yaml）。
+ * user_risk_state.reason_category，用户可见的原因类别（用户文案取字典 risk_reason.<category>）；state 不为 normal 时必填；后台封禁与冻结时必选一项（PUT /admin/v1/users/{user_id}/risk-state，CT-02j）
+ *
+ * 未知取值解码为 [RiskReasonCategory.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RiskReasonCategorySerializer::class)
+enum class RiskReasonCategory(
+    val raw: kotlin.String,
+) {
+    MALICIOUS_RIGHTS("malicious_rights"),
+    FRAUD_INVITE("fraud_invite"),
+    ABNORMAL_TRADE("abnormal_trade"),
+    ACCOUNT_SECURITY("account_security"),
+    OTHER("other"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RiskReasonCategory> =
+            listOf(
+                MALICIOUS_RIGHTS,
+                FRAUD_INVITE,
+                ABNORMAL_TRADE,
+                ACCOUNT_SECURITY,
+                OTHER,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RiskReasonCategory> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RiskReasonCategory = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RiskReasonCategory] 的序列化器：未知字符串得 [RiskReasonCategory.UNKNOWN]；序列化写 raw。 */
+object RiskReasonCategorySerializer : KSerializer<RiskReasonCategory> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RiskReasonCategory", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RiskReasonCategory = RiskReasonCategory.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RiskReasonCategory,
     ) {
         encoder.encodeString(value.raw)
     }

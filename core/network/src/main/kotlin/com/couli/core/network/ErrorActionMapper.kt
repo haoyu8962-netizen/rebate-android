@@ -140,7 +140,8 @@ data class ErrorEffect(
  * - 10405 进强更不重放；本机版本不低于 data.min_supported_version（或它为空）而会话是 deletion_only 时只刷新令牌；
  *   reason=no_account 提示先更新、回强更。42901 按 Retry-After（缺省 5 秒）禁用按钮。
  * - 带 data.reason 的取 error.<code>.<reason>，字典没有回落 error.<code>；表外码与废弃码：5xxxx 通用错误态附 trace6，
- *   其余用服务端 msg（[ErrorEffectKind.FALLBACK_MESSAGE]）；表内无专门分支、字典也没有文案键的 1xxxx（10008 / 10009）同样回落 msg。
+ *   其余用服务端 msg（[ErrorEffectKind.FALLBACK_MESSAGE]）；表内无专门分支、字典也没有文案键的码
+ *   （10008 / 10009；CT-LOCK-02 起不限码段：30154 / 30417 / 44004）同样回落 msg；页面自处理码与置灰码不在此列。
  */
 @Suppress("TooManyFunctions") // 每类码一个小判定函数，便于逐条对照 03 §4.2
 object ErrorActionMapper {
@@ -158,8 +159,6 @@ object ErrorActionMapper {
     private const val MILLIS_PER_SECOND = 1_000L
     private const val SERVER_ERROR_MIN = 50_000
     private const val SERVER_ERROR_MAX = 59_999
-    private const val AUTH_MIN = 10_000
-    private const val AUTH_MAX = 19_999
     private const val BUSINESS_MIN = 30_000
     private const val BUSINESS_MAX = 39_999
     private const val AUTH_UNAVAILABLE = "auth_unavailable"
@@ -373,9 +372,10 @@ object ErrorActionMapper {
                         .effect(
                             ErrorEffectKind.GENERIC_ERROR,
                         ).copy(includeTrace6 = true)
-                } else if (code in AUTH_MIN..AUTH_MAX && context.textKey == null) {
-                    // CT-LOCK-01：表内但用户侧字典没有文案键的 1xxxx（目前只有只出现在 /admin/v1 的 10008 / 10009）与表外 1xxxx
-                    // 同一回落：用服务端 msg，不写专门分流（与鸿蒙同口径）
+                } else if (context.textKey == null) {
+                    // CT-LOCK-01 起：表内但用户侧字典没有文案键的码与表外码同一回落：用服务端 msg，不写专门分流（与鸿蒙同口径）。
+                    // CT-LOCK-02 由 1xxxx 扩到所有码段（三端同口径）：a7c9f1fc 新增只出现在 /admin/v1 的 30154 / 30417 / 44004。
+                    // 页面自处理码（PAGE_ACTION_CODES，如 30505 / 44003）与置灰码在上面的分支先处理，不受影响；5xxxx 仍是通用错误态。
                     context.effect(ErrorEffectKind.FALLBACK_MESSAGE, key = null)
                 } else {
                     context.effect(ErrorEffectKind.TOAST)

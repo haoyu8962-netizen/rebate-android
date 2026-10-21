@@ -510,8 +510,11 @@ ROUTE_KEYS = {"page", "kind", "h5_path", "params", "auth", "entry", "since", "de
               "agent_guide", "agent_guide_account"}
 # params schema 里生成器认识的关键字；出现其他关键字即失败（不静默忽略约束）。
 PARAM_SCHEMA_KEYS = {"type", "additionalProperties", "properties", "required"}
-PARAM_PROPERTY_KEYS = {"type", "enum", "minLength", "maxLength", "pattern", "description", "additionalProperties"}
-PARAM_TYPES = {"string": "STRING", "object": "OBJECT"}
+PARAM_PROPERTY_KEYS = {"type", "enum", "minLength", "maxLength", "pattern", "description", "additionalProperties",
+                       "minimum"}
+# CT-LOCK-02：a7c9f1fc 的 Agreement.version 是 {"type": "integer", "minimum": 1}，加 integer 与 minimum（三端同口径）。
+PARAM_TYPES = {"string": "STRING", "object": "OBJECT", "integer": "INTEGER"}
+INTEGER_PARAM_KEYS = {"type", "minimum", "description"}
 
 
 def kint_or_null(value, where: str) -> str:
@@ -552,6 +555,13 @@ def route_params_exprs(name: str, r: dict, indent: str) -> list:
             raise GenError(f"{pw} 是 object，只支持 additionalProperties")
         if ptype == "string" and "additionalProperties" in prop:
             raise GenError(f"{pw} 是 string，不应有 additionalProperties")
+        if ptype == "integer" and set(prop) - INTEGER_PARAM_KEYS:
+            raise GenError(f"{pw} 是 integer，只支持 minimum")
+        minimum = prop.get("minimum")
+        if minimum is not None and ptype != "integer":
+            raise GenError(f"{pw} 的 minimum 只用于 integer")
+        if minimum is not None and (not isinstance(minimum, int) or isinstance(minimum, bool)):
+            raise GenError(f"{pw} 的 minimum 必须是整数：{minimum!r}")
         enum = prop.get("enum")
         if enum is not None and (not isinstance(enum, list) or not all(isinstance(v, str) for v in enum)):
             raise GenError(f"{pw} 的 enum 必须是字符串数组")
@@ -568,6 +578,7 @@ def route_params_exprs(name: str, r: dict, indent: str) -> list:
             f"{indent}    minLength = {kint_or_null(prop.get('minLength'), pw + '.minLength')},",
             f"{indent}    maxLength = {kint_or_null(prop.get('maxLength'), pw + '.maxLength')},",
             f"{indent}    pattern = {knullable_str(pattern)},",
+        ] + ([f"{indent}    minimum = {minimum}L,"] if minimum is not None else []) + [
             f"{indent}),",
         ]
     return lines
@@ -638,7 +649,7 @@ def gen_routes(out_root: str, enums):
         "enum class RouteKind { NATIVE, H5 }",
         "",
         "/** 路由参数的取值类型（params JSON Schema 的 type）。 */",
-        "enum class RouteParamType { STRING, OBJECT }",
+        "enum class RouteParamType { STRING, OBJECT, INTEGER }",
         "",
         "/** 路由的一个参数（params JSON Schema 的一项 property；schema 一律 additionalProperties=false）。 */",
         "data class RouteParamSpec(",
@@ -650,6 +661,8 @@ def gen_routes(out_root: str, enums):
         "    val maxLength: kotlin.Int?,",
         "    /** ECMA 正则（契约当前只有 ^https://）。 */",
         "    val pattern: kotlin.String?,",
+        "    /** 整数参数的下限（含）；null 表示没有（CT-LOCK-02：Agreement.version minimum 1）。 */",
+        "    val minimum: kotlin.Long? = null,",
         ")",
         "",
         "/** 一条路由（contracts/routes.json）。 */",
@@ -1069,7 +1082,8 @@ def gen_api_operations(out_root: str):
             if unknown:
                 raise GenError(f"{where} 有不认识的扩展字段：{unknown}")
             auth = op.get("x-auth")
-            if auth not in ("none", "optional", "login", "realname"):
+            # CT-LOCK-02：a7c9f1fc 起客户端接口出现 x-auth phone（已登录且绑了手机号；鸿蒙早已认），CT-LOCK-01 G16 收口。
+            if auth not in ("none", "optional", "login", "phone", "realname"):
                 raise GenError(f"{where} 的 x-auth 不认识：{auth!r}")
             flags = {}
             for key in ("x-signed", "x-idempotent"):
@@ -1137,7 +1151,7 @@ def gen_api_operations(out_root: str):
         "    /** 大写 HTTP 方法。 */",
         "    val method: kotlin.String,",
         "    val pathTemplate: kotlin.String,",
-        "    /** x-auth：none / optional / login / realname。 */",
+        "    /** x-auth：none / optional / login / phone / realname。 */",
         "    val auth: kotlin.String,",
         "    val signed: kotlin.Boolean,",
         "    val idempotent: kotlin.Boolean,",
@@ -1375,6 +1389,10 @@ CONFIG_PATH = "/v1/config"
 # CT-LOCK-01：platform_icons（CT-17f，替换图地址与摘要）同样不进包——包内默认配置没有替换图，客户端显示包内平台标识；
 # 下发接入归 F-X-05。
 BUNDLED_CONFIG_DROPPED_KEYS = ["h5_base_url", "share_domains", "kf", "external_hosts", "platform_icons"]
+# CT-LOCK-02：a7c9f1fc 的示例多了 clipboard.consent_version（示例值，不是生产的功能同意版本）。本端剪贴板自动读取按
+# 「配置缺 consent_version 一律不许读、不用包内值兜底」（G47、BR-ID-16）；包内带了示例值就会在没有 LKG 时让用户按一个
+# 示例版本做功能同意，所以不进包（与 platform_icons 同理：升锁不改现有行为）。clipboard 节里其余透传字段照留。
+BUNDLED_CONFIG_DROPPED_NESTED = [("clipboard", "consent_version")]
 NON_PROD_ADDRESS = re.compile(r"(?i)https?://|\.test\b|\.invalid\b|\.example\b|\.local\b|example\.(com|net|org)\b")
 
 
@@ -1399,6 +1417,9 @@ def gen_bundled_config(out_root: str):
     if not isinstance(body, dict):
         raise GenError(f"GET {CONFIG_PATH} 的响应示例没有 data 对象")
     config = {key: value for key, value in body.items() if key not in BUNDLED_CONFIG_DROPPED_KEYS}
+    for section, key in BUNDLED_CONFIG_DROPPED_NESTED:
+        if isinstance(config.get(section), dict) and key in config[section]:
+            config[section] = {k: v for k, v in config[section].items() if k != key}
     patterns = config.get("link_patterns")
     if not isinstance(patterns, dict) or not isinstance(patterns.get("version"), str):
         raise GenError(f"GET {CONFIG_PATH} 的响应示例缺 link_patterns.version")

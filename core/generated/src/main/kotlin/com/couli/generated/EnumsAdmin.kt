@@ -19,6 +19,7 @@ import kotlinx.serialization.encoding.Encoder
 enum class AdminPermission(
     val raw: kotlin.String,
 ) {
+    DASHBOARD_VIEW("dashboard.view"),
     USER_LIST("user.list"),
     USER_LOOKUP("user.lookup"),
     PII_REVEAL_PHONE("pii.reveal_phone"),
@@ -80,6 +81,7 @@ enum class AdminPermission(
         /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
         val known: kotlin.collections.List<AdminPermission> =
             listOf(
+                DASHBOARD_VIEW,
                 USER_LIST,
                 USER_LOOKUP,
                 PII_REVEAL_PHONE,
@@ -337,6 +339,253 @@ object AdminAuthLevelSerializer : KSerializer<AdminAuthLevel> {
     override fun serialize(
         encoder: Encoder,
         value: AdminAuthLevel,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_dashboard_todo_key`（contracts/enums/admin.yaml）。
+ * GET /admin/v1/dashboard 的 todo[].key；每张卡只在账号持有括号里的权限点、且对应模块已上线时返回（count 为 0 也返回）；编码独立于权限点，不复用权限点字符串；卡标题与副文案取 BR-TEXT-25 admin_dict
+ *
+ * 未知取值解码为 [AdminDashboardTodoKey.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminDashboardTodoKeySerializer::class)
+enum class AdminDashboardTodoKey(
+    val raw: kotlin.String,
+) {
+    WITHDRAW_REVIEW_PENDING("withdraw_review_pending"),
+    CLAIM_REVIEW_PENDING("claim_review_pending"),
+    SETTLE_BILL_PENDING("settle_bill_pending"),
+    RECON_DIFF_OPEN("recon_diff_open"),
+    APPEAL_PENDING("appeal_pending"),
+    AGENT_REPORT_OVERDUE("agent_report_overdue"),
+    BENEFICIARY_HELD_OVERDUE("beneficiary_held_overdue"),
+    UNION_AUTH_EXPIRING("union_auth_expiring"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminDashboardTodoKey> =
+            listOf(
+                WITHDRAW_REVIEW_PENDING,
+                CLAIM_REVIEW_PENDING,
+                SETTLE_BILL_PENDING,
+                RECON_DIFF_OPEN,
+                APPEAL_PENDING,
+                AGENT_REPORT_OVERDUE,
+                BENEFICIARY_HELD_OVERDUE,
+                UNION_AUTH_EXPIRING,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminDashboardTodoKey> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminDashboardTodoKey = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminDashboardTodoKey] 的序列化器：未知字符串得 [AdminDashboardTodoKey.UNKNOWN]；序列化写 raw。 */
+object AdminDashboardTodoKeySerializer : KSerializer<AdminDashboardTodoKey> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminDashboardTodoKey", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminDashboardTodoKey = AdminDashboardTodoKey.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminDashboardTodoKey,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_search_hit_type`（contracts/enums/admin.yaml）。
+ * GET /admin/v1/search 的 items[].type；每类只返回给持有括号里权限点的账号，无权限与无命中同样不出现；类型名取 BR-TEXT-25 admin_dict
+ *
+ * 未知取值解码为 [AdminSearchHitType.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminSearchHitTypeSerializer::class)
+enum class AdminSearchHitType(
+    val raw: kotlin.String,
+) {
+    ORDER("order"),
+    USER("user"),
+    WITHDRAWAL("withdrawal"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminSearchHitType> =
+            listOf(
+                ORDER,
+                USER,
+                WITHDRAWAL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminSearchHitType> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminSearchHitType = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminSearchHitType] 的序列化器：未知字符串得 [AdminSearchHitType.UNKNOWN]；序列化写 raw。 */
+object AdminSearchHitTypeSerializer : KSerializer<AdminSearchHitType> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminSearchHitType", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminSearchHitType = AdminSearchHitType.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminSearchHitType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `export_status`（contracts/enums/admin.yaml）。
+ * 后台导出任务（/admin/v1/exports）的状态；迁移只有 pending→running→done 或 failed、done→expired（生成后 24 小时）、pending 或 running→cancelled（创建人账号停用）、failed→pending（创建人重试）；没有取消接口；中文名取 BR-TEXT-25 admin_dict
+ *
+ * 未知取值解码为 [ExportStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = ExportStatusSerializer::class)
+enum class ExportStatus(
+    val raw: kotlin.String,
+) {
+    PENDING("pending"),
+    RUNNING("running"),
+    DONE("done"),
+    FAILED("failed"),
+    EXPIRED("expired"),
+    CANCELLED("cancelled"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<ExportStatus> =
+            listOf(
+                PENDING,
+                RUNNING,
+                DONE,
+                FAILED,
+                EXPIRED,
+                CANCELLED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, ExportStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): ExportStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [ExportStatus] 的序列化器：未知字符串得 [ExportStatus.UNKNOWN]；序列化写 raw。 */
+object ExportStatusSerializer : KSerializer<ExportStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.ExportStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): ExportStatus = ExportStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: ExportStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `export_resource`（contracts/enums/admin.yaml）。
+ * 后台导出任务的来源列表；创建时须持有该列表本身的权限点（括号内），filters 与该列表的查询参数同形；其他列表随各自的契约追加
+ *
+ * 未知取值解码为 [ExportResource.UNKNOWN]，不抛错。
+ */
+@Serializable(with = ExportResourceSerializer::class)
+enum class ExportResource(
+    val raw: kotlin.String,
+) {
+    USERS("users"),
+    AUDIT_LOGS("audit_logs"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<ExportResource> =
+            listOf(
+                USERS,
+                AUDIT_LOGS,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, ExportResource> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): ExportResource = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [ExportResource] 的序列化器：未知字符串得 [ExportResource.UNKNOWN]；序列化写 raw。 */
+object ExportResourceSerializer : KSerializer<ExportResource> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.ExportResource", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): ExportResource = ExportResource.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: ExportResource,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_claim_match_field`（contracts/enums/admin.yaml）。
+ * GET /admin/v1/claims/{claim_id} 的 items[].matches[].field，证据视图逐项比对用户填写与联盟回传的字段；预售单的联盟侧付款日期取定金支付日
+ *
+ * 未知取值解码为 [AdminClaimMatchField.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminClaimMatchFieldSerializer::class)
+enum class AdminClaimMatchField(
+    val raw: kotlin.String,
+) {
+    ORDER_NO("order_no"),
+    PAID_DATE("paid_date"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminClaimMatchField> =
+            listOf(
+                ORDER_NO,
+                PAID_DATE,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminClaimMatchField> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminClaimMatchField = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminClaimMatchField] 的序列化器：未知字符串得 [AdminClaimMatchField.UNKNOWN]；序列化写 raw。 */
+object AdminClaimMatchFieldSerializer : KSerializer<AdminClaimMatchField> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminClaimMatchField", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminClaimMatchField = AdminClaimMatchField.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminClaimMatchField,
     ) {
         encoder.encodeString(value.raw)
     }

@@ -352,6 +352,15 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            30154 to
+                ErrorCodeInfo(
+                    code = 30154,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             30201 to
                 ErrorCodeInfo(
                     code = 30201,
@@ -631,6 +640,15 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            30417 to
+                ErrorCodeInfo(
+                    code = 30417,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             30501 to
                 ErrorCodeInfo(
                     code = 30501,
@@ -825,6 +843,15 @@ object ErrorCodes {
                     code = 44003,
                     http = 403,
                     retryKind = RetryKind.AFTER_ACTION,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            44004 to
+                ErrorCodeInfo(
+                    code = 44004,
+                    http = 403,
+                    retryKind = RetryKind.NEVER,
                     retryKindByReason = emptyMap(),
                     isDeprecated = false,
                     isP1 = false,

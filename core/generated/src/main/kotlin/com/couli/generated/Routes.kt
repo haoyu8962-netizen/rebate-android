@@ -5,7 +5,7 @@ package com.couli.generated
 enum class RouteKind { NATIVE, H5 }
 
 /** 路由参数的取值类型（params JSON Schema 的 type）。 */
-enum class RouteParamType { STRING, OBJECT }
+enum class RouteParamType { STRING, OBJECT, INTEGER }
 
 /** 路由的一个参数（params JSON Schema 的一项 property；schema 一律 additionalProperties=false）。 */
 data class RouteParamSpec(
@@ -17,6 +17,8 @@ data class RouteParamSpec(
     val maxLength: kotlin.Int?,
     /** ECMA 正则（契约当前只有 ^https://）。 */
     val pattern: kotlin.String?,
+    /** 整数参数的下限（含）；null 表示没有（CT-LOCK-02：Agreement.version minimum 1）。 */
+    val minimum: kotlin.Long? = null,
 )
 
 /** 一条路由（contracts/routes.json）。 */
@@ -640,10 +642,20 @@ object Routes {
                                 name = "type",
                                 type = RouteParamType.STRING,
                                 required = false,
-                                enumValues = listOf("agreement", "privacy", "sdk_list"),
+                                enumValues = listOf("agreement", "privacy", "sdk_list", "labor_agreement"),
                                 minLength = null,
                                 maxLength = null,
                                 pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "version",
+                                type = RouteParamType.INTEGER,
+                                required = false,
+                                enumValues = null,
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                                minimum = 1L,
                             ),
                         ),
                 ),
