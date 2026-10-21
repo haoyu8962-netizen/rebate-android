@@ -468,7 +468,7 @@ private fun ProductCard(
     ) {
         EndWrapRow(
             modifier = Modifier.fillMaxWidth(),
-            start = { PlatformBadge(name = texts.text("platform.${summary.platform}")) },
+            start = { PlatformBadge(name = texts.text("platform.${summary.platform}"), platformCode = summary.platform) },
             end = {
                 if (ViewProductEntry.of(detail) != null) {
                     CouliButton(

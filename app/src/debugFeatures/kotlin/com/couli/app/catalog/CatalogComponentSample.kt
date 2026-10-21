@@ -515,8 +515,14 @@ private fun Sample(
 
         "PlatformBadge" -> {
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-                val names = if (v == "list") listOf(CatalogSamples.TAOBAO, CatalogSamples.JD) else listOf(CatalogSamples.PDD)
-                names.forEach { PlatformBadge(name = it, icon = if (s == "fallback") CouliIcons.image else null) }
+                val samples =
+                    if (v == "list") {
+                        listOf("taobao" to CatalogSamples.TAOBAO, "jd" to CatalogSamples.JD)
+                    } else {
+                        listOf("pdd" to CatalogSamples.PDD)
+                    }
+                // loaded：左侧 14dp 包内官方图；fallback：缺官方图（天猫等，F-X-05a）只显示文字，不画占位方块
+                samples.forEach { (code, name) -> PlatformBadge(name = name, platformCode = if (s == "fallback") "" else code) }
             }
         }
 

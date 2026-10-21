@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -50,6 +51,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.couli.core.designsystem.CouliTextStyles.tabular
 
 /** 价格的排版尺寸：列表搜索卡 22/700、AI 卡 17/700、详情大卡 34/700（GUIDE §3 / §7.2.1，Product 画板）。 */
@@ -412,16 +415,22 @@ fun DisclaimerInfoButton(
 }
 
 /**
- * 平台来源标签（GUIDE §7.1：白底 + 1 描边、中性文字）。平台 logo 未到（design/icons/platform/），先只放文字；
- * logo 到了在 [icon] 传入小图标。
+ * 平台来源标签（GUIDE §7.1 / 03 §10.2：白底 + 1 描边、中性文字）。图标在左：有内置官方图的平台画 14 档原图
+ * （[PlatformIcon]，不着色），暂缺 / 未知编码只显示文字，不画占位方块（F-X-05a）。
+ * 读屏整枚只读 [name] 一次（平台中文名，调用方从字典给）；图标是装饰，文字节点对读屏隐藏。
+ * [platformCode] 显式给时以它取图（空串 / 未知 = 无图）；为 null 的旧调用按已知中文名兼容取图。
+ * [remoteIconUrl] 只是 F-X-05 后台替换图的签名预留，本任务不使用。[icon] 是旧矢量参数，仅为源码兼容保留，不再绘制（缺图 / 空码 / 未知码一律只文字）。
  */
 @Composable
 fun PlatformBadge(
     name: String,
     modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
+    @Suppress("UnusedParameter") icon: ImageVector? = null,
+    platformCode: String? = null,
+    remoteIconUrl: String? = null,
 ) {
     val shape = RoundedCornerShape(CouliRadius.pill)
+    val iconCode = badgeIconCode(name, platformCode)
     Row(
         modifier =
             modifier
@@ -429,18 +438,29 @@ fun PlatformBadge(
                 .clip(shape)
                 .background(CouliColors.sourceBackground)
                 .border(CouliSizes.hairline, CouliColors.sourceBorder, shape)
-                .padding(horizontal = CouliSpacing.space2),
+                .padding(horizontal = CouliSpacing.space2)
+                .semantics { contentDescription = name },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
-        if (icon !=
-            null
-        ) {
-            Icon(icon, contentDescription = null, tint = CouliColors.sourceText, modifier = Modifier.size(CouliSizes.iconTiny))
+        if (platformIconAssetPath(iconCode) != null) {
+            PlatformIcon(platformCode = iconCode, size = PlatformIconSize.BADGE, remoteUrl = remoteIconUrl)
         }
-        Text(text = name, style = CouliTypography.caption, color = CouliColors.sourceText, softWrap = false)
+        Text(
+            text = name,
+            style = CouliTypography.caption,
+            color = CouliColors.sourceText,
+            softWrap = false,
+            modifier = Modifier.semantics { hideFromAccessibility() },
+        )
     }
 }
+
+/** 徽标左侧图标（含间距）要占的宽度；无图时为 0。供行内占位计算，与 [PlatformBadge] 同一取图规则。 */
+private fun platformBadgeIconWidth(
+    name: String,
+    platformCode: String?,
+): Dp = if (platformIconAssetPath(badgeIconCode(name, platformCode)) != null) PlatformIconSize.BADGE.dp + CouliSpacing.space1 else 0.dp
 
 /**
  * 标题最前放平台来源标签（行内，GUIDE §7.2.1）；标题按 [maxLines] 截断（标题是唯一允许省略的文字）。
@@ -453,15 +473,18 @@ fun BadgedTitle(
     modifier: Modifier = Modifier,
     style: TextStyle = CouliTypography.footnote,
     maxLines: Int = 2,
+    platformCode: String? = null,
 ) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     val badgeStyle = CouliTypography.caption
+    val iconWidth = platformBadgeIconWidth(platformName, platformCode)
     val placeholder =
-        remember(platformName, density) {
+        remember(platformName, iconWidth, density) {
             val measured = measurer.measure(platformName, badgeStyle)
             with(density) {
-                val horizontal = (CouliSpacing.space2 * 2 + CouliSizes.hairline * 2 + CouliSpacing.space1).roundToPx()
+                // 徽标左右内边距 + 描边 + 行内右侧间距 + 左侧图标与图文间距（F-X-05a，否则中文名被挤掉）
+                val horizontal = (CouliSpacing.space2 * 2 + CouliSizes.hairline * 2 + CouliSpacing.space1 + iconWidth).roundToPx()
                 val height = maxOf(CouliSizes.badgeHeight.roundToPx(), measured.size.height)
                 Placeholder(
                     width = (measured.size.width + horizontal).toSp(),
@@ -486,7 +509,7 @@ fun BadgedTitle(
                 BADGE_ID to
                     InlineTextContent(placeholder) {
                         Box(modifier = Modifier.padding(end = CouliSpacing.space1), contentAlignment = Alignment.CenterStart) {
-                            PlatformBadge(name = platformName)
+                            PlatformBadge(name = platformName, platformCode = platformCode)
                         }
                     },
             ),

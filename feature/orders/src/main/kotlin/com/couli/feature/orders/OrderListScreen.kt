@@ -992,7 +992,7 @@ internal fun OrderCard(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            PlatformBadge(name = texts.text("platform.${item.platform}"))
+            PlatformBadge(name = texts.text("platform.${item.platform}"), platformCode = item.platform)
             OrderFormat.epochMillis(item.paidAt)?.let {
                 Text(text = CouliFormat.timeListPast(it, now), style = CouliTypography.caption, color = CouliColors.textSecondary)
             }

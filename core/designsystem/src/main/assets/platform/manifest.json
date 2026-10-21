@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "source_commit": "8209d6e31bf5e4eb336421f51aa5354eb6b539c2",
+  "files": [
+    {
+      "file": "taobao.png",
+      "source_file": "taobao.png",
+      "source_sha256": "d987c0084948eeeada4da71bce00653a9eb2e5743149adb4b25587adb573a4ea",
+      "sha256": "d987c0084948eeeada4da71bce00653a9eb2e5743149adb4b25587adb573a4ea",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "jd.png",
+      "source_file": "jd.png",
+      "source_sha256": "574f09c6bdfc99fa91e814a07e5fd569618060065fa723165059586b0e79766c",
+      "sha256": "574f09c6bdfc99fa91e814a07e5fd569618060065fa723165059586b0e79766c",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "pinduoduo.png",
+      "source_file": "pinduoduo.png",
+      "source_sha256": "6b9ff1c90ef7c168ecda69b56e5b33ab609a7883a910688aeeee8ca8ee07997d",
+      "sha256": "6b9ff1c90ef7c168ecda69b56e5b33ab609a7883a910688aeeee8ca8ee07997d",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "vip.png",
+      "source_file": "vip.png",
+      "source_sha256": "456f08146a062d5d473d0afd5bcd0834ffb998fb1c68214b5f63d4cfbd921ffc",
+      "sha256": "456f08146a062d5d473d0afd5bcd0834ffb998fb1c68214b5f63d4cfbd921ffc",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "douyin.png",
+      "source_file": "douyin.png",
+      "source_sha256": "5f953c7cc1c0d170797c2594c9985fbed83fe074091a05755526e10f5e0d6934",
+      "sha256": "5f953c7cc1c0d170797c2594c9985fbed83fe074091a05755526e10f5e0d6934",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "meituan.png",
+      "source_file": "meituan.png",
+      "source_sha256": "cc903df41d19b3d64ec7ba865b2bd153fcf216f9484b6af8d893ae5295174efc",
+      "sha256": "cc903df41d19b3d64ec7ba865b2bd153fcf216f9484b6af8d893ae5295174efc",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "eleme.png",
+      "source_file": "eleme.png",
+      "source_sha256": "339ac42dee1c281abddcea1a4ec0064eb1afeb17af27f28b81583ed6a277d05e",
+      "sha256": "339ac42dee1c281abddcea1a4ec0064eb1afeb17af27f28b81583ed6a277d05e",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "fliggy.png",
+      "source_file": "fliggy.png",
+      "source_sha256": "f2d4b6800645c512f486ad880d357adb81a65dc07bef54048e8aa0854c42e9b9",
+      "sha256": "f2d4b6800645c512f486ad880d357adb81a65dc07bef54048e8aa0854c42e9b9",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    },
+    {
+      "file": "didi.png",
+      "source_file": "didi.png",
+      "source_sha256": "99fe6bd2d354bba2b1846e6f9734de1214ee16c8af3c4d7ed8cc2a0c6e3ba81d",
+      "sha256": "99fe6bd2d354bba2b1846e6f9734de1214ee16c8af3c4d7ed8cc2a0c6e3ba81d",
+      "width": 224,
+      "height": 224,
+      "transform": "identity"
+    }
+  ]
+}
