@@ -55,16 +55,30 @@ class AccountEntryIntegrationTest : AccountHarness() {
         )
 
     @Test
+    fun app17aOrdinaryLoginRemovesLegacyEntriesAndUsesOnlyAutomaticSubmit() {
+        loginScope = "full"
+        launch(user = null)
+        open("Login")
+        idleUntil { has(LoginTags.PHONE) }
+        assertFalse(has("login_settings"))
+        assertFalse(has("login_invite_entry"))
+        loginThroughPage()
+        idleUntil { top() != "Login" }
+        assertEquals(1, all("POST", "/v1/auth/login/sms").size)
+        assertEquals("sms", lastLoginMethod.read())
+    }
+
+    @Test
     fun acS1_83_guestForceUpdateDeletesThroughRestrictedLoginAndReturnsToForceUpdate() {
         launch(user = null, forced = true)
         idleUntil("强更页") { top() == FORCE_UPDATE && has(FORCE_UPDATE_DELETE_TAG) }
         assertTrue(hasText(t("app_update.delete_account")))
         click(FORCE_UPDATE_DELETE_TAG)
-        // 受限登录：无邀请码、无【设置】（⑯）
+        // APP-17a：普通 / 受限登录统一移除邀请码、设置；此处仍核对受限来源。
         idleUntil("受限登录页") { top() == "Login" && has(LoginTags.PHONE) }
         assertTrue(has(LoginTags.RESTRICTED))
-        assertFalse(has(LoginTags.INVITE_ENTRY))
-        assertFalse(has(LoginTags.SETTINGS))
+        assertFalse(has("login_invite_entry"))
+        assertFalse(has("login_settings"))
         loginThroughPage()
         idleUntil("登录后打开 DeleteAccount 一次") { top() == DELETE_ACCOUNT && has(AccountTags.DELETE_SUBMIT) }
         assertEquals("deletion_only", tokens.scope)

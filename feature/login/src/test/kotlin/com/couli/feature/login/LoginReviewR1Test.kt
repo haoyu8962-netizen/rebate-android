@@ -119,7 +119,7 @@ class LoginReviewR1Test {
         assertEquals("提示错误、仍在手机号步", LoginStep.PHONE, model.state.value.step)
         assertTrue("短信可能已送达：出现【继续输入验证码】", model.state.value.issuedCodeSec > 0)
 
-        model.onContinueCode()
+        requireConsentForContinue(model)
         assertEquals("进入验证码步", LoginStep.CODE, model.state.value.step)
         assertEquals("继续输入不发码", 1, server.requestCount)
     }
@@ -135,10 +135,25 @@ class LoginReviewR1Test {
 
         // 60 秒过了（已可重发）、5 分钟还没到
         now += 61_000
-        model.onContinueCode()
+        requireConsentForContinue(model)
 
         assertEquals("直接回验证码步继续输入", LoginStep.CODE, model.state.value.step)
         assertEquals("没有再发码（旧码不作废）", 1, server.requestCount)
+    }
+
+    /** APP-17a/G06：两条继续入口取消不发码、不换步；重新确认才继续。 */
+    private fun requireConsentForContinue(model: LoginViewModel) {
+        model.onToggleAgreement()
+        model.onContinueCode()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LoginDialog.AGREE_CONFIRM, model.state.value.dialog)
+        model.onCancelConfirm()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LoginStep.PHONE, model.state.value.step)
+        assertEquals(1, server.requestCount)
+        model.onContinueCode()
+        model.onConfirmAgree()
+        idleUntil { model.state.value.step == LoginStep.CODE }
     }
 
     // ---- 共性第 20、21 条（iOS 第 1 轮评审追加）

@@ -95,6 +95,8 @@ interface LoginHost {
 internal class AttemptTicket(
     val issued: Long,
     val owner: CallOwnership,
+    /** 尝试开始时捕获的上次登录方式修订号（G29）：成功后带它写方式，期间被撤回清掉或写进更新的方式就写不回来。 */
+    val methodRevision: Long? = null,
 )
 
 /**
@@ -340,7 +342,7 @@ class LoginService(
                 },
             ) { serial == issued && stillBound() }
         synchronized(owners) { owners += owner }
-        return AttemptTicket(issued, owner)
+        return AttemptTicket(issued, owner, lastLoginMethod?.revision)
     }
 
     /** 暂缓的待办可以继续了（第三方老用户 phone_bound 已查清；引导结束）：同步会话状态并经 Router 守卫恢复，不再重置计时。 */
@@ -405,22 +407,35 @@ class LoginService(
         return PhoneEntry(PhoneEntry.CONTINUE, phone, countdown)
     }
 
-    suspend fun sendCode(rawPhone: String): SendCodeOutcome {
-        val phone =
-            PhoneNumber.normalize(rawPhone).normalized ?: run {
-                // 与服务端 20001 phone_invalid 同一文案，不发短信、不计频控（BR-ID-05）
-                val local = LoginErrorMapper.map(LoginErrorMapper.SEND_SMS_CODE, 20001, phoneInvalidData())
-                return SendCodeOutcome(local.stateRaw, 0, local.textKey, LoginErrorMapper.FIELD_PHONE, null)
-            }
-        active(phone)?.let { gate ->
-            // 同一号码截止前不再发出：成功发码的倒计时内 → 页面直接进验证码步用已收到的码；42901 的禁用期内 → 照旧禁用
-            val remaining = ceilSec(gate.untilMillis - clock())
-            return if (gate.kind == SmsCountdown.STATE_SENT) {
-                SendCodeOutcome(STATE_COUNTDOWN, remaining, null, null, phone)
-            } else {
-                SendCodeOutcome(SmsCountdown.STATE_RATE_LIMITED, remaining, RATE_LIMITED_KEY, null, phone)
-            }
+    /**
+     * 号码本地校验（坑 20：先校验、再弹协议确认框）：不合法给与服务端 20001 phone_invalid 同一文案的 field_error，不发短信、不计频控
+     * （BR-ID-05）；合法为 null。
+     */
+    fun phoneCheck(rawPhone: String): SendCodeOutcome? {
+        if (PhoneNumber.normalize(rawPhone).normalized != null) return null
+        val local = LoginErrorMapper.map(LoginErrorMapper.SEND_SMS_CODE, 20001, phoneInvalidData())
+        return SendCodeOutcome(local.stateRaw, 0, local.textKey, LoginErrorMapper.FIELD_PHONE, null)
+    }
+
+    /**
+     * 发码之前不经网络就能给出的结果（同步，页面据此不进 loading）：号码不合法；同一号码截止前不再发出——成功发码的倒计时内为
+     * [STATE_COUNTDOWN]（页面直接进验证码步用已收到的码，G06 的 CONTINUE 分支），42901 的禁用期内照旧禁用。都不是为 null（要发码）。
+     */
+    fun localSendOutcome(rawPhone: String): SendCodeOutcome? {
+        phoneCheck(rawPhone)?.let { return it }
+        val phone = PhoneNumber.normalize(rawPhone).normalized ?: return null
+        val gate = active(phone) ?: return null
+        val remaining = ceilSec(gate.untilMillis - clock())
+        return if (gate.kind == SmsCountdown.STATE_SENT) {
+            SendCodeOutcome(STATE_COUNTDOWN, remaining, null, null, phone)
+        } else {
+            SendCodeOutcome(SmsCountdown.STATE_RATE_LIMITED, remaining, RATE_LIMITED_KEY, null, phone)
         }
+    }
+
+    suspend fun sendCode(rawPhone: String): SendCodeOutcome {
+        localSendOutcome(rawPhone)?.let { return it }
+        val phone = PhoneNumber.normalize(rawPhone).normalized ?: return requireNotNull(phoneCheck(rawPhone))
         if (sending) return SendCodeOutcome(LoginOutcome.BUSY, 0, null, null, null)
         val issued = serial
         val body = JsonObject(mapOf("phone" to JsonPrimitive(phone), "purpose" to JsonPrimitive("login"))).toString()
@@ -497,19 +512,20 @@ class LoginService(
 
     /**
      * 短信登录。[consentAtMillis]：勾选或确认框同意的时刻（[AgreementState.consentAtMillis]）；[restricted]：从强更页进入的受限登录
-     * （APP-02c 已有的来源标记，不进路由参数，rule-gaps ROUTE-01）。[inviteRaw]：旧手填邀请码框的值，APP-17c 起忽略（请求只带待绑定码
-     * [pendingInvite]，G18），签名留给 APP-17a 删手填框时一并删除。
+     * （APP-02c 已有的来源标记，不进路由参数，rule-gaps ROUTE-01）。邀请码只带待绑定码 [pendingInvite]（G18；APP-17a 删了手填框）。
+     *
+     * 上次登录方式（G05、G29）：尝试开始时捕获 [lastLoginMethod] 的修订号，会话真实保存、尝试仍有效、登录后计划执行完（LOGGED_IN）才带着
+     * 捕获值写 sms（受限登录也写）；失败、保存失败、保存后被作废都不写。
      *
      * 待绑定码（G07、G18）：号码、验证码、同意时刻、BUSY 全部本地判定通过之后，在交给 ApiClient 之前的同一同步段里 [PendingInviteCode.consumeForRequest]
      * 取走本次那一份（之后到 ApiClient 的第一步之间没有挂起点），带码前仍过 [InviteField.wireValue] 的长度兜底；结算后不论结果都不再清理或放回
      * （请求在途时新写入的码留给下一次；ApiClient 发送前本地拒绝也不放回，Q4 / F-IOS-33 待三端统一）。受限登录不读也不清。
      */
-    @Suppress("ReturnCount", "UnusedParameter")
+    @Suppress("ReturnCount")
     suspend fun login(
         rawPhone: String,
         code: String,
         consentAtMillis: Long?,
-        inviteRaw: String,
         restricted: Boolean,
     ): LoginOutcome {
         val phone =
@@ -522,6 +538,7 @@ class LoginService(
         if (consentAtMillis == null || consentAtMillis <= 0L) return LoginOutcome(LoginOutcome.AGREEMENT_REQUIRED)
         if (loggingIn) return LoginOutcome(LoginOutcome.BUSY)
         val issued = serial
+        val methodRevision = lastLoginMethod?.revision
         val fields =
             mutableMapOf(
                 "phone" to JsonPrimitive(phone),
@@ -549,7 +566,7 @@ class LoginService(
         if (result is ApiResult.Success) {
             // 码已用掉：手机号页不再提供「继续输入」
             issuedCodes.remove(phone)
-            return loggedIn(result, issued, restricted)
+            return loggedIn(result, issued, restricted, method = LastLoginMethod.SMS, methodRevision = methodRevision)
         }
         if (issued != serial) return LoginOutcome(LoginOutcome.STALE)
         if (result is ApiResult.Failure) {
@@ -604,20 +621,27 @@ class LoginService(
      * 登录响应已保存会话之后的流程。这一代会话在流程期间归登录流程管（[ownsSession]）：App 的会话状态通知只同步、不另行恢复待办；
      * 流程结束（有效或作废）后交还：之后冷启动、版本恢复触发的受限会话刷新成 full 由通知经守卫恢复（共性第 14、19 条）。
      */
+    @Suppress("LongParameterList") // 结果、尝试、来源与上次登录方式的捕获值逐项给
     private suspend fun loggedIn(
         result: ApiResult.Success,
         issued: Long,
         restricted: Boolean,
         hold: Boolean = false,
+        method: String,
+        methodRevision: Long?,
     ): LoginOutcome {
         // 这次登录保存的那一代（保存同步区里记下；APP-04 共性第 68 条）。没有记下（不应发生）按此刻的登录世代
         val epoch = savedEpoch ?: tokens.loginEpoch
         flowEpoch = epoch
-        try {
-            return runLoggedIn(result, issued, restricted, hold)
-        } finally {
-            if (flowEpoch == epoch) flowEpoch = null
-        }
+        val outcome =
+            try {
+                runLoggedIn(result, issued, restricted, hold)
+            } finally {
+                if (flowEpoch == epoch) flowEpoch = null
+            }
+        // G05：只在这次尝试有效地登录成功后写（受限登录也写）；带开始时捕获的修订号，撤回清理或更新的方式之后到的旧成功写不回来（G29）
+        if (outcome.stateRaw == LoginOutcome.LOGGED_IN && methodRevision != null) lastLoginMethod?.record(method, methodRevision)
+        return outcome
     }
 
     /**
@@ -628,7 +652,16 @@ class LoginService(
         result: ApiResult.Success,
         ticket: AttemptTicket,
         hold: Boolean,
-    ): LoginOutcome = loggedIn(result, ticket.issued, restricted = false, hold = hold)
+        provider: String,
+    ): LoginOutcome =
+        loggedIn(
+            result,
+            ticket.issued,
+            restricted = false,
+            hold = hold,
+            method = provider,
+            methodRevision = ticket.methodRevision,
+        )
 
     /** 第三方登录这次保存的登录世代（保存同步区里记下）。 */
     internal fun lastSavedEpoch(): Long? = savedEpoch
@@ -757,6 +790,12 @@ class LoginService(
      */
     @Volatile
     var smsSessionSaved: ((loginEpoch: Long) -> Unit)? = null
+
+    /**
+     * 上次登录方式（APP-17a，G05）：App 由 Hilt 单例提供，短信与第三方登录共用这一份；没有接（非 App 的旧夹具）时不记。
+     */
+    @Volatile
+    var lastLoginMethod: LastLoginMethodStore? = null
 
     private fun release(owner: CallOwnership) {
         synchronized(owners) { owners.remove(owner) }

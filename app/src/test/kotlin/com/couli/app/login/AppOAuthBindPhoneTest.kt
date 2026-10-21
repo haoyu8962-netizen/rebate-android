@@ -252,7 +252,7 @@ class AppOAuthBindPhoneTest {
     private fun wechatLogin() {
         composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).performScrollTo().performClick()
         composeRule
-            .onAllNodesWithText(LoginDraftTexts.text("login.agree_confirm.ok"))
+            .onAllNodesWithText(LoginDraftTexts.text("login.agree_confirm.btn_login"))
             .let { nodes -> nodes[nodes.fetchSemanticsNodes().size - 1] }
             .performClick()
         idleUntil { RouteNames.LOGIN !in routes() }
@@ -265,7 +265,7 @@ class AppOAuthBindPhoneTest {
         return last.request.route == route && last.request.source == RouteSource.PENDING_ACTION.raw && last.decision.opensPage
     }
 
-    /** 共性第 28 条（FU-AND-0716 第 2 轮）：App 给受限登录（强更页进入）的页面配置同样带上可显示的第三方入口；邀请码来源仍不给。 */
+    /** 共性第 28 条（FU-AND-0716 第 2 轮）：App 给受限登录（强更页进入）的页面配置同样带上可显示的第三方入口；APP-17a 不再有手填邀请码来源。 */
     @Test
     fun fuand0716_28_theRestrictedLoginPageConfigKeepsTheVisibleThirdPartyProviders() {
         launch(session = null)
@@ -273,7 +273,6 @@ class AppOAuthBindPhoneTest {
             val restricted = login.pageConfig(restricted = true)
             assertEquals(listOf(OAuthProvider.WECHAT), restricted.thirdParty)
             assertTrue(restricted.restricted)
-            assertEquals("受限登录不用邀请码来源", null, restricted.invite)
             assertEquals("与正常登录同一组第三方入口", login.pageConfig(restricted = false).thirdParty, restricted.thirdParty)
         }
     }
@@ -312,7 +311,7 @@ class AppOAuthBindPhoneTest {
         composeRule.mainClock.autoAdvance = true
         assertTrue(
             "不弹协议确认框",
-            composeRule.onAllNodesWithText(LoginDraftTexts.text("login.agree_confirm.ok")).fetchSemanticsNodes().isEmpty(),
+            composeRule.onAllNodesWithText(LoginDraftTexts.text("login.agree_confirm.btn_login")).fetchSemanticsNodes().isEmpty(),
         )
         assertEquals("不发任何请求", 0, server.requestCount)
         assertEquals("仍在登录页", RouteNames.LOGIN, routes().last())

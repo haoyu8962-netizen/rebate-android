@@ -28,10 +28,6 @@ internal object ClipboardDraftTexts {
             // ---- 多卡弹层（没有专稿，按搜索卡样式列出，标题措辞待定稿）
             "clipboard.card_list.title" to "识别到的商品",
             "clipboard.card_list.close" to "关闭",
-            // ---- 登录验证码页邀请码行【粘贴】（LoginCodeInvite）与抽不到时的轻提示（BR-INV-04「未识别到邀请码」）
-            "clipboard.login_invite.paste" to "粘贴",
-            "clipboard.login_invite.paste_label" to "粘贴邀请码",
-            "clipboard.login_invite.not_found" to "未识别到邀请码",
             // ---- 设置页开关（BR-TEXT-14 表 C settings.clipboard_auto / .desc，契约快照未同步；.desc 按 couli #124 2026-10-17 改写，原句作废）
             "settings.clipboard_auto" to "打开 App 自动识别剪贴板",
             "settings.clipboard_auto.desc" to "开启后，在系统支持并允许时回到 App 会自动识别复制的商品链接或口令，否则可以用粘贴入口；可以随时关闭",

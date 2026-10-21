@@ -19,9 +19,7 @@
  * - LoginErrorMapper.map(op: String, code: Int, data: JsonObject)
  *   -> { stateRaw: String, textKey: String?, field: String?, route: String? }；
  *   接已有 ErrorActionMapper，不另造错误码表。
- * - InviteField.decide(raw: String, context: JsonObject)
- *   -> { showInviteField: Boolean, valid: Boolean?, noticeKey: String? }；
- *   valid 只判注册输入语法，空值可省略，不决定能否登录。
+ * - InviteField.normalize / isValidCode：只判规范化与语法；空值可省略，不决定能否登录。
  * - AfterLogin.plan(response: JsonObject, state: JsonObject): List<String>；
  *   response 为向量投影，session_scope 来自实际 tokens.session_scope。
  *   返回完整会话/路由计划：save_session、resume_pending、
@@ -190,16 +188,9 @@ class LoginVectorTest {
     @Test
     fun inviteVectors() {
         each("invite") { row, expected, label ->
-            val actual = InviteField.decide(row.string("raw"), row.objectAt("context"))
-            assertEquals(
-                "$label.showInviteField",
-                expected.bool("showInviteField"),
-                actual.showInviteField,
-            )
-            if (expected.containsKey("valid")) {
-                assertEquals("$label.valid", expected.bool("valid"), actual.valid)
-            }
-            assertText(expected, "noticeKey", actual.noticeKey, label)
+            val normalized = InviteField.normalize(row.string("raw"))
+            assertEquals("$label.normalized", expected.string("normalized"), normalized)
+            assertEquals("$label.valid", expected.bool("valid"), normalized.isEmpty() || InviteField.isValidCode(normalized))
         }
     }
 

@@ -42,7 +42,7 @@ class PendingInviteLogin17cTest {
                     )
                 cases.forEach { (input, expected) ->
                     f.pending.set("K7M2QX")
-                    assertEquals(expected, f.service.login(input.first, input.second, input.third, "", false).stateRaw)
+                    assertEquals(expected, f.service.login(input.first, input.second, input.third, false).stateRaw)
                     assertEquals("已 await 生产调用的结算", 0, f.entries.size)
                     assertEquals("K7M2QX", f.pending.peek())
                 }
@@ -54,18 +54,18 @@ class PendingInviteLogin17cTest {
         }
 
     @Test
-    fun typedValueIsIgnoredAndRemovalPreventsSending() =
+    fun onlyThePendingContainerSuppliesCodesAndRemovalPreventsSending() =
         runTest {
             PendingInvite17cFixture(backgroundScope).use { f ->
-                f.submit(typed = "K7M2QX")
+                f.submit()
                 assertNull(f.code(0))
                 f.pending.set("K7M2QX")
                 f.pending.set("P8N3RY")
-                f.submit(typed = "AB23CD")
+                f.submit()
                 assertEquals("P8N3RY", f.code(1))
                 f.pending.set("K7M2QX")
                 f.pending.remove()
-                f.submit(typed = "AB23CD")
+                f.submit()
                 assertNull(f.code(2))
                 assertNull(InviteField.wireValue("K".repeat(33), false))
             }

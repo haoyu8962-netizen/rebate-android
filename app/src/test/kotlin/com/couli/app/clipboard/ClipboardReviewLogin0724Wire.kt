@@ -34,6 +34,14 @@ class ClipboardReviewLogin0724Wire {
                     loginData(account)
                 }
 
+                "/v1/auth/sms-codes" -> {
+                    """{"resend_after_sec":60,"expires_in_sec":300}"""
+                }
+
+                "/v1/auth/logout" -> {
+                    "{}"
+                }
+
                 "/v1/me" -> {
                     """{"user_id":"$account","phone_bound":true}"""
                 }

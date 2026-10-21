@@ -2503,7 +2503,7 @@ class AppMeIntegrationTest {
         click(com.couli.feature.login.LoginTags.OAUTH_PREFIX + "wechat")
         val ok =
             com.couli.app.login.LoginDraftTexts
-                .text("login.agree_confirm.ok")
+                .text("login.agree_confirm.btn_login")
         waitFor("协议确认框") { text(ok) > 0 }
         clickText(ok)
         waitFor("第三方登录完成、登录页关闭") { count("POST", "/v1/auth/login/wechat") == 1 && tokens.scope == scope && "Login" !in stack() }

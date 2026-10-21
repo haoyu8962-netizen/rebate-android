@@ -23,34 +23,15 @@ interface LoginTexts {
     ): String
 }
 
-/**
- * 邀请码的剪贴板来源（APP-07，App 给；BR-INV-04、BR-ID-16）。游客在提示条点确认后的码不再经这里预填输入框：APP-17c 起写进待绑定码
- * （[PendingInviteCode]），登录页以小字行显示（[LoginViewModel.pendingInviteRow]），提交时由 [LoginService] 取走。
- * - [paste]：邀请码行【粘贴】（用户点击才读剪贴板）：只抽 6 位码，抽不到返回 null（页面轻提示「未识别到邀请码」，不清空已有输入）；
- * - [blocked]：parse 收到 42901 后的共享禁用期（与首页、SearchTyping 的粘贴入口同一个，A-R1-06）：【粘贴】置灰，点击也不读。
- */
-interface InvitePasteSource {
-    fun paste(): String?
-
-    /**
-     * 需要先给用户看剪贴板用途说明时（FU-AND-0724 G15：第一次点粘贴先出弹层）：返回 true，本次不读，用户关掉弹层后同一次点击读一次、抽码经
-     * [onFilled] 交回一次（抽不到为 null）；不需要时返回 false，页面照常调 [paste]。缺省不需要。
-     */
-    fun pasteLater(onFilled: (String?) -> Unit): Boolean = false
-
-    val blocked: StateFlow<Boolean> get() = NOT_BLOCKED
-}
-
-/** 没有禁用期的来源（缺省）。 */
-private val NOT_BLOCKED: StateFlow<Boolean> = MutableStateFlow(false)
-
 /** 登录页的出口（App 给：经 Router 打开别的页、关闭登录页）。 */
 @Suppress("LongParameterList") // 每个出口一个回调，都有缺省
 class LoginPageActions(
     /** 关闭登录页（左上角关闭）。 */
     val onClose: () -> Unit = {},
-    val onSettings: () -> Unit = {},
-    /** 登录遇到问题（login.help_entry）。 */
+    /**
+     * 求助：手机号页「登录遇到问题」（login.help_entry）与验证码页「收不到验证码？」（login.code.help_entry）。App 读 help_links.login_help，
+     * 没配或不合法时打开帮助中心首页（坑 18）。
+     */
     val onHelp: () -> Unit = {},
     /** 协议链接：type 为 agreement / privacy（Agreement 路由参数）。 */
     val onAgreement: (type: String) -> Unit = {},
@@ -65,8 +46,8 @@ class LoginPageActions(
 )
 
 /**
- * 登录页的配置。[restricted]：从强更页进入的受限登录（APP-02c 已有的来源标记）——不显示设置、邀请码与帮助等业务入口
- * （BR-ID-01 细则）；第三方登录入口保留（共性第 28 条：仅第三方身份的已有账号要能登进 deletion_only 去注销），协议校验与 deletion_only
+ * 登录页的配置。[restricted]：从强更页进入的受限登录（APP-02c 已有的来源标记）——不显示帮助等业务入口、不显示待绑定码小字行
+ * （BR-ID-01 细则；APP-17a 起普通登录也没有设置与邀请码入口）；第三方登录入口保留（共性第 28 条：仅第三方身份的已有账号要能登进 deletion_only 去注销），协议校验与 deletion_only
  * 分流照常。[sessionExpired]：刷新失败清会话后跳来的登录（LoginSessionExpired，进页提示一次）。[oauth]：第三方登录执行器
  * （APP-05b）；[thirdParty] 要显示的第三方按钮（provider 名，[OAuthLoginService.visibleProviders]：适配器可用且本机已装 / 未知；
  * Android 正式包的微信适配器恒为不可用 → 空，整块不显示）。
@@ -81,8 +62,6 @@ class LoginPageConfig(
     val thirdParty: List<String> = emptyList(),
     val clock: () -> Long = System::currentTimeMillis,
     val actions: LoginPageActions = LoginPageActions(),
-    /** 邀请码的剪贴板来源（APP-07）；没有时不显示【粘贴】。受限登录不用。 */
-    val invite: InvitePasteSource? = null,
 )
 
 /** 登录页两步。 */
@@ -93,7 +72,7 @@ enum class LoginStep {
 
 /** 登录页上的弹窗。 */
 enum class LoginDialog {
-    /** LoginAgreeConfirm：未勾选协议点获取验证码 / 登录。 */
+    /** LoginAgreeConfirm：未勾选协议时点获取验证码、继续输入验证码、第三方登录（文案键见 [LoginUiState.confirmation]）。 */
     AGREE_CONFIRM,
 
     /** LoginCodeBlocked：44001 注册被拦。 */
@@ -111,10 +90,10 @@ data class LoginUiState(
     val step: LoginStep = LoginStep.PHONE,
     val phone: String = "",
     val code: String = "",
-    val invite: String = "",
-    val inviteExpanded: Boolean = false,
     val agreed: Boolean = false,
     val dialog: LoginDialog? = null,
+    /** 协议确认框按动作取的文案键（G10）：[dialog] 是 [LoginDialog.AGREE_CONFIRM] 时有值，关框后为 null。 */
+    val confirmation: AgreementConfirmKeys? = null,
     val phoneError: String? = null,
     val codeError: String? = null,
     val maskedPhone: String = "",
@@ -144,8 +123,17 @@ data class LoginUiState(
 )
 
 /**
- * 登录页的状态机（APP-05a）：两步（手机号 → 验证码）、协议确认框、倒计时与限流、错误映射到页面状态。网络与会话都经 [LoginService]；
- * 页面关闭或出栈由 App 在同步出口调 [LoginService.invalidateAttempt]（共性第 9 条），这里只在用户「返回手机号步」「换号」时作废。
+ * 登录页的状态机（APP-05a；APP-17a 改版闸前逻辑）：两步（手机号 → 验证码）、协议确认框、倒计时与限流、错误映射到页面状态。网络与会话都经
+ * [LoginService]；页面关闭或出栈由 App 在同步出口调 [LoginService.invalidateAttempt]（共性第 9 条），这里只在用户「返回手机号步」「换号」时作废。
+ *
+ * - 协议闸只有一个生产入口 [requireAgreement]（G06）：获取验证码、手机号页【继续输入验证码】、第三方登录都过它；验证码页【重新获取】不过
+ *   （验证码步一定已同意）。号码不合法先本地提示、不弹确认框（坑 20）。确认框只在仍有待继续的动作时生效，同意时刻取主按钮点击时刻，
+ *   第二次空确认不改时刻；换号、返回、取消都丢掉待继续的动作。
+ * - 进入验证码步只有一个出口 [enterCodeStep]（评审 r1）：此刻没有同意（发码等待中取消了勾选）就留在手机号页，验证码页任何时候不弹确认框；
+ *   验证码绑定所属规范化号码，换号清格、进入时号码不符清格。
+ * - 验证码满 6 位自动提交（[onCodeChange]，BR-ID-05）：同值事件不是新修订；在途时的输入不排队、结算后也不补交（G12、G23）；
+ *   20002 / 20003 清空格子并留着错误（程序清空回来的空事件不冲掉错误，坑 23）；42901 保留格子、禁用期内不提交（G25）；验证码已过期
+ *   （本地有效期到了或服务端 20003）要先重新获取。consent_at 沿用手机号步的勾选 / 确认时刻。
  */
 @Suppress("TooManyFunctions") // 页面每个操作一个入口
 class LoginViewModel(
@@ -158,7 +146,7 @@ class LoginViewModel(
     private val limits = LoginRateLimits()
     private val oauthLimit = LoginRateLimits()
 
-    /** 确认框同意之后要继续的动作。 */
+    /** 确认框同意之后要继续的动作（只在确认框显示期间有值；同意时取走一次，取消、换号、返回时丢掉）。 */
     private var afterConfirm: (() -> Unit)? = null
 
     /** 上一次发起尝试时的规范化号码（换号时作废在途请求）。 */
@@ -169,6 +157,12 @@ class LoginViewModel(
      * 20002 / 20003 等验证码字段结果只在修订号未变时落到输入框（显示错误、清空），同号码换码后不显示在新码上、不清空新码。
      */
     private var codeRevision = 0L
+
+    /**
+     * 评审 r1 S1-2：输入框里的验证码属于哪个规范化号码（没有内容或已清空时可能为 null）。号码变了就清格并推进 [codeRevision]；进入验证码步时
+     * 再核对一次，所属号码与要进入的号码不符就清空——跨号码的残留永远不会被补满后自动提交（也就不会提前消费待绑定码）。
+     */
+    private var codePhone: String? = null
 
     private val mutableState = MutableStateFlow(LoginUiState())
     val state: StateFlow<LoginUiState> = mutableState.asStateFlow()
@@ -196,7 +190,11 @@ class LoginViewModel(
      */
     fun onPhoneChange(raw: String) {
         val text = raw
+        // 换了号码：待继续的协议确认作废（同意后不对新号码继续旧动作）
+        if (text != mutableState.value.phone) dropConfirmation()
         val normalized = PhoneNumber.normalize(text).normalized
+        // S1-2：规范化号码变了，验证码格里属于旧号码的内容作废（清格、推进修订号，迟到的旧结果不再落到格子上）
+        if (normalized != codePhone) dropCode()
         if (normalized != attemptPhone && (service.busy || attemptPhone != null)) {
             // 换了号码：作废在途的发码与登录（共性第 1 条）
             service.invalidateAttempt()
@@ -220,37 +218,6 @@ class LoginViewModel(
         mutableState.update { it.copy(agreed = agreement.checked) }
     }
 
-    fun onExpandInvite() = mutableState.update { it.copy(inviteExpanded = true) }
-
-    fun onInviteChange(raw: String) = mutableState.update { it.copy(invite = raw.take(MAX_INVITE_INPUT)) }
-
-    /** 有剪贴板来源（APP-07）时邀请码行显示【粘贴】。 */
-    val invitePasteAvailable: Boolean get() = !config.restricted && config.invite != null
-
-    /** 邀请码行【粘贴】的禁用状态（42901 共享禁用期，A-R1-06）；没有来源时恒为 false。 */
-    val invitePasteBlocked: StateFlow<Boolean> get() = config.invite?.blocked ?: NOT_BLOCKED
-
-    /**
-     * 邀请码行【粘贴】：只抽码填入；抽不到轻提示「未识别到邀请码」，不清空已有输入（BR-INV-04）。42901 禁用期内执行层也拦：不读剪贴板，
-     * 给限流提示（error.42901），不误报「未识别到邀请码」（A-R1-06）。
-     */
-    fun onPasteInvite() {
-        val source = config.invite?.takeIf { !config.restricted } ?: return
-        if (source.blocked.value) {
-            toast(texts.text(RATE_LIMITED_KEY))
-            return
-        }
-        if (!source.pasteLater(::fillPastedInvite)) fillPastedInvite(source.paste())
-    }
-
-    private fun fillPastedInvite(code: String?) {
-        if (code != null) {
-            mutableState.update { it.copy(invite = code, inviteExpanded = true) }
-        } else {
-            toast(texts.text(INVITE_NOT_FOUND_KEY))
-        }
-    }
-
     /**
      * 待绑定码小字行（APP-17c，R04、G20）：每次现读 [LoginService.pendingInvite]（读取不取走）；没有码或受限登录为 null。
      * 只有码、文案键与【移除】键，不含告知句（10-19 口径）；渲染属视觉闸后，刷新随 [pendingInviteChanges]。
@@ -267,59 +234,84 @@ class LoginViewModel(
         service.pendingInvite.remove()
     }
 
+    /**
+     * 验证码输入（只在验证码步收）：值没变（输入法 / Compose 重复派发、程序清空回来的空串）不算新修订，不撤错误、不提交（坑 23）；真改了
+     * 才加修订号、撤掉旧错误，满 6 位立即自动提交（[submitCode]）。
+     */
     fun onCodeChange(raw: String) {
+        if (mutableState.value.step != LoginStep.CODE) return
         val code = CodeInput.sanitize(raw)
-        if (code != mutableState.value.code) codeRevision += 1
+        if (code == mutableState.value.code) return
+        codeRevision += 1
         mutableState.update { it.copy(code = code, codeError = null) }
+        if (CodeInput.accept(code).complete) submitCode()
     }
-
-    /** 手机号页【获取验证码】与验证码页【重新获取】：都是发码（同号码倒计时内不再发出，直接回验证码步）。 */
-    fun onGetCode() = requireAgreement { send(fromCodePage = false) }
 
     /**
-     * 手机号页【继续输入验证码】（共性第 12、16 条）：这个号码有仍在有效期内、或可能已送达的码时直接回验证码步，不发码、不作废旧码；
-     * 不以能否重发为条件（倒计时中、42901 限流中、发码结果不确定都可以）。协议在点登录时照常检查。
+     * 手机号页【获取验证码】：号码不合法先本地提示（不弹确认框、不发请求，坑 20）；再过协议闸。同意后这个号码的成功发码倒计时还没到
+     * （CONTINUE 分支）直接回验证码步继续输入已收到的码，不发码、不进 loading（G06、坑 21）。
      */
-    fun onContinueCode() {
-        val entry = service.continueEntry(mutableState.value.phone)
-        val phone = entry.phone
-        if (entry.kind != PhoneEntry.CONTINUE || phone == null) return
-        attemptPhone = phone
-        mutableState.update {
-            it.copy(step = LoginStep.CODE, maskedPhone = PhoneNumber.masked(phone), resendSec = entry.countdownSec, phoneError = null)
+    fun onGetCode() {
+        service.phoneCheck(mutableState.value.phone)?.let { local ->
+            onSent(local, fromCodePage = false)
+            return
         }
+        requireAgreement(LoginAgreementAction.GET_CODE) { requestCode(fromCodePage = false) }
     }
 
-    fun onResend() = requireAgreement { send(fromCodePage = true) }
+    /**
+     * 手机号页【继续输入验证码】（共性第 12、16 条）：这个号码有仍在有效期内、或可能已送达的码时显示；同样先过协议闸（G06，确认框按
+     * 获取验证码取键），同意后回验证码步，不发码、不作废旧码；不以能否重发为条件（倒计时中、42901 限流中、发码结果不确定都可以）。
+     */
+    fun onContinueCode() {
+        if (service.continueEntry(mutableState.value.phone).kind != PhoneEntry.CONTINUE) return
+        requireAgreement(LoginAgreementAction.GET_CODE, ::continueToCode)
+    }
 
-    fun onLogin() = requireAgreement(::login)
+    /** 验证码页【重新获取】：直接发码（验证码步一定已同意，不再过协议闸、不弹确认框）；发码期间输入框照常可输入（坑 22）。 */
+    fun onResend() = requestCode(fromCodePage = true)
 
-    /** 第三方登录按钮（与短信登录同一个协议确认框，BR-ID-04）。 */
+    /** 第三方登录按钮（与短信登录同一个协议闸，确认框正文 body_oauth，BR-ID-04）。 */
     fun onThirdParty(provider: String) {
         // F-X-12（FU-AND-0717）：Debug / Staging 入口没开本机假服务 → 不要求勾选协议、直接只提示（[OAuthLoginService.loginWith] 先于任何请求返回）
-        if (config.oauth?.debugOnly(provider) == true) oauthLogin(provider) else requireAgreement { oauthLogin(provider) }
+        if (config.oauth?.debugOnly(provider) == true) {
+            oauthLogin(provider)
+            return
+        }
+        requireAgreement(LoginAgreementAction.OAUTH) { oauthLogin(provider) }
     }
 
     val thirdParty: List<String> get() = if (config.oauth == null) emptyList() else config.thirdParty
 
+    /**
+     * 登录方式条目（C08）：实际显示的第三方按钮与要挂「上次登录」的那一个（只读，每次按当前配置与共享的上次登录方式现算；没接存储为 null）。
+     */
+    val entries: LoginPageEntries get() = LoginPageEntries.of(thirdParty, service.lastLoginMethod?.read())
+
     /** 验证码页返回手机号页：作废在途的登录（共性第 1 条）；已收到的码仍可在同号码下继续输入（共性第 12 条）。 */
     fun onBackToPhone() {
+        dropConfirmation()
         service.invalidateAttempt()
         mutableState.update { it.copy(step = LoginStep.PHONE, loggingIn = false, sending = false, codeError = null) }
     }
 
+    /**
+     * 确认框主按钮（同意并获取验证码 / 同意并登录）：勾选框同步为已勾，记下这一次点击的时刻，继续原动作一次。没有待继续的动作（框已关、
+     * 已同意过、换号或返回作废了）时什么都不做，不改已记下的时刻。
+     */
     fun onConfirmAgree() {
-        agreement.confirm(config.clock())
-        mutableState.update { it.copy(agreed = true, dialog = null) }
-        val next = afterConfirm
+        val next = afterConfirm ?: return
         afterConfirm = null
-        if (agreement.consumeProceed()) next?.invoke()
+        agreement.confirm(config.clock())
+        mutableState.update { it.copy(agreed = true, dialog = null, confirmation = null) }
+        if (agreement.consumeProceed()) next()
     }
 
+    /** 确认框【不同意】、点遮罩、系统返回：只关确认框，留在本页（不勾选、不发码、不换步，G10）。 */
     fun onCancelConfirm() {
         agreement.cancel()
         afterConfirm = null
-        mutableState.update { it.copy(dialog = null) }
+        mutableState.update { it.copy(dialog = null, confirmation = null) }
     }
 
     /** 确认框里的协议链接：关确认框（不算同意）并打开协议页（共性第 8 条）。 */
@@ -335,8 +327,7 @@ class LoginViewModel(
     /** 页面离开（返回键关闭等）：交给 App 的出口。 */
     fun onClose() = config.actions.onClose()
 
-    fun settings() = config.actions.onSettings()
-
+    /** 求助入口（手机号页 login.help_entry、验证码页 login.code.help_entry）：App 按 help_links.login_help 打开。 */
     fun help() = config.actions.onHelp()
 
     /** 协议行的链接：打开协议页（不改变勾选）。 */
@@ -348,20 +339,46 @@ class LoginViewModel(
         config.actions.onCustomerService()
     }
 
-    private fun requireAgreement(next: () -> Unit) {
+    /**
+     * 协议闸（唯一的生产入口，G06）：已勾选（有同意时刻）直接继续 [next]；未勾选弹确认框，文案键按 [action] 取（G10），同意时继续一次。
+     * 再次触发（框还开着）只换成最新的待继续动作，不叠加。
+     */
+    private fun requireAgreement(
+        action: String,
+        next: () -> Unit,
+    ) {
         agreement.tapLogin()
         if (agreement.showConfirm) {
             afterConfirm = next
-            mutableState.update { it.copy(dialog = LoginDialog.AGREE_CONFIRM) }
+            val keys = AgreementConfirmKeys.of(action)
+            mutableState.update { it.copy(dialog = LoginDialog.AGREE_CONFIRM, confirmation = keys) }
             return
         }
         if (agreement.consumeProceed()) next()
     }
 
-    private fun send(fromCodePage: Boolean) {
+    /** 换号、返回手机号步：待继续的协议确认作废（关掉确认框，之后的确认不再继续旧动作）。 */
+    private fun dropConfirmation() {
+        if (afterConfirm == null && mutableState.value.dialog != LoginDialog.AGREE_CONFIRM) return
+        agreement.cancel()
+        afterConfirm = null
+        mutableState.update {
+            if (it.dialog == LoginDialog.AGREE_CONFIRM) it.copy(dialog = null, confirmation = null) else it.copy(confirmation = null)
+        }
+    }
+
+    /**
+     * 发码（获取验证码、重新获取共用）：本地就能定的结果（号码不合法、这个号码的倒计时还没到 → 直接回验证码步、42901 禁用期）同步给出，
+     * 不进 loading；要发出时才置 [LoginUiState.sending]（坑 21）。
+     */
+    private fun requestCode(fromCodePage: Boolean) {
         if (service.busy) return
         val phone = mutableState.value.phone
         attemptPhone = PhoneNumber.normalize(phone).normalized
+        service.localSendOutcome(phone)?.let { local ->
+            onSent(local, fromCodePage)
+            return
+        }
         mutableState.update { it.copy(sending = true) }
         viewModelScope.launch {
             val outcome = service.sendCode(phone)
@@ -370,28 +387,102 @@ class LoginViewModel(
         }
     }
 
+    /** 同意后回验证码步继续输入已收到的码（不发码、不作废旧码）；同意期间码已失效则不换步。 */
+    private fun continueToCode() {
+        val entry = service.continueEntry(mutableState.value.phone)
+        val phone = entry.phone
+        if (entry.kind != PhoneEntry.CONTINUE || phone == null) return
+        enterCodeStep(phone, entry.countdownSec)
+    }
+
+    /** 此刻是否已同意协议（勾选或确认框同意，且有同意时刻）。 */
+    private fun consented(): Boolean = agreement.checked && agreement.consentAtMillis != null
+
+    /**
+     * 进入验证码步的唯一出口（评审 r1 S1-1 / S1-2）：获取验证码成功、倒计时内的 COUNTDOWN 分支、【继续输入验证码】都经这里。
+     * - 此刻没有同意（发码等待中取消了勾选）：留在手机号页、不弹确认框，只刷新一次计时让【继续输入验证码】出现；码仍可经原闸继续，不重复发码。
+     * - 格子里的内容不属于 [phone]（换号残留）：清空并推进修订号。
+     */
+    private fun enterCodeStep(
+        phone: String,
+        resendSec: Int,
+    ) {
+        attemptPhone = phone
+        if (!consented()) {
+            backToPhoneForConsent()
+            return
+        }
+        if (codePhone != phone) dropCode()
+        codePhone = phone
+        mutableState.update {
+            it.copy(
+                step = LoginStep.CODE,
+                maskedPhone = PhoneNumber.masked(phone),
+                resendSec = resendSec,
+                phoneError = null,
+                codeError = null,
+            )
+        }
+    }
+
+    /** 清掉格子里属于旧号码（或已作废）的验证码：有内容才算一次换码；所属号码一并清掉。 */
+    private fun dropCode() {
+        if (mutableState.value.code.isNotEmpty()) codeRevision += 1
+        codePhone = null
+        mutableState.update { if (it.code.isEmpty() && it.codeError == null) it else it.copy(code = "", codeError = null) }
+    }
+
+    /**
+     * 验证码步上发现没有同意时刻（正常不会发生：进入验证码步都已过协议闸，验证码步也没有勾选框）：验证码页任何时候都不弹确认框，
+     * 回手机号页，由用户经原闸【继续输入验证码】重新同意后再进来。
+     */
+    private fun backToPhoneForConsent() {
+        mutableState.update { it.copy(step = LoginStep.PHONE, loggingIn = false) }
+        tick()
+    }
+
+    /**
+     * 满 6 位的自动提交（BR-ID-05）：已有登录或发码在途时不提交、不排队（G12、G23：结算后也不补交，要再改码才算新的一次）；42901 禁用期内
+     * 不提交（G25，格子保留）；这个号码的码已过期（本地有效期到了或服务端回过 20003）时不提交，提示先重新获取。
+     */
+    private fun submitCode() {
+        val current = mutableState.value
+        if (current.loggingIn || service.busy || limits.loginBlocked(config.clock())) return
+        when {
+            !consented() -> {
+                backToPhoneForConsent()
+            }
+
+            service.issuedCodeRemainingSec(current.phone) <= 0 -> {
+                mutableState.update { it.copy(codeError = texts.text(RESEND_NEEDED_KEY).ifEmpty { null }) }
+            }
+
+            else -> {
+                login()
+            }
+        }
+    }
+
+    /** 程序清空验证码格（20002 / 20003 等）：算一次换码（之后重新输入同一个码也是新修订，可以再提交），错误提示保留。 */
+    private fun clearCode(error: String?) {
+        if (mutableState.value.code.isNotEmpty()) codeRevision += 1
+        mutableState.update { it.copy(code = "", codeError = error ?: it.codeError) }
+    }
+
     private fun onSent(
         outcome: SendCodeOutcome,
         fromCodePage: Boolean,
     ) {
         when (outcome.stateRaw) {
             SmsCountdown.STATE_SENT, LoginService.STATE_COUNTDOWN -> {
-                val masked = outcome.phone?.let(PhoneNumber::masked).orEmpty()
-                // 共性第 29 条：发码成功会清空输入框，算一次换码
-                if (outcome.stateRaw == SmsCountdown.STATE_SENT && mutableState.value.code.isNotEmpty()) codeRevision += 1
+                val phone = outcome.phone ?: PhoneNumber.normalize(mutableState.value.phone).normalized ?: return
+                // 共性第 29 条：发码成功会清空输入框，算一次换码（不论随后能否进入验证码步，旧内容都不再对应新码）
+                if (outcome.stateRaw == SmsCountdown.STATE_SENT) dropCode()
                 // 共性第 11 条：真正发出的那次播报一次脱敏的发送对象（倒计时内不再发出的不播报）
-                if (outcome.stateRaw == SmsCountdown.STATE_SENT && masked.isNotEmpty()) {
-                    announce(texts.format("login.code.sent_to", mapOf("phone" to masked)))
+                if (outcome.stateRaw == SmsCountdown.STATE_SENT) {
+                    announce(texts.format("login.code.sent_to", mapOf("phone" to PhoneNumber.masked(phone))))
                 }
-                mutableState.update {
-                    it.copy(
-                        step = LoginStep.CODE,
-                        maskedPhone = masked,
-                        resendSec = outcome.countdownSec,
-                        code = if (outcome.stateRaw == SmsCountdown.STATE_SENT) "" else it.code,
-                        codeError = null,
-                    )
-                }
+                enterCodeStep(phone, outcome.countdownSec)
             }
 
             SmsCountdown.STATE_RATE_LIMITED -> {
@@ -429,7 +520,7 @@ class LoginViewModel(
         mutableState.update { it.copy(loggingIn = true, codeError = null) }
         val revision = codeRevision
         viewModelScope.launch {
-            val outcome = service.login(current.phone, current.code, agreement.consentAtMillis, current.invite, config.restricted)
+            val outcome = service.login(current.phone, current.code, agreement.consentAtMillis, config.restricted)
             mutableState.update { it.copy(loggingIn = false) }
             onLoginOutcome(outcome, revision == codeRevision)
         }
@@ -440,7 +531,8 @@ class LoginViewModel(
         if (service.busy || oauth.busy || oauthLimit.loginBlocked(config.clock())) return
         mutableState.update { it.copy(oauthBusy = provider) }
         viewModelScope.launch {
-            val outcome = oauth.loginWith(provider, agreement.consentAtMillis)
+            // F6：授权回来后按页面此刻的同意状态复核（同 S1-1 口径），取消勾选了就不登录
+            val outcome = oauth.loginWith(provider, agreement.consentAtMillis) { agreement.consentAtMillis?.takeIf { consented() } }
             mutableState.update { it.copy(oauthBusy = null) }
             onOAuthOutcome(outcome)
         }
@@ -470,12 +562,16 @@ class LoginViewModel(
             }
 
             LoginOutcome.AGREEMENT_REQUIRED -> {
-                afterConfirm = { oauthLogin(outcome.provider) }
-                mutableState.update { it.copy(dialog = LoginDialog.AGREE_CONFIRM) }
+                requireAgreement(LoginAgreementAction.OAUTH) { oauthLogin(outcome.provider) }
             }
 
             OAuthLoginOutcome.CANCELLED, LoginOutcome.STALE, LoginOutcome.BUSY -> {
                 Unit
+            }
+
+            // F6：授权在途期间取消了同意——留在手机号页、不弹确认框，用户从第三方入口经协议闸重新同意后再发起（consent_at 取新确认时刻）
+            OAuthLoginOutcome.CONSENT_WITHDRAWN -> {
+                tick()
             }
 
             // F-X-12：Debug / Staging 的第三方入口没开本机假服务——只提示（原文来自 Debug 源码集的假适配器），不发请求
@@ -501,24 +597,24 @@ class LoginViewModel(
                 config.actions.onLoggedIn(outcome)
             }
 
-            // 共性第 29 条：验证码字段的结果只落到提交时的那个验证码上（[sameCode]）；换码后的迟到结果不显示、不清空
-            "code_error" -> {
-                if (sameCode) mutableState.update { it.copy(codeError = text(outcome.textKey)) }
-            }
-
-            LoginErrorMapper.STATE_CODE_EXPIRED -> {
-                if (sameCode) mutableState.update { it.copy(code = "", codeError = text(outcome.textKey)) }
+            // 共性第 29 条：验证码字段的结果只落到提交时的那个验证码上（[sameCode]）；换码后的迟到结果不显示、不清空。
+            // APP-17a 坑 23：20002 / 20003 清空格子并留着错误（输入框不卸载，焦点与键盘不动）；过期的码要先重新获取（[submitCode]）
+            "code_error", LoginErrorMapper.STATE_CODE_EXPIRED -> {
+                if (sameCode) clearCode(text(outcome.textKey))
             }
 
             LoginErrorMapper.STATE_REGISTRATION_BLOCKED -> {
                 // 账号没有创建：手机号保留、验证码清空（需要重新获取，BR-TEXT-14 login.risk_blocked.desc）
-                mutableState.update { it.copy(code = if (sameCode) "" else it.code, dialog = LoginDialog.BLOCKED) }
+                if (sameCode) clearCode(null)
+                mutableState.update { it.copy(dialog = LoginDialog.BLOCKED) }
             }
 
             LoginErrorMapper.STATE_DELETION_PROCESSING -> {
-                mutableState.update { it.copy(code = if (sameCode) "" else it.code, dialog = LoginDialog.DELETION_PROCESSING) }
+                if (sameCode) clearCode(null)
+                mutableState.update { it.copy(dialog = LoginDialog.DELETION_PROCESSING) }
             }
 
+            // G25：42901 不清格子，按 Retry-After 禁用提交；禁用期内的输入不提交，到期后再改码才提交
             SmsCountdown.STATE_RATE_LIMITED -> {
                 limits.limitLogin(config.clock(), outcome.disableMillis)
                 tick()
@@ -538,9 +634,9 @@ class LoginViewModel(
                 }
             }
 
+            // 验证码步没有勾选框，正常不会到这里（进入验证码步都已过协议闸）；万一没有同意时刻，验证码页也不弹确认框（G06）：回手机号页
             LoginOutcome.AGREEMENT_REQUIRED -> {
-                afterConfirm = ::login
-                mutableState.update { it.copy(dialog = LoginDialog.AGREE_CONFIRM) }
+                backToPhoneForConsent()
             }
 
             LoginOutcome.STALE, LoginOutcome.BUSY, LoginOutcome.CODE_INCOMPLETE -> {
@@ -596,13 +692,9 @@ class LoginViewModel(
 
     private companion object {
         const val TICK_MILLIS = 1000L
-        const val MAX_INVITE_INPUT = 32
 
-        /** 邀请码行【粘贴】抽不到码的轻提示（BR-INV-04；草稿键 TODO(N-30)）。 */
-        const val INVITE_NOT_FOUND_KEY = "clipboard.login_invite.not_found"
-
-        /** 邀请码行【粘贴】在 42901 禁用期内被点（A-R1-06）。 */
-        const val RATE_LIMITED_KEY = "error.42901"
+        /** 验证码已过期、要先重新获取（BR-TEXT-14 表 C；草稿键 TODO(N-26)）。 */
+        const val RESEND_NEEDED_KEY = "login.code.resend_needed"
         const val DEFAULT_LIMIT_MILLIS = 5_000L
     }
 }

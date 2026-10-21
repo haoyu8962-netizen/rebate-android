@@ -72,10 +72,7 @@ internal class PendingInvite17cFixture(
         )
     val service = LoginService(api, tokens, Host, sessionScope = scope, pendingInvite = pending, clock = { NOW })
 
-    suspend fun submit(
-        restricted: Boolean = false,
-        typed: String = "",
-    ): LoginOutcome = service.login("13800138000", "123456", NOW, typed, restricted)
+    suspend fun submit(restricted: Boolean = false): LoginOutcome = service.login("13800138000", "123456", NOW, restricted)
 
     fun hold(response: MockResponse): Pair<CompletableDeferred<Unit>, CountDownLatch> {
         val arrived = CompletableDeferred<Unit>()

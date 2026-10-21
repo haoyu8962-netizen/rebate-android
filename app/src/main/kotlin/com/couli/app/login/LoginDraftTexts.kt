@@ -8,8 +8,9 @@ import com.couli.generated.DefaultTexts
  * 登录页与退出登录里契约 texts.default.json 还没有的文案键（APP-05a rule-gaps TEXT-01，对应 N-26）。照设计稿 Login、LoginAgreeConfirm、
  * LoginCode、LoginCodeBlocked、LoginCodeInvite、LoginInviteBound、LoginInviteFailed、LoginDeletionProcessing、SettingsLogoutConfirm
  * 逐字集中放在这一处；规划 BR-TEXT-14 已有措辞的（login.risk_blocked.desc、cs.appeal_entry、settings.logout.*）照规划原文。
- * 三端同名（iOS / Android / 鸿蒙 LoginDraftTexts）。有键的（error.*、invite.notice_inviter、login.help_entry）一律读 DefaultTexts，
- * 不放这里。
+ * 三端同名（iOS / Android / 鸿蒙 LoginDraftTexts）。有键的（error.*、login.help_entry）一律读 DefaultTexts，不放这里。
+ * APP-17a（登录改版）：协议整句、确认框按动作的键、验证码页求助、重新获取提示、上次登录标签按规划 BR-TEXT-14 表 C 原文；设置、邀请码手填、
+ * 【登录】按钮、拆段协议句与旧确认框键随入口删除。
  *
  * TODO(N-26) 整张表都是「待定稿，不得提审」：契约补键后删除本文件、改读 DefaultTexts；提审前（QA-07）必须替换。
  */
@@ -21,40 +22,38 @@ internal object LoginDraftTexts : LoginTexts {
             "login.brand" to "凑狸",
             "login.close" to "关闭",
             "login.back" to "返回",
-            "login.settings" to "设置",
             "login.title" to "手机号登录",
             "login.phone.label" to "手机号",
             "login.phone.prefix" to "+86",
             "login.phone.placeholder" to "请输入手机号",
             "login.phone.clear" to "清除手机号",
-            "login.agree.prefix" to "我已阅读并同意",
+            // 协议整句（BR-TEXT-14 表 C）；两个链接按下面的原文在整句里定位（AgreementSentence，G16）
+            "login.agree.text" to "我已阅读并同意《用户协议》和《隐私政策》，未注册的手机号验证后将自动注册凑狸账号",
             "login.agree.agreement" to "《用户协议》",
-            "login.agree.and" to "和",
             "login.agree.privacy" to "《隐私政策》",
-            "login.agree.suffix" to "，",
-            "login.agree.hint" to "未注册的手机号验证后自动创建账号",
             "login.agree.checked" to "已勾选",
             "login.agree.unchecked" to "未勾选",
             "login.get_code" to "获取验证码",
             // 共性第 12、16 条的独立入口（设计稿没有这一项，措辞待定稿）
             "login.code.continue" to "继续输入验证码",
-            "login.invite.entry" to "有邀请码？填写邀请码（选填）",
             "login.other_methods" to "其他登录方式",
-            // ---- LoginAgreeConfirm（正文拆成前后两段，中间是两个可点的协议链接）
-            "login.agree_confirm.title" to "请阅读并同意协议",
-            "login.agree_confirm.before" to "登录前请阅读并同意",
-            "login.agree_confirm.after" to "。",
-            "login.agree_confirm.cancel" to "取消",
-            "login.agree_confirm.ok" to "同意并继续",
-            // ---- LoginCode / LoginCodeInvite
+            // 「上次登录」标签（BR-TEXT-14 表 C；闸前只进第三方按钮的读屏说明）
+            "login.last_method_tag" to "上次登录",
+            // ---- LoginAgreeConfirm（BR-TEXT-14 表 C：正文整句、两个协议链接在句中；主按钮按动作，G10）
+            "login.agree_confirm.title" to "请阅读并同意以下条款",
+            "login.agree_confirm.body" to "《用户协议》《隐私政策》，未注册的号码将自动注册凑狸账号",
+            "login.agree_confirm.body_oauth" to "《用户协议》《隐私政策》，首次登录将自动注册凑狸账号",
+            "login.agree_confirm.btn_get_code" to "同意并获取验证码",
+            "login.agree_confirm.btn_login" to "同意并登录",
+            "login.agree_confirm.btn_disagree" to "不同意",
+            // ---- LoginCode（满 6 位自动登录，没有【登录】按钮）
             "login.code.title" to "输入验证码",
             "login.code.sent_to" to "验证码已发送至 {phone}",
             "login.code.label" to "验证码",
-            "login.code.countdown" to "{sec} 秒后可重新获取",
+            "login.code.countdown" to "{n} 秒后可重新获取",
             "login.code.resend" to "重新获取",
-            "login.invite.label" to "邀请码（选填）",
-            "login.invite.placeholder" to "6 位邀请码",
-            "login.submit" to "登录",
+            "login.code.resend_needed" to "验证码需要重新获取",
+            "login.code.help_entry" to "收不到验证码？",
             // ---- LoginCodeBlocked（标题用 error.44001；说明句 BR-TEXT-14 表 C 已有措辞）
             "login.risk_blocked.desc" to
                 "账号没有创建，填写的手机号保留在本页，验证码需要重新获取。如有疑问，可以联系客服申诉，客服核实后会帮你登记。",
@@ -112,7 +111,7 @@ internal object LoginDraftTexts : LoginTexts {
 
     /** 先取契约字典，再取草稿；带 {变量} 的契约文案（没有给值）用它的 fallback。缺键返回空串。 */
     override fun text(key: String): String {
-        // 登录页邀请码行【粘贴】与「未识别到邀请码」（APP-07）在剪贴板的集中草稿表里（TODO(N-30)）
+        // 剪贴板的集中草稿表（TODO(N-30)）兜底：设置页里挂的剪贴板开关等外壳页面经这里取字
         val raw = DefaultTexts.text(key) ?: DRAFTS[key] ?: ClipboardDraftTexts.DRAFTS[key] ?: DefaultTexts.fallback(key) ?: return ""
         return if (PLACEHOLDER.containsMatchIn(raw)) DefaultTexts.fallback(key) ?: raw.replace(PLACEHOLDER, "") else raw
     }

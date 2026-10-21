@@ -61,7 +61,8 @@ object PhoneNumber {
 }
 
 /**
- * 登录页的协议勾选（BR-ID-04：勾选框默认不勾；未勾选点登录 → 确认框；同意后记下点击时刻并继续）。[consentAtMillis] 是本机记下的
+ * 登录页的协议勾选（BR-ID-04：勾选框默认不勾；未勾选时需要同意的动作 → 确认框；同意后记下点击时刻并继续）。页面上只有一个生产入口
+ * 用它（[LoginViewModel] 的协议闸，APP-17a G06）。[consentAtMillis] 是本机记下的
  * 勾选 / 确认时刻（登录请求的 consent_at），不是服务端已写入 consent_records。取消勾选清除记下的时刻：之后再登录必须重新确认
  * （TODO(N-26) AGREEMENT-01：历史时刻的去留未规定，保守清除）。[check] 用注入的时钟，[confirm] 用实参（毫秒）。
  */
@@ -82,7 +83,7 @@ class AgreementState(
     var consentAtMillis: Long? = null
         private set
 
-    /** 点【获取验证码】或【登录】：已勾选直接继续；未勾选弹确认框。 */
+    /** 需要同意的动作（获取验证码、继续输入验证码、第三方登录）：已勾选直接继续；未勾选弹确认框。 */
     fun tapLogin() {
         if (checked && consentAtMillis != null) {
             showConfirm = false
@@ -106,7 +107,7 @@ class AgreementState(
         proceed = false
     }
 
-    /** 确认框【同意并继续】：勾上并记下点击时刻。 */
+    /** 确认框主按钮（同意并获取验证码 / 同意并登录）：勾上并记下点击时刻。 */
     fun confirm(nowMillis: Long) {
         checked = true
         consentAtMillis = nowMillis
@@ -114,7 +115,7 @@ class AgreementState(
         proceed = true
     }
 
-    /** 确认框【取消】、关闭，或点了框里的协议链接（不算同意）：不勾选、不继续。 */
+    /** 确认框【不同意】、关闭，或点了框里的协议链接（不算同意）：不勾选、不继续，留在本页（G10）。 */
     fun cancel() {
         showConfirm = false
         proceed = false
@@ -311,23 +312,10 @@ object LoginErrorMapper {
 }
 
 /**
- * 邀请码输入框的判定。[valid] 只判注册页可接受的语法（空值可省略），不决定能否登录（rule-gaps INVITE-01）；[normalized] 规范化后的码；
- * [noticeKey] 输入框下方的告知句（BR-INV-18 细则），不显示输入框时为 null。
- */
-data class InviteDecision(
-    val showInviteField: Boolean,
-    val valid: Boolean,
-    val normalized: String,
-    val noticeKey: String?,
-)
-
-/**
- * 注册页邀请码（BR-INV-01 字符集 23456789ABCDEFGHJKLMNPQRSTUVWXYZ、长度 6；BR-INV-02 规范化：NFKC → 删空白与零宽 → 大写，不做 O→0
- * 纠错、不删连字符）。受限登录（从强更页进入）不显示邀请码等业务输入（BR-ID-01 细则「受限登录」）。
+ * 邀请码（BR-INV-01 字符集 23456789ABCDEFGHJKLMNPQRSTUVWXYZ、长度 6；BR-INV-02 规范化：NFKC → 删空白与零宽 → 大写，不做 O→0
+ * 纠错、不删连字符）。APP-17a 起登录页没有手填框：码只来自待绑定码（[PendingInviteCode]），这里只留规范化、语法判定与请求长度兜底。
  */
 object InviteField {
-    const val NOTICE_KEY = "invite.notice_inviter"
-
     /** openapi LoginBySmsRequest.invite_code maxLength。 */
     private const val MAX_WIRE_LENGTH = 32
 
@@ -345,17 +333,6 @@ object InviteField {
      * （[PendingInviteCode.set]，D10-107）与邀请链接分流（[InviteLinkDispatcher]）共用这一个 PATTERN，不另写正则。
      */
     fun isValidCode(normalized: String): Boolean = PATTERN.matches(normalized)
-
-    fun decide(
-        raw: String,
-        context: JsonObject,
-    ): InviteDecision {
-        val normalized = normalize(raw)
-        val valid = normalized.isEmpty() || isValidCode(normalized)
-        val restricted = (context["restricted"] as? JsonPrimitive)?.booleanOrNull == true
-        if (restricted) return InviteDecision(false, valid, "", null)
-        return InviteDecision(true, valid, normalized, NOTICE_KEY)
-    }
 
     /**
      * 登录请求里带的 invite_code：受限登录不带；规范化后为空不带；超过契约长度不带（否则整个登录 20001）。语法不对的照样带上，由服务端

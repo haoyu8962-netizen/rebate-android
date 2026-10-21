@@ -185,7 +185,7 @@ class ClipboardServiceSources0724Test {
                 f.clipboard.connectModalSources(login = login) // 服务已构造完成，不在 appClipboard provider 内 login.get()。
                 assertTrue(f.clipboard.homeRoot())
                 assertFalse(login.taskActive.value)
-                val task = async { login.service.login("13800138000", "123456", f.now, "", restricted = false) }
+                val task = async { login.service.login("13800138000", "123456", f.now, restricted = false) }
                 try {
                     runCurrent()
                     withContext(Dispatchers.IO) { assertTrue("请求已实际进入本机传输口", entered.await(WAIT_SECONDS, TimeUnit.SECONDS)) }

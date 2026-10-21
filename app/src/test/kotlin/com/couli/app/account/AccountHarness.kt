@@ -107,6 +107,7 @@ abstract class AccountHarness {
     protected lateinit var server: MockWebServer
     protected lateinit var routing: AppRouting
     protected lateinit var navController: NavHostController
+    protected lateinit var lastLoginMethod: com.couli.feature.login.LastLoginMethodStore
     protected lateinit var login: AppLogin
     protected lateinit var api: ApiClient
     protected lateinit var me: AppMe
@@ -523,6 +524,14 @@ abstract class AccountHarness {
                 clock = { now },
                 bundled = "{}",
             )
+        lastLoginMethod =
+            com.couli.app.AppModule
+                .lastLoginMethodStore(
+                    context,
+                    com.couli.core.privacy
+                        .CredentialCleanerRegistry(),
+                )
+        lastLoginMethod.clear()
         composeRule.runOnUiThread {
             login =
                 AppLogin(
@@ -535,6 +544,7 @@ abstract class AccountHarness {
                     // FU-AND-0716 窄修四：与缺省值同一种作用域（SupervisorJob + Main.immediate），只是由测试持有，用来等会话级任务（绑定 / 确认）结束
                     sessionScope = loginSessionScope,
                     pendingInvite = PendingInviteCode(),
+                    lastLoginMethod = lastLoginMethod,
                 )
             login.syncSession()
             me =
@@ -913,19 +923,14 @@ abstract class AccountHarness {
         idleUntil("登录页") { has(com.couli.feature.login.LoginTags.PHONE) }
         type(com.couli.feature.login.LoginTags.PHONE, PHONE_OLD)
         if (!has(com.couli.feature.login.LoginTags.CODE)) {
-            click(com.couli.feature.login.LoginTags.AGREE)
             click(com.couli.feature.login.LoginTags.GET_CODE)
-            if (has(com.couli.feature.login.LoginTags.CONFIRM_OK)) tap(com.couli.feature.login.LoginTags.CONFIRM_OK)
+            idleUntil("按发码动作显示确认框") { has(com.couli.feature.login.LoginTags.CONFIRM_PRIMARY) }
+            check(hasText(t("login.agree_confirm.btn_get_code")))
+            tap(com.couli.feature.login.LoginTags.CONFIRM_PRIMARY)
         }
         idleUntil("验证码输入") { has(com.couli.feature.login.LoginTags.CODE) }
+        check(!has("login_submit") && !has(com.couli.feature.login.LoginTags.AGREE))
         type(com.couli.feature.login.LoginTags.CODE, "222222")
-        settle()
-        // 输满 6 位自动登录；没有自动发出时才点【登录】（再点会作废在途的那一次）。FU-AND-0716 R3-01 残留：「有没有发出」看页面同步状态——登录已发起时
-        // 【登录】进 loading、不可点（或页面已关），不再只看固定空转后假服务是否已收到请求（请求经 IO 线程到达，晚于固定轮次时会误判为没发、多点一次）
-        val submit = com.couli.feature.login.LoginTags.SUBMIT
-        if (all("POST", "/v1/auth/login/sms").isEmpty() && has(submit) && enabled(submit)) {
-            tap(submit)
-        }
         idleUntil("登录完成") { all("POST", "/v1/auth/login/sms").isNotEmpty() && tokens.accessToken != null }
     }
 

@@ -15,6 +15,8 @@ dependencies {
     api(project(":core:network"))
     // APP-13a：BindPhone 待确认（BindPhonePendingPolicy、PhoneChangeOutcomePolicy、AccountShared、AccountDraftTexts，G07；Feature → Core）
     implementation(project(":core:me"))
+    // APP-17a：上次登录方式登记进撤回同意的清理入口（CredentialCleanerRegistry，BR-ID-13；Feature → Core）
+    implementation(project(":core:privacy"))
     implementation(project(":core:designsystem"))
     implementation(libs.androidx.lifecycle.runtime.compose)
     // 页面状态：ViewModel + StateFlow，跟随登录页的回退栈条目（03 §3.3）

@@ -29,6 +29,7 @@ import com.couli.app.home.variantEnvironmentKey
 import com.couli.app.home.variantHomePort
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
+import com.couli.app.login.LastLoginMethodPreferences
 import com.couli.app.login.registerCleanup
 import com.couli.app.login.variantWechatAdapter
 import com.couli.app.me.AndroidMeSystem
@@ -119,7 +120,7 @@ import com.couli.core.update.UpdateConfigReader
 import com.couli.core.update.UpdateGate
 import com.couli.core.update.UpdateStatus
 import com.couli.core.wallet.WalletStaleCache
-import com.couli.feature.login.InvitePasteSource
+import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
@@ -137,7 +138,6 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 
@@ -594,7 +594,13 @@ object AppModule {
     fun appPrivacy(
         gate: PrivacyGate,
         environmentGate: EnvironmentGate,
-    ): AppPrivacy = AppPrivacy(gate, environmentSettled = { environmentGate.isSettled })
+        lastLoginMethod: LastLoginMethodStore,
+    ): AppPrivacy {
+        // APP-17a（P03）：上次登录方式在构造时登记进撤回同意清理；AppStartup 冷启动补清理（privacy.coldStart）之前它必须已建好、已登记，
+        // 否则待清理的撤回重试漏删它（AppLogin 要到首次用到登录时才建）
+        check(lastLoginMethod.cleanerInstalled) { "上次登录方式没有登记撤回清理" }
+        return AppPrivacy(gate, environmentSettled = { environmentGate.isSettled })
+    }
 
     /**
      * 强更检查（APP-02c）：UpdateGate（core:config com.couli.core.update；结论 Release 存 couli.update，debug / staging 存
@@ -702,6 +708,18 @@ object AppModule {
     ): PendingInviteCode = PendingInviteCode().registerCleanup(privacy, cleaners)
 
     /**
+     * 上次登录方式（APP-17a，G05、G22、G24；Q5）：独立 SharedPreferences [LastLoginMethodPreferences.NAME]（不以 `couli.` 开头，切换环境的命名空间
+     * 清理不碰它），唯一键 last_method，同步 commit；只登记进撤回同意清理（删不掉报错，PrivacyGate 保留待清理、冷启动重试）。登出、注销申请
+     * 不清。短信与第三方登录共用这一个单例（AppLogin → LoginService）。
+     */
+    @Provides
+    @Singleton
+    fun lastLoginMethodStore(
+        @ApplicationContext context: Context,
+        credentialCleaners: CredentialCleanerRegistry,
+    ): LastLoginMethodStore = LastLoginMethodStore(LastLoginMethodPreferences(context)).also { it.installCleaner(credentialCleaners) }
+
+    /**
      * 登录（APP-05a）：LoginService（ApiClient 保存会话、Router 恢复 pending_action）、守卫的会话状态、登出。协议版本取包内默认配置的
      * legal.*.version（BR-ID-04）。隐私结论、强更状态变化后重新同步会话状态（撤回清理、受限会话刷新会改变它）。
      */
@@ -718,6 +736,7 @@ object AppModule {
         clipboard: Provider<AppClipboard>,
         trade: Provider<AppTrade>,
         pendingInvite: PendingInviteCode,
+        lastLoginMethod: LastLoginMethodStore,
     ): AppLogin =
         AppLogin(
             client = client,
@@ -729,24 +748,12 @@ object AppModule {
             // 第三方登录（APP-05b）：Release 微信适配器恒不可用；Debug / Staging 本机假服务打开时是假适配器
             adapters = listOf(variantWechatAdapter(context, AndroidInstalledAppProbe(context))),
             pendingInvite = pendingInvite,
+            lastLoginMethod = lastLoginMethod,
         ).also { login ->
             privacy.onConclusionChanged { login.syncSession() }
             update.onRouterUpdate { login.syncSession() }
-            // 邀请码行【粘贴】的剪贴板来源（APP-07）。游客邀请确认的码在共享的待绑定码里（APP-17c），不再经这里预填
-            login.invite =
-                object : InvitePasteSource {
-                    override fun paste(): String? = clipboard.get().pasteInviteCode()
-
-                    // G15：还没看过用途说明时先出弹层，关掉后同一次点击读一次、抽码填回这个输入框
-                    override fun pasteLater(onFilled: (String?) -> Unit): Boolean {
-                        val board = clipboard.get()
-                        if (!board.manualNoticeNeeded()) return false
-                        board.pasteInviteCode(onFilled)
-                        return true
-                    }
-
-                    override val blocked: StateFlow<Boolean> get() = clipboard.get().blocked
-                }
+            // 登录求助（APP-17a 坑 18）：每次点击现读 ConfigStore 的 help_links.login_help（与购买页同一个读取函数），不在这里缓存
+            login.helpLink = { key -> trade.get().helpLink(key) }
             // 剪贴板普通互斥模态的生产来源（FU-AND-0724 G28 / G29）：登录、购买、更新三个服务都已构造完成后一次接上（不在 appClipboard
             // provider 里取 AppLogin，避免循环依赖）；在 loginBuilt 之前接，订阅的初始同步不会经浮层来源回头取 AppLogin
             val board = clipboard.get()

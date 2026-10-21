@@ -21,12 +21,14 @@ import com.couli.app.trade.AppTrade
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.StoreAccess
 import com.couli.app.wallet.AppWallet
+import com.couli.core.clientcore.ConfigReply
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clientcore.TrackerQueue
 import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentStartupReconciler
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
+import com.couli.core.config.SharedPreferencesNamespaceCleaner
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ApiClientPageApi
 import com.couli.core.network.DeviceIdReader
@@ -34,6 +36,7 @@ import com.couli.core.network.DeviceRegistry
 import com.couli.core.network.InFlightCalls
 import com.couli.core.network.MemoryDeviceCredentialStore
 import com.couli.core.network.MemorySessionTokens
+import com.couli.core.privacy.CredentialCleanerRegistry
 import com.couli.core.privacy.PrivacyGate
 import com.couli.core.privacy.PrivacyStore
 import com.couli.core.privacy.RetryScheduler
@@ -58,7 +61,9 @@ import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 
 /** 真正经过 AppModule.apiClient/appClipboard/appLogin，测试不复制 onSessionStored 回调。 */
-internal class ClipboardReviewLogin0724Graph : AutoCloseable {
+internal class ClipboardReviewLogin0724Graph(
+    var configJson: String = ClipboardReview0724Harness.CONFIG,
+) : AutoCloseable {
     val context = ApplicationProvider.getApplicationContext<Application>()
     val queue = ClipboardReviewQueue0724()
     private val job = Job()
@@ -67,10 +72,12 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
     private val environment = EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED }.also { it.settleAtStartup() }
     val cleaners = EnvironmentSwitchCleanerRegistry()
     private val inFlight = InFlightCalls()
+    val credentialCleaners = CredentialCleanerRegistry()
+    val lastLoginMethod = AppModule.lastLoginMethodStore(context, credentialCleaners)
     val privacy =
         AppPrivacy(
             PrivacyGate(ConsentedStore(), { NOW }, "1").apply {
-                withdrawalCleanup = {}
+                withdrawalCleanup = { credentialCleaners.cleanAll() }
                 retryScheduler = RetryScheduler { _, _ -> }
             },
             { true },
@@ -79,7 +86,11 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
     val pendingInvite = AppModule.pendingInviteCode(privacy, cleaners)
     val routing = AppRouting(context, environment, clock = { NOW }, initialPrivacy = PrivacyState.CONSENTED)
     private val update = updateService()
-    private val config = AppConfig(ConfigStore({ null }, {}, { _, _ -> }, { NOW }, ClipboardReview0724Harness.CONFIG), { true })
+    val config =
+        AppConfig(
+            ConfigStore({ null }, {}, { _, done -> done(ConfigReply(ConfigReply.OK, configJson, null)) }, { NOW }, configJson),
+            { true },
+        )
     val client: ApiClient
     var board: AppClipboard
         private set
@@ -91,6 +102,8 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
 
     init {
         Dispatchers.setMain(queue)
+        lastLoginMethod.clear()
+        cleaners.register(SharedPreferencesNamespaceCleaner(context))
         context
             .getSharedPreferences(CouliPreferenceNamespaces.CLIPBOARD, Context.MODE_PRIVATE)
             .edit()
@@ -151,6 +164,7 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
                 Provider { board },
                 Provider { trade },
                 pendingInvite = pendingInvite,
+                lastLoginMethod = lastLoginMethod,
             )
         settle()
     }
@@ -178,8 +192,29 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
         } while (queue.size > 0 || !main.isIdle)
     }
 
+    fun logout() {
+        val task = scope.async { login.logout() }
+        until("登出结算") { task.isCompleted }
+        assertTrue(task.getCompleted())
+    }
+
+    fun until(
+        label: String,
+        condition: () -> Boolean,
+    ) {
+        val deadline =
+            System.nanoTime() +
+                java.util.concurrent.TimeUnit.SECONDS
+                    .toNanos(10)
+        do {
+            settle()
+            Thread.yield()
+        } while (!condition() && System.nanoTime() < deadline)
+        assertTrue(label, condition())
+    }
+
     fun loginAs(phone: String) {
-        val task = scope.async { login.service.login(phone, "123456", NOW, "", false) }
+        val task = scope.async { login.service.login(phone, "123456", NOW, false) }
         // 完成屏障：等真实 IO 返回及生产 Handler 通知，不用固定 sleep 后宣称结算。
         val deadline =
             System.nanoTime() +
@@ -292,6 +327,7 @@ internal class ClipboardReviewLogin0724Graph : AutoCloseable {
 
     override fun close() {
         board.onBackground()
+        lastLoginMethod.clear()
         job.cancel()
         settle()
         Dispatchers.resetMain()

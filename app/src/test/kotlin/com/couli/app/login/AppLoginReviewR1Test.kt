@@ -296,7 +296,7 @@ class AppLoginReviewR1Test {
         var outcome: com.couli.feature.login.LoginOutcome? = null
         composeRule.runOnUiThread {
             CoroutineScope(Dispatchers.Main.immediate).launch {
-                outcome = login.service.login("13800138000", "123456", now, "", restricted = false)
+                outcome = login.service.login("13800138000", "123456", now, restricted = false)
             }
         }
         idleUntil { refreshing.count == 0L }

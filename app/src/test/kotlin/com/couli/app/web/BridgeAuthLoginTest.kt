@@ -237,7 +237,7 @@ class BridgeAuthLoginTest {
         var outcome: LoginOutcome? = null
         composeRule.runOnUiThread {
             CoroutineScope(Dispatchers.Main.immediate).launch {
-                outcome = login.service.login("13800138000", "123456", now, "", restricted = false)
+                outcome = login.service.login("13800138000", "123456", now, restricted = false)
             }
         }
         idleUntil { replies.isNotEmpty() && outcome != null }
@@ -297,7 +297,7 @@ class BridgeAuthLoginTest {
         var outcome: LoginOutcome? = null
         composeRule.runOnUiThread {
             CoroutineScope(Dispatchers.Main.immediate).launch {
-                outcome = login.service.login("13800138000", "123456", now, "", restricted = false)
+                outcome = login.service.login("13800138000", "123456", now, restricted = false)
             }
         }
         idleUntil { replies.size == 2 && outcome != null }

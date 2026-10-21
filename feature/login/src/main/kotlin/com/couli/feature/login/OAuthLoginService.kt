@@ -52,6 +52,11 @@ data class OAuthLoginOutcome(
         const val UNAVAILABLE = "unavailable"
         const val TIMEOUT = "timeout"
         const val UNAVAILABLE_KEY = "login.wechat_unavailable"
+
+        /**
+         * F6（APP-17a 评审 r1 followup）：授权在途期间页面取消了同意——不提交、不提示，页面回到需重新同意的状态（同 S1-1 口径，不自动弹确认框）。
+         */
+        const val CONSENT_WITHDRAWN = "consent_withdrawn"
     }
 }
 
@@ -131,10 +136,15 @@ class OAuthLoginService(
     /** F-X-12：[provider] 是 Debug / Staging 专用入口且此刻不可用（点击只提示、不发请求）。 */
     fun debugOnly(provider: String): Boolean = adapters[provider]?.let { !available(it) && hint(it) != null } == true
 
-    /** [consentAtMillis]：勾选或确认框同意的时刻（同短信登录，BR-ID-04）。 */
+    /**
+     * [consentAtMillis]：勾选或确认框同意的时刻（同短信登录，BR-ID-04）。[consentNow]：页面此刻的同意时刻（未同意为 null）——授权在途期间
+     * 用户可能取消勾选（F6），拉起第三方前、提交凭证前各复核一次：取消了就终止尝试（[OAuthLoginOutcome.CONSENT_WITHDRAWN]），
+     * 不以开始时取走的同意时刻登录；仍同意时请求带此刻的同意时刻。
+     */
     suspend fun loginWith(
         provider: String,
         consentAtMillis: Long?,
+        consentNow: () -> Long? = { consentAtMillis },
     ): OAuthLoginOutcome {
         val adapter = adapters[provider]
         val operationId = OAuthProvider.loginOperation(provider)
@@ -155,7 +165,7 @@ class OAuthLoginService(
         val bound = { tokens.loginEpoch == startEpoch && client.inFlight.epochs() == startEpochs }
         val ticket = login.beginThirdParty(bound) { epoch -> phoneBinding.markUnverified(epoch) }
         try {
-            return run(provider, operationId, adapter, consentAtMillis, ticket, bound).copy(provider = provider)
+            return run(provider, operationId, adapter, consentNow, ticket, bound).copy(provider = provider)
         } finally {
             running = false
             login.thirdPartyBusy = false
@@ -168,7 +178,7 @@ class OAuthLoginService(
         provider: String,
         operationId: String,
         adapter: ThirdPartyAuthAdapter,
-        consentAtMillis: Long,
+        consentNow: () -> Long?,
         ticket: AttemptTicket,
         bound: () -> Boolean,
     ): OAuthLoginOutcome {
@@ -187,6 +197,8 @@ class OAuthLoginService(
                 trace6 = trace6(created.traceId),
             )
         }
+        // F6：取尝试期间取消了同意——不拉起第三方
+        if (!consentHeld(consentNow)) return OAuthLoginOutcome(OAuthLoginOutcome.CONSENT_WITHDRAWN)
         // 2. 拉起第三方；迟到的回调（取消、离页、超时之后）只交给 session 记为丢弃
         val handle = session.create()
         session.launch(handle)
@@ -243,8 +255,14 @@ class OAuthLoginService(
                 return OAuthLoginOutcome(OAuthLoginErrorAction.REAUTHORIZE, textKey = REAUTHORIZE_KEY)
             }
         }
+        // F6：授权在途期间取消了同意——本次尝试终止，凭证不提交；页面重新同意后从入口重新发起
+        val consentAt = consentNow()?.takeIf { it > 0L }
+        if (consentAt == null) {
+            session.cancel()
+            return OAuthLoginOutcome(OAuthLoginOutcome.CONSENT_WITHDRAWN)
+        }
         // 3. 客户端自查：SDK 回传的 state 必须等于本次 nonce（微信 state；Apple 由服务端核对 nonce）
-        val body = loginBody(provider, attemptId, accepted, consentAtMillis)
+        val body = loginBody(provider, attemptId, accepted, consentAt)
         if ((provider == OAuthProvider.WECHAT && accepted.state != nonce) || body == null) {
             session.cancel()
             return OAuthLoginOutcome(OAuthLoginErrorAction.REAUTHORIZE, textKey = REAUTHORIZE_KEY)
@@ -256,7 +274,7 @@ class OAuthLoginService(
             if (!login.ticketValid(ticket)) return OAuthLoginOutcome(LoginOutcome.STALE)
             return failure(result)
         }
-        return loggedIn(result, ticket)
+        return loggedIn(result, ticket, provider)
     }
 
     /** 登录响应已保存会话：分流、暂缓待办、老用户查 phone_bound。 */
@@ -264,6 +282,7 @@ class OAuthLoginService(
     private suspend fun loggedIn(
         result: ApiResult.Success,
         ticket: AttemptTicket,
+        provider: String,
     ): OAuthLoginOutcome {
         val data = result.data as? JsonObject ?: JsonObject(emptyMap())
         val route = OAuthLoginRoute.ofData(data)
@@ -273,7 +292,8 @@ class OAuthLoginService(
         // 第三方新号没有手机号（BR-ID-04：第三方首次登录即注册、不强制绑手机）；老用户保存时已记为待查
         if (isNew) phoneBinding.set(epoch, false)
         val guide = route.routeRaw == OAuthLoginRoute.BIND_PHONE_GUIDE && guideEnabled()
-        val finished = login.finishThirdPartyLogin(result, ticket, hold = full)
+        // 上次登录方式（G05）：与短信同一份存储，由执行器在会话保存且尝试有效后写，带授权开始时捕获的修订号（ticket，G29）
+        val finished = login.finishThirdPartyLogin(result, ticket, hold = full, provider = provider)
         if (finished.stateRaw != LoginOutcome.LOGGED_IN) {
             return OAuthLoginOutcome(finished.stateRaw, textKey = finished.textKey, trace6 = finished.trace6, login = finished)
         }
@@ -425,6 +445,8 @@ class OAuthLoginService(
                 OAuthLoginOutcome(OAuthLoginErrorAction.SERVICE_ERROR, textKey = LoginService.GENERIC_KEY)
             }
         }
+
+    private fun consentHeld(consentNow: () -> Long?): Boolean = (consentNow() ?: 0L) > 0L
 
     private fun available(adapter: ThirdPartyAuthAdapter): Boolean = runCatching { adapter.adapterAvailable() }.getOrDefault(false)
 

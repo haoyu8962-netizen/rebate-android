@@ -127,7 +127,7 @@ class LoginServiceIntegrationTest {
             assertEquals(2, requests.size)
 
             answer = { loggedIn(SessionScopeRaw.FULL) }
-            val outcome = service.login("13800138000", "123456", now, "", restricted = false)
+            val outcome = service.login("13800138000", "123456", now, restricted = false)
             assertEquals(LoginOutcome.LOGGED_IN, outcome.stateRaw)
         }
 
@@ -146,11 +146,11 @@ class LoginServiceIntegrationTest {
     fun wrongAndExpiredCodesMapToTheirPageStates() =
         runBlocking {
             answer = { envelope(20002, "null") }
-            val wrong = service.login("13800138000", "111111", now, "", restricted = false)
+            val wrong = service.login("13800138000", "111111", now, restricted = false)
             assertEquals("code_error", wrong.stateRaw)
             assertEquals("error.20002", wrong.textKey)
             answer = { envelope(20003, "null") }
-            val expired = service.login("13800138000", "111111", now, "", restricted = false)
+            val expired = service.login("13800138000", "111111", now, restricted = false)
             assertEquals(LoginErrorMapper.STATE_CODE_EXPIRED, expired.stateRaw)
             assertNull("没有保存会话", tokens.accessToken)
             assertTrue("没有通知 Router", host.events.isEmpty())
@@ -160,7 +160,7 @@ class LoginServiceIntegrationTest {
     fun anAccountBeingDeletedEndsInLoginDeletionProcessing() =
         runBlocking {
             answer = { envelope(10007, """{"stage":"processing"}""") }
-            val outcome = service.login("13800138000", "123456", now, "", restricted = false)
+            val outcome = service.login("13800138000", "123456", now, restricted = false)
             assertEquals(LoginErrorMapper.STATE_DELETION_PROCESSING, outcome.stateRaw)
             assertEquals("error.10007", outcome.textKey)
             assertNull(tokens.accessToken)
@@ -169,7 +169,7 @@ class LoginServiceIntegrationTest {
     @Test
     fun loginWithoutConsentIsNotSent() =
         runBlocking {
-            assertEquals(LoginOutcome.AGREEMENT_REQUIRED, service.login("13800138000", "123456", null, "", false).stateRaw)
+            assertEquals(LoginOutcome.AGREEMENT_REQUIRED, service.login("13800138000", "123456", null, false).stateRaw)
             assertTrue(requests.isEmpty())
         }
 
@@ -182,7 +182,7 @@ class LoginServiceIntegrationTest {
             host.onEvent = { event -> if (event == "resume_pending") host.sessionAtResume = tokens.accessToken }
             answer = { loggedIn(SessionScopeRaw.FULL, invite = ""","invite_bind":{"result":"bound","code":null}""") }
             service.pendingInvite.set(" k7m3qx ")
-            val outcome = service.login("13800138000", "123456", CONSENT_AT, "IGNORED", restricted = false)
+            val outcome = service.login("13800138000", "123456", CONSENT_AT, restricted = false)
 
             assertEquals(LoginOutcome.LOGGED_IN, outcome.stateRaw)
             assertEquals(listOf(AfterLoginAction.SAVE_SESSION, AfterLoginAction.RESUME_PENDING), outcome.actions)
@@ -203,7 +203,7 @@ class LoginServiceIntegrationTest {
             update = UpdateRaw.BELOW
             host.update = AfterLoginUpdate.BELOW
             service.pendingInvite.set("K7M3QX")
-            service.login("13800138000", "123456", now, "K7M3QX", restricted = true)
+            service.login("13800138000", "123456", now, restricted = true)
             assertEquals("K7M3QX", service.pendingInvite.peek())
             assertFalse(body(requests.single()).containsKey("invite_code"))
         }
@@ -215,7 +215,7 @@ class LoginServiceIntegrationTest {
             host.update = AfterLoginUpdate.UNKNOWN
             update = UpdateRaw.UNKNOWN
             answer = { loggedIn(SessionScopeRaw.DELETION_ONLY) }
-            val outcome = service.login("13800138000", "123456", now, "", restricted = true)
+            val outcome = service.login("13800138000", "123456", now, restricted = true)
             assertEquals(
                 listOf(AfterLoginAction.SAVE_SESSION, AfterLoginAction.DISCARD_PENDING, AfterLoginAction.ENTER_FORCE_UPDATE),
                 outcome.actions,
@@ -231,7 +231,7 @@ class LoginServiceIntegrationTest {
             host.pending = true
             answer =
                 { request -> if (request.path == REFRESH) refreshed(SessionScopeRaw.FULL) else loggedIn(SessionScopeRaw.DELETION_ONLY) }
-            val outcome = service.login("13800138000", "123456", now, "", restricted = false)
+            val outcome = service.login("13800138000", "123456", now, restricted = false)
             assertEquals(
                 listOf(AfterLoginAction.SAVE_SESSION, AfterLoginAction.REFRESH_RESTRICTED, AfterLoginAction.RESUME_PENDING),
                 outcome.actions,
@@ -248,7 +248,7 @@ class LoginServiceIntegrationTest {
             answer = { request ->
                 if (request.path == REFRESH) refreshed(SessionScopeRaw.DELETION_ONLY) else loggedIn(SessionScopeRaw.DELETION_ONLY)
             }
-            val outcome = service.login("13800138000", "123456", now, "", restricted = false)
+            val outcome = service.login("13800138000", "123456", now, restricted = false)
             assertEquals(
                 listOf(AfterLoginAction.SAVE_SESSION, AfterLoginAction.REFRESH_RESTRICTED, LoginService.HOLD_PENDING),
                 outcome.actions,
@@ -273,7 +273,7 @@ class LoginServiceIntegrationTest {
                 }
             }
             val started = System.nanoTime()
-            val login = async(Dispatchers.Default) { service.login("13800138000", "123456", now, "", restricted = false) }
+            val login = async(Dispatchers.Default) { service.login("13800138000", "123456", now, restricted = false) }
             assertTrue(withContext(Dispatchers.IO) { refreshing.await(WAIT_S, TimeUnit.SECONDS) })
             service.invalidateAttempt()
             val outcome = login.await()
@@ -294,7 +294,7 @@ class LoginServiceIntegrationTest {
                 release.await(WAIT_S, TimeUnit.SECONDS)
                 loggedIn(SessionScopeRaw.FULL)
             }
-            val login = async(Dispatchers.Default) { service.login("13800138000", "123456", now, "", restricted = false) }
+            val login = async(Dispatchers.Default) { service.login("13800138000", "123456", now, restricted = false) }
             assertTrue(withContext(Dispatchers.IO) { arrived.await(WAIT_S, TimeUnit.SECONDS) })
             service.invalidateAttempt()
             release.countDown()

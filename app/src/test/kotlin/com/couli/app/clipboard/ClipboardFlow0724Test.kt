@@ -346,7 +346,7 @@ class ClipboardFlow0724Test {
         }
 
     @Test
-    fun g25_searchTypingButtonLooksUpButInviteFieldOnlyFills() =
+    fun g25_searchTypingLooksUpButInviteBackfillPasteOnlyFills() =
         runTest {
             Clipboard0724Fixture(this, enabled = false).use { f ->
                 f.foreground()

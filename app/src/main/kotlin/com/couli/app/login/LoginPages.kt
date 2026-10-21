@@ -34,6 +34,7 @@ import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.me.MeDraftTexts
 import com.couli.core.router.SessionState
 import com.couli.feature.login.BindPhoneGuideDialog
 import com.couli.feature.login.BindPhoneScreen
@@ -92,7 +93,7 @@ fun SettingsRoute(
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = CouliSpacing.space1)) {
             CouliIconButton(icon = CouliIcons.back, label = texts.text("login.back"), onClick = onBack)
             Text(
-                text = texts.text("login.settings"),
+                text = MeDraftTexts.text(SETTINGS_TITLE_KEY),
                 style = CouliTypography.title,
                 color = CouliColors.textPrimary,
                 modifier = Modifier.semantics { heading() },
@@ -185,3 +186,6 @@ fun LoginNoticeHost(
 }
 
 private const val TOAST_MILLIS = 2_000L
+
+/** 设置页标题（「我的」草稿表 settings.title；登录页的设置入口与 login.settings 已在 APP-17a 删除）。 */
+private const val SETTINGS_TITLE_KEY = "settings.title"

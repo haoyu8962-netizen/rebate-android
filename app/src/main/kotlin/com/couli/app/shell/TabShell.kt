@@ -31,7 +31,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.couli.app.home.HomeTonalButton
-import com.couli.app.login.LoginDraftTexts
 import com.couli.app.trade.AuthManageEntry
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
@@ -46,6 +45,7 @@ import com.couli.core.designsystem.SearchEntry as CouliSearchEntry
 import com.couli.core.designsystem.TabBar
 import com.couli.core.designsystem.TabItem
 import com.couli.core.home.HomeDraftTexts
+import com.couli.core.me.MeDraftTexts
 import com.couli.core.wallet.WalletDraftTexts
 import com.couli.generated.DefaultTexts
 
@@ -281,7 +281,7 @@ fun MeWithEntries(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = LoginDraftTexts.text(SETTINGS_TEXT_KEY),
+                    text = MeDraftTexts.text(SETTINGS_TEXT_KEY),
                     style = CouliTypography.body,
                     color = CouliColors.textPrimary,
                     modifier = Modifier.weight(1f),
@@ -293,7 +293,7 @@ fun MeWithEntries(
     }
 }
 
-private const val SETTINGS_TEXT_KEY = "login.settings"
+private const val SETTINGS_TEXT_KEY = "settings.title"
 private const val WALLET_TEXT_KEY = "wallet.title"
 
 /** 「我的」占位页上的【钱包】冒烟入口（APP-09）。 */

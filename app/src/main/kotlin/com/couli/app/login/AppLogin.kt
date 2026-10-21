@@ -26,7 +26,7 @@ import com.couli.feature.login.BindPhoneOwner
 import com.couli.feature.login.BindPhonePageActions
 import com.couli.feature.login.BindPhonePageConfig
 import com.couli.feature.login.BindPhoneService
-import com.couli.feature.login.InvitePasteSource
+import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginHost
 import com.couli.feature.login.LoginOutcome
@@ -123,9 +123,15 @@ class AppLogin(
      * （短信登录提交时取走、登录页小字行现读）。离开登录页、会话变化、进出后台都不清；隐私与环境的清理由容器的提供函数自己登记。
      */
     val pendingInvite: PendingInviteCode,
+    /**
+     * 上次登录方式（APP-17a，G05）：AppModule 的 Hilt 单例（独立 SharedPreferences、登记进撤回同意清理）；交给 [service]，短信与第三方登录
+     * 共用这一份。没有偏好存储的旧夹具不给（不记）。
+     */
+    lastLoginMethod: LastLoginMethodStore? = null,
 ) : LoginHost,
     BindPhoneHost {
-    val service: LoginService = LoginService(client, tokens, this, legal, sessionScope, pendingInvite)
+    val service: LoginService =
+        LoginService(client, tokens, this, legal, sessionScope, pendingInvite).also { it.lastLoginMethod = lastLoginMethod }
 
     /**
      * 登录任务进行中（FU-AND-0724 G28：剪贴板自动识别的普通互斥模态 login，首页等非登录页上发起的登录任务）：真实 [LoginService] 的发码、
@@ -413,14 +419,16 @@ class AppLogin(
         return wait.result.await()
     }
 
-    /** 邀请码行【粘贴】的剪贴板来源（APP-07，AppModule 接 AppClipboard）；没有时登录页不显示【粘贴】。 */
-    var invite: InvitePasteSource? = null
-
     /** 会话保存、刷新、清理通知的转发（AppModule 接剪贴板，按登录世代判断换号）；在 Router 同步之后调。 */
     var sessionStoredListener: (() -> Unit)? = null
 
-    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心。 */
+    /** 统一客服出口（APP-12 brief §2.9；AppModule 接 AppMe）。没接时打开帮助中心（坑 19：[HELP_ROUTE] 仍是这里的缺省出口，不能删）。 */
     var customerService: (fromRoute: String) -> Unit = { open(HELP_ROUTE) }
+
+    /**
+     * /v1/config.help_links.<key> 的现读（AppModule 接 AppTrade.helpLink，每次点击读 ConfigStore 当前配置）：{route, params}，没配为 null。
+     */
+    var helpLink: (key: String) -> Pair<String, JsonObject>? = { null }
 
     /** 登录有效完成时的登录世代（APP-12 推送上报只认它为「真实登录成功」，共性第 3 条；AppModule 接 AppMe）。 */
     var onLoginCompleted: (loginEpoch: Long) -> Unit = {}
@@ -438,14 +446,12 @@ class AppLogin(
             oauth = oauth,
             // 共性第 28 条（FU-AND-0716 第 2 轮）：受限登录也保留第三方入口——仅第三方身份的已有账号要能登进 deletion_only 去注销（BR-ID-01）
             thirdParty = oauth.visibleProviders(),
-            // 邀请码行【粘贴】的剪贴板来源（APP-07）；受限登录不用。游客邀请确认的码在待绑定码里（APP-17c），不再预填
-            invite = if (restricted) null else invite,
+            // APP-17a：登录页没有设置入口、没有邀请码手填框与【粘贴】；游客邀请确认的码在待绑定码里（APP-17c）
             actions =
                 LoginPageActions(
                     onClose = ::closeLogin,
-                    onSettings = { open(SETTINGS_ROUTE) },
-                    // login.help_entry：help_links.login_help 未配置时打开帮助中心首页（BR-TEXT-14 表 C）。TODO(N-26)：接 help_links.login_help
-                    onHelp = { open(HELP_ROUTE) },
+                    // login.help_entry / login.code.help_entry：读 help_links.login_help（坑 18），没配或不合法打开帮助中心首页
+                    onHelp = ::openLoginHelp,
                     onAgreement = { type -> openAgreement(type, restricted) },
                     // 统一客服出口（APP-12 brief §2.9，G20）：原样 kf.url，未装微信给复制客服链接与帮助中心
                     onCustomerService = { customerService(RouteNames.LOGIN) },
@@ -693,6 +699,23 @@ class AppLogin(
         routing.router.open(RouteRequest(route, JsonObject(emptyMap()), RouteSource.IN_APP))
     }
 
+    /**
+     * 登录求助（BR-TEXT-14 表 C login.help_entry / login.code.help_entry；坑 18）：每次点击现读 help_links.login_help；只有 route = Help 且
+     * params.article_id 是非空白字符串时打开那篇文章，其余（没配、不是对象、别的路由、article_id 缺失 / 空白 / 非字符串）打开帮助中心首页。
+     */
+    private fun openLoginHelp() {
+        val link = helpLink(LOGIN_HELP_KEY)
+        val article =
+            link
+                ?.takeIf { it.first == HELP_ROUTE }
+                ?.second
+                ?.get(ARTICLE_ID)
+                ?.let { it as? JsonPrimitive }
+                ?.takeIf { it.isString && it.content.isNotBlank() }
+        val params = article?.let { JsonObject(mapOf(ARTICLE_ID to it)) } ?: JsonObject(emptyMap())
+        routing.router.open(RouteRequest(HELP_ROUTE, params, RouteSource.IN_APP))
+    }
+
     /** 协议链接：受限登录（强更状态）以「从强更页进入」打开，否则守卫会把它重定向回强更页（03 §4.1）。 */
     private fun openAgreement(
         type: String,
@@ -713,8 +736,10 @@ class AppLogin(
             runCatching { entry.toRoute<RouteDestination>().name == name }.getOrDefault(false)
 
     private companion object {
-        const val SETTINGS_ROUTE = "Settings"
+        /** 帮助中心（登录求助的回退、统一客服出口没接时的缺省，坑 19）。 */
         const val HELP_ROUTE = "Help"
+        const val LOGIN_HELP_KEY = "login_help"
+        const val ARTICLE_ID = "article_id"
         const val AUTH_PHONE = "phone"
         const val AGREEMENT_ROUTE = "Agreement"
         const val INVITE_BOUND = "bound"

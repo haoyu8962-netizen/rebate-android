@@ -60,9 +60,9 @@ class PendingInviteRow17cTest {
                         val model = LoginViewModel(LoginPageConfig(f.service, Keys, restricted))
                         try {
                             model.onPhoneChange("13800138000")
+                            model.onToggleAgreement()
                             model.onContinueCode()
                             assertEquals(LoginStep.CODE, model.state.value.step)
-                            assertEquals("不得预填旧输入框", "", model.state.value.invite)
                             assertEquals(if (restricted) null else "K7M2QX", model.pendingInviteRow?.code)
                             assertEquals("K7M2QX", f.pending.peek())
                         } finally {

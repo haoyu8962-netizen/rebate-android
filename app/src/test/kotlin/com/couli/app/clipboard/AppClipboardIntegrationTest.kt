@@ -90,7 +90,6 @@ import com.couli.core.router.SharedPreferencesPendingBackend
 import com.couli.core.router.UpdateCheck
 import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.feature.home.HomeTags
-import com.couli.feature.login.InvitePasteSource
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.LoginTags
 import com.couli.feature.login.PendingInviteCode
@@ -429,13 +428,6 @@ class AppClipboardIntegrationTest {
                     UpdateCheck.OK
                 }, markBelow = {}, legal = LegalVersions(1, 1), pendingInvite = clipboard.pendingInvite)
             login.syncSession()
-            // 与 AppModule 同一个邀请码来源
-            login.invite =
-                object : InvitePasteSource {
-                    override fun paste(): String? = clipboard.pasteInviteCode()
-
-                    override val blocked: StateFlow<Boolean> get() = clipboard.blocked
-                }
         }
         val home = composeRule.runOnUiThread { clipboardTestHome(api, tokens, routing, privacy) }
         composeRule.setContent {
@@ -1480,29 +1472,6 @@ class AppClipboardIntegrationTest {
         composeRule.runOnUiThread { clipboard.paste(ManualPasteAction.ENTRY_HOME) }
         assertEquals("禁用期内执行层不读", reads, system.reads)
         assertEquals(1, parseRequests().size)
-    }
-
-    /** A-R1-06：42901 禁用期内，登录页邀请码【粘贴】置灰；执行层也不读剪贴板，不误报「未识别到邀请码」。 */
-    @Test
-    fun rateLimitAlsoDisablesTheLoginInvitePaste() {
-        parseAnswer = { envelope(42901, "null").setResponseCode(429).setHeader("Retry-After", "60") }
-        launch()
-        copy(LINK)
-        foreground()
-        idleUntil { clipboard.parseCount > 0 } // 0724：自动直接 parse，不点击商品提示条
-        idleUntil { clipboard.blocked.value }
-        copy("邀请码 K7M2QX")
-        composeRule.runOnUiThread { routing.router.open(RouteRequest(RouteNames.LOGIN, JsonObject(emptyMap()), RouteSource.IN_APP)) }
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag(LoginTags.INVITE_ENTRY).performClick()
-        composeRule.onNodeWithTag(LoginTags.INVITE_PASTE).assertIsDisplayed().assertIsNotEnabled()
-        val reads = system.reads
-        // 执行层：登录页拿到的同一个来源，禁用期内不读
-        assertTrue(checkNotNull(login.invite).blocked.value)
-        assertNull(composeRule.runOnUiThread<String?> { checkNotNull(login.invite).paste() })
-        assertEquals("禁用期内不读剪贴板", reads, system.reads)
-        composeRule.onNodeWithText("未识别到邀请码").assertDoesNotExist()
-        assertEquals(0, system.writes)
     }
 
     /** A-R1-07：24 小时内识别过 51 个不同候选，再复制第 1 个回前台不上传、不出卡（去重记录不被条数上限挤掉）。 */

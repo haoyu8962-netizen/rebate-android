@@ -39,7 +39,7 @@ import org.robolectric.annotation.Config
  * - 勾选单元、《用户协议》、《隐私政策》三个命中区各自独立、各不小于 48dp，互不重叠（默认宽度与 320dp × 200% 字号）；
  * - 320dp × 200% 字号下六个验证码格都在屏幕内完整可见，格高不小于数字行高；
  * - 确认框里的两个协议是两个可单独聚焦、可点的链接：点了关确认框（不算同意）并打开协议页；
- * - 读屏顺序（从上到下、从左到右）：关闭 → 设置 → 手机号 → 协议勾选 →《用户协议》→《隐私政策》→ 获取验证码 → 邀请码入口 → 登录遇到问题。
+ * - 读屏顺序（从上到下、从左到右）：关闭 → 手机号 → 协议勾选 →《用户协议》→《隐私政策》→ 获取验证码 → 登录遇到问题。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class, sdk = [36], qualifiers = "w390dp-h844dp-xxhdpi")
@@ -155,16 +155,15 @@ class LoginScreenLayoutTest {
     @Test
     fun readingOrderFollowsA11yFocusLogin() {
         show()
+        listOf("login_settings", "login_invite_entry").forEach { composeRule.onNodeWithTag(it).assertDoesNotExist() }
         val order =
             listOf(
                 LoginTags.CLOSE,
-                LoginTags.SETTINGS,
                 LoginTags.PHONE,
                 LoginTags.AGREE,
                 LoginTags.LINK_AGREEMENT,
                 LoginTags.LINK_PRIVACY,
                 LoginTags.GET_CODE,
-                LoginTags.INVITE_ENTRY,
                 LoginTags.HELP,
             ).map { tag -> tag to bounds(tag) }
         val sameRow = with(composeRule.density) { ROW_SLACK_DP.dp.toPx() }
@@ -179,7 +178,7 @@ class LoginScreenLayoutTest {
     @Test
     fun restrictedLoginHidesBusinessEntries() {
         show(restricted = true)
-        listOf(LoginTags.SETTINGS, LoginTags.INVITE_ENTRY, LoginTags.HELP, LoginTags.THIRD_PARTY).forEach { tag ->
+        listOf("login_settings", "login_invite_entry", LoginTags.HELP, LoginTags.THIRD_PARTY).forEach { tag ->
             assertTrue("$tag 不显示", composeRule.onAllNodesWithTagCompat(tag) == 0)
         }
     }

@@ -89,18 +89,17 @@ object LoginTags {
     const val LINK_PRIVACY = "login_link_privacy"
     const val GET_CODE = "login_get_code"
     const val CONTINUE_CODE = "login_continue_code"
-    const val INVITE_ENTRY = "login_invite_entry"
-    const val INVITE = "login_invite"
-    const val INVITE_PASTE = "login_invite_paste"
     const val CODE = "login_code"
     const val CODE_CELL = "login_code_cell_"
     const val RESEND = "login_resend"
-    const val SUBMIT = "login_submit"
+
+    /** 求助入口（手机号页 login.help_entry、验证码页 login.code.help_entry；一页只有一个）。 */
     const val HELP = "login_help"
-    const val SETTINGS = "login_settings"
     const val CLOSE = "login_close"
     const val BACK = "login_back"
-    const val CONFIRM_OK = "login_confirm_ok"
+
+    /** 协议确认框主按钮（同意并获取验证码 / 同意并登录，按动作取键）。 */
+    const val CONFIRM_PRIMARY = "login_confirm_primary"
     const val CONFIRM_LINK_AGREEMENT = "login_confirm_link_agreement"
     const val CONFIRM_LINK_PRIVACY = "login_confirm_link_privacy"
     const val THIRD_PARTY = "login_third_party"
@@ -118,8 +117,11 @@ object LoginAgreementType {
 
 /**
  * 登录页（Login / LoginCode / LoginAgreeConfirm / LoginCodeBlocked / LoginDeletionProcessing / LoginSessionExpired；APP-05a）。
- * 读屏顺序按 A11yFocusLogin：关闭 → 设置 → 手机号 → 协议勾选 →《用户协议》→《隐私政策》→ 获取验证码 → 邀请码入口 → 其他登录方式 →
- * 登录遇到问题；品牌方块对读屏隐藏。命中区不小于 48dp，两个协议链接与勾选单元各自独立（共性第 6 条）。
+ * 读屏顺序按 A11yFocusLogin：关闭 → 手机号 → 协议勾选 →《用户协议》→《隐私政策》→ 获取验证码 → 其他登录方式 → 登录遇到问题；品牌方块
+ * 对读屏隐藏。命中区不小于 48dp，两个协议链接与勾选单元各自独立（共性第 6 条）。
+ *
+ * APP-17a（登录改版闸前）：只删入口（设置、邀请码入口与手填框、【粘贴】、告知句、验证码页勾选行与【登录】）、转发事件、改读屏名与文案键；
+ * 协议整句、确认框按动作取键、验证码满 6 位自动提交、验证码页求助入口都来自 [LoginViewModel]。DS-02 组件与排版在视觉闸后。
  */
 @Composable
 fun LoginScreen(
@@ -228,14 +230,6 @@ private fun TopBar(
             )
         }
         Spacer(Modifier.weight(1f))
-        if (!model.restricted) {
-            TextLink(
-                text = texts.text("login.settings"),
-                onClick = { model.settings() },
-                style = CouliTextStyles.footnoteMedium,
-                modifier = Modifier.testTag(LoginTags.SETTINGS),
-            )
-        }
     }
 }
 
@@ -284,23 +278,10 @@ private fun PhoneStep(
                 )
             }
         }
-        if (!config.restricted) {
-            if (state.inviteExpanded) {
-                InviteField(model, state, texts)
-            } else {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    TextLink(
-                        text = texts.text("login.invite.entry"),
-                        onClick = model::onExpandInvite,
-                        modifier = Modifier.testTag(LoginTags.INVITE_ENTRY),
-                    )
-                }
-            }
-        }
     }
     // 共性第 28 条：受限登录保留第三方入口（只隐藏帮助等业务入口）
     if (model.thirdParty.isNotEmpty()) ThirdPartySlot(model, state, texts)
-    if (!config.restricted) HelpEntry(model, texts)
+    if (!config.restricted) HelpEntry(model, texts.text("login.help_entry"))
 }
 
 @Composable
@@ -323,6 +304,7 @@ private fun CodeStep(
             color = CouliColors.textSecondary,
         )
     }
+    // 满 6 位自动提交（没有【登录】按钮、没有勾选行）；失败清格时输入框不卸载，焦点与键盘留在格子上（坑 23）
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
         CodeCells(model, state, texts)
         state.codeError?.let { message ->
@@ -330,21 +312,8 @@ private fun CodeStep(
         }
         ResendRow(model, state, texts)
     }
-    if (!config.restricted) InviteField(model, state, texts)
-    Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-        AgreementRow(model, state, texts)
-        CouliButton(
-            text = texts.text("login.submit"),
-            onClick = model::onLogin,
-            enabled = CodeInput.accept(state.code).complete && state.loginLimitedSec == 0,
-            loading = state.loggingIn,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .testTag(LoginTags.SUBMIT),
-        )
-    }
-    if (!config.restricted) HelpEntry(model, texts)
+    // 验证码页唯一的求助入口「收不到验证码？」（坑 18、25）；受限登录不显示业务入口
+    if (!config.restricted) HelpEntry(model, texts.text("login.code.help_entry"))
 }
 
 /** 品牌方块 72 × 72（设计稿固定尺寸，不随字号放大；对读屏隐藏，标题已说明页面）。 */
@@ -460,8 +429,8 @@ private fun InputBox(
 }
 
 /**
- * 协议行（共性第 6 条）：勾选单元（复选框 +「我已阅读并同意」）、《用户协议》、《隐私政策》三个命中区各自独立、各不小于 48dp；窄屏或大字号时
- * 按节换行。下方说明句是勾选单元的读屏描述。
+ * 协议行（共性第 6 条）：勾选单元（复选框 + 整句开头到第一个链接）、《用户协议》、《隐私政策》三个命中区各自独立、各不小于 48dp；窄屏或大字号时
+ * 按节换行。文字来自整句 login.agree.text（[AgreementSentence]，G16），勾选单元的读屏名是整句。
  */
 @Composable
 private fun AgreementRow(
@@ -469,64 +438,81 @@ private fun AgreementRow(
     state: LoginUiState,
     texts: LoginTexts,
 ) {
-    val prefix = texts.text("login.agree.prefix")
-    val note = texts.text("login.agree.hint")
+    val sentence = agreementSentence(texts, AGREE_TEXT_KEY)
     val checkedText = texts.text(if (state.agreed) "login.agree.checked" else "login.agree.unchecked")
-    Column {
-        FlowRow(verticalArrangement = Arrangement.Center, itemVerticalAlignment = Alignment.CenterVertically) {
-            Row(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            role = Role.Checkbox,
-                            onClick = model::onToggleAgreement,
-                        ).semantics(mergeDescendants = true) {
-                            contentDescription = "$prefix $note"
-                            toggleableState = ToggleableState(state.agreed)
-                            stateDescription = checkedText
-                        }.testTag(LoginTags.AGREE),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            ) {
-                CheckMark(state.agreed)
-                Text(
-                    text = prefix,
-                    style = CouliTypography.caption,
-                    color = CouliColors.textSecondary,
-                    modifier = Modifier.clearAndSetSemantics {},
-                )
-            }
-            Spacer(Modifier.width(CouliSpacing.space1))
-            TextLink(
-                text = texts.text("login.agree.agreement"),
-                onClick = { model.openAgreement(LoginAgreementType.AGREEMENT) },
-                style = CouliTypography.caption,
-                padding = 0.dp,
-                modifier = Modifier.testTag(LoginTags.LINK_AGREEMENT),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = texts.text("login.agree.and"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-                TextLink(
-                    text = texts.text("login.agree.privacy"),
-                    onClick = { model.openAgreement(LoginAgreementType.PRIVACY) },
-                    style = CouliTypography.caption,
-                    padding = 0.dp,
-                    modifier = Modifier.testTag(LoginTags.LINK_PRIVACY),
-                )
-                Text(text = texts.text("login.agree.suffix"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-            }
-        }
-        Text(
-            text = note,
-            style = CouliTypography.caption,
-            color = CouliColors.textSecondary,
+    val style = CouliTypography.caption
+    val lead = sentence.spans.firstOrNull()?.let { sentence.text.substring(0, it.start) } ?: sentence.text
+    FlowRow(verticalArrangement = Arrangement.Center, itemVerticalAlignment = Alignment.CenterVertically) {
+        Row(
             modifier =
                 Modifier
-                    .padding(start = CHECK_INDENT.dp)
-                    .clearAndSetSemantics {},
+                    .heightIn(min = CouliSizes.touchTarget)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Checkbox,
+                        onClick = model::onToggleAgreement,
+                    ).semantics(mergeDescendants = true) {
+                        contentDescription = sentence.accessibilityText
+                        toggleableState = ToggleableState(state.agreed)
+                        stateDescription = checkedText
+                    }.testTag(LoginTags.AGREE),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        ) {
+            CheckMark(state.agreed)
+            Text(text = lead, style = style, color = CouliColors.textSecondary, modifier = Modifier.clearAndSetSemantics {})
+        }
+        Spacer(Modifier.width(CouliSpacing.space1))
+        AgreementLinks(sentence, texts, style, CouliColors.textSecondary, AGREEMENT_LINK_TAGS, model::openAgreement)
+    }
+}
+
+/** 协议整句：链接按《…》原文在整句里定位（[AgreementSentence.of]）。 */
+private fun agreementSentence(
+    texts: LoginTexts,
+    key: String,
+): AgreementSentence =
+    AgreementSentence.of(
+        texts.text(key),
+        linkedMapOf(
+            LoginAgreementType.AGREEMENT to texts.text("login.agree.agreement"),
+            LoginAgreementType.PRIVACY to texts.text("login.agree.privacy"),
+        ),
+    )
+
+/**
+ * 整句里第一个链接起的部分：链接（独立命中区）与链接之间、之后的普通文字依次排开；字典里没能定位到的协议仍补一个独立链接（不让协议入口
+ * 因文案调整而消失）。[tags] 协议类型 → 测试标记。
+ */
+@Composable
+@Suppress("LongParameterList") // 整句、文案、样式与出口逐项给（登录页协议行与确认框正文共用）
+private fun AgreementLinks(
+    sentence: AgreementSentence,
+    texts: LoginTexts,
+    style: TextStyle,
+    color: Color,
+    tags: Map<String, String>,
+    onOpen: (type: String) -> Unit,
+) {
+    sentence.spans.forEachIndexed { index, span ->
+        val tail = sentence.text.substring(span.end, sentence.spans.getOrNull(index + 1)?.start ?: sentence.text.length)
+        TextLink(
+            text = sentence.text.substring(span.start, span.end),
+            onClick = { onOpen(span.type) },
+            style = style,
+            padding = 0.dp,
+            modifier = Modifier.testTag(tags.getValue(span.type)),
+        )
+        if (tail.isNotEmpty()) Text(text = tail, style = style, color = color)
+    }
+    tags.keys.filter { type -> sentence.spans.none { it.type == type } }.forEach { type ->
+        TextLink(
+            text = texts.text("login.agree.$type"),
+            onClick = { onOpen(type) },
+            style = style,
+            padding = 0.dp,
+            modifier = Modifier.testTag(tags.getValue(type)),
         )
     }
 }
@@ -660,7 +646,7 @@ private fun ResendRow(
         val limited = state.sendLimitedSec > 0
         val label =
             if (waiting) {
-                texts.format("login.code.countdown", mapOf("sec" to state.resendSec.toString()))
+                texts.format("login.code.countdown", mapOf("n" to state.resendSec.toString()))
             } else {
                 texts.text("login.code.resend")
             }
@@ -672,77 +658,6 @@ private fun ResendRow(
             style = CouliTypography.footnote.copy(fontFeatureSettings = "tnum"),
             modifier = Modifier.testTag(LoginTags.RESEND),
         )
-    }
-}
-
-/** 邀请码（选填）+ 告知句（BR-INV-18 细则）。受限登录不显示。 */
-@Composable
-private fun InviteField(
-    model: LoginViewModel,
-    state: LoginUiState,
-    texts: LoginTexts,
-) {
-    val decision = InviteField.decide(state.invite, kotlinx.serialization.json.JsonObject(emptyMap()))
-    val label = texts.text("login.invite.label")
-    Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = label,
-                style = CouliTypography.footnote,
-                color = CouliColors.textSecondary,
-                modifier = Modifier.weight(1f).clearAndSetSemantics {},
-            )
-            // 邀请码行【粘贴】（LoginCodeInvite，APP-07）：用户点击才读剪贴板，只抽码
-            if (model.invitePasteAvailable) {
-                // 42901 共享禁用期内置灰（A-R1-06；执行层另在 onPasteInvite 拦）
-                val blocked by model.invitePasteBlocked.collectAsStateWithLifecycle()
-                TextLink(
-                    text = texts.text(INVITE_PASTE_KEY),
-                    onClick = model::onPasteInvite,
-                    enabled = !blocked,
-                    color = if (blocked) CouliColors.textSecondary else CouliColors.textLink,
-                    modifier =
-                        Modifier
-                            .testTag(LoginTags.INVITE_PASTE)
-                            .semantics { contentDescription = texts.text(INVITE_PASTE_LABEL_KEY) },
-                )
-            }
-        }
-        InputBox(error = false) {
-            Box(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .padding(vertical = CouliSpacing.space2),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                if (state.invite.isEmpty()) {
-                    Text(
-                        text = texts.text("login.invite.placeholder"),
-                        style = CouliTypography.body,
-                        color = CouliColors.textSecondary,
-                        modifier = Modifier.clearAndSetSemantics {},
-                    )
-                }
-                BasicTextField(
-                    value = state.invite,
-                    onValueChange = model::onInviteChange,
-                    singleLine = true,
-                    textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
-                    cursorBrush = SolidColor(CouliColors.textPrimary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(end = CouliSpacing.space3)
-                            .testTag(LoginTags.INVITE)
-                            .semantics { contentDescription = label },
-                )
-            }
-        }
-        decision.noticeKey?.let { key ->
-            Text(text = texts.text(key), style = CouliTypography.caption, color = CouliColors.textSecondary)
-        }
     }
 }
 
@@ -784,9 +699,12 @@ private fun ThirdPartySlot(
                     .background(CouliColors.borderSubtle),
             )
         }
+        // 「上次登录」只挂在实际显示的那个按钮上（[LoginPageEntries]，C08）：闸前只进读屏说明，可视标签（DS-02 LastLoginTag）在视觉闸后
+        val entries = model.entries
         FlowRow(horizontalArrangement = Arrangement.spacedBy(OAUTH_GAP.dp, Alignment.CenterHorizontally)) {
-            model.thirdParty.forEach { provider ->
+            entries.providers.forEach { provider ->
                 val enabled = state.oauthBusy == null && state.oauthLimitedSec == 0 && !state.sending && !state.loggingIn
+                val lastTag = if (entries.lastMethod == provider) texts.text("login.last_method_tag") else null
                 Column(
                     modifier =
                         Modifier
@@ -800,6 +718,7 @@ private fun ThirdPartySlot(
                             ).semantics(mergeDescendants = true) {
                                 // 读屏名称「微信登录」（下方的「微信」标签不再重复朗读）；点击动作由 clickable 提供
                                 contentDescription = texts.text("login.$provider")
+                                lastTag?.let { stateDescription = it }
                             }.testTag(LoginTags.OAUTH_PREFIX + provider),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
@@ -831,13 +750,14 @@ private fun ThirdPartySlot(
     }
 }
 
+/** 求助入口（一页一个）：[label] 是可见文字，也是读屏名；点击由 App 按 help_links.login_help 打开（坑 18）。 */
 @Composable
 private fun HelpEntry(
     model: LoginViewModel,
-    texts: LoginTexts,
+    label: String,
 ) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        TextLink(text = texts.text("login.help_entry"), onClick = { model.help() }, modifier = Modifier.testTag(LoginTags.HELP))
+        TextLink(text = label, onClick = { model.help() }, modifier = Modifier.testTag(LoginTags.HELP))
     }
 }
 
@@ -848,14 +768,17 @@ private fun LoginDialogs(
     texts: LoginTexts,
 ) {
     when (state.dialog) {
+        // G10：四个键按动作取（获取验证码 / 第三方 / 其余）；次按钮【不同意】、点遮罩、返回都只关弹窗、留在本页
         LoginDialog.AGREE_CONFIRM -> {
+            val keys = state.confirmation ?: AgreementConfirmKeys.of(LoginAgreementAction.LOGIN)
             CouliDialog(
-                title = texts.text("login.agree_confirm.title"),
-                confirmText = texts.text("login.agree_confirm.ok"),
+                title = texts.text(keys.titleKey),
+                confirmText = texts.text(keys.primaryKey),
                 onConfirm = model::onConfirmAgree,
                 onDismissRequest = model::onCancelConfirm,
-                dismissText = texts.text("login.agree_confirm.cancel"),
-                body = { ConfirmBody(model, texts) },
+                dismissText = texts.text(keys.secondaryKey),
+                body = { ConfirmBody(model, texts, keys.bodyKey) },
+                confirmTag = LoginTags.CONFIRM_PRIMARY,
             )
         }
 
@@ -902,31 +825,19 @@ private fun LoginDialogs(
     }
 }
 
-/** 确认框正文：《用户协议》《隐私政策》是两个可点的链接，读屏单独聚焦（共性第 8 条），各自命中区 48dp。 */
+/** 确认框正文（整句 [bodyKey]）：《用户协议》《隐私政策》是两个可点的链接，读屏单独聚焦（共性第 8 条），各自命中区 48dp；点了只关框、打开协议页。 */
 @Composable
 private fun ConfirmBody(
     model: LoginViewModel,
     texts: LoginTexts,
+    bodyKey: String,
 ) {
+    val sentence = agreementSentence(texts, bodyKey)
+    val style = CouliTypography.footnote
+    val lead = sentence.spans.firstOrNull()?.let { sentence.text.substring(0, it.start) } ?: sentence.text
     FlowRow(itemVerticalAlignment = Alignment.CenterVertically) {
-        val style = CouliTypography.footnote
-        Text(text = texts.text("login.agree_confirm.before"), style = style, color = CouliColors.textPrimary)
-        TextLink(
-            text = texts.text("login.agree.agreement"),
-            onClick = { model.onConfirmLink(LoginAgreementType.AGREEMENT) },
-            style = style,
-            padding = 0.dp,
-            modifier = Modifier.testTag(LoginTags.CONFIRM_LINK_AGREEMENT),
-        )
-        Text(text = texts.text("login.agree.and"), style = style, color = CouliColors.textPrimary)
-        TextLink(
-            text = texts.text("login.agree.privacy"),
-            onClick = { model.onConfirmLink(LoginAgreementType.PRIVACY) },
-            style = style,
-            padding = 0.dp,
-            modifier = Modifier.testTag(LoginTags.CONFIRM_LINK_PRIVACY),
-        )
-        Text(text = texts.text("login.agree_confirm.after"), style = style, color = CouliColors.textPrimary)
+        if (lead.isNotEmpty()) Text(text = lead, style = style, color = CouliColors.textPrimary)
+        AgreementLinks(sentence, texts, style, CouliColors.textPrimary, CONFIRM_LINK_TAGS, model::onConfirmLink)
     }
 }
 
@@ -945,8 +856,13 @@ private const val OAUTH_MIN_WIDTH = 64
 /** 大屏上登录内容的最大宽度（03 §10.4「内容区限制最大宽度并水平居中」；共性第 17 条示例值 480dp）。 */
 private const val CONTENT_MAX_WIDTH = 480
 
-/** 协议说明句的缩进：复选框 20 + 间距 8。 */
-private const val CHECK_INDENT = 28
+/** 协议整句（BR-TEXT-14 表 C）。 */
+private const val AGREE_TEXT_KEY = "login.agree.text"
 
-private const val INVITE_PASTE_KEY = "clipboard.login_invite.paste"
-private const val INVITE_PASTE_LABEL_KEY = "clipboard.login_invite.paste_label"
+private val AGREEMENT_LINK_TAGS =
+    linkedMapOf(LoginAgreementType.AGREEMENT to LoginTags.LINK_AGREEMENT, LoginAgreementType.PRIVACY to LoginTags.LINK_PRIVACY)
+private val CONFIRM_LINK_TAGS =
+    linkedMapOf(
+        LoginAgreementType.AGREEMENT to LoginTags.CONFIRM_LINK_AGREEMENT,
+        LoginAgreementType.PRIVACY to LoginTags.CONFIRM_LINK_PRIVACY,
+    )

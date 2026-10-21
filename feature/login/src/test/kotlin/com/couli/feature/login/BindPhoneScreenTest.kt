@@ -280,12 +280,12 @@ class BindPhoneScreenTest {
         }
         assertTrue("受限登录", composeRule.onAllNodesWithTag(LoginTags.RESTRICTED, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
         composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).assertExists()
-        listOf(LoginTags.SETTINGS, LoginTags.INVITE_ENTRY, LoginTags.HELP).forEach { tag ->
+        listOf("login_settings", "login_invite_entry", LoginTags.HELP).forEach { tag ->
             assertTrue("$tag 不显示", composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
         }
         composeRule.onNodeWithTag(LoginTags.OAUTH_PREFIX + OAuthProvider.WECHAT).performScrollTo().performClick()
         composeRule.waitForIdle()
-        assertTrue("未勾协议：先弹确认框", composeRule.onAllNodesWithText("login.agree_confirm.ok").fetchSemanticsNodes().isNotEmpty())
+        assertTrue("未勾协议：先弹确认框", composeRule.onAllNodesWithText("login.agree_confirm.btn_login").fetchSemanticsNodes().isNotEmpty())
         assertTrue("确认之前不发请求", paths.isEmpty())
     }
 
@@ -318,7 +318,6 @@ class BindPhoneScreenTest {
         model.onGetCode()
         waitUntil { pumpMain().let { model.state.value.step == LoginStep.CODE } }
         model.onCodeChange("123456")
-        model.onLogin()
         try {
             assertTrue(arrived.await(WAIT_NS, TimeUnit.NANOSECONDS))
             if (retype) model.onCodeChange("654321")
@@ -332,7 +331,7 @@ class BindPhoneScreenTest {
             assertEquals("$code：不清空新码", "654321", state.code)
         } else {
             assertNotNull("$code 对照：显示错误", state.codeError)
-            assertEquals("$code 对照：20003 清空、20002 保留", if (code == 20003) "" else "123456", state.code)
+            assertEquals("$code 对照：失败清空", "", state.code)
         }
     }
 

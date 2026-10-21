@@ -167,7 +167,7 @@ class AppLoginNavigationTest {
     private fun loginNow(restricted: Boolean = false): LoginOutcome {
         var outcome: LoginOutcome? = null
         composeRule.runOnUiThread {
-            outcome = runBlocking { login.service.login("13800138000", "123456", now, "", restricted) }
+            outcome = runBlocking { login.service.login("13800138000", "123456", now, restricted) }
         }
         composeRule.waitForIdle()
         return checkNotNull(outcome)
@@ -245,7 +245,7 @@ class AppLoginNavigationTest {
         var outcome: LoginOutcome? = null
         val worker =
             Thread {
-                outcome = runBlocking { login.service.login("13800138000", "123456", now, "", restricted = false) }
+                outcome = runBlocking { login.service.login("13800138000", "123456", now, restricted = false) }
             }.apply { start() }
         assertTrue(arrived.await(WAIT_S, TimeUnit.SECONDS))
         // 用户返回：Login 出栈（回退栈一更新就作废尝试，共性第 9 条）

@@ -29,6 +29,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
     @Test
     fun mainChainStepUpReplaysTheSameKeyOnceAndEntersCooling() {
         launch()
+        lastLoginMethod.record("wechat")
         openDeleteFromSettings()
         // 初始态：资金区按服务端字段与 CouliFormat；未勾选时【申请注销】置灰
         idleUntil { has(AccountTags.DELETE_WITHDRAWABLE) }
@@ -54,6 +55,7 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         assertTrue("无请求体（G14）", applies.all { it.body.isEmpty() })
         assertTrue("键结束：没有未决记录", records().isEmpty())
         assertTrue(has(AccountTags.DELETE_CANCEL))
+        assertEquals("G22：真实注销申请不清本机登录方式", "wechat", lastLoginMethod.read())
     }
 
     @Test
