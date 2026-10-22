@@ -209,12 +209,15 @@ private fun Modifier.focusRingDrawing(
 /**
  * 「左边一块 + 右边一块」：放得下时同一行、右块靠右；放不下时右块整块换到下一行并靠右
  * （等同 CSS `flex-wrap: wrap` + `margin-left: auto`，GUIDE §6 / §7.2.1）。
+ * [wrappedCenterGap]：换行时两块中线至少相距多少（行距按需加大，不小于 [verticalGap]）。两块的命中区向外溢出（如 48 命中区只占 20 的
+ * 紧凑按钮）时用它让上下两个命中区不重叠；默认 0 = 只按 [verticalGap]（旧行为）。
  */
 @Composable
 fun EndWrapRow(
     modifier: Modifier = Modifier,
     horizontalGap: Dp = CouliSpacing.space2,
     verticalGap: Dp = CouliSpacing.space1,
+    wrappedCenterGap: Dp = 0.dp,
     start: @Composable () -> Unit,
     end: @Composable () -> Unit,
 ) {
@@ -231,10 +234,11 @@ fun EndWrapRow(
         val endSize = ends.boxSize()
         val width = if (constraints.hasBoundedWidth) constraints.maxWidth else startSize.first + hGap + endSize.first
         val sameLine = startSize.first == 0 || startSize.first + hGap + endSize.first <= width
-        val contentHeight = if (sameLine) maxOf(startSize.second, endSize.second) else startSize.second + vGap + endSize.second
+        val wrapGap = maxOf(vGap, wrappedCenterGap.roundToPx() - (startSize.second + endSize.second + 1) / 2)
+        val contentHeight = if (sameLine) maxOf(startSize.second, endSize.second) else startSize.second + wrapGap + endSize.second
         val height = maxOf(contentHeight, constraints.minHeight)
         layout(width, height) {
-            val endTop = if (sameLine) 0 else startSize.second + vGap
+            val endTop = if (sameLine) 0 else startSize.second + wrapGap
             val rowHeight = if (sameLine) height else null
             starts.forEach { it.place(0, rowHeight?.let { h -> (h - it.height) / 2 } ?: 0) }
             ends.forEach { it.place(width - it.width, rowHeight?.let { h -> (h - it.height) / 2 } ?: endTop) }

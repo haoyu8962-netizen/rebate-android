@@ -42,21 +42,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -250,7 +254,13 @@ internal fun ErrorBar(
     }
 }
 
-/** 提示条（role=status，礼貌播报）：断网缓存、待确认卡里的提示。 */
+/**
+ * 警告提示条（钱包 Wallet* 画板：警告浅底、圆角 12、内边距 12；20 图标 + 两行文字都是警告字色，首行 [textStyle]、次行 14 常规）：
+ * 风控暂停（可点，右侧 20 的 ›）、断网缓存（[icon] 给断网图标）、待抵扣、提现关闭。[onClick] 为 null 时是不可点形态（无 ›、无点击动作）。
+ * [spoken] 给了就作为首行的读屏（金额隐藏时首行可见文字是遮罩）。[live] 为 true 时 role=status 礼貌播报（断网、风控）；
+ * 待抵扣、提现关闭是页面常驻说明，不播报。
+ */
+@Suppress("LongParameterList")
 @Composable
 internal fun StatusBar(
     text: String,
@@ -258,37 +268,42 @@ internal fun StatusBar(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     secondary: String? = null,
+    icon: ImageVector = CouliIcons.alert,
+    textStyle: TextStyle = CouliTextStyles.footnoteSemibold,
+    spoken: String? = null,
+    live: Boolean = true,
 ) {
+    val tint = CouliColors.statusWarningText
     Row(
         modifier =
             modifier
                 .fillMaxWidth()
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
-                .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
-                .heightIn(min = CouliSizes.touchTarget)
-                .padding(CouliSpacing.space3)
-                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                .clip(RoundedCornerShape(CouliRadius.button))
+                .background(CouliColors.statusWarningBackground)
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(role = Role.Button, onClick = onClick).heightIn(min = CouliSizes.touchTarget)
+                    } else {
+                        Modifier
+                    },
+                ).padding(CouliSpacing.space3)
+                .semantics(mergeDescendants = true) { if (live) liveRegion = LiveRegionMode.Polite }
                 .testTag(tag),
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconSmall),
-        )
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
-            Text(text = text, style = CouliTextStyles.footnoteMedium, color = CouliColors.textPrimary)
-            if (secondary != null) Text(text = secondary, style = CouliTypography.caption, color = CouliColors.textSecondary)
+            Text(
+                text = text,
+                style = textStyle,
+                color = tint,
+                modifier = if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier,
+            )
+            if (secondary != null) Text(text = secondary, style = CouliTypography.footnote, color = tint)
         }
         if (onClick != null) {
-            Icon(
-                CouliIcons.chevron,
-                contentDescription = null,
-                tint = CouliColors.textSecondary,
-                modifier = Modifier.size(CouliSizes.iconSmall),
-            )
+            Icon(CouliIcons.chevron, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium))
         }
     }
 }
@@ -491,12 +506,17 @@ internal fun FieldErrorText(
 
 private const val FIELD_ERROR_FOCUS_DELAY_MILLIS = 100L
 
-/** 问号说明半屏（WalletNote* / WithdrawNoteNet；做法沿用收益看板的说明弹层）：标题 + 说明 +【知道了】。 */
+/**
+ * 问号说明半屏（WalletNote* / WithdrawNoteNet；做法沿用收益看板的说明弹层）：标题 + 说明 +【知道了】。[bodyStyle] / [okVariant] 默认 17 正文与实心
+ * 主按钮（提现页沿用）；钱包页按 WalletNote* 画板给 14/21 与描边按钮（APP-09v W15）。
+ */
 @Composable
 internal fun HelpSheet(
     texts: WalletTexts,
     help: String,
     restore: FocusRequester?,
+    bodyStyle: TextStyle = CouliTypography.body,
+    okVariant: CouliButtonVariant = CouliButtonVariant.PRIMARY,
     onDismiss: () -> Unit,
 ) {
     CouliSheet(
@@ -508,13 +528,14 @@ internal fun HelpSheet(
             CouliButton(
                 text = texts.text("wallet.help.ok"),
                 onClick = onDismiss,
+                variant = okVariant,
                 modifier = Modifier.fillMaxWidth().testTag(WalletTags.HELP_OK),
             )
         },
     ) {
         Text(
             text = texts.text("wallet.help.$help"),
-            style = CouliTypography.body,
+            style = bodyStyle,
             color = CouliColors.textPrimary,
             modifier = Modifier.testTag(WalletTags.HELP_SHEET),
         )

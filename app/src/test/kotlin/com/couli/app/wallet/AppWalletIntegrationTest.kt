@@ -596,7 +596,9 @@ class AppWalletIntegrationTest {
         assertTrue("已提现 ¥0", spoken("已提现，0 元") > 0)
         assertTrue("预估收益只取 estimated_total_fen", spoken("预估收益，10.19 元") > 0)
         assertTrue("其中已收货", texts("其中已收货 ¥7.5") > 0)
-        assertTrue("最早预计", texts("最早预计 11 月结算") > 0)
+        // test-change APP-09v-a W9：标签和月份拆成右列两行，保留同一服务端月份。
+        assertTrue("最早预计标签", texts("最早预计") > 0)
+        assertTrue("服务端月份", texts("11 月结算") > 0)
         assertTrue("暂缓入账", texts("其中 ¥4.5 暂缓入账") > 0)
         assertEquals("不出现「待入账」", 0, texts("待入账"))
         assertEquals("不出现「累计」", 0, texts("累计"))
@@ -635,8 +637,11 @@ class AppWalletIntegrationTest {
         assertTrue(texts("提现已暂停") > 0)
         // G11 更正（R1-11）：风控冻结不置灰，点了进提现页，由 rules 的 30303 account_frozen 提示，不能提交
         composeRule.onNodeWithTag(WalletTags.WALLET_WITHDRAW, useUnmergedTree = true).assertIsEnabled()
+        // test-change APP-09v-a W16 / G-W02：新增计数保护；钱包零预取，进入提现页仅原有一次 rules。
+        assertEquals(0, count("GET", RULES_PATH))
         click(WalletTags.WALLET_WITHDRAW)
         idleUntil { top()?.name == "Withdraw" && has(WalletTags.WITHDRAW_GUIDE) }
+        assertEquals(1, count("GET", RULES_PATH))
         assertTrue(texts("提现已暂停，如有疑问请联系客服") > 0)
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
         assertEquals(0, count("POST", WITHDRAW_PATH))
@@ -655,7 +660,10 @@ class AppWalletIntegrationTest {
         settle()
         open("Wallet")
         idleUntil { has(WalletTags.WALLET_NEGATIVE) }
-        assertTrue(texts("待抵扣 ¥2，后续返利将优先抵扣") > 0)
+        // test-change APP-09v-a W4 / G-W06：主卡下警告条拆两行；保留待抵扣禁提与原金额检查。
+        assertTrue(texts("待抵扣 ¥2") > 0)
+        assertTrue(texts("账户有待抵扣金额，抵扣完成前暂不能提现") > 0)
+        assertEquals(0, texts("后续返利将优先抵扣"))
         composeRule.onNodeWithTag(WalletTags.WALLET_WITHDRAW, useUnmergedTree = true).assertIsNotEnabled()
         // c：withdraw_enabled=false 显示 error.30306
         summary = SUMMARY.replace("\"withdraw_enabled\":true", "\"withdraw_enabled\":false")
@@ -700,7 +708,9 @@ class AppWalletIntegrationTest {
         assertTrue("冻结中、已提现、预估收益读「金额已隐藏」", spoken("金额已隐藏") >= 4)
         assertEquals("金额不再读出", 0, spoken("10.19 元"))
         assertEquals("可提现金额不再读出", 0, spoken("可提现余额，10 元"))
-        assertTrue("月份行照常显示", texts("最早预计 11 月结算") > 0)
+        // test-change APP-09v-a W9 / W17：拆行后金额隐藏仍不能遮住月份。
+        assertTrue("月份标签照常显示", texts("最早预计") > 0)
+        assertTrue("月份值照常显示", texts("11 月结算") > 0)
         // 订单页的偏好是同一份（另一个实例读到同一个值）；开关不上传、不重新请求
         assertTrue(AmountMaskStore(context).hidden.value)
         assertEquals(before, count("GET", SUMMARY_PATH))

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -35,12 +36,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 /**
  * 数字格的一格：上标签（可带钟表图标与问号说明按钮）、下数值（等宽数字），可再带一行说明。
  * [spoken] 是读屏名称（标签与数值合成一项，如「可提现余额，12.34 元」）；[helpLabel] 是问号按钮的读屏名称。
  * 金额隐藏（[AmountGrid] 的 amountHidden）时：[isAmount] 的格数值换成遮罩、读屏读「标签，金额已隐藏」，
  * 说明行换成 [hiddenNote]（不给就不显示说明行，免得说明里的分项金额漏出来）；非金额格（如「最早预计 10 月结算」）不变。
+ * 隐藏时说明行默认不单独读（格名称已读「金额已隐藏」）；给了 [hiddenNoteSpoken] 时说明行作为独立一项读它（如「其中已收货 金额已隐藏」）。
  */
 @Immutable
 data class AmountCell(
@@ -56,6 +60,8 @@ data class AmountCell(
     val hiddenNote: String? = null,
     /** 带类型的数值（[of] 构造时有）：区间按破折号分段排版，强调色只给正金额。 */
     val amount: AmountValue? = null,
+    /** 金额隐藏时说明行的独立读屏名称；null（默认）= 隐藏时说明行不读（旧行为）。 */
+    val hiddenNoteSpoken: String? = null,
 ) {
     /** 不可拆分的显示段：区间「¥a」「–¥b」只在破折号处折行；手写文字的格按空格分段。 */
     fun segments(masked: Boolean): List<String> = amount?.takeUnless { masked }?.segments() ?: value.split(' ')
@@ -87,6 +93,7 @@ data class AmountCell(
             helpLabel: String? = null,
             onHelp: (() -> Unit)? = null,
             hiddenNote: String? = null,
+            hiddenNoteSpoken: String? = null,
         ): AmountCell =
             AmountCell(
                 label = label,
@@ -100,6 +107,7 @@ data class AmountCell(
                 isAmount = value !is AmountValue.Text,
                 hiddenNote = hiddenNote,
                 amount = value,
+                hiddenNoteSpoken = hiddenNoteSpoken,
             )
     }
 }
@@ -208,6 +216,8 @@ enum class AmountValueSize {
  * 两列数字格（GUIDE §7.2）：两列等宽、左对齐；任一列放不下金额的一个不可拆分段时改上下排（第一格在上），
  * 系统字号 200% 一律纵排（adaptation-a11y-spec §2）。[stackOrder]：纵排时各格的先后（按 [cells] 下标；缺省同并排顺序）——订单卡并排时
  * 实付在左、返利在右，纵排时返利在上（AdaptLargeTextOrderDetail，APP-08）。
+ * [compactHelpRow]：问号按钮视觉 14、紧跟标签文字（间距 4），48 命中区以图标为中心向外溢出、不撑高标签行（钱包 Wallet 画板标签行 18）；
+ * 默认关，标签行仍按旧做法撑到 48 并对齐。
  */
 @Composable
 fun AmountGrid(
@@ -217,6 +227,7 @@ fun AmountGrid(
     valueSize: AmountValueSize = AmountValueSize.TITLE,
     mask: AmountMask? = null,
     stackOrder: List<Int>? = null,
+    compactHelpRow: Boolean = false,
 ) {
     val masked = mask?.hidden == true
     val cells = if (masked && mask != null) cells.map { it.masked(mask) } else cells
@@ -240,12 +251,13 @@ fun AmountGrid(
                         valueStyle,
                         Modifier.fillMaxWidth(),
                         masked = masked && it.isAmount,
+                        compactHelp = compactHelpRow,
                     )
                 }
             }
         } else {
-            // 并排时两列标签行等高（有问号按钮的一列标签行是 48 命中区高），数值对齐
-            val anyHelp = cells.any { it.onHelp != null && it.helpLabel != null }
+            // 并排时两列标签行等高（有问号按钮的一列标签行是 48 命中区高），数值对齐；紧凑问号不撑高，无需对齐
+            val alignRows = alignedLabelRows(cells, compactHelpRow)
             Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
                 cells.forEach {
                     AmountCellView(
@@ -254,15 +266,22 @@ fun AmountGrid(
                         labelStyle,
                         valueStyle,
                         Modifier.weight(1f),
-                        alignLabelRow = anyHelp,
+                        alignLabelRow = alignRows,
                         masked =
                             masked && it.isAmount,
+                        compactHelp = compactHelpRow,
                     )
                 }
             }
         }
     }
 }
+
+/** 并排时标签行是否要按 48 对齐：有问号按钮且不是紧凑问号。 */
+private fun alignedLabelRows(
+    cells: List<AmountCell>,
+    compactHelpRow: Boolean,
+): Boolean = !compactHelpRow && cells.any { it.onHelp != null && it.helpLabel != null }
 
 /** 所有格里最宽的一个不可拆分段（px）。 */
 private fun widestSegment(
@@ -288,6 +307,7 @@ private fun AmountCellView(
     modifier: Modifier,
     alignLabelRow: Boolean = false,
     masked: Boolean = false,
+    compactHelp: Boolean = false,
 ) {
     val solid = tone == AmountGridTone.ON_SOLID
     val (labelColor, valueColor) = cellColors(cell, solid, masked)
@@ -295,6 +315,7 @@ private fun AmountCellView(
         Row(
             modifier = if (alignLabelRow) Modifier.heightIn(min = CouliSizes.touchTarget) else Modifier,
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = if (compactHelp) Arrangement.spacedBy(CouliSpacing.space1) else Arrangement.Start,
         ) {
             Column(
                 modifier = Modifier.weight(1f, fill = false).clearAndSetSemantics { contentDescription = cell.spoken },
@@ -312,13 +333,21 @@ private fun AmountCellView(
                     label = cell.helpLabel,
                     onClick = cell.onHelp,
                     tint = labelColor,
-                    iconSize = CouliSizes.iconSmall,
-                    modifier = Modifier.offset(x = -CouliSpacing.space3),
+                    iconSize = if (compactHelp) CouliSizes.iconTiny else CouliSizes.iconSmall,
+                    modifier =
+                        if (compactHelp) {
+                            // 行内只占 14 × 14；按钮仍按 48 × 48 量、以图标为中心摆放（命中区 ≥48，不撑高标签行）
+                            Modifier.size(CouliSizes.iconTiny).wrapContentSize(unbounded = true)
+                        } else {
+                            Modifier.offset(x = -CouliSpacing.space3)
+                        },
                 )
             }
         }
         AmountCellValue(cell = cell, masked = masked, style = valueStyle, color = valueColor)
-        if (cell.note != null) AmountNote(note = cell.note, solid = solid, masked = masked)
+        if (cell.note != null) {
+            AmountNote(note = cell.note, solid = solid, masked = masked, hiddenSpoken = cell.hiddenNoteSpoken)
+        }
     }
 }
 
@@ -353,16 +382,25 @@ private fun AmountCellValue(
     }
 }
 
-/** 数字格的说明行；隐藏金额时说明行里是遮罩，读屏不读（格的名称已读「金额已隐藏」）。 */
+/**
+ * 数字格的说明行；隐藏金额时说明行里是遮罩：默认读屏不读（格的名称已读「金额已隐藏」），
+ * 给了 [hiddenSpoken] 时读它（独立一项，不读遮罩字符）。
+ */
 @Composable
 private fun AmountNote(
     note: String,
     solid: Boolean,
     masked: Boolean,
+    hiddenSpoken: String? = null,
 ) {
     Text(
         text = note,
-        modifier = if (masked) Modifier.clearAndSetSemantics { } else Modifier,
+        modifier =
+            when {
+                !masked -> Modifier
+                hiddenSpoken != null -> Modifier.clearAndSetSemantics { contentDescription = hiddenSpoken }
+                else -> Modifier.clearAndSetSemantics { }
+            },
         style = if (solid) CouliTypography.footnote.copy(fontFeatureSettings = CouliAlpha.TABULAR_NUMS) else CouliTextStyles.captionAmount,
         color = if (solid) CouliColors.textInverse else CouliColors.textSecondary,
     )
@@ -399,54 +437,25 @@ fun WalletHeroCard(
     withdrawEnabled: Boolean = true,
     /** 【提现】的测试标记（APP-09）。 */
     withdrawModifier: Modifier = Modifier,
+    /** 卡内各行纵向间距：默认 12（「我的」页沿用）；钱包页按 Wallet 画板给 16（APP-09v W2）。 */
+    contentGap: Dp = CouliSpacing.space3,
+    /**
+     * 首行紧凑（钱包 Wallet 画板：首行视觉高 = 文字行高）：眼睛按钮只占 20 × 20、48 命中区以图标为中心向外溢出；「提现记录 ›」不再撑到 48，
+     * 命中区靠系统最小触控扩展。默认关（「我的」页首行仍按 48 排）。
+     */
+    compactHeader: Boolean = false,
     bottom: @Composable () -> Unit = {},
 ) {
     Column(
         modifier = modifier.fillMaxWidth().couliCard(background = CouliColors.rebateSolidBackground).padding(CouliSpacing.space5),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        verticalArrangement = Arrangement.spacedBy(contentGap),
     ) {
-        EndWrapRow(
-            horizontalGap = CouliSpacing.space3,
-            start = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(text = texts.label, style = CouliTextStyles.footnoteMedium, color = CouliColors.rebateSolidText)
-                    if (onToggleHidden != null) {
-                        CouliIconButton(
-                            icon = if (amountHidden) CouliIcons.eyeOff else CouliIcons.eye,
-                            label = if (amountHidden) texts.showLabel else texts.hideLabel,
-                            onClick = onToggleHidden,
-                            tint = CouliColors.rebateSolidText,
-                        )
-                    }
-                }
-            },
-            end = {
-                if (texts.records != null && onRecords != null) {
-                    val interaction = remember { MutableInteractionSource() }
-                    Row(
-                        modifier =
-                            Modifier
-                                .heightIn(min = CouliSizes.touchTarget)
-                                .couliFocusRing(focusRingVisible(interaction), CouliRadius.small)
-                                .clip(RoundedCornerShape(CouliRadius.small))
-                                .clickable(
-                                    interactionSource = interaction,
-                                    indication = LocalIndication.current,
-                                    role = Role.Button,
-                                    onClick = onRecords,
-                                ),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(text = texts.records, style = CouliTextStyles.footnoteMedium, color = CouliColors.rebateSolidText)
-                        Icon(
-                            CouliIcons.chevron,
-                            contentDescription = null,
-                            tint = CouliColors.rebateSolidText,
-                            modifier = Modifier.size(CouliSizes.iconSmall),
-                        )
-                    }
-                }
-            },
+        WalletHeroHeader(
+            texts = texts,
+            amountHidden = amountHidden,
+            onToggleHidden = onToggleHidden,
+            onRecords = onRecords,
+            compactHeader = compactHeader,
         )
         EndWrapRow(
             horizontalGap = CouliSpacing.space3,
@@ -477,17 +486,86 @@ fun WalletHeroCard(
     }
 }
 
-/** 宫格入口的一格。 */
+/** 主卡首行：「可提现余额 + 眼睛」与「提现记录 ›」（放不下整块换行）；[compactHeader] 见 [WalletHeroCard]。 */
+@Composable
+private fun WalletHeroHeader(
+    texts: WalletHeroTexts,
+    amountHidden: Boolean,
+    onToggleHidden: (() -> Unit)?,
+    onRecords: (() -> Unit)?,
+    compactHeader: Boolean,
+) {
+    EndWrapRow(
+        // 紧凑首行：眼睛 48 命中区以 20 图标为中心各溢出 14；同行时横向间距 16 > 14，换行时两块中线至少相距 48 + 4，
+        // 眼睛与「提现记录」两个命中区都不重叠（APP-09v r1 S2-1）。非紧凑沿用旧间距。
+        horizontalGap = if (compactHeader) CouliSpacing.space4 else CouliSpacing.space3,
+        wrappedCenterGap = if (compactHeader) CouliSizes.touchTarget + CouliSpacing.space1 else 0.dp,
+        start = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = if (compactHeader) Arrangement.spacedBy(CouliSpacing.space1) else Arrangement.Start,
+            ) {
+                Text(text = texts.label, style = CouliTextStyles.footnoteMedium, color = CouliColors.rebateSolidText)
+                if (onToggleHidden != null) {
+                    CouliIconButton(
+                        icon = if (amountHidden) CouliIcons.eyeOff else CouliIcons.eye,
+                        label = if (amountHidden) texts.showLabel else texts.hideLabel,
+                        onClick = onToggleHidden,
+                        tint = CouliColors.rebateSolidText,
+                        iconSize = if (compactHeader) CouliSizes.iconMedium else CouliSizes.iconLarge,
+                        modifier =
+                            if (compactHeader) {
+                                // 行内只占 20 × 20；按钮仍按 48 × 48 量、以图标为中心摆放（命中区 ≥48，不撑高首行）
+                                Modifier.size(CouliSizes.iconMedium).wrapContentSize(unbounded = true)
+                            } else {
+                                Modifier
+                            },
+                    )
+                }
+            }
+        },
+        end = {
+            if (texts.records != null && onRecords != null) {
+                val interaction = remember { MutableInteractionSource() }
+                Row(
+                    modifier =
+                        Modifier
+                            .then(if (compactHeader) Modifier else Modifier.heightIn(min = CouliSizes.touchTarget))
+                            .couliFocusRing(focusRingVisible(interaction), CouliRadius.small)
+                            .clip(RoundedCornerShape(CouliRadius.small))
+                            .clickable(
+                                interactionSource = interaction,
+                                indication = LocalIndication.current,
+                                role = Role.Button,
+                                onClick = onRecords,
+                            ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(text = texts.records, style = CouliTextStyles.footnoteMedium, color = CouliColors.rebateSolidText)
+                    Icon(
+                        CouliIcons.chevron,
+                        contentDescription = null,
+                        tint = CouliColors.rebateSolidText,
+                        modifier = Modifier.size(CouliSizes.iconSmall),
+                    )
+                }
+            }
+        },
+    )
+}
+
+/** 宫格入口的一格。[modifier] 挂在整格可点节点上（如测试标记）；放在 [onClick] 之前，保留尾随 lambda 写法。 */
 @Immutable
 data class EntryItem(
     val icon: ImageVector,
     val label: String,
+    val modifier: Modifier = Modifier,
     val onClick: () -> Unit,
 )
 
 /**
  * 宫格入口（GUIDE §7.2）：白卡片内 4 列，图标 24（墨棕线性）+ 14 字，格高 ≥ 72，整格是命中区；分组标题 17/600。
- * 系统字号放大后一格放不下文字时改 3 列、2 列（不缩字号、不截断）。
+ * 系统字号放大后一格放不下文字时改 3 列、2 列（不缩字号、不截断）。[topPadding]：卡片上内边距，默认 16；钱包页按画板给 8。
  */
 @Composable
 fun EntryGrid(
@@ -495,6 +573,7 @@ fun EntryGrid(
     modifier: Modifier = Modifier,
     title: String? = null,
     columns: Int = DEFAULT_COLUMNS,
+    topPadding: Dp = CouliSpacing.space4,
 ) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -503,7 +582,7 @@ fun EntryGrid(
             modifier
                 .fillMaxWidth()
                 .couliCard()
-                .padding(start = CouliSpacing.space2, end = CouliSpacing.space2, top = CouliSpacing.space4, bottom = CouliSpacing.space2),
+                .padding(start = CouliSpacing.space2, end = CouliSpacing.space2, top = topPadding, bottom = CouliSpacing.space2),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
         if (title != null) {
@@ -540,6 +619,7 @@ private fun EntryCell(
     Column(
         modifier =
             modifier
+                .then(item.modifier)
                 .heightIn(min = CouliSizes.gridCellMinHeight)
                 .couliFocusRing(focusRingVisible(interaction), CouliRadius.small)
                 .clip(RoundedCornerShape(CouliRadius.small))
@@ -569,15 +649,25 @@ fun InfoStrip(
     helpLabel: String? = null,
     onHelp: (() -> Unit)? = null,
     background: Color = CouliColors.backgroundMuted,
+    /**
+     * 问号紧凑（钱包 Wallet 画板「其中 ¥x 暂缓入账」：条高 = 文字行高 + 上下 8，问号 14 紧跟文字、间距 4）：48 命中区以图标为中心向条外溢出
+     * （条不裁剪，溢出落在外层卡片内边距 / 块间距里）。默认关，仍按旧做法放 48 的问号按钮。
+     */
+    compactHelp: Boolean = false,
 ) {
     Row(
         modifier =
             modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(CouliRadius.button))
-                .background(background)
-                .padding(start = CouliSpacing.space3),
+                .then(
+                    if (compactHelp) {
+                        Modifier.background(background, RoundedCornerShape(CouliRadius.button)).padding(end = CouliSpacing.space3)
+                    } else {
+                        Modifier.clip(RoundedCornerShape(CouliRadius.button)).background(background)
+                    },
+                ).padding(start = CouliSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = if (compactHelp) Arrangement.spacedBy(CouliSpacing.space1) else Arrangement.Start,
     ) {
         Text(
             text = text,
@@ -595,7 +685,8 @@ fun InfoStrip(
                 label = helpLabel,
                 onClick = onHelp,
                 tint = CouliColors.textSecondary,
-                iconSize = CouliSizes.iconSmall,
+                iconSize = if (compactHelp) CouliSizes.iconTiny else CouliSizes.iconSmall,
+                modifier = if (compactHelp) Modifier.size(CouliSizes.iconTiny).wrapContentSize(unbounded = true) else Modifier,
             )
         }
     }

@@ -43,8 +43,11 @@ object WalletDraftTexts : WalletTexts {
             "wallet.earliest_label" to "最早预计",
             "wallet.earliest" to "{month}结算",
             "wallet.overdue" to "入账核对中",
+            // APP-09v G-W07：WalletStates ④ 右列标签「结算进度」（设计稿措辞，08 只规定附「入账核对中」）
+            "wallet.settle_progress" to "结算进度",
             "wallet.paused" to "其中 {amount} 暂缓入账",
-            "wallet.negative" to "待抵扣 {amount}，后续返利将优先抵扣",
+            // APP-09v G-W06：主卡下警告条首行（WalletNegative-v2），次行取 error.30302
+            "wallet.negative" to "待抵扣 {amount}",
             "wallet.estimate_note" to "按联盟最新预估计算，以联盟结算金额为准",
             "wallet.draft.risk_paused" to "提现已暂停",
             "wallet.draft.risk_paused_reason" to "提现已暂停：{reason}",

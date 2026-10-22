@@ -259,6 +259,14 @@ object CouliIcons {
         )
     }
 
+    /** 柱状图（钱包「收益看板」入口 WalletEarningsEntry；三根竖柱，路径照抄画板）。 */
+    val barChart: ImageVector by lazy {
+        lineIcon(
+            "BarChart",
+            "M5 19.5V11M12 19.5V5M19 19.5v-6",
+        )
+    }
+
     val star: ImageVector by lazy {
         lineIcon(
             "Star",
