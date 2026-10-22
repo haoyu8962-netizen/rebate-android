@@ -1230,6 +1230,12 @@ private fun ResultCard(
             context = BuyButtonModel.CONTEXT_LIST,
             onInfo = { model.showDisclaimer(key, card.data.disclaimer) },
             infoFocus = focus,
+            // 下架（open 返回 availability=off_shelf 或 30141，执行器写进这张卡）：按钮由映射置灰，卡顶「商品已下架」胶囊 polite 播报，
+            // 不出轻提示（G-D07；与详情原位置灰一致）
+            statusLabel =
+                model.config.texts
+                    .text(OFF_SHELF_KEY)
+                    .takeIf { raw.string("availability") == OFF_SHELF },
         )
         // 比价无返利（open 复核后卡片的 no_rebate_cause=price_compare，或接口直接给出）：原因行 +【看看相似商品】，绑定这张卡（BR-PRICE-08，A-R1-16）
         if (raw.string("no_rebate_cause") == PRICE_COMPARE) {
@@ -1459,6 +1465,10 @@ private fun mapCard(
 }
 
 private const val PRICE_COMPARE = "price_compare"
+private const val OFF_SHELF = "off_shelf"
+
+/** 下架状态句（契约字典 error.30141「商品已下架」，与详情原位置灰的胶囊同键）。 */
+private const val OFF_SHELF_KEY = "error.30141"
 private const val COMPARE_REASON_KEY = "no_rebate.price_compare"
 private const val COMPARE_SIMILAR_KEY = "no_rebate.price_compare.similar"
 private const val SIMILAR_SUFFIX = "_similar"

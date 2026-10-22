@@ -18,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -28,7 +27,9 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -40,6 +41,7 @@ import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
+import com.couli.core.designsystem.CouliDialogScrim
 import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliRadius
@@ -49,6 +51,8 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.PlatformIcon
+import com.couli.core.designsystem.PlatformIconSize
 import com.couli.core.designsystem.PriceTagModel
 import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.network.ResultSignals
@@ -116,6 +120,9 @@ object TradeKeys {
     const val SDK_FAILED_TITLE = "jump.taobao_sdk_unavailable"
     const val SDK_FAILED_BODY = "trade.sdk_failed.body"
     const val NOT_INSTALLED = "trade.not_installed"
+
+    /** 淘宝未安装、口令已复制后的按钮文字「复制淘口令」（G-D11，三端同名，CT-16f）。 */
+    const val NOT_INSTALLED_COPY_TPWD = "trade.not_installed.copy_tpwd"
     const val CONTACT = "trade.contact"
     const val RETRY_LATER = "card.retry_later"
     const val NOT_LAUNCHED = "error.50301.not_launched"
@@ -138,22 +145,42 @@ object TradeTags {
     const val JUMP_TIP = "trade_jump_tip"
     const val TOAST = "trade_toast"
     const val COMPARE = "trade_compare"
+    const val NOT_INSTALLED = "trade_not_installed"
 }
 
 /**
  * 购买流程 → 按钮覆盖（加载、限流、未安装提示）；没有覆盖为 null。点击结果的禁用不在这里：下架写进那张卡、平台停用按平台进卡片映射
  * （A-R1-05 / 06），由卡片自己的按钮状态表达。
+ *
+ * 淘宝未安装且口令已复制（[PurchaseState.notInstalledTpwd]）：详情底栏上方有常驻说明（[PurchaseNotInstalledBanner]），按钮写【复制淘口令】
+ * （G-D11；再点仍是一次新的购买，复制由服务端下发的步骤执行）。[copyTpwd] = false 时（搜索卡，没有常驻说明行）仍写安装说明句。
  */
 fun purchaseButton(
     state: PurchaseState,
     texts: TradeTexts,
+    copyTpwd: Boolean = true,
 ): BuyButtonOverride? {
     val vars = mapOf("platform_name" to texts.text(TradeKeys.platform(state.platform)))
     return when {
-        state.phase == PurchasePhase.LOADING -> BuyButtonOverride(BuyButtonState.LOADING, null)
-        state.rateLimited -> BuyButtonOverride(BuyButtonState.DISABLED, null)
-        state.notInstalled -> BuyButtonOverride(BuyButtonState.NORMAL, texts.format(TradeKeys.NOT_INSTALLED, vars))
-        else -> null
+        state.phase == PurchasePhase.LOADING -> {
+            BuyButtonOverride(BuyButtonState.LOADING, null)
+        }
+
+        state.rateLimited -> {
+            BuyButtonOverride(BuyButtonState.DISABLED, null)
+        }
+
+        state.notInstalled && state.notInstalledTpwd && copyTpwd -> {
+            BuyButtonOverride(BuyButtonState.NORMAL, texts.text(TradeKeys.NOT_INSTALLED_COPY_TPWD))
+        }
+
+        state.notInstalled -> {
+            BuyButtonOverride(BuyButtonState.NORMAL, texts.format(TradeKeys.NOT_INSTALLED, vars))
+        }
+
+        else -> {
+            null
+        }
     }
 }
 
@@ -169,7 +196,7 @@ fun searchPurchaseButton(
 ): BuyButtonOverride? =
     when {
         state.rateLimited -> BuyButtonOverride(BuyButtonState.DISABLED, null)
-        CardPatch.sameCard(card, current) -> purchaseButton(state, texts)
+        CardPatch.sameCard(card, current) -> purchaseButton(state, texts, copyTpwd = false)
         else -> null
     }
 
@@ -252,6 +279,7 @@ fun PurchaseOverlay(
             controller.consumeToast()
         }
         Box(modifier = Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
+            val kind = toastKind(toast.key)
             CouliToast(
                 message = ResultSignals.withTrace6(texts.format(toast.key, vars), toast.traceId),
                 modifier =
@@ -261,8 +289,9 @@ fun PurchaseOverlay(
                             start = CouliSpacing.space4,
                             end = CouliSpacing.space4,
                         ).testTag(TradeTags.TOAST),
-                icon = null,
+                icon = toastIcon(toast.key),
                 announcementId = toast.id,
+                iconTint = if (kind == ToastKind.WARNING) CouliColors.statusWarningText else CouliColors.textSecondary,
             )
         }
     }
@@ -277,6 +306,8 @@ private fun BlockingLayer(
     tag: String,
 ) {
     Dialog(onDismissRequest = onCancel, properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false)) {
+        // 遮罩用令牌 overlay.scrim（关系统 dim，ProductBuyOpening-v2）
+        CouliDialogScrim(CouliColors.overlayScrim)
         Column(
             modifier =
                 Modifier
@@ -332,6 +363,7 @@ private fun PurchaseDialogs(
                 onDismissRequest = controller::dismissDialog,
                 dismissText = texts.text(TradeKeys.CANCEL),
                 restoreFocusTo = buyFocus,
+                scrim = CouliColors.overlayScrim,
                 body = {
                     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
                         PriceCompareBox(
@@ -341,18 +373,8 @@ private fun PurchaseDialogs(
                             nowLine(state.latest ?: controller.currentCard, dialog.newFen, texts),
                         )
                         if (dialog.rebateGone) {
-                            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                                Text(
-                                    text = texts.text(TradeKeys.REBATE_GONE_LINE),
-                                    style = CouliTextStyles.bodySemibold,
-                                    color = CouliColors.textPrimary,
-                                )
-                                Text(
-                                    text = texts.text(TradeKeys.REBATE_GONE_NOTE),
-                                    style = CouliTypography.footnote,
-                                    color = CouliColors.textSecondary,
-                                )
-                            }
+                            // 改价且返利归零（ProductPriceChangedRebateGone-v2）：警告底 + 警告图标 + 警告色两行
+                            RebateGoneWarning(texts.text(TradeKeys.REBATE_GONE_LINE), texts.text(TradeKeys.REBATE_GONE_NOTE))
                         }
                         Text(text = texts.text(TradeKeys.PRICE_ASK), style = CouliTypography.footnote, color = CouliColors.textPrimary)
                     }
@@ -369,44 +391,32 @@ private fun PurchaseDialogs(
                 onDismissRequest = controller::dismissDialog,
                 dismissText = texts.text(TradeKeys.CANCEL),
                 restoreFocusTo = buyFocus,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
         PurchaseDialog.CompareNoRebate -> {
-            CouliSheet(
+            // 比价无返利确认（ProductPriceCompareNoRebate-v2，BR-PRICE-08，G-D10）：居中弹窗 + 右上关闭；主【看看相似商品】、次【仍去购买（无返利）】；
+            // 「查看说明」是正文里的链接（没有配置文章时不显示）。回调不变：主 → similar、次 → confirm、关闭 / 遮罩 / 返回 → dismissDialog
+            CouliDialog(
                 title = texts.text(TradeKeys.COMPARE_TITLE),
+                confirmText = texts.text(TradeKeys.COMPARE_SIMILAR),
+                onConfirm = { controller.similar() },
                 onDismissRequest = controller::dismissDialog,
+                modifier = Modifier.testTag(TradeTags.COMPARE),
+                dismissText = texts.text(TradeKeys.BUY_NO_REBATE),
+                onDismiss = controller::confirm,
                 restoreFocusTo = buyFocus,
-                closeLabel = texts.text(TradeKeys.CLOSE),
-                actions = {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-                        modifier = Modifier.testTag(TradeTags.COMPARE),
-                    ) {
-                        CouliButton(
-                            text = texts.text(TradeKeys.BUY_NO_REBATE),
-                            onClick = controller::confirm,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        CouliButton(
-                            text = texts.text(TradeKeys.COMPARE_SIMILAR),
-                            onClick = { controller.similar() },
-                            variant = CouliButtonVariant.SECONDARY,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                },
-            ) {
-                Text(text = texts.text(TradeKeys.COMPARE_BODY), style = CouliTypography.footnote, color = CouliColors.textPrimary)
-                if (controller.explanationAvailable) {
-                    CouliButton(
-                        text = texts.text(TradeKeys.COMPARE_EXPLAIN),
-                        onClick = controller::viewExplanation,
-                        variant = CouliButtonVariant.TEXT,
-                        size = CouliButtonSize.COMPACT,
+                body = {
+                    CompareBody(
+                        body = texts.text(TradeKeys.COMPARE_BODY),
+                        link = texts.text(TradeKeys.COMPARE_EXPLAIN).takeIf { controller.explanationAvailable },
+                        onLink = controller::viewExplanation,
                     )
-                }
-            }
+                },
+                closeLabel = texts.text(TradeKeys.CLOSE),
+                scrim = CouliColors.overlayScrim,
+            )
         }
 
         is PurchaseDialog.AuthSheet -> {
@@ -423,6 +433,10 @@ private fun PurchaseDialogs(
                 dismissText = texts.text(TradeKeys.BUY_NO_REBATE),
                 onDismiss = controller::buyWithoutRebate,
                 restoreFocusTo = buyFocus,
+                // 授权失败（ProductAuthFailed-v2）标题前错误色警告；用户拒绝（ProductAuthDeclined-v2）无图标
+                titleIcon = CouliIcons.alert.takeIf { dialog.failed },
+                titleIconTint = CouliColors.statusErrorText,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -444,6 +458,7 @@ private fun PurchaseDialogs(
                 onDismissRequest = controller::dismissDialog,
                 dismissText = texts.text(TradeKeys.CANCEL),
                 restoreFocusTo = buyFocus,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -455,6 +470,10 @@ private fun PurchaseDialogs(
                 onConfirm = controller::dismissDialog,
                 onDismissRequest = controller::dismissDialog,
                 restoreFocusTo = buyFocus,
+                // ProductAuthUnavailable-v2：标题前次文字色 info
+                titleIcon = CouliIcons.info,
+                titleIconTint = CouliColors.textSecondary,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -463,6 +482,8 @@ private fun PurchaseDialogs(
                 title = texts.text(TradeKeys.TIP_TITLE),
                 onDismissRequest = controller::dismissDialog,
                 restoreFocusTo = buyFocus,
+                // 容器保持半屏（定稿画板 ProductJumpTip-v2，G-D15），标题 20/700
+                titleStyle = CouliTextStyles.sheetTitle,
                 actions = {
                     CouliButton(
                         text = texts.format(TradeKeys.TIP_GO, vars),
@@ -471,7 +492,13 @@ private fun PurchaseDialogs(
                     )
                 },
             ) {
-                BulletLines(listOf(texts.text(TradeKeys.TIP_LINE_1), texts.text(TradeKeys.TIP_LINE_2)), boxed = false)
+                // 下单须知正文 17 / 25.5（ProductJumpTip-v2）；授权说明仍 14 原档
+                BulletLines(
+                    listOf(texts.text(TradeKeys.TIP_LINE_1), texts.text(TradeKeys.TIP_LINE_2)),
+                    boxed = false,
+                    style = CouliTypography.body,
+                    bulletTop = CouliSpacing.space2 + CouliSpacing.space1 / 2,
+                )
             }
         }
 
@@ -483,6 +510,10 @@ private fun PurchaseDialogs(
                 onConfirm = controller::dismissDialog,
                 onDismissRequest = controller::dismissDialog,
                 restoreFocusTo = buyFocus,
+                // ProductJumpSdkFailed-v2：标题前错误色警告
+                titleIcon = CouliIcons.alert,
+                titleIconTint = CouliColors.statusErrorText,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -501,27 +532,27 @@ private fun NoticeDialog(
     buyFocus: FocusRequester?,
 ) {
     val title = ResultSignals.withTrace6(texts.format(dialog.textKey ?: OpenPurchaseController.GENERIC_KEY, vars), dialog.traceId)
-    // 50303：【重试】主 +【仍去购买（无返利）】次；30103 / 30151 / 30153：【仍去购买（无返利）】+【联系客服】；30121：只有无返利购买
-    val (primary, onPrimary) =
-        when {
-            dialog.retry -> texts.text(TradeKeys.RETRY) to controller::retryPurchase
-            dialog.noRebate -> texts.text(TradeKeys.BUY_NO_REBATE) to controller::buyWithoutRebate
-            else -> texts.text(TradeKeys.OK) to controller::dismissDialog
-        }
-    val (secondary, onSecondary) =
-        when {
-            dialog.retry && dialog.noRebate -> texts.text(TradeKeys.BUY_NO_REBATE) to controller::buyWithoutRebate
-            dialog.contact -> texts.text(TradeKeys.CONTACT) to controller::contactService
-            else -> null to controller::dismissDialog
-        }
+    // 50303（ProductPriceUnconfirmed，G-D09）：主【稍后再试】只关弹窗、留在本页（用户再点购买才发新一次 open），次【仍去购买（无返利）】；
+    // 30103 / 30151 / 30153（ProductAuthBlocked，G-D08）：主【联系客服】、次【仍去购买（无返利）】（只换位置与样式，回调不变）、标题前警告图标；
+    // 30121：只有无返利购买
+    val primary = noticePrimary(dialog)
+    val secondary = noticeSecondary(dialog)
     CouliDialog(
         title = title,
-        confirmText = primary,
-        onConfirm = onPrimary,
+        confirmText = texts.text(primary.first),
+        onConfirm = { primary.second(controller) },
         onDismissRequest = controller::dismissDialog,
-        dismissText = secondary,
-        onDismiss = onSecondary,
+        dismissText = secondary?.let { texts.text(it.first) },
+        onDismiss = { (secondary?.second ?: OpenPurchaseController::dismissDialog)(controller) },
         restoreFocusTo = buyFocus,
+        titleIcon =
+            when {
+                dialog.contact -> CouliIcons.alert
+                dialog.retry -> CouliIcons.info
+                else -> null
+            },
+        titleIconTint = if (dialog.contact) CouliColors.statusWarningText else CouliColors.textSecondary,
+        scrim = CouliColors.overlayScrim,
     )
 }
 
@@ -543,6 +574,9 @@ private fun AuthSheet(
         onDismissRequest = controller::dismissDialog,
         restoreFocusTo = buyFocus,
         closeLabel = texts.text(TradeKeys.CLOSE),
+        // 标题 20/700 + 前置 32 平台官方图标（ProductAuthSheet-v2，G-D14；装饰，读屏只读标题）
+        titleStyle = CouliTextStyles.sheetTitle,
+        titleLeading = { PlatformIcon(platformCode = dialog.platform, size = PlatformIconSize.SHEET) },
         actions = {
             CouliButton(
                 text = texts.text(TradeKeys.AUTHORIZE),
@@ -562,11 +596,13 @@ private fun AuthSheet(
     }
 }
 
-/** 圆点列表（说明框）。 */
+/** 圆点列表（说明框）。[style] 默认 14 档（授权说明）；[bulletTop] 让圆点与首行垂直居中。 */
 @Composable
 private fun BulletLines(
     lines: List<String>,
     boxed: Boolean,
+    style: TextStyle = CouliTypography.footnote,
+    bulletTop: Dp = CouliSpacing.space2,
 ) {
     Column(
         modifier =
@@ -589,11 +625,11 @@ private fun BulletLines(
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
                 Box(
                     Modifier
-                        .padding(top = CouliSpacing.space2)
+                        .padding(top = bulletTop)
                         .size(BULLET.dp)
                         .background(CouliColors.textSecondary, RoundedCornerShape(CouliRadius.pill)),
                 )
-                Text(text = line, style = CouliTypography.footnote, color = CouliColors.textPrimary)
+                Text(text = line, style = style, color = CouliColors.textPrimary)
             }
         }
     }

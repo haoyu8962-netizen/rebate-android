@@ -239,7 +239,7 @@ step "单元测试（testDebugUnitTest，含 Robolectric 与格式向量）" $GR
 step "组件快照测试（Roborazzi verifyRoborazziDebug；含首页 golden 页 APP-11 G29、Agent 页流 fixture 快照 APP-10 G32）" $GRADLE :core:designsystem:verifyRoborazziDebug :feature:home:verifyRoborazziDebug :feature:agent:verifyRoborazziDebug
 step "DS-02 目录组件浅 / 深快照（仅 golden 用例）" $GRADLE :app:verifyRoborazziDebug --tests "*Ds02CatalogSnapshotTest"
 step "首页视觉整页浅 / 深快照（APP-11v：Main-v3 / HomeGuest-v3 / MainDark-v3 / 200% / 840；b：弹窗、剪贴板浮层、⑥独立展示 fixture）" $GRADLE :app:verifyRoborazziDebug --tests "*HomeVisualSnapshotTest" --tests "*HomePopupVisualSnapshotTest" --tests "*ClipboardVisualSnapshotTest" --tests "*ClipboardMaterialVisualSnapshotTest"
-step "商品详情视觉整页浅 / 深快照（APP-06v-a：Product-v2 / ProductJd / ProductDark / ProductOffShelf-v3 / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*ProductVisualSnapshotTest"
+step "商品详情视觉整页浅 / 深快照（APP-06v-a：Product-v2 / ProductJd / ProductDark / ProductOffShelf-v3 / 无稿状态 / 200% / 840；b：购买浮层、确认框、授权 / 须知半屏、轻提示、未安装、待跟单）" $GRADLE :app:verifyRoborazziDebug --tests "*ProductVisualSnapshotTest" --tests "*PurchaseVisualSnapshotTest"
 step "订单列表视觉整页浅 / 深快照（APP-08v-a：Orders-v2 / OrdersShare-v2 / 空态 / 置顶找回 / 金额隐藏 / 断网 / 搜索 / 半屏 / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*OrderListVisualSnapshotTest"
 step "钱包视觉整页浅 / 深快照（APP-09v-a：Wallet / WalletFrozen / WalletNegative-v2 / WalletRiskFrozen-v2 / WalletStates / WalletHidden / WalletDark / WalletNote* / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*WalletVisualSnapshotTest"
 step "订单详情视觉整页浅 / 深快照（APP-08v-b：OrderDetail* 14 态 / OrderDetailDark / ReasonStates 12 卡 / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*OrderDetailVisualSnapshotTest"

@@ -138,6 +138,11 @@ data class PurchaseState(
     val rateLimited: Boolean = false,
     /** 全部路径失败、安装状态明确为 false：「安装X后下单才有返利」（ProductJumpNotInstalled，BR-ATTR-27 ②；unknown 不算，A-R1-13）。 */
     val notInstalled: Boolean = false,
+    /**
+     * 淘宝未安装、且本次外跳的口令复制步骤已成功（ProductJumpNotInstalled-v2，G-D11）：底栏上方常驻「安装淘宝后下单才有返利」、按钮写
+     * 【复制淘口令】（再点仍走新一次 open，复制仍由服务端下发的步骤执行）。没走复制步骤、复制失败、京东 / 拼多多都为 false。只是展示标志。
+     */
+    val notInstalledTpwd: Boolean = false,
     /** 即将交系统浏览器：「将通过浏览器打开X」+【取消】（ProductJumpBrowser）。 */
     val browserNotice: Boolean = false,
     /**
@@ -435,7 +440,7 @@ class OpenPurchaseController(
         if (gate.active) return
         this.card = card
         this.spm = spm
-        mutableState.value = mutableState.value.copy(platform = platform, card = card, notInstalled = false)
+        mutableState.value = mutableState.value.copy(platform = platform, card = card, notInstalled = false, notInstalledTpwd = false)
         if (env.basicMode()) return requestConsentFor(card, spm)
         startClick(card, keys.start(), noRebate = false, noRebateReason = null, userAuthRetry = userAuthRetry)
     }
@@ -507,7 +512,8 @@ class OpenPurchaseController(
         current = attempt
         ready = null
         grantPermit(attempt)
-        mutableState.value = mutableState.value.copy(platform = attempt.platform, card = card, notInstalled = false, latest = card)
+        mutableState.value =
+            mutableState.value.copy(platform = attempt.platform, card = card, notInstalled = false, notInstalledTpwd = false, latest = card)
         send(attempt)
     }
 
@@ -620,7 +626,8 @@ class OpenPurchaseController(
         if (outcome.requoteNotice) toast(REQUOTE_KEY)
         when (outcome.actionRaw) {
             OpenActions.OFF_SHELF -> {
-                toast(OFF_SHELF_KEY)
+                // 下架：卡片原位置灰（availability 已由 patchCard 写入），卡片状态胶囊 polite 播报，不再出轻提示（G-D07）
+                Unit
             }
 
             OpenActions.CONFIRM_PRICE, OpenActions.CONFIRM_COUPON -> {
@@ -733,7 +740,7 @@ class OpenPurchaseController(
                     30141 -> {
                         // 下架绑定这张卡（A-R1-05）
                         updateCard(attempt) { it.with("availability", JsonPrimitive(BuyBlock.OFF_SHELF)) }
-                        toast(outcome.textKey ?: OFF_SHELF_KEY)
+                        // 不再出轻提示：卡片原位置灰 + 状态胶囊 polite 播报（G-D07）
                     }
 
                     50303 -> {
@@ -1013,8 +1020,10 @@ class OpenPurchaseController(
             // 平台未安装但口令已复制成功：同样算成功外跳（BR-ATTR-21，APP-08 共性第 33 条），回到前台后拉待跟单卡；安装提示照常
             JumpTypes.FINAL_NOT_INSTALLED -> {
                 env.jumped(jump.attempt.platform)
-                mutableState.value = mutableState.value.copy(notInstalled = true)
-                toast(NOT_INSTALLED_COPIED_KEY)
+                // 淘宝：常驻说明 +【复制淘口令】+「已复制淘口令」（G-D11，只换展示与键名，时机不变）；京东 / 拼多多维持原合并句
+                val tpwd = jump.attempt.platform == TAOBAO_PLATFORM
+                mutableState.value = mutableState.value.copy(notInstalled = true, notInstalledTpwd = tpwd)
+                toast(if (tpwd) NOT_INSTALLED_TPWD_COPIED_KEY else NOT_INSTALLED_COPIED_KEY)
             }
 
             else -> {
@@ -1692,6 +1701,10 @@ class OpenPurchaseController(
         const val GENERIC_KEY = "error.50001"
         const val COPIED_KEY = "share_page.copy_tpwd.done"
         const val NOT_INSTALLED_COPIED_KEY = "trade.not_installed.copied"
+
+        /** 淘宝未安装、口令已复制（G-D11，三端同名，CT-16f）。 */
+        const val NOT_INSTALLED_TPWD_COPIED_KEY = "trade.not_installed.tpwd_copied"
+        private const val TAOBAO_PLATFORM = "taobao"
         const val REQUOTE_KEY = "trade.requote_notice"
         const val JUMP_FAILED_KEY = "trade.jump_failed"
         const val JUMP_EXPIRED_KEY = "trade.jump_expired"

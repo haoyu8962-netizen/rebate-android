@@ -39,6 +39,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.couli.generated.DesignTokens
 
 /**
@@ -115,6 +116,13 @@ object CouliTextStyles {
     val bodyMedium: TextStyle = CouliTypography.body.copy(fontWeight = FontWeight.Medium)
     val titleSemibold: TextStyle = CouliTypography.title
 
+    /**
+     * 半屏大标题 20/700（授权半屏 ProductAuthSheet-v2、下单须知 ProductJumpTip-v2，G-D14）：6 级令牌没有 20 一档，在 title 级上取画板字号，
+     * 行高按 title 的 1.3。
+     */
+    val sheetTitle: TextStyle =
+        CouliTypography.title.copy(fontSize = SHEET_TITLE_SIZE.sp, lineHeight = SHEET_TITLE_LINE.sp, fontWeight = FontWeight.Bold)
+
     /** 等宽数字版本（金额一律等宽，GUIDE §2）。 */
     fun TextStyle.tabular(): TextStyle = copy(fontFeatureSettings = CouliAlpha.TABULAR_NUMS)
 
@@ -128,6 +136,9 @@ object CouliTextStyles {
     /** 28/700 等宽（订单详情返利主数字，APP-08v O22）。 */
     val amountHeading: TextStyle = CouliTypography.heading.copy(fontWeight = FontWeight.Bold).tabular()
 }
+
+private const val SHEET_TITLE_SIZE = 20
+private const val SHEET_TITLE_LINE = 26
 
 /**
  * 白卡片：圆角 16、卡片阴影、白底。不裁切内容：卡内控件的焦点环（控件外 2 + 2）贴近卡片边缘时也完整可见

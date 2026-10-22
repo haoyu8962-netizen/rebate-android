@@ -1,5 +1,6 @@
 package com.couli.core.designsystem
 
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -25,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,8 +36,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -45,6 +54,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import kotlinx.coroutines.delay
 
 /** Agent 卡片的条件标记（BR-AI-24）：符合条件 / 已放宽 / 规格待确认；文字取字典。 */
@@ -235,6 +245,8 @@ fun CouliToast(
     modifier: Modifier = Modifier,
     icon: ImageVector? = CouliIcons.check,
     announcementId: Any? = null,
+    /** 图标色（默认成功色，旧调用外观不变；购买流程按提示类别传次文字色 / 警告色，APP-06v B4）。 */
+    iconTint: Color = CouliColors.statusSuccessText,
 ) {
     val announcer = rememberCouliAnnouncer()
     LaunchedEffect(message, announcementId) { announcer.announce(message) }
@@ -249,10 +261,8 @@ fun CouliToast(
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (icon !=
-            null
-        ) {
-            Icon(icon, contentDescription = null, tint = CouliColors.statusSuccessText, modifier = Modifier.size(CouliSizes.iconMedium))
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(CouliSizes.iconMedium))
         }
         Text(text = message, style = CouliTypography.footnote, color = CouliColors.textPrimary)
     }
@@ -285,6 +295,17 @@ fun CouliDialog(
     /** 次按钮、主按钮的测试标记（撤回确认框的【确认撤回】是次按钮）。 */
     dismissTag: String? = null,
     confirmTag: String? = null,
+    /** 标题前的装饰图标（ProductAuthBlocked 警告、ProductPriceUnconfirmed 提示，G-D08）；默认 null 不画，旧调用外观不变。 */
+    titleIcon: ImageVector? = null,
+    /** [titleIcon] 的颜色（默认警告色）。 */
+    titleIconTint: Color = CouliColors.statusWarningText,
+    /** 右上关闭的读屏名；给了才画，点击 = [onDismissRequest]（ProductPriceCompareNoRebate-v2，G-D10）。默认 null 不画。 */
+    closeLabel: String? = null,
+    /**
+     * 遮罩色：给了（如 [CouliColors.overlayScrim]）就关掉系统窗口 dim、整屏铺这层颜色（购买浮层，APP-06v-b）；
+     * 默认 [Color.Unspecified] 沿用系统 dim，旧调用外观不变。
+     */
+    scrim: Color = Color.Unspecified,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
     val fontScale = callerFontScale()
@@ -297,6 +318,7 @@ fun CouliDialog(
                 usePlatformDefaultWidth = false,
             ),
     ) {
+        if (scrim.isSpecified) CouliDialogScrim(scrim)
         // 可视区域（扣除安全区）四周各留 24：弹窗高度不会超过窗口，正文在弹窗内滚动
         WindowFontScale(fontScale) {
             Box(
@@ -318,8 +340,29 @@ fun CouliDialog(
                     confirmEnabled = confirmEnabled,
                     dismissTag = dismissTag,
                     confirmTag = confirmTag,
+                    titleIcon = titleIcon,
+                    titleIconTint = titleIconTint,
+                    closeLabel = closeLabel,
+                    onClose = onDismissRequest,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 用令牌遮罩代替系统窗口 dim（首页弹窗同一做法）：在系统 Dialog 的内容里调用，关掉 FLAG_DIM_BEHIND、窗口铺满屏幕、窗口底色设为 [color]。
+ * 内容位置与点内容以外关闭的行为不变。
+ */
+@Composable
+fun CouliDialogScrim(color: Color) {
+    val view = LocalView.current
+    val argb = color.toArgb()
+    SideEffect {
+        (view.parent as? DialogWindowProvider)?.window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            decorView.setBackgroundColor(argb)
         }
     }
 }
@@ -342,6 +385,12 @@ fun CouliDialogContent(
     confirmEnabled: Boolean = true,
     dismissTag: String? = null,
     confirmTag: String? = null,
+    /** 标题前的装饰图标；默认 null 不画（见 [CouliDialog]）。 */
+    titleIcon: ImageVector? = null,
+    titleIconTint: Color = CouliColors.statusWarningText,
+    /** 右上关闭：[closeLabel] 与 [onClose] 都给了才画；默认不画。 */
+    closeLabel: String? = null,
+    onClose: (() -> Unit)? = null,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -352,12 +401,17 @@ fun CouliDialogContent(
                 .semantics { paneTitle = title },
         gap = CouliSpacing.space3,
         header = {
-            Text(
-                text = title,
-                style = CouliTextStyles.bodySemibold,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.modalTitle(titleFocus),
-            )
+            val close = onClose?.takeIf { closeLabel != null }
+            if (titleIcon == null && close == null) {
+                Text(
+                    text = title,
+                    style = CouliTextStyles.bodySemibold,
+                    color = CouliColors.textPrimary,
+                    modifier = Modifier.modalTitle(titleFocus),
+                )
+            } else {
+                DialogTitleRow(title, titleFocus, titleIcon, titleIconTint, closeLabel, close)
+            }
         },
         // 正文：可交互的正文（如带协议链接的确认框，链接各自可点、读屏可单独聚焦）用 [body]，否则是纯文字 [message]
         body =
@@ -390,6 +444,48 @@ fun CouliDialogContent(
             )
         },
     )
+}
+
+/**
+ * 带前置图标 / 右上关闭的弹窗标题行。图标 20 装饰（不进读屏），与标题首行垂直居中；有关闭时标题在两侧等宽留白之间居中，关闭的视觉 24、
+ * 命中区 48 向外溢出到弹窗内边距里，不把标题行撑高（画板 ProductPriceCompareNoRebate-v2）。读屏顺序：标题 → 关闭。
+ */
+@Composable
+private fun DialogTitleRow(
+    title: String,
+    titleFocus: FocusRequester?,
+    icon: ImageVector?,
+    iconTint: Color,
+    closeLabel: String?,
+    onClose: (() -> Unit)?,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2), verticalAlignment = Alignment.Top) {
+        if (onClose != null) Spacer(Modifier.size(CouliSizes.iconLarge))
+        if (icon != null) {
+            val line = with(LocalDensity.current) { CouliTextStyles.bodySemibold.lineHeight.toDp() }
+            Box(modifier = Modifier.height(line), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(CouliSizes.iconMedium))
+            }
+        }
+        Text(
+            text = title,
+            style = CouliTextStyles.bodySemibold,
+            color = CouliColors.textPrimary,
+            textAlign = if (onClose != null) TextAlign.Center else TextAlign.Start,
+            modifier = Modifier.weight(1f).modalTitle(titleFocus),
+        )
+        if (onClose != null && closeLabel != null) {
+            Box(modifier = Modifier.size(CouliSizes.iconLarge), contentAlignment = Alignment.Center) {
+                CouliIconButton(
+                    icon = CouliIcons.close,
+                    label = closeLabel,
+                    onClick = onClose,
+                    tint = CouliColors.textSecondary,
+                    modifier = Modifier.wrapContentSize(unbounded = true),
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -524,6 +620,8 @@ fun CouliSheet(
     showTitle: Boolean = true,
     /** 标题字号（默认 17/600；用途说明半屏 HomeClipboardConsent-v3 用 22/600）。 */
     titleStyle: TextStyle = CouliTextStyles.bodySemibold,
+    /** 标题前的装饰槽（授权半屏的 32 平台图标，G-D14）；默认 null 不画，旧调用外观不变。读屏仍只读标题文字。 */
+    titleLeading: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
@@ -549,6 +647,7 @@ fun CouliSheet(
                 closeLabel = closeLabel,
                 showTitle = showTitle,
                 titleStyle = titleStyle,
+                titleLeading = titleLeading,
                 modifier = modifier,
                 content = content,
             )
@@ -567,6 +666,8 @@ fun CouliSheetBody(
     closeLabel: String? = null,
     showTitle: Boolean = true,
     titleStyle: TextStyle = CouliTextStyles.bodySemibold,
+    /** 标题前的装饰槽；默认 null 不画（见 [CouliSheet]）。 */
+    titleLeading: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     ScrollBodyLayout(
@@ -597,6 +698,9 @@ fun CouliSheetBody(
 
                 onClose != null && closeLabel != null -> {
                     Row(verticalAlignment = Alignment.Top) {
+                        if (titleLeading != null) {
+                            Box(Modifier.padding(top = CouliSpacing.space3, end = CouliSpacing.space3)) { titleLeading() }
+                        }
                         Text(
                             text = title,
                             style = titleStyle,
@@ -604,6 +708,18 @@ fun CouliSheetBody(
                             modifier = Modifier.weight(1f).padding(top = CouliSpacing.space3).modalTitle(titleFocus),
                         )
                         CouliIconButton(icon = CouliIcons.close, label = closeLabel, onClick = onClose, tint = CouliColors.textSecondary)
+                    }
+                }
+
+                titleLeading != null -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
+                        titleLeading()
+                        Text(
+                            text = title,
+                            style = titleStyle,
+                            color = CouliColors.textPrimary,
+                            modifier = Modifier.weight(1f).modalTitle(titleFocus),
+                        )
                     }
                 }
 

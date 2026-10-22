@@ -65,6 +65,9 @@ enum class PlatformIconSize(
     BADGE(14.dp),
     FILTER(16.dp),
     SELECT(20.dp),
+
+    /** 授权半屏标题前（ProductAuthSheet-v2，G-D14）：同一张内置原图缩放，不新增素材。 */
+    SHEET(32.dp),
     HOME(44.dp),
 }
 

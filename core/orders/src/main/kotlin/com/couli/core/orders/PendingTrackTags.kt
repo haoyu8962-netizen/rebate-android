@@ -1,14 +1,17 @@
 package com.couli.core.orders
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,7 +19,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
@@ -27,6 +32,7 @@ import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
+import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
@@ -143,15 +149,7 @@ private fun PendingTrackCard(
                     )
                 }
             }
-            if (card.claimEntry) {
-                CouliButton(
-                    text = texts.text(PendingTrackService.CLAIM_KEY),
-                    onClick = onClaim,
-                    variant = CouliButtonVariant.TEXT,
-                    size = CouliButtonSize.COMPACT,
-                    modifier = Modifier.testTag(PendingTrackTags.CLAIM),
-                )
-            }
+            if (card.claimEntry) ClaimLink(texts.text(PendingTrackService.CLAIM_KEY), onClaim)
             if (card.notificationRow) NotificationRow(texts, onNotify)
         }
         CouliIconButton(
@@ -163,6 +161,31 @@ private fun PendingTrackCard(
             enabled = closeEnabled,
             modifier = Modifier.align(Alignment.TopEnd).testTag(PendingTrackTags.CLOSE),
         )
+    }
+}
+
+/**
+ * 「未跟单？去找回 ›」（ProductPendingTrackClaim）：强调色文字 + 尾部箭头，整块一个按钮（Role.Button），视觉贴合文字、命中区 ≥ 48。
+ * 与说明左对齐（左侧不留按钮内边距）。
+ */
+@Composable
+private fun ClaimLink(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier
+                .defaultMinSize(minHeight = CouliSizes.touchTarget)
+                .clip(RoundedCornerShape(CouliRadius.small))
+                .clickable(role = Role.Button, onClick = onClick)
+                .padding(start = CouliSizes.iconMedium + CouliSpacing.space2, end = CouliSpacing.space2)
+                .testTag(PendingTrackTags.CLAIM),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = text, style = CouliTextStyles.footnoteSemibold, color = CouliColors.textLink)
+        Icon(CouliIcons.chevron, contentDescription = null, tint = CouliColors.textLink, modifier = Modifier.size(CouliSizes.iconSmall))
     }
 }
 

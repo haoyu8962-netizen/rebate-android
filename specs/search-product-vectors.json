@@ -820,6 +820,198 @@
           "text_key": "btn.buy"
         }
       }
+    },
+    "purchase": {
+      "notes": "APP-06v-b：仅假服务与截图使用；不参加判定向量。时钟沿用 visualCards.clock，所有外跳由 src/test 端口拦截。",
+      "responses": {
+        "unchanged": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4678,
+          "new_link_id": null,
+          "requote_failed": false,
+          "new_rebate_min_fen": 123,
+          "new_rebate_max_fen": 234,
+          "no_rebate_cause": null,
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "price": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": true,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4990,
+          "new_link_id": "visual-link-new",
+          "requote_failed": false,
+          "new_rebate_min_fen": 123,
+          "new_rebate_max_fen": 234,
+          "no_rebate_cause": null,
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "coupon": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 5678,
+          "new_link_id": "visual-link-new",
+          "requote_failed": false,
+          "new_rebate_min_fen": 123,
+          "new_rebate_max_fen": 234,
+          "no_rebate_cause": null,
+          "availability": "coupon_gone",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "rebate": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4678,
+          "new_link_id": null,
+          "requote_failed": false,
+          "new_rebate_min_fen": 0,
+          "new_rebate_max_fen": 0,
+          "no_rebate_cause": null,
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "price_rebate": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": true,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4990,
+          "new_link_id": null,
+          "requote_failed": false,
+          "new_rebate_min_fen": 0,
+          "new_rebate_max_fen": 0,
+          "no_rebate_cause": null,
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "compare": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 1234,
+          "new_final_price_fen": 1234,
+          "new_link_id": null,
+          "requote_failed": false,
+          "new_rebate_min_fen": 0,
+          "new_rebate_max_fen": 0,
+          "no_rebate_cause": "price_compare",
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "off_shelf": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4678,
+          "new_link_id": null,
+          "requote_failed": false,
+          "new_rebate_min_fen": 123,
+          "new_rebate_max_fen": 234,
+          "no_rebate_cause": null,
+          "availability": "off_shelf",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        },
+        "cached": {
+          "attempt_id": "visual-attempt",
+          "jump": {
+            "primary": {
+              "type": "scheme",
+              "value": "fixture-shop://item"
+            },
+            "fallbacks": [],
+            "expire_at": "2026-10-22T11:00:00+08:00"
+          },
+          "price_changed": false,
+          "old_final_price_fen": 4678,
+          "new_final_price_fen": 4678,
+          "new_link_id": null,
+          "requote_failed": true,
+          "new_rebate_min_fen": 123,
+          "new_rebate_max_fen": 234,
+          "no_rebate_cause": null,
+          "availability": "ok",
+          "quoted_at": "2026-10-22T10:32:00+08:00"
+        }
+      },
+      "auth": {
+        "auth_url": "https://auth.example.test/authorize",
+        "state": "fixture-state",
+        "auth_methods": [
+          "web_code"
+        ]
+      },
+      "pending": {
+        "items": [
+          {
+            "platform": "taobao",
+            "attempt_id": "visual-attempt",
+            "link_id": "visual-link",
+            "show_claim_entry": false,
+            "dismissed": false,
+            "jumped_at": "2026-10-22T10:00:00+08:00"
+          }
+        ]
+      }
     }
   }
 }

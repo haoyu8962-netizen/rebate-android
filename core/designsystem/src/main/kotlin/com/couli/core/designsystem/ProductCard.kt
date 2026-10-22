@@ -42,10 +42,11 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -165,6 +166,11 @@ fun ProductCardList(
     retryLaterOutlined: Boolean = false,
     /** false：不画卡框（白底、阴影与 12 内边距），内容直接贴容器边排（半屏里的单张识别卡 HomeClipboardCard-v3）；默认 true 保持原外观。 */
     framed: Boolean = true,
+    /**
+     * 卡顶状态胶囊（搜索卡点购买得知下架：「商品已下架」）；给了就画灰胶囊，文字是 polite 状态区，出现即由读屏播报（代替轻提示，G-D07）。
+     * 默认 null 不画，旧调用外观不变。
+     */
+    statusLabel: String? = null,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val toggleInfo: () -> Unit = onInfo ?: { expanded = !expanded }
@@ -184,6 +190,7 @@ fun ProductCardList(
             modifier = Modifier.padding(inset),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
+            if (statusLabel != null) StatusCapsule(text = statusLabel, politeStatus = true)
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
                 ProductThumbnail(label = shown.imageLabel, size = CouliSizes.listThumbnail, imageUrl = shown.imageUrl)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
@@ -585,8 +592,9 @@ fun ProductCardLarge(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         if (offShelfLabel != null) {
-            // 下架：只有状态胶囊（读屏随标题读出，这里不重复）、标题与店铺（BR-PRICE-14，不留旧价）
-            StatusCapsule(text = offShelfLabel, modifier = Modifier.semantics { hideFromAccessibility() })
+            // 下架：只有状态胶囊、标题与店铺（BR-PRICE-14，不留旧价）。胶囊是 polite 状态区：点购买得知下架时卡片原位置灰，由它播报
+            // 「商品已下架」，不再出轻提示（G-D07）
+            StatusCapsule(text = offShelfLabel, politeStatus = true)
         } else {
             if (data.priceUnavailableText != null) {
                 // 价格不可用：不显示任何金额（价格、返利、预估返后、取价），只有提示（BR-PRICE-01）；替代行（不含金额）照常
@@ -624,6 +632,8 @@ fun ProductCardLarge(
 fun StatusCapsule(
     text: String,
     modifier: Modifier = Modifier,
+    /** true：文字是 polite 状态区，出现 / 变化时由读屏播报（下架原位置灰，G-D07）。默认 false。 */
+    politeStatus: Boolean = false,
 ) {
     Box(
         modifier =
@@ -634,7 +644,12 @@ fun StatusCapsule(
                 .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1),
         contentAlignment = Alignment.CenterStart,
     ) {
-        Text(text = text, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+        Text(
+            text = text,
+            style = CouliTypography.footnote,
+            color = CouliColors.textSecondary,
+            modifier = if (politeStatus) Modifier.semantics { liveRegion = LiveRegionMode.Polite } else Modifier,
+        )
     }
 }
 

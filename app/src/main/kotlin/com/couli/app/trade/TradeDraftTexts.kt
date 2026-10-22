@@ -68,6 +68,9 @@ internal object TradeDraftTexts : TradeTexts {
             "trade.sdk_failed.body" to "这次没有跳转，商品信息保留在本页，稍后可以再点购买。",
             "trade.not_installed" to "安装{platform_name}后下单才有返利",
             "trade.not_installed.copied" to "安装{platform_name}后下单才有返利，口令已复制",
+            // 淘宝未安装、口令已复制（ProductJumpNotInstalled-v2，08 BR-TEXT-14 表 C，G-D11；三端同名，登记 CT-16f）：按钮与轻提示
+            "trade.not_installed.copy_tpwd" to "复制淘口令",
+            "trade.not_installed.tpwd_copied" to "已复制淘口令",
             "trade.jump_failed" to "暂时无法打开{platform_name}，请稍后再试",
             // 跳转方案过了 expire_at（A-R1-12；没有画板与文案键，草稿，TODO(N-28)）
             "trade.jump_expired" to "购买链接已过期，请重新点购买",

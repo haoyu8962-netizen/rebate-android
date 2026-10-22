@@ -56,6 +56,7 @@ import com.couli.feature.search.SearchScreen
 import com.couli.feature.trade.CardPatch
 import com.couli.feature.trade.OpenPurchaseController
 import com.couli.feature.trade.PurchaseEnv
+import com.couli.feature.trade.PurchaseNotInstalledBanner
 import com.couli.feature.trade.PurchaseOverlay
 import com.couli.feature.trade.PurchaseTimeoutBanner
 import com.couli.feature.trade.purchaseButton
@@ -312,11 +313,12 @@ class AppSearch(
         val texts = trade?.texts ?: TradeDraftTexts
         return ProductPurchaseSlots(
             overlay = { focus -> PurchaseOverlay(page.controller, texts, focus) },
-            // 待跟单卡（设计稿 ProductPendingTrack：内容与底栏之间）+ 超时提示条
+            // 待跟单卡（设计稿 ProductPendingTrack：内容与底栏之间）+ 超时提示条 + 淘宝未安装的常驻说明（紧贴底栏上方，G-D11）
             banner = {
                 Column {
                     PendingCards(entryId)
                     PurchaseTimeoutBanner(page.controller, texts)
+                    PurchaseNotInstalledBanner(page.controller, texts)
                 }
             },
             button = {
