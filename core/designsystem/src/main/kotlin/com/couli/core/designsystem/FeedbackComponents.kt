@@ -81,6 +81,8 @@ fun AiLabel(
 data class StateAction(
     val label: String,
     val enabled: Boolean = true,
+    /** true：实心主按钮（如订单空态【去首页逛逛】，OrdersEmpty）；缺省 false 为描边次按钮，保持原外观。 */
+    val primary: Boolean = false,
     val onClick: () -> Unit,
 )
 
@@ -180,7 +182,7 @@ private fun StateLayout(
             CouliButton(
                 text = action.label,
                 onClick = action.onClick,
-                variant = CouliButtonVariant.SECONDARY,
+                variant = if (action.primary) CouliButtonVariant.PRIMARY else CouliButtonVariant.SECONDARY,
                 enabled = action.enabled,
                 modifier = Modifier.padding(top = CouliSpacing.space2).then(actionModifier),
             )

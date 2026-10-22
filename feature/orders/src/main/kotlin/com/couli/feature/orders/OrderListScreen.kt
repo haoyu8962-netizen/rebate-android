@@ -2,13 +2,13 @@ package com.couli.feature.orders
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,11 +19,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -51,25 +48,20 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsPropertyKey
-import androidx.compose.ui.semantics.collapse
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.expand
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.couli.core.designsystem.AmountGrid
-import com.couli.core.designsystem.AmountValueSize
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
@@ -78,35 +70,20 @@ import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliRadius
-import com.couli.core.designsystem.CouliSheet
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
-import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.EmptyState
 import com.couli.core.designsystem.ErrorAnnouncement
 import com.couli.core.designsystem.ErrorState
-import com.couli.core.designsystem.PlatformBadge
-import com.couli.core.designsystem.ProductThumbnail
 import com.couli.core.designsystem.RestoreLanding
-import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.awaitLanding
-import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
-import com.couli.core.orders.CreditPeriodText
-import com.couli.core.orders.OrderAmountCells
 import com.couli.core.orders.OrderErrorAction
-import com.couli.core.orders.OrderFormat
-import com.couli.core.orders.OrderMonthOptions
-import com.couli.core.orders.OrderNumberDisplay
-import com.couli.core.orders.OrderPlatformOptions
 import com.couli.core.orders.OrderQuery
-import com.couli.core.orders.OrderStatusText
-import com.couli.core.orders.OrderSummary
 import com.couli.core.orders.OrderTexts
-import com.couli.core.orders.OrderTitleImage
 import com.couli.core.orders.PendingTrackCards
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -150,12 +127,20 @@ fun OrderListScreen(config: OrderListConfig) {
         contentAlignment = Alignment.TopCenter,
     ) {
         Column(modifier = Modifier.widthIn(max = OrderUi.MAX_WIDTH.dp).fillMaxSize().statusBarsPadding()) {
-            TitleRow(texts) { config.env.open(OrderRoutes.FIND_ORDER, EMPTY) }
-            state.staleAt?.let { StaleBanner(texts, it, config.clock()) }
+            // 置顶（G-O04）时右上入口不画，改在标题下整行；两处去向相同（FindOrder，不带参数），不发额外请求
+            val onFind = { config.env.open(OrderRoutes.FIND_ORDER, EMPTY) }
+            TitleRow(texts, showEntry = !state.claimPinned, onFind = onFind)
+            // 头部各行按画板视觉高排（Tab 44、搜索 44、胶囊 32，行距 12）；胶囊行上下各留 16：上下两行的 48 命中区各扩 8 不重叠；筛选行下留 8
+            // 给它与眼睛的命中扩展（在头部之内，不伸进列表），列表上内边距 8 补足卡片前的 16
             Column(
-                modifier = Modifier.padding(horizontal = CouliSpacing.space4).padding(top = CouliSpacing.space2),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                modifier =
+                    Modifier
+                        .padding(horizontal = CouliSpacing.space4)
+                        .padding(top = CouliSpacing.space2, bottom = CouliSpacing.space2),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
+                if (state.claimPinned) PinnedFindRow(texts, onFind)
+                state.staleAt?.let { StaleBanner(texts, it, config.clock(), outer = PaddingValues()) }
                 ScopeTabs(texts, state.scope, actions.onScope)
                 SearchField(
                     texts,
@@ -166,7 +151,9 @@ fun OrderListScreen(config: OrderListConfig) {
                     onSubmit = actions.onSubmit,
                     onClear = actions.onClear,
                 )
-                GroupChips(texts, state.conditions.group, enabled = !state.blocked, onSelect = actions.onGroup)
+                Box(modifier = Modifier.padding(vertical = CouliSpacing.space1)) {
+                    GroupChips(texts, state.conditions.group, enabled = !state.blocked, onSelect = actions.onGroup)
+                }
                 FilterRow(
                     texts = texts,
                     state = state,
@@ -209,110 +196,7 @@ fun OrderListScreen(config: OrderListConfig) {
     }
 }
 
-@Composable
-private fun TitleRow(
-    texts: OrderTexts,
-    onFind: () -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .heightIn(
-                    min = CouliSizes.touchTarget,
-                ).padding(start = CouliSpacing.space4, end = CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = texts.text("order_list.title"),
-            style = CouliTextStyles.titleSemibold,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.weight(1f).semantics { heading() },
-        )
-        CouliButton(
-            text = texts.text("order_list.find_entry"),
-            onClick = onFind,
-            variant = CouliButtonVariant.TEXT,
-            size = CouliButtonSize.COMPACT,
-            modifier = Modifier.testTag(OrderTags.FIND_ENTRY),
-        )
-    }
-}
-
-/** 「网络不可用，以下为 {time} 的数据」（role=status，礼貌播报；{time} 按 BR-TEXT-11）。 */
-@Composable
-internal fun StaleBanner(
-    texts: OrderTexts,
-    fetchedAt: Long,
-    now: Long,
-    tag: String = OrderTags.STALE,
-) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space1)
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
-                .padding(CouliSpacing.space3)
-                .semantics { liveRegion = LiveRegionMode.Polite }
-                .testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconSmall),
-        )
-        Text(
-            text = texts.format(OrderErrorAction.STALE_KEY, mapOf("time" to CouliFormat.timeListPast(fetchedAt, now))),
-            style = CouliTypography.footnote,
-            color = CouliColors.textPrimary,
-        )
-    }
-}
-
-/** 子 Tab「自购 / 分享」：分段控件，选中状态读出（Role.Tab + selected）。 */
-@Composable
-private fun ScopeTabs(
-    texts: OrderTexts,
-    scope: String,
-    onSelect: (String) -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.button))
-                .padding(CouliSpacing.space1),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-    ) {
-        listOf(OrderQuery.SELF to OrderTags.TAB_SELF, OrderQuery.SHARE to OrderTags.TAB_SHARE).forEach { (value, tag) ->
-            val selected = value == scope
-            Box(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .background(
-                            if (selected) CouliColors.backgroundSurface else CouliColors.backgroundMuted,
-                            RoundedCornerShape(CouliRadius.small),
-                        ).selectable(selected = selected, role = Role.Tab) { onSelect(value) }
-                        .testTag(tag),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = texts.text("order_list.tab.$value"),
-                    style = if (selected) CouliTextStyles.footnoteSemibold else CouliTypography.footnote,
-                    color = if (selected) CouliColors.textPrimary else CouliColors.textSecondary,
-                )
-            }
-        }
-    }
-}
-
-/** 搜索框（G11）：最多 40 个 Unicode 字符；键盘「搜索」或清空才发请求，不边输边搜。 */
+/** 搜索框（G11）：视觉高 44、1 控件边、圆角 12；最多 40 个 Unicode 字符；键盘「搜索」或清空才发请求，不边输边搜。 */
 @Composable
 private fun SearchField(
     texts: OrderTexts,
@@ -329,7 +213,7 @@ private fun SearchField(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = CouliSizes.touchTarget)
+                .heightIn(min = CouliSizes.visualTarget)
                 .border(CouliSizes.hairline, CouliColors.borderControl, RoundedCornerShape(CouliRadius.button))
                 .background(CouliColors.backgroundSurface, RoundedCornerShape(CouliRadius.button))
                 .padding(start = CouliSpacing.space3),
@@ -374,146 +258,12 @@ private fun SearchField(
                 tint = CouliColors.textSecondary,
                 iconSize = CouliSizes.iconMedium,
                 enabled = enabled,
-                modifier = Modifier.testTag(OrderTags.SEARCH_CLEAR),
+                // 48 的清除按钮不把 44 的搜索框撑高（命中区上下溢出 2）
+                modifier = Modifier.visualHeight(CouliSizes.iconMedium).testTag(OrderTags.SEARCH_CLEAR),
             )
         }
     }
 }
-
-/** 状态分组胶囊（全部 / 预估中 / 已结算 / 无返利）：横滑，选中项滚入可见区；视觉高 32，命中区 48；选中状态读出。 */
-@Composable
-private fun GroupChips(
-    texts: OrderTexts,
-    group: String,
-    enabled: Boolean,
-    onSelect: (String) -> Unit,
-) {
-    val listState = rememberLazyListState()
-    val selectedIndex = OrderQuery.GROUPS.indexOf(group).coerceAtLeast(0)
-    LaunchedEffect(selectedIndex) { listState.animateScrollToItem(selectedIndex) }
-    LazyRow(state = listState, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2), modifier = Modifier.fillMaxWidth()) {
-        itemsIndexed(OrderQuery.GROUPS) { _, value ->
-            val selected = value == group
-            Box(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .selectable(selected = selected, enabled = enabled, role = Role.Tab) { onSelect(value) }
-                        .testTag(OrderTags.GROUP_PREFIX + value),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = texts.text("order_status_group.$value"),
-                    style = if (selected) CouliTextStyles.footnoteSemibold else CouliTypography.footnote,
-                    color = if (selected) CouliColors.brandEmphasis else CouliColors.textSecondary,
-                    modifier =
-                        Modifier
-                            .background(
-                                if (selected) CouliColors.brandSubtle else CouliColors.backgroundSurface,
-                                RoundedCornerShape(CouliRadius.pill),
-                            ).padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1),
-                )
-            }
-        }
-    }
-}
-
-/** 【平台】【月份】（展开状态读出）+ 眼睛按钮（金额隐藏，G21）。 */
-@Composable
-private fun FilterRow(
-    texts: OrderTexts,
-    state: OrderListSnapshot,
-    sheet: OrderSheet?,
-    masked: Boolean,
-    platformFocus: FocusRequester,
-    monthFocus: FocusRequester,
-    onSheet: (OrderSheet) -> Unit,
-    onMask: () -> Unit,
-) {
-    // 窄屏、大字号且已选长筛选（「拼多多」+「2026 年 10 月」）时：两个筛选按钮在左侧的可用宽度里换行，眼睛按钮固定在行尾、先量出完整 48 命中区
-    // （Row 先量不带权重的子项；APP-08 共性第 11 条）
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        val platformLabel = state.conditions.platform?.let { texts.text("platform.$it") } ?: texts.text("order_list.filter.platform")
-        val monthLabel = state.conditions.month?.let { monthText(texts, it) } ?: texts.text("order_list.filter.month")
-        FlowRow(
-            modifier = Modifier.weight(1f).testTag(OrderTags.FILTERS),
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            FilterButton(platformLabel, sheet == OrderSheet.PLATFORM, !state.blocked, platformFocus, OrderTags.FILTER_PLATFORM) {
-                onSheet(OrderSheet.PLATFORM)
-            }
-            FilterButton(
-                monthLabel,
-                sheet == OrderSheet.MONTH,
-                !state.blocked,
-                monthFocus,
-                OrderTags.FILTER_MONTH,
-            ) { onSheet(OrderSheet.MONTH) }
-        }
-        CouliIconButton(
-            icon = if (masked) CouliIcons.eyeOff else CouliIcons.eye,
-            label = texts.text(if (masked) OrderUi.MASK_SHOW_KEY else OrderUi.MASK_HIDE_KEY),
-            onClick = onMask,
-            tint = CouliColors.textSecondary,
-            iconSize = CouliSizes.iconMedium,
-            modifier = Modifier.testTag(OrderTags.MASK),
-        )
-    }
-}
-
-@Composable
-private fun FilterButton(
-    label: String,
-    expanded: Boolean,
-    enabled: Boolean,
-    focus: FocusRequester,
-    tag: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier
-                .heightIn(min = CouliSizes.touchTarget)
-                .couliFocusTarget(focus)
-                .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-                .semantics { if (expanded) collapse { true } else expand { true } }
-                .padding(horizontal = CouliSpacing.space2)
-                .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-    ) {
-        // 文字与箭头分开分配空间：箭头先量（固定大小），文字用剩下的宽度、放不下时换行，不把箭头挤出去
-        Text(
-            text = label,
-            style = CouliTypography.footnote,
-            color = if (enabled) CouliColors.textPrimary else CouliColors.textSecondary,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        Icon(
-            CouliIcons.chevronDown,
-            contentDescription = null,
-            tint = CouliColors.textSecondary,
-            modifier = Modifier.size(CouliSizes.iconSmall).testTag(tag + ARROW_SUFFIX),
-        )
-    }
-}
-
-/** 「2026 年 10 月」。 */
-private fun monthText(
-    texts: OrderTexts,
-    month: String,
-): String =
-    texts.format(
-        "order_list.filter.month_item",
-        mapOf(
-            "year" to month.take(YEAR_LENGTH),
-            "month" to month.takeLast(2).trimStart('0'),
-        ),
-    )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -545,7 +295,7 @@ private fun OrderListBody(
     )
     val pullState = rememberPullToRefreshState()
     // 下拉刷新：42901 禁用期内手势不可用（enabled = false；执行层也拦）
-    Box(
+    BoxWithConstraints(
         modifier =
             modifier
                 .fillMaxWidth()
@@ -569,9 +319,14 @@ private fun OrderListBody(
                             restoreGuard.touched()
                         }
                     },
+            // 上内边距 8：头部已留出筛选行命中扩展的 8（APP-08v O8），卡片离筛选行视觉仍是 16
             contentPadding =
-                androidx.compose.foundation.layout
-                    .PaddingValues(CouliSpacing.space4),
+                PaddingValues(
+                    start = CouliSpacing.space4,
+                    top = CouliSpacing.space2,
+                    end = CouliSpacing.space4,
+                    bottom = CouliSpacing.space4,
+                ),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
         ) {
             val pending = model.pending
@@ -595,7 +350,8 @@ private fun OrderListBody(
                 }
 
                 OrderListPhase.EMPTY -> {
-                    item(key = EMPTY_KEY) { ListEmpty(texts, state, config) }
+                    val fill = emptyFill(state, pending != null, if (constraints.hasBoundedHeight) maxHeight else null)
+                    item(key = EMPTY_KEY) { ListEmpty(texts, state, config, fill) }
                 }
 
                 OrderListPhase.CONTENT -> {
@@ -870,11 +626,25 @@ private fun ListError(
     }
 }
 
+/**
+ * OrdersEmpty：空态在列表可视区内上下居中的最小高（列表里只有它时；有待跟单卡或查询范围提示时为 0，照常排在顶部）。[viewport] 为列表高，
+ * 减去列表上下内边距。
+ */
+private fun emptyFill(
+    state: OrderListSnapshot,
+    hasPending: Boolean,
+    viewport: Dp?,
+): Dp {
+    val alone = (state.scope != OrderQuery.SELF || !hasPending) && state.earliestVisibleDate == null
+    return if (alone && viewport != null) viewport - CouliSpacing.space2 - CouliSpacing.space4 else 0.dp
+}
+
 @Composable
 private fun ListEmpty(
     texts: OrderTexts,
     state: OrderListSnapshot,
     config: OrderListConfig,
+    minHeight: Dp,
 ) {
     if (state.filtered) {
         // OrdersSearchEmpty：带搜索词或筛选的无结果（分享子 Tab 加「分享订单只按商品名搜索」），role=status
@@ -891,12 +661,16 @@ private fun ListEmpty(
         return
     }
     val scope = state.scope
-    Box(modifier = Modifier.fillMaxWidth().testTag(OrderTags.EMPTY)) {
+    Box(
+        modifier = Modifier.fillMaxWidth().heightIn(min = minHeight).testTag(OrderTags.EMPTY),
+        contentAlignment = Alignment.Center,
+    ) {
         EmptyState(
             title = texts.text("order_list.empty.$scope.title"),
             message = texts.text("order_list.empty.$scope.message"),
             icon = CouliIcons.orders,
-            action = StateAction(texts.text("order_list.empty.action")) { config.env.open(OrderRoutes.HOME, EMPTY) },
+            // OrdersEmpty：实心主按钮、紧凑宽（不通栏）
+            action = StateAction(texts.text("order_list.empty.action"), primary = true) { config.env.open(OrderRoutes.HOME, EMPTY) },
         )
     }
 }
@@ -963,101 +737,6 @@ private fun ListFooter(
     }
 }
 
-/**
- * 订单卡（Orders）：整卡一个目标（打开详情，读屏名称含商品名），卡内【复制】是独立的第二个目标（点击不穿透）。来源 + 付款时间；商品图（只在加载中、
- * 为 null 或失败时占位）+ 标题（is_other_product 用「好友购买的其他商品」）+ 件数；订单号；两列金额格；状态行（+ 预计结算月份）。
- */
-@Composable
-internal fun OrderCard(
-    item: OrderSummary,
-    texts: OrderTexts,
-    masked: Boolean,
-    now: Long,
-    onOpen: () -> Unit,
-    onCopy: (() -> Unit)?,
-) {
-    val titleView = OrderTitleImage.of(item)
-    val title = titleView.titleKey?.let(texts::text) ?: titleView.title.orEmpty()
-    val status = OrderStatusText.of(item.displayStatus)
-    val (cells, stackOrder) = OrderUi.listCells(texts, OrderAmountCells.of(item))
-    val period = CreditPeriodText.of(item.displayStatus, null, now)
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .couliCard()
-                .clickable(role = Role.Button, onClick = onOpen)
-                .padding(CouliSpacing.space4)
-                .testTag(OrderTags.CARD_PREFIX + item.orderId),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            PlatformBadge(name = texts.text("platform.${item.platform}"), platformCode = item.platform)
-            OrderFormat.epochMillis(item.paidAt)?.let {
-                Text(text = CouliFormat.timeListPast(it, now), style = CouliTypography.caption, color = CouliColors.textSecondary)
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-            ProductThumbnail(label = texts.text("order_list.image_placeholder"), size = THUMB.dp, imageUrl = titleView.imageUrl)
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                if (title.isNotEmpty()) {
-                    Text(
-                        text = title,
-                        style = CouliTypography.footnote,
-                        color = CouliColors.textPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                item.quantity?.let {
-                    Text(
-                        text = texts.format("order_list.quantity", mapOf("n" to it.toString())),
-                        style = CouliTypography.caption,
-                        color = CouliColors.textSecondary,
-                    )
-                }
-            }
-        }
-        OrderNumberRow(
-            number = OrderNumberDisplay.of(item),
-            texts = texts,
-            onCopy = onCopy,
-            textTag = OrderTags.ORDER_NO_PREFIX + item.orderId,
-            copyTag = OrderTags.COPY_PREFIX + item.orderId,
-        )
-        AmountGrid(cells = cells, valueSize = AmountValueSize.BODY, mask = OrderUi.mask(texts, masked), stackOrder = stackOrder)
-        // 列表只给状态文案；预计结算月份要 expected_credit_period（只在详情里有），列表行没有这个字段
-        StatusLine(item.displayStatus, OrderUi.statusLabel(texts, status.labelKey, item.clawbackFen, masked), period.monthText)
-    }
-}
-
-/** 列表骨架（GUIDE 未出订单骨架稿，按卡片结构自画）：读屏「加载中」。 */
-@Composable
-private fun SkeletonOrderCard(texts: OrderTexts) {
-    val loading = texts.text("order_list.loading")
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .couliCard()
-                .padding(CouliSpacing.space4)
-                .semantics {
-                    contentDescription = loading
-                }.testTag(OrderTags.SKELETON),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Skeleton(Modifier.size(width = SKELETON_BADGE.dp, height = CouliSpacing.space5))
-        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-            Skeleton(Modifier.size(THUMB.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-                Skeleton(Modifier.fillMaxWidth().heightIn(min = CouliSpacing.space4))
-                Skeleton(Modifier.fillMaxWidth(SKELETON_LINE).heightIn(min = CouliSpacing.space4))
-            }
-        }
-        Skeleton(Modifier.fillMaxWidth().heightIn(min = CouliSpacing.space10))
-    }
-}
-
 /** 轻提示（页顶，2 秒）：同一句再提示时 [id] 不同，重新播报（复制成功 polite 播报一次）。 */
 @Composable
 internal fun ToastHost(
@@ -1084,97 +763,6 @@ internal fun ToastHost(
     }
 }
 
-@Composable
-private fun PlatformSheet(
-    texts: OrderTexts,
-    selected: String?,
-    restore: FocusRequester,
-    onChoose: (String?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    CouliSheet(
-        title = texts.text("order_list.filter.platform"),
-        onDismissRequest = onDismiss,
-        restoreFocusTo = restore,
-        closeLabel = texts.text("order_list.filter.close"),
-    ) {
-        RadioOption(
-            texts.text("order_list.filter.all_platforms"),
-            selected == null,
-            OrderTags.FILTER_OPTION_PREFIX + ALL_OPTION,
-        ) { onChoose(null) }
-        OrderPlatformOptions.platforms.forEach { platform ->
-            RadioOption(
-                texts.text("platform.$platform"),
-                selected == platform,
-                OrderTags.FILTER_OPTION_PREFIX + platform,
-            ) { onChoose(platform) }
-        }
-    }
-}
-
-@Composable
-private fun MonthSheet(
-    texts: OrderTexts,
-    selected: String?,
-    earliestVisibleDate: String?,
-    now: Long,
-    restore: FocusRequester,
-    onChoose: (String?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    CouliSheet(
-        title = texts.text("order_list.filter.month"),
-        onDismissRequest = onDismiss,
-        restoreFocusTo = restore,
-        closeLabel = texts.text("order_list.filter.close"),
-    ) {
-        Text(text = texts.text("order_list.filter.month_note"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        RadioOption(
-            texts.text("order_list.filter.all_months"),
-            selected == null,
-            OrderTags.FILTER_OPTION_PREFIX + ALL_OPTION,
-        ) { onChoose(null) }
-        OrderMonthOptions.months(earliestVisibleDate, now).forEach { month ->
-            RadioOption(monthText(texts, month), selected == month, OrderTags.FILTER_OPTION_PREFIX + month) { onChoose(month) }
-        }
-    }
-}
-
-/** 半屏里的单选项（Role.RadioButton + selected，命中区 48）。 */
-@Composable
-private fun RadioOption(
-    label: String,
-    selected: Boolean,
-    tag: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = CouliSizes.touchTarget)
-                .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-                .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = if (selected) CouliTextStyles.bodySemibold else CouliTypography.body,
-            color = if (selected) CouliColors.brandEmphasis else CouliColors.textPrimary,
-            modifier = Modifier.weight(1f),
-        )
-        if (selected) {
-            Icon(
-                CouliIcons.check,
-                contentDescription = null,
-                tint = CouliColors.brandEmphasis,
-                modifier = Modifier.size(CouliSizes.iconMedium),
-            )
-        }
-    }
-}
-
 private val EMPTY = kotlinx.serialization.json.JsonObject(emptyMap())
 private const val LIST_VM_KEY = "order_list"
 private const val PENDING_KEY = "pending"
@@ -1182,15 +770,9 @@ private const val ERROR_KEY = "error"
 private const val EMPTY_KEY = "empty"
 private const val FOOTER_KEY = "footer"
 private const val HISTORY_KEY = "history"
-private const val ALL_OPTION = "all"
 private const val SKELETON_COUNT = 3
 private const val LOAD_AHEAD = 2
-private const val THUMB = 64
-private const val SKELETON_BADGE = 56
-private const val SKELETON_LINE = 0.6f
-private const val YEAR_LENGTH = 4
 private const val TOAST_MILLIS = 2_000L
-private const val ARROW_SUFFIX = "_arrow"
 
 private fun LazyListState.position(): Pair<Int, Int> = firstVisibleItemIndex to firstVisibleItemScrollOffset
 

@@ -56,11 +56,15 @@ private const val PLATFORM_ASSET_DIR = "platform"
 /** 平台编码 → 包内图片路径（AssetManager 相对路径，如 `platform/pinduoduo.png`）；未知或暂缺返回 null。 */
 fun platformIconAssetPath(platformCode: String): String? = PLATFORM_ICON_FILES[platformCode]?.let { "$PLATFORM_ASSET_DIR/$it.png" }
 
-/** 平台图标两档：徽标 14、首页金刚区平台格 44（APP-11v A7）。同一张原图按尺寸缩小显示。 */
+/**
+ * 平台图标各档：徽标 14、筛选胶囊 16、选择列表 20（订单平台半屏，APP-08v）、首页金刚区平台格 44（APP-11v A7）。同一张原图按尺寸缩小显示。
+ */
 enum class PlatformIconSize(
     val dp: Dp,
 ) {
     BADGE(14.dp),
+    FILTER(16.dp),
+    SELECT(20.dp),
     HOME(44.dp),
 }
 

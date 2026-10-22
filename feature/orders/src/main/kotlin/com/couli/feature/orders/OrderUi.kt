@@ -1,18 +1,30 @@
 package com.couli.feature.orders
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.AlignmentLine
+import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextLayoutResult
 import com.couli.core.designsystem.AmountCell
 import com.couli.core.designsystem.AmountMask
 import com.couli.core.designsystem.AmountValue
@@ -22,8 +34,10 @@ import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIcons
+import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.EndWrapRow
 import com.couli.core.designsystem.PriceTerms
@@ -33,6 +47,8 @@ import com.couli.core.orders.OrderAmountCells
 import com.couli.core.orders.OrderNumberView
 import com.couli.core.orders.OrderTexts
 import com.couli.generated.DisplayStatus
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /** 订单页共用的小组件与金额格的拼装（列表卡、详情共用）。文案一律经 [OrderTexts] 取键。 */
 internal object OrderUi {
@@ -95,13 +111,20 @@ internal object OrderUi {
         return listOf(left, right) to listOf(1, 0)
     }
 
-    /** 状态行的图标（不只靠颜色：图标 + 文字）。 */
+    /**
+     * 状态胶囊 / 状态标题的图标（不只靠颜色：图标 + 文字；APP-08v O13，按画板）：预估类钟表；INVALID / NO_REBATE / UNKNOWN 用 i；CLAWED_BACK 警告三角；
+     * 已结算（含部分扣回）对勾。纯视图映射。
+     */
     fun statusIcon(status: DisplayStatus): ImageVector =
         when (status) {
             DisplayStatus.CREDITED, DisplayStatus.CREDITED_PART_CLAWED -> CouliIcons.check
-            DisplayStatus.INVALID, DisplayStatus.CLAWED_BACK, DisplayStatus.NO_REBATE -> CouliIcons.alert
+            DisplayStatus.CLAWED_BACK -> CouliIcons.alert
+            DisplayStatus.INVALID, DisplayStatus.NO_REBATE, DisplayStatus.UNKNOWN -> CouliIcons.info
             else -> CouliIcons.clock
         }
+
+    /** 已结算类（CREDITED / CREDITED_PART_CLAWED）用松叶绿色调，其余中性。 */
+    fun settled(status: DisplayStatus): Boolean = status == DisplayStatus.CREDITED || status == DisplayStatus.CREDITED_PART_CLAWED
 
     /** 「已结算（部分扣回 {z}）」：z 为扣回金额；隐藏金额时为遮罩，为 null 时用不带金额的 fallback。 */
     fun statusLabel(
@@ -131,27 +154,31 @@ internal object OrderUi {
     private val SPOKEN_PAUSE = PriceTerms.SPOKEN_PAUSE
 }
 
-/** 状态行：图标 + 状态文案（+ 预计结算月份），可变长文案按宽度换行。 */
+/**
+ * 状态胶囊（APP-08v O13）：最小高 22（随字号增高，文字可换行不裁切）、左右 8、圆角满、图标 14 + 12 字；中性为次要底 + 次文字，已结算为
+ * `status.success` 底 + 字。图标装饰（读屏只读文字）。
+ */
 @Composable
-internal fun StatusLine(
+internal fun StatusPill(
     status: DisplayStatus,
     label: String,
-    extra: String?,
     modifier: Modifier = Modifier,
 ) {
+    val settled = OrderUi.settled(status)
+    val content = if (settled) CouliColors.statusSuccessText else CouliColors.textSecondary
     Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        modifier =
+            modifier
+                .heightIn(min = CouliSizes.tagHeight)
+                .background(
+                    if (settled) CouliColors.statusSuccessBackground else CouliColors.backgroundMuted,
+                    RoundedCornerShape(CouliRadius.pill),
+                ).padding(horizontal = CouliSpacing.space2),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            OrderUi.statusIcon(status),
-            contentDescription = null,
-            tint = CouliColors.textSecondary,
-            modifier = Modifier.size(CouliSizes.iconSmall),
-        )
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f, fill = false))
-        if (!extra.isNullOrEmpty()) Text(text = extra, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+        Icon(OrderUi.statusIcon(status), contentDescription = null, tint = content, modifier = Modifier.size(CouliSizes.iconTiny))
+        Text(text = label, style = CouliTypography.caption, color = content)
     }
 }
 
@@ -202,4 +229,115 @@ internal fun OrderNumberRow(
             }
         },
     )
+}
+
+/**
+ * 列表卡的订单号（APP-08v O10）：「订单号 {no}」12 次文字 + 紧随其后的【复制】（12 强调色；视觉只占文字高，≥48 命中区由最小触控区扩展给出，
+ * 不撑高这一行）。单号按整列宽度折行；【复制】不拆行，按流式排在单号末行实际文字之后（间距 8、基线对齐），末行放不下时整体换到下一行
+ * 的列起点（评审 r1 S2-2：不停在多行中部）。分享单只有脱敏号，没有【复制】，读屏把「*」读成「星号」（不变）。
+ * 详情仍用 [OrderNumberRow]（独立一行、复制靠右）。
+ */
+@Composable
+internal fun OrderNumberInline(
+    number: OrderNumberView,
+    texts: OrderTexts,
+    onCopy: (() -> Unit)?,
+    textTag: String,
+    copyTag: String,
+    modifier: Modifier = Modifier,
+) {
+    val text = number.text ?: return
+    val shown = texts.format("order_list.order_no", mapOf("no" to text))
+    val lines = remember { NumberLines() }
+    Layout(
+        modifier = modifier,
+        content = {
+            Text(
+                text = shown,
+                style = CouliTextStyles.captionAmount,
+                color = CouliColors.textSecondary,
+                onTextLayout = { lines.result = it },
+                modifier =
+                    Modifier
+                        .testTag(textTag)
+                        .then(
+                            if (number.copyable) {
+                                Modifier
+                            } else {
+                                Modifier.semantics { contentDescription = OrderUi.spokenOrderNo(texts, shown) }
+                            },
+                        ),
+            )
+            if (number.copyable && onCopy != null) {
+                val label = texts.text("order_list.copy_label")
+                Text(
+                    text = texts.text("order_list.copy"),
+                    style = CouliTypography.caption,
+                    color = CouliColors.brandEmphasis,
+                    softWrap = false,
+                    modifier =
+                        Modifier
+                            .clickable(role = Role.Button, onClick = onCopy)
+                            .semantics { contentDescription = label }
+                            .testTag(copyTag),
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val numberPlaceable = measurables[0].measure(loose)
+        val copyPlaceable = measurables.getOrNull(1)?.measure(loose)
+        val gap = CouliSpacing.space2.roundToPx()
+        val flow = flowCopy(lines.result, numberPlaceable, copyPlaceable, gap, constraints.maxWidth)
+        val copyRight = flow.copyX + (copyPlaceable?.width ?: 0)
+        val width = maxOf(numberPlaceable.width, copyRight).coerceIn(constraints.minWidth, constraints.maxWidth)
+        val height = maxOf(flow.numberY + numberPlaceable.height, flow.copyY + (copyPlaceable?.height ?: 0))
+        layout(width, height.coerceIn(constraints.minHeight, constraints.maxHeight)) {
+            numberPlaceable.placeRelative(0, flow.numberY)
+            copyPlaceable?.placeRelative(flow.copyX, flow.copyY)
+        }
+    }
+}
+
+/** 单号末行的排版结果（测量时由 onTextLayout 写入，同一次测量里读取）。 */
+private class NumberLines {
+    var result: TextLayoutResult? = null
+}
+
+private class CopyFlow(
+    val numberY: Int,
+    val copyX: Int,
+    val copyY: Int,
+)
+
+/**
+ * 【复制】按流式排在单号之后（O10）：末行实际文字末端 + 8 放得下就跟在末行后、与末行基线对齐；放不下就整体换到单号下一行的列起点，
+ * 不停在多行单号中部、不被推到行尾。
+ */
+private fun flowCopy(
+    layout: TextLayoutResult?,
+    number: Placeable,
+    copy: Placeable?,
+    gap: Int,
+    maxWidth: Int,
+): CopyFlow {
+    val last = (layout?.lineCount ?: 1) - 1
+    val end = layout?.getLineRight(last)?.let { ceil(it).toInt() } ?: number.width
+    return when {
+        copy == null -> {
+            CopyFlow(0, 0, 0)
+        }
+
+        // 末行放不下：整体换到单号下一行的列起点
+        end + gap + copy.width > maxWidth -> {
+            CopyFlow(0, 0, number.height)
+        }
+
+        else -> {
+            val lineBaseline = layout?.getLineBaseline(last)?.roundToInt() ?: number[FirstBaseline]
+            val copyBaseline = copy[FirstBaseline].takeIf { it != AlignmentLine.Unspecified } ?: copy.height
+            val offset = lineBaseline - copyBaseline
+            if (offset >= 0) CopyFlow(0, end + gap, offset) else CopyFlow(-offset, end + gap, 0)
+        }
+    }
 }

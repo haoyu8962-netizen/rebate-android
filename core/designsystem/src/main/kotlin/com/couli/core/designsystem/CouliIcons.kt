@@ -266,6 +266,16 @@ object CouliIcons {
         )
     }
 
+    /** 断网（订单断网提示条 OrdersStale-v2；三段信号弧 + 斜杠，路径照抄画板）。 */
+    val wifiOff: ImageVector by lazy {
+        lineIcon(
+            "WifiOff",
+            "M3.5 9.5a12 12 0 0 1 17 0M6.5 12.5a7.5 7.5 0 0 1 11 0M9.5 15.5a3 3 0 0 1 5 0",
+            "M12 19v.2",
+            "m4 4 16 16",
+        )
+    }
+
     val image: ImageVector by lazy {
         lineIcon(
             "Image",

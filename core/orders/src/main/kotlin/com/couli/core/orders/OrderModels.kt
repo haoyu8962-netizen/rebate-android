@@ -74,12 +74,17 @@ data class PendingTrack(
     val dismissed: Boolean,
 )
 
-/** 列表一页（openapi OrderListData）。[dropped]：按坏数据丢弃的行数（只记日志，不显示任何单号）。 */
+/**
+ * 列表一页（openapi OrderListData）。[dropped]：按坏数据丢弃的行数（只记日志，不显示任何单号）。
+ * [claimEntryPinned]：「未跟单？去找回」置顶（openapi `claim_entry_pinned`，只 scope=self，服务端按 BR-ATTR-17 计算；G-O04）。只读、缺省 false，
+ * 只认 JSON 布尔 true；与当时时间有关，离线缓存不存（读回的缓存一律 false）。
+ */
 data class OrderListData(
     val items: List<OrderSummary>,
     val nextCursor: String?,
     val earliestVisibleDate: String?,
     val dropped: Int = 0,
+    val claimEntryPinned: Boolean = false,
 )
 
 /** 日志出口（App 接到 Logcat；不写订单号、金额与任何个人信息）。缺省丢弃，纯逻辑单测不依赖 Android Log。 */
@@ -114,6 +119,7 @@ object OrderJson {
             nextCursor = root.text("next_cursor")?.takeIf(String::isNotEmpty),
             earliestVisibleDate = root.text("earliest_visible_date")?.takeIf(String::isNotEmpty),
             dropped = dropped,
+            claimEntryPinned = (root["claim_entry_pinned"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull == true,
         )
     }
 

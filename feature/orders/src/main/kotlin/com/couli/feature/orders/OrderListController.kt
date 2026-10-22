@@ -80,6 +80,11 @@ data class OrderListSnapshot(
     val toast: OrderToast? = null,
     /** 已显示的数据的固定身份（没有数据时为 null）。 */
     val identity: OrderListIdentity? = null,
+    /**
+     * 「未跟单？去找回」置顶（G-O04）：只取自本轮第一页的联网结果（`claim_entry_pinned`）且只在自购子 Tab；断网显示缓存、出错、换条件时为假。
+     * 不用本机时钟推算、不发额外请求。
+     */
+    val claimPinned: Boolean = false,
 ) {
     val scope: String get() = conditions.scope
     val filtered: Boolean get() =
@@ -585,6 +590,7 @@ class OrderListController(
                 refreshing = false,
                 shownSeq = request.seq,
                 identity = request.identity(++resultVersion),
+                claimPinned = data.claimEntryPinned && it.scope == OrderQuery.SELF,
             )
         }
     }
@@ -612,6 +618,8 @@ class OrderListController(
                         loadMoreError = OrderErrorView(OrderErrorKind.PAGE_ERROR, OrderErrorAction.NETWORK_KEY, keepItems = true),
                         error = null,
                         staleAt = cached.fetchedAt,
+                        // 置顶与当时时间有关：缓存不存，断网显示上次数据时按不置顶
+                        claimPinned = false,
                         refreshing = false,
                         shownSeq = request.seq,
                         identity = request.identity(++resultVersion),
@@ -628,6 +636,8 @@ class OrderListController(
                         it.copy(
                             refreshing = false,
                             loadingMore = false,
+                            // 成功外壳但 data 解析不出：本次置顶标志无法确认，退回不置顶（右上入口恢复）；网络 / 业务错误沿用原值
+                            claimPinned = it.claimPinned && result !is ApiResult.Success,
                             toast = OrderToast(view.textKey ?: OrderErrorAction.NETWORK_KEY, ++toastSerial, error = true, view = view),
                         )
                     } else {
@@ -639,6 +649,7 @@ class OrderListController(
                             refreshing = false,
                             shownSeq = request.seq,
                             identity = null,
+                            claimPinned = false,
                         )
                     }
                 }
@@ -1004,6 +1015,7 @@ class OrderListController(
             refreshing = false,
             shownSeq = null,
             identity = null,
+            claimPinned = false,
         )
 
     private inline fun update(change: (OrderListSnapshot) -> OrderListSnapshot) {

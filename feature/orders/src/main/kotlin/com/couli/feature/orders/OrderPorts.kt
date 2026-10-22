@@ -133,6 +133,9 @@ object OrderTags {
     const val LIST_PAGE = "orders_page"
     const val DETAIL_PAGE = "order_detail_page"
     const val FIND_ENTRY = "orders_find_entry"
+
+    /** 置顶找回整行（G-O04，claim_entry_pinned）；与 [FIND_ENTRY] 互斥。 */
+    const val FIND_PINNED = "orders_find_pinned"
     const val TAB_SELF = "orders_tab_self"
     const val TAB_SHARE = "orders_tab_share"
     const val SEARCH = "orders_search"

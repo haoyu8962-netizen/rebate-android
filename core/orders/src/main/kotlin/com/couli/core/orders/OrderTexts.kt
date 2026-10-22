@@ -107,7 +107,7 @@ object OrderDraftTexts : OrderTexts {
             "order_list.search.share_note" to "分享订单只按商品名搜索",
             "order_list.filter.all_platforms" to "全部平台",
             "order_list.filter.all_months" to "全部月份",
-            "order_list.filter.month_note" to "按付款时间；预售单按付定金时间",
+            "order_list.filter.month_note" to "按付款时间",
             "order_list.filter.month_item" to "{year} 年 {month} 月",
             "order_list.filter.close" to "关闭",
             "order_list.load_more" to "上拉加载更多",
