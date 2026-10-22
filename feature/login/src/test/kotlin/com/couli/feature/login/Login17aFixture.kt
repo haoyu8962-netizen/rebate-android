@@ -155,12 +155,17 @@ internal class Login17aFixture(
         model.onPhoneChange(PHONE)
     }
 
-    /** 等所有页面动作协程结束；不把每秒刷新循环算作动作，也不按固定轮次空转后断言零请求。 */
+    /**
+     * 等页面忙碌状态和动作协程都结算，再检查请求次数；不把每秒刷新循环算作动作。
+     * isActive=false 也可能只是正在取消，必须等 isCompleted；不能把调度器暂时空闲当成真实 IO 已结束。
+     */
     fun settle() =
         until("页面动作结算") {
-            model.viewModelScope.coroutineContext[Job]!!
-                .children
-                .none { it !in ticker && it.isActive }
+            val state = model.state.value
+            !state.sending && !state.loggingIn && state.oauthBusy == null &&
+                model.viewModelScope.coroutineContext[Job]!!
+                    .children
+                    .none { it !in ticker && !it.isCompleted }
         }
 
     fun until(

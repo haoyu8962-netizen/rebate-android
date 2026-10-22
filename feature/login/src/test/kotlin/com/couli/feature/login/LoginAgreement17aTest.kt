@@ -99,6 +99,8 @@ class LoginAgreement17aTest {
                 f.model.onToggleAgreement()
                 f.model.onGetCode()
                 f.settle()
+                assertEquals("继续输入前已有且只有一次发码入口", 1, f.entries.get())
+                assertEquals(1, f.sends())
                 if (!uncertain) {
                     f.model.onBackToPhone()
                     f.advance(61_000) // 已可重发、旧码仍有效的另一条继续路径。
@@ -136,6 +138,12 @@ class LoginAgreement17aTest {
                 f.model.onGetCode()
                 f.model.onConfirmAgree()
                 f.settle()
+                assertEquals("重新确认后只能发起一次请求（含传输前拒绝）", 1, f.entries.get())
+                assertEquals(1, f.sends())
+                assertEquals(LoginStep.CODE, f.model.state.value.step)
+                f.model.onConfirmAgree()
+                f.settle()
+                assertEquals("重复确认不能再次发起请求", 1, f.entries.get())
                 assertEquals(1, f.sends())
                 assertEquals(LoginStep.CODE, f.model.state.value.step)
             }
