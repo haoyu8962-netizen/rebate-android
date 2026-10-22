@@ -374,12 +374,16 @@ fun WithdrawScreen(config: WalletPageConfig) {
         onBack = config.onBack,
         overlay = {
             flowState.toast?.let { toast ->
-                WalletToast(toast.message(texts), toast.id, error = false) { controller.flow.consumeToast(toast.id) }
+                // W62：「已经处理完成」用次文字色信息图标，已放弃等仍是成功对勾；位置不变（G-W18）
+                WalletToast(toast.message(texts), toast.id, error = false, info = toast.isCompletedNotice()) {
+                    controller.flow.consumeToast(toast.id)
+                }
             }
         },
     ) {
         if (state.successPending) {
-            WalletCard {
+            // 成功锁卡与内容区同一套页边距（上 8、左右 16），不贴屏幕两侧
+            WalletCard(modifier = Modifier.padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)) {
                 Text(
                     text = texts.text(if (state.navigationRejected) "withdraw.submitted_opening_records" else "withdraw.submission_locked"),
                     style = CouliTypography.footnote,
@@ -425,7 +429,12 @@ fun WithdrawScreen(config: WalletPageConfig) {
             }
         }
     }
-    if (help) HelpSheet(texts, "fee_tax", helpOrigin) { help = false }
+    // W45：正文维持 wallet.help.fee_tax（G-W27），按 WithdrawNoteNet 给 14/21 正文与描边【知道了】（共用默认不变）
+    if (help) {
+        HelpSheet(texts, "fee_tax", helpOrigin, bodyStyle = CouliTypography.footnote, okVariant = CouliButtonVariant.SECONDARY) {
+            help = false
+        }
+    }
     stepUp?.let { StepUpSheet(controller.flow.stepUp, it, texts, smsBlocked, verifyBlocked, submitFocus) }
     flowState.riskDialog?.let { dialog ->
         RiskBlockedDialog(
@@ -503,6 +512,11 @@ private fun pendingAmount(pending: PendingView?): Long? =
         }.getOrNull()
     }
 
+/**
+ * 内容区（W36–W55）：上 8、左右 16、下 0、块间 12。待确认卡 → 页顶错误条（金额类提交错误改在金额框下，G-W13）→ 余额卡 → 金额卡（金额框、上限、档位、
+ * 分隔线 + 估算、block 引导）→ 不能提现时隐藏的三块（收款账号行、时效条、不可撤销句，G-W14）。底栏无底色。
+ * 【提交】的回调与可用条件一字不改（G-W12 不做）；所有回调仍在这里按渲染时的版本 / 表单身份捕获。
+ */
 @Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod") // 页面各区块的显示条件逐项
 @Composable
 private fun WithdrawContent(
@@ -523,24 +537,39 @@ private fun WithdrawContent(
     val guide = state.guide()
     val pending = flow.pending != null || flow.pendingUnreadable
     val editable = display.amountEditable && !pending && flow.phase == FlowState.EDITING
+    // G-W13：只读错误键决定显示位置；金额类业务错误挪到金额框下，页顶不再重复
+    val amountError = flow.error?.takeIf { isWithdrawAmountError(it.key) }
+    // G-W14：rules 明确不能提现时隐藏收款账号行、时效条、不可撤销句（不读 submitEnabled，空金额时照常显示）
+    val canWithdraw = state.rules?.canWithdraw != false
+    // G-W15：30309 且下发了提现规则文章时，引导框里加【查看提现规则】，去向同页底链接
+    val guideRules = controller::openRules.takeIf { guide.textKey == GUIDE_RULES_TEXT_KEY && state.helpTarget != null }
     Column(
-        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(CouliSpacing.space4),
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         WithdrawPendingSection(controller, state, flow, texts, submitBlocked)
-        flow.error?.let { ErrorBar(it, texts, WalletTags.WITHDRAW_ERROR) }
+        flow.error?.takeIf { amountError == null }?.let { ErrorBar(it, texts, WalletTags.WITHDRAW_ERROR) }
         flow.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.FLOW_GUIDE) { controller.flow.openGuide() } }
         (state.readError ?: state.payoutError)?.let {
             val readBlocked = controller.readBlocked.collectAsStateWithLifecycle().value
             RetryErrorBar(it, texts, WalletTags.WITHDRAW_READ_ERROR, retryEnabled = !readBlocked) { controller.retry() }
         }
-        WalletCard {
-            Text(
-                text = texts.format("withdraw.balance_line", mapOf("amount" to CouliFormat.money(display.balanceFen))),
-                style = CouliTextStyles.bodySemibold,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.testTag(WalletTags.WITHDRAW_BALANCE),
-            )
+        // W37：标签 14 次文字 → 34/700 等宽大数（间距 4）→ 次数 12（间距 8）；标签与金额合成一个读屏元素（WITHDRAW_BALANCE）
+        Column(
+            modifier = Modifier.fillMaxWidth().withdrawCard().padding(CouliSpacing.space4),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        ) {
+            Column(
+                modifier = Modifier.semantics(mergeDescendants = true) {}.testTag(WalletTags.WITHDRAW_BALANCE),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+            ) {
+                Text(text = texts.text("wallet.withdrawable"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                Text(text = CouliFormat.money(display.balanceFen), style = CouliTextStyles.amountDisplay, color = CouliColors.textPrimary)
+            }
             Text(
                 text =
                     texts.format(
@@ -550,56 +579,60 @@ private fun WithdrawContent(
                             "monthly" to display.monthlyRemaining.toString(),
                         ),
                     ),
-                style = CouliTypography.footnote,
+                style = CouliTypography.caption,
                 color = CouliColors.textSecondary,
                 modifier = Modifier.testTag(WalletTags.WITHDRAW_REMAINING),
             )
         }
         WalletCard {
-            AmountField(model, state, display, texts, editable, flow)
+            AmountField(model, state, display, texts, editable, flow, amountError)
             EstimateRow(state, texts, onHelp)
+            // W46：引导框进金额卡、在金额框（与估算）之下；按钮仍是用户点了才打开（openGuide 捕获渲染时版本）
+            if (guide.actionRaw != WithdrawBlockGuide.NONE) GuideBox(guide, texts, guideRules) { controller.openGuide(version) }
         }
-        if (guide.actionRaw != WithdrawBlockGuide.NONE) GuideBox(guide, texts) { controller.openGuide(version) }
-        state.payout?.line(texts)?.let { line ->
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .background(CouliColors.backgroundSurface, RoundedCornerShape(CouliRadius.card))
-                        .clickable(role = Role.Button, onClick = controller::openPayout)
-                        .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
-                        .semantics(mergeDescendants = true) {
-                            contentDescription =
-                                texts.text("withdraw.payout_label") + PriceTerms.SPOKEN_PAUSE + spokenMask(texts, line)
-                        }.testTag(WalletTags.WITHDRAW_PAYOUT),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-            ) {
-                Text(text = texts.text("withdraw.payout_label"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(text = line, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
-                Icon(
-                    CouliIcons.chevron,
-                    contentDescription = null,
-                    tint = CouliColors.textSecondary,
-                    modifier = Modifier.size(CouliSizes.iconSmall),
-                )
+        if (canWithdraw) {
+            // W51：白卡、左「收款账号」右脱敏账号 + 20 箭头；读屏与 openPayout 不变
+            state.payout?.line(texts)?.let { line ->
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = CouliSizes.touchTarget)
+                            .withdrawClickableCard()
+                            .clickable(role = Role.Button, onClick = controller::openPayout)
+                            .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
+                            .semantics(mergeDescendants = true) {
+                                contentDescription =
+                                    texts.text("withdraw.payout_label") + PriceTerms.SPOKEN_PAUSE + spokenMask(texts, line)
+                            }.testTag(WalletTags.WITHDRAW_PAYOUT),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                ) {
+                    Text(text = texts.text("withdraw.payout_label"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                    Text(text = line, style = WITHDRAW_PAYOUT_LINE_STYLE, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
+                    Icon(
+                        CouliIcons.chevron,
+                        contentDescription = null,
+                        tint = CouliColors.textSecondary,
+                        modifier = Modifier.size(CouliSizes.iconMedium),
+                    )
+                }
             }
+            // W52：时效 INFO 条 + 不可撤销句 12 次文字缩进 4
+            SlaNote(display.slaText, WalletTags.WITHDRAW_SLA)
+            Text(
+                text = texts.text("withdraw.irrevocable"),
+                style = CouliTypography.caption,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.padding(start = CouliSpacing.space1),
+            )
         }
-        Text(
-            text = display.slaText,
-            style = CouliTypography.footnote,
-            color = CouliColors.textSecondary,
-            modifier = Modifier.testTag(WalletTags.WITHDRAW_SLA),
-        )
-        Text(text = texts.text("withdraw.irrevocable"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
     }
-    // 底部主操作：随键盘上移（AdaptKeyboardWithdraw）；读屏顺序排在内容之后
+    // 底部主操作：随键盘上移（AdaptKeyboardWithdraw）；读屏顺序排在内容之后。W53 / W55：无底色（透出页面画布色）
     Column(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .background(CouliColors.backgroundSurface)
                 .navigationBarsPadding()
                 .imePadding()
                 .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3),
@@ -616,13 +649,8 @@ private fun WithdrawContent(
             modifier = Modifier.fillMaxWidth().couliFocusTarget(submitFocus).testTag(WalletTags.WITHDRAW_SUBMIT),
         )
         if (state.helpTarget != null) {
-            CouliButton(
-                text = texts.text("withdraw.rules_link"),
-                onClick = controller::openRules,
-                variant = CouliButtonVariant.TEXT,
-                size = CouliButtonSize.COMPACT,
-                modifier = Modifier.testTag(WalletTags.WITHDRAW_RULES_LINK),
-            )
+            // r1 S2-2：视觉 21、命中 48 分离（页面私有件，不改共用按钮 48 最小高）
+            WithdrawRulesLink(texts.text("withdraw.rules_link"), WalletTags.WITHDRAW_RULES_LINK, controller::openRules)
         }
     }
 }
@@ -635,6 +663,11 @@ internal fun spokenMask(
 
 internal const val STAR_SPOKEN_KEY = "wallet.star_spoken"
 
+/**
+ * 金额区（W38–W41、W49、W50、W54）：金额框走 [WalletField] 的金额样式（视觉 56、「¥」17 次文字、输入 28/600 等宽、禁用浅边 + 灰底），右侧【全部提现】
+ * 14/500；上限行 12 次文字等宽；快捷档位为胶囊（[QuickChip]）。输入、【全部提现】、档位回调仍捕获渲染时的版本与表单身份并 `.tapped` 登记。
+ * [placed] 是挪到金额框下显示的金额类提交错误（G-W13）：沿用字段错误路径（框变红、提示紧邻框下、移焦点并播报一次），20001 字段错误优先。
+ */
 @Suppress("LongParameterList")
 @Composable
 private fun AmountField(
@@ -644,6 +677,7 @@ private fun AmountField(
     texts: WalletTexts,
     editable: Boolean,
     flow: FlowState,
+    placed: Notice?,
 ) {
     val controller = model.controller
     val version = state.version
@@ -651,59 +685,62 @@ private fun AmountField(
     val owner = flow.owner
     val fieldError =
         flow.fieldErrorKey?.takeIf { WithdrawController.AMOUNT_FEN in flow.fieldErrors || flow.fieldErrors.isEmpty() }?.let(texts::text)
-    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        WalletField(
-            label = texts.text("withdraw.amount_label"),
-            value = state.amountText,
-            onValueChange = { model.onAmountChange(it, owner) },
-            tag = WalletTags.WITHDRAW_INPUT,
-            placeholder = if (!display.amountEditable) texts.text("withdraw.realname_placeholder") else null,
-            error = fieldError,
-            enabled = editable,
-            keyboardType = KeyboardType.Decimal,
-            prefix = PriceTerms.YUAN_SIGN,
-            errorEvent = flow.fieldErrorId.takeIf { fieldError != null },
-            errorTag = WalletTags.WITHDRAW_FIELD_ERROR,
-            modifier = Modifier.weight(1f),
-        )
+    val placedError = placed?.takeIf { fieldError == null }
+    WalletField(
+        label = texts.text("withdraw.amount_label"),
+        value = state.amountText,
+        onValueChange = { model.onAmountChange(it, owner) },
+        tag = WalletTags.WITHDRAW_INPUT,
+        placeholder = if (!display.amountEditable) texts.text("withdraw.realname_placeholder") else null,
+        error = fieldError ?: placedError?.message(texts),
+        enabled = editable,
+        keyboardType = KeyboardType.Decimal,
+        prefix = PriceTerms.YUAN_SIGN,
+        errorEvent = if (fieldError != null) flow.fieldErrorId else placedError?.id,
+        errorTag = WalletTags.WITHDRAW_FIELD_ERROR,
+        amount = true,
+    ) {
         CouliButton(
             text = texts.text("withdraw.all"),
             onClick = { model.fillAll(version, owner) }.tapped(WalletTags.WITHDRAW_ALL),
             enabled = display.allEnabled && editable,
             variant = CouliButtonVariant.TEXT,
             size = CouliButtonSize.COMPACT,
+            textStyle = CouliTextStyles.footnoteMedium,
             modifier = Modifier.testTag(WalletTags.WITHDRAW_ALL),
         )
     }
     display.maxLineFen?.let { fen ->
         Text(
             text = texts.format("withdraw.max_line", mapOf("amount" to CouliFormat.money(fen))),
-            style = CouliTypography.footnote,
+            style = CouliTextStyles.captionAmount,
             color = CouliColors.textSecondary,
             modifier = Modifier.testTag(WalletTags.WITHDRAW_MAX),
         )
     }
     if (display.quick.isNotEmpty()) {
+        // 行距 16：胶囊视觉 32、命中区上下各扩 8，换行后相邻两行的命中区不重叠
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
         ) {
             display.quick.forEach { fen ->
-                CouliButton(
+                QuickChip(
                     text = CouliFormat.money(fen),
-                    onClick = { model.fillQuick(version, fen, owner) }.tapped(WalletTags.WITHDRAW_QUICK_PREFIX + fen),
+                    label = texts.format("withdraw.spoken.amount", mapOf("amount" to CouliFormat.moneySpoken(fen))),
                     enabled = editable,
-                    variant = CouliButtonVariant.SECONDARY,
-                    size = CouliButtonSize.COMPACT,
-                    accessibilityLabel = texts.format("withdraw.spoken.amount", mapOf("amount" to CouliFormat.moneySpoken(fen))),
-                    modifier = Modifier.testTag(WalletTags.WITHDRAW_QUICK_PREFIX + fen),
+                    tag = WalletTags.WITHDRAW_QUICK_PREFIX + fen,
+                    onClick = { model.fillQuick(version, fen, owner) }.tapped(WalletTags.WITHDRAW_QUICK_PREFIX + fen),
                 )
             }
         }
     }
 }
 
-/** 估算行：「计算中…」不播报；结果只读服务端 est_*；问号打开「手续费 / 税费」说明（wallet.help.fee_tax）。 */
+/**
+ * 估算行（W42–W44）：1 分隔线 + 估算，估算隐藏时分隔线一起隐藏。「计算中…」带 16 转圈、不播报（G-W20）；结果只读服务端 est_*，仍是一个 polite 文字节点，
+ * 只把到账金额加粗到 17/600；问号 14、命中 48（不撑高行），打开「手续费 / 税费」说明（wallet.help.fee_tax）。
+ */
 @Composable
 private fun EstimateRow(
     state: WithdrawSnapshot,
@@ -716,39 +753,38 @@ private fun EstimateRow(
         }
 
         EstimateUi.Calculating -> {
-            Text(
-                text = texts.text("withdraw.estimate.calculating"),
-                style = CouliTypography.footnote,
-                color = CouliColors.textSecondary,
-                modifier = Modifier.testTag(WalletTags.WITHDRAW_CALCULATING),
-            )
+            EstimateDivider()
+            CalculatingRow(texts.text("withdraw.estimate.calculating"), WalletTags.WITHDRAW_CALCULATING)
         }
 
         is EstimateUi.Shown -> {
-            val text =
+            val (text, net) =
                 when (val line = estimate.line) {
                     is EstimateLine.NetOnly -> {
-                        texts.format(line.key, mapOf("net" to CouliFormat.money(line.netFen)))
+                        val net = CouliFormat.money(line.netFen)
+                        texts.format(line.key, mapOf("net" to net)) to net
                     }
 
                     is EstimateLine.Full -> {
+                        val net = CouliFormat.money(line.netFen)
                         texts.format(
                             line.key,
                             mapOf(
-                                "net" to CouliFormat.money(line.netFen),
+                                "net" to net,
                                 "fee" to CouliFormat.money(line.feeFen),
                                 "tax" to CouliFormat.money(line.taxFen),
                             ),
-                        )
+                        ) to net
                     }
 
                     EstimateLine.Hidden -> {
-                        ""
+                        "" to null
                     }
                 }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            EstimateDivider()
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
                 Text(
-                    text = text,
+                    text = estimateText(text, net),
                     style = CouliTypography.footnote,
                     color = CouliColors.textPrimary,
                     modifier =
@@ -764,42 +800,49 @@ private fun EstimateRow(
                     label = texts.text("wallet.help.fee_tax_label"),
                     onClick = onHelp,
                     tint = CouliColors.textSecondary,
-                    iconSize = CouliSizes.iconSmall,
+                    iconSize = CouliSizes.iconTiny,
+                    modifier = Modifier.inlineHelpSlot(),
                 )
             }
         }
     }
 }
 
-/** block_code 引导（G03、G28：其余 block_code 套用 WithdrawRealName 的版式）：原因句 + 引导按钮（用户点了才打开）。 */
+/**
+ * block_code 引导（W46–W48；G03、G28：其余 block_code 套用 WithdrawRealName 的版式）：在金额卡内，警告底 + 20 图标 + 14/500 警告字色；按钮在文字下方、描边
+ * 14/500（用户点了才打开）。纯提示码无按钮；30309 有 [rules] 时加【查看提现规则】。
+ */
 @Composable
 private fun GuideBox(
     guide: WithdrawBlockGuide.View,
     texts: WalletTexts,
+    rules: (() -> Unit)?,
     onGuide: () -> Unit,
 ) {
     Column(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.card))
-                .padding(CouliSpacing.space4)
+                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
+                .padding(CouliSpacing.space3)
                 .testTag(WalletTags.WITHDRAW_GUIDE),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        Text(
-            text = texts.text(guide.textKey),
-            style = CouliTypography.footnote,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-        )
-        guide.buttonKey?.let { key ->
-            CouliButton(
-                text = texts.text(key),
-                onClick = onGuide,
-                size = CouliButtonSize.COMPACT,
-                modifier = Modifier.testTag(WalletTags.WITHDRAW_GUIDE_BUTTON),
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusWarningText,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+            Text(
+                text = texts.text(guide.textKey),
+                style = CouliTextStyles.footnoteMedium,
+                color = CouliColors.statusWarningText,
+                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
             )
         }
+        guide.buttonKey?.let { key -> GuideButton(texts.text(key), WalletTags.WITHDRAW_GUIDE_BUTTON, onGuide) }
+        if (rules != null) GuideButton(texts.text(GUIDE_RULES_LABEL_KEY), WITHDRAW_GUIDE_RULES_TAG, rules)
     }
 }

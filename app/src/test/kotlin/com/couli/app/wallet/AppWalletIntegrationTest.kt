@@ -39,6 +39,7 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.RouteDestination
 import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.shell.AppShell
+import com.couli.app.wallet.visual.assertWithdrawVisualBalance
 import com.couli.app.walletCacheStore
 import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.ClientEvent
@@ -726,7 +727,8 @@ class AppWalletIntegrationTest {
     fun ac_s2_80_estimateOnlyAfterPauseAndSubmitWithStepUpReplaysSameKey() {
         launch()
         openWithdraw()
-        assertTrue("页头 withdrawable_fen", texts("可提现余额 ¥12.34") > 0)
+        // test-change APP-09v-c W37 / G-W26：余额拆标签与金额，仍检查同一合并语义节点的完整值。
+        composeRule.assertWithdrawVisualBalance()
         assertTrue(texts("今日还可提 1 次，本月还可提 10 次") > 0)
         assertTrue("上限行", texts("本次最多可提 ¥12") > 0)
         val rulesBefore = all("GET", RULES_PATH).size

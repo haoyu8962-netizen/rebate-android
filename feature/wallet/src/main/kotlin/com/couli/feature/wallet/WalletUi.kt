@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -62,6 +63,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -75,6 +77,7 @@ import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
+import com.couli.core.designsystem.CouliLoading
 import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSheet
 import com.couli.core.designsystem.CouliSheetBody
@@ -83,10 +86,12 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.LoadingSize
 import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.designsystem.NavBar
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
+import com.couli.core.wallet.SensitiveOutcome
 import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletTexts
 import kotlinx.coroutines.delay
@@ -308,12 +313,16 @@ internal fun StatusBar(
     }
 }
 
-/** 轻提示（页顶，2 秒）：同一句再提示时 [id] 不同，重新播报。 */
+/**
+ * 轻提示（页顶，2 秒）：同一句再提示时 [id] 不同，重新播报。[info] 为 true（「上一次提交已经处理完成」，W62）时用次文字色信息图标，其余仍是成功色对勾；
+ * 位置不变（G-W18）。
+ */
 @Composable
 internal fun WalletToast(
     message: String,
     id: Long,
     error: Boolean,
+    info: Boolean = false,
     onDone: () -> Unit,
 ) {
     LaunchedEffect(id) {
@@ -326,12 +335,21 @@ internal fun WalletToast(
     ) {
         CouliToast(
             message = message,
-            icon = if (error) CouliIcons.alert else CouliIcons.check,
+            icon =
+                when {
+                    error -> CouliIcons.alert
+                    info -> CouliIcons.info
+                    else -> CouliIcons.check
+                },
             announcementId = id,
             modifier = Modifier.testTag(WalletTags.TOAST),
+            iconTint = if (info && !error) CouliColors.textSecondary else CouliColors.statusSuccessText,
         )
     }
 }
+
+/** 这条一次性提示是「上一次提交已经处理完成」（W62 用信息图标）。 */
+internal fun Notice.isCompletedNotice(): Boolean = key == SensitiveOutcome.ALREADY_DONE_KEY
 
 /** 一次性播报（提交成功、档位估算结果）。 */
 @Composable
@@ -403,8 +421,18 @@ internal fun WalletField(
     /** 这次错误事件的编号（只给本次事件里的第一个错误字段）：变化时滚到错误提示、移焦点并播报一次（APP-09 共性第 24 条）。 */
     errorEvent: Any? = null,
     errorTag: String? = null,
+    /**
+     * 提现金额框样式（APP-09v-c W38 / W54）：标签与框间 8、框视觉高 56、「¥」17 次文字、输入 28/600 等宽、禁用浅边 + 灰底。默认 false = 原样式
+     * （实名、收款账号不变）。
+     */
+    amount: Boolean = false,
+    /** 与框同一行、在框右侧的控件（提现页【全部提现】）；null = 框占满整行（原样）。 */
+    trailing: (@Composable () -> Unit)? = null,
 ) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(if (amount) CouliSpacing.space2 else CouliSpacing.space1),
+    ) {
         Text(
             text = label,
             style = CouliTypography.footnote,
@@ -415,57 +443,122 @@ internal fun WalletField(
                         ""
                 },
         )
-        Row(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = CouliSizes.touchTarget)
-                    .background(
-                        if (enabled) CouliColors.backgroundSurface else CouliColors.backgroundMuted,
-                        RoundedCornerShape(CouliRadius.button),
-                    ).border(
-                        CouliSizes.hairline,
-                        if (error != null) CouliColors.statusErrorText else CouliColors.borderControl,
-                        RoundedCornerShape(CouliRadius.button),
-                    ).padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            if (prefix != null) Text(text = prefix, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary)
-            Box(modifier = Modifier.weight(1f)) {
-                if (value.isEmpty() && placeholder != null) {
-                    Text(text = placeholder, style = CouliTypography.body, color = CouliColors.textSecondary)
-                }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange.tapped(tag),
-                    enabled = enabled,
-                    singleLine = true,
-                    textStyle =
-                        if (prefix !=
-                            null
-                        ) {
-                            CouliTextStyles.amountTitle.copy(color = CouliColors.textPrimary)
-                        } else {
-                            CouliTypography.body.copy(color = CouliColors.textPrimary)
-                        },
-                    cursorBrush = SolidColor(CouliColors.textPrimary),
-                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        val box =
+            @Composable { boxModifier: Modifier ->
+                Row(
                     modifier =
-                        Modifier
+                        boxModifier
                             .fillMaxWidth()
-                            .then(if (focus != null) Modifier.focusRequester(focus) else Modifier)
-                            .testTag(tag)
-                            .semantics {
-                                contentDescription = label
-                                if (error != null) error(error)
-                            },
-                )
+                            .heightIn(min = if (amount) AMOUNT_FIELD_HEIGHT else CouliSizes.touchTarget)
+                            .background(
+                                if (enabled) CouliColors.backgroundSurface else CouliColors.backgroundMuted,
+                                RoundedCornerShape(CouliRadius.button),
+                            ).border(
+                                CouliSizes.hairline,
+                                fieldBorder(error != null, enabled, amount),
+                                RoundedCornerShape(CouliRadius.button),
+                            ).padding(
+                                horizontal = if (amount) CouliSpacing.space4 else CouliSpacing.space3,
+                                vertical = CouliSpacing.space2,
+                            ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                ) {
+                    if (prefix != null) {
+                        Text(
+                            text = prefix,
+                            style = if (amount) CouliTypography.body else CouliTextStyles.amountTitle,
+                            color = if (amount) CouliColors.textSecondary else CouliColors.textPrimary,
+                        )
+                    }
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (value.isEmpty() && placeholder != null) {
+                            Text(text = placeholder, style = CouliTypography.body, color = CouliColors.textSecondary)
+                        }
+                        BasicTextField(
+                            value = value,
+                            onValueChange = onValueChange.tapped(tag),
+                            enabled = enabled,
+                            singleLine = true,
+                            textStyle = fieldTextStyle(prefix != null, amount).copy(color = CouliColors.textPrimary),
+                            cursorBrush = SolidColor(CouliColors.textPrimary),
+                            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .then(if (focus != null) Modifier.focusRequester(focus) else Modifier)
+                                    .testTag(tag)
+                                    .semantics {
+                                        contentDescription = label
+                                        if (error != null) error(error)
+                                    },
+                        )
+                    }
+                }
             }
+        if (trailing == null) {
+            box(Modifier)
+        } else {
+            FieldWithTrailing(box = { box(Modifier) }, trailing = trailing)
         }
         if (error != null) FieldErrorText(error, errorTag, errorEvent)
     }
 }
+
+/**
+ * 框与右侧控件同一行（间距 12、垂直居中）；大字号 / 窄屏下框若会窄于右侧控件的 2 倍，右侧控件整块换到框下靠右（W55：金额框不被挤成几个字宽）。
+ */
+@Composable
+private fun FieldWithTrailing(
+    box: @Composable () -> Unit,
+    trailing: @Composable () -> Unit,
+) {
+    Layout(contents = listOf(box, trailing)) { (boxMs, trailingMs), c ->
+        val gap = CouliSpacing.space3.roundToPx()
+        val trailingP = trailingMs.map { it.measure(Constraints(maxWidth = c.maxWidth)) }
+        val trailingW = trailingP.maxOfOrNull { it.width } ?: 0
+        val stacked = c.maxWidth - trailingW - gap < trailingW * 2
+        val boxW = if (stacked) c.maxWidth else (c.maxWidth - trailingW - gap).coerceAtLeast(0)
+        val boxP = boxMs.map { it.measure(Constraints(minWidth = boxW, maxWidth = boxW)) }
+        val boxH = boxP.maxOfOrNull { it.height } ?: 0
+        val trailingH = trailingP.maxOfOrNull { it.height } ?: 0
+        val height = if (stacked) boxH + trailingH else maxOf(boxH, trailingH)
+        layout(c.maxWidth, height) {
+            boxP.forEach { it.place(0, if (stacked) 0 else (height - it.height) / 2) }
+            trailingP.forEach {
+                if (stacked) it.place(c.maxWidth - it.width, boxH) else it.place(c.maxWidth - it.width, (height - it.height) / 2)
+            }
+        }
+    }
+}
+
+/** 框描边：有错误红；金额框禁用时浅边（W54）；其余控件边（原样）。 */
+@Composable
+private fun fieldBorder(
+    hasError: Boolean,
+    enabled: Boolean,
+    amount: Boolean,
+) = when {
+    hasError -> CouliColors.statusErrorText
+    amount && !enabled -> CouliColors.borderSubtle
+    else -> CouliColors.borderControl
+}
+
+/** 输入文字样式：金额框 28/600 等宽（W38）；带前缀 22/600 等宽、其余 17 正文（原样）。 */
+private fun fieldTextStyle(
+    hasPrefix: Boolean,
+    amount: Boolean,
+): TextStyle =
+    when {
+        amount -> AMOUNT_INPUT_STYLE
+        hasPrefix -> CouliTextStyles.amountTitle
+        else -> CouliTypography.body
+    }
+
+private val AMOUNT_INPUT_STYLE: TextStyle = with(CouliTextStyles) { CouliTypography.heading.tabular() }
+
+/** 金额框视觉高 56（W38）= 48 命中高 + 8。 */
+private val AMOUNT_FIELD_HEIGHT = CouliSizes.touchTarget + CouliSpacing.space2
 
 /**
  * 字段错误提示（APP-09 共性第 24 条，brief §0「字段错误即时播报一次，焦点移到错误提示」）：[event] 每次错误事件换新（只给第一个错误字段）；变化时先把提示
@@ -491,18 +584,30 @@ internal fun FieldErrorText(
         @Suppress("DEPRECATION") // 一次性播报（与 DesignSystem 的 ViewAnnouncer 同一做法）
         injected?.announce(text) ?: view.announceForAccessibility(text)
     }
-    Text(
-        text = text,
-        style = CouliTypography.caption,
-        color = CouliColors.statusErrorText,
-        modifier =
-            Modifier
-                .bringIntoViewRequester(bring)
-                .couliFocusTarget(focus)
-                .focusable()
-                .then(if (tag != null) Modifier.testTag(tag) else Modifier),
-    )
+    // W50 / W82：14 红字 + 左侧 16 三角图标（间距 4）；焦点、tag、文字仍在同一个文字节点上
+    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1), verticalAlignment = Alignment.Top) {
+        Icon(
+            CouliIcons.alert,
+            contentDescription = null,
+            tint = CouliColors.statusErrorText,
+            modifier = Modifier.padding(top = FIELD_ERROR_ICON_TOP).size(CouliSizes.iconSmall),
+        )
+        Text(
+            text = text,
+            style = CouliTypography.footnote,
+            color = CouliColors.statusErrorText,
+            modifier =
+                Modifier
+                    .bringIntoViewRequester(bring)
+                    .couliFocusTarget(focus)
+                    .focusable()
+                    .then(if (tag != null) Modifier.testTag(tag) else Modifier),
+        )
+    }
 }
+
+/** 16 图标与 14/21 文字首行垂直居中：(21 − 16) / 2 ≈ 2。 */
+private val FIELD_ERROR_ICON_TOP = CouliSpacing.space1 / 2
 
 private const val FIELD_ERROR_FOCUS_DELAY_MILLIS = 100L
 
@@ -635,7 +740,10 @@ internal fun CheckRow(
     }
 }
 
-/** 44001 弹窗（WithdrawBlocked / PayoutAccountBlocked）：标题、说明句、【知道了】【联系客服申诉】。 */
+/**
+ * 44001 弹窗（WithdrawBlocked / PayoutAccountBlocked）：标题居中、说明句；按钮槽位见 [riskDialogSlots]（G-W16）：主（右）【联系客服申诉】→ [onAppeal]，
+ * 次（左）【知道了】→ [onOk]；返回键 / 点遮罩仍 = 【知道了】。
+ */
 @Composable
 internal fun RiskBlockedDialog(
     texts: WalletTexts,
@@ -645,19 +753,29 @@ internal fun RiskBlockedDialog(
     onOk: () -> Unit,
     onAppeal: () -> Unit,
 ) {
+    val (primaryKey, secondaryKey) = riskDialogSlots()
     CouliDialog(
         title = texts.text(dialog.titleKey),
         message = texts.text(descKey),
-        confirmText = texts.text("withdraw.risk_blocked.ok"),
-        onConfirm = onOk,
-        dismissText = texts.text("cs.appeal_entry"),
-        onDismiss = onAppeal,
+        confirmText = texts.text(primaryKey),
+        onConfirm = onAppeal,
+        dismissText = texts.text(secondaryKey),
+        onDismiss = onOk,
         onDismissRequest = onOk,
         restoreFocusTo = restore,
+        titleAlign = TextAlign.Center,
+        // r1 S2-1：画板 WithdrawBlocked 遮罩 = 令牌 overlayScrim（关系统 dim）
+        scrim = CouliColors.overlayScrim,
     )
 }
 
-/** 待确认卡片（WithdrawPendingConfirm / PayoutAccountPendingConfirm 一族）：alert 角色，【放弃】【确认】，在途时两个都置灰（PendingBusy）。 */
+/**
+ * 待确认卡片（WithdrawPendingConfirm / Busy / Still 与 PayoutAccountPending* 一族，W56–W59，G-W17）：白卡 → 警告提示块（20 图标、标题 14/600、说明 14，
+ * 警告字色，整块一个 assertive 元素）→ 灰底明细（标签左、值右，有才显示）→ 两等宽按钮（【放弃】描边、【确认】主）→ 在途时转圈状态行「正在处理，请稍候」
+ * （role=status，两按钮置灰）→ 40901 / retry_later / cannot_confirm 等提示为警告提示块（polite）→ 卡底一行：左注释 12、右「查看提现记录 ›」（有 [link] 才有）。
+ *
+ * 只改结构：[onAbandon] / [onConfirm] 由调用方在渲染时捕获未决键与表单身份后传入，签名与 `.tapped(PENDING_*)` 不变；在途判定只读 `pending.inFlight`。
+ */
 @Suppress("LongParameterList")
 @Composable
 internal fun PendingCard(
@@ -679,61 +797,166 @@ internal fun PendingCard(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.card))
+                .couliCard()
                 .padding(CouliSpacing.space4)
                 .testTag(WalletTags.PENDING_CARD),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Column(
+        PendingWarningBlock(
+            title = texts.text("pending_confirm.title"),
+            text = desc,
             modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Assertive },
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-        ) {
-            Text(text = texts.text("pending_confirm.title"), style = CouliTextStyles.bodySemibold, color = CouliColors.textPrimary)
-            Text(text = desc, style = CouliTypography.footnote, color = CouliColors.textPrimary)
-        }
-        details.forEach { (label, value) ->
-            Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.CenterVertically) {
-                Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
-            }
-        }
+        )
+        if (details.isNotEmpty()) DetailBlock(details)
         Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
             CouliButton(
                 text = abandonLabel,
                 onClick = onAbandon.tapped(WalletTags.PENDING_ABANDON),
                 enabled = !busy,
                 variant = CouliButtonVariant.SECONDARY,
+                // 两等宽按钮 17/600（画板）：用紧凑款的 16 横向内边距，七个字的按钮名在 390 宽下一行放得下；命中高仍 ≥48
+                size = CouliButtonSize.COMPACT,
+                textStyle = CouliTextStyles.bodySemibold,
                 modifier = Modifier.weight(1f).testTag(WalletTags.PENDING_ABANDON),
             )
             CouliButton(
                 text = confirmLabel,
                 onClick = onConfirm.tapped(WalletTags.PENDING_CONFIRM),
                 enabled = !busy,
+                size = CouliButtonSize.COMPACT,
+                textStyle = CouliTextStyles.bodySemibold,
                 modifier = Modifier.weight(1f).testTag(WalletTags.PENDING_CONFIRM),
             )
         }
-        flow.pendingNotice?.let { notice ->
-            Text(
+        if (pending.inFlight) PendingBusyRow(texts.text(PENDING_BUSY_KEY))
+        // 在途时控制器给的「正在处理」由上面的转圈状态行表达，不再重复一块同文的提示
+        flow.pendingNotice?.takeUnless { pending.inFlight && it.key == PENDING_BUSY_KEY }?.let { notice ->
+            PendingWarningBlock(
+                title = null,
                 text = notice.message(texts),
-                style = CouliTypography.footnote,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(WalletTags.PENDING_NOTICE),
+                modifier =
+                    Modifier
+                        .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                        .testTag(WalletTags.PENDING_NOTICE),
             )
         }
-        Text(text = note, style = CouliTypography.caption, color = CouliColors.textSecondary)
-        if (link != null) {
-            CouliButton(
-                text = link.first,
-                onClick = link.second,
-                variant = CouliButtonVariant.TEXT,
-                size = CouliButtonSize.COMPACT,
-                modifier = Modifier.testTag(WalletTags.PENDING_RECORDS),
-            )
+        PendingFooter(note, link)
+    }
+}
+
+/** 在途状态与 40901 共用的文案键（契约 error.40901「正在处理，请稍候」，与 SensitiveFlow 在途提示同键）。 */
+private const val PENDING_BUSY_KEY = "error.40901"
+
+/** 警告提示块：警告浅底、圆角 12、内边距 12；20 三角 + 文字列（[title] 14/600、[text] 14，均警告字色）。 */
+@Composable
+private fun PendingWarningBlock(
+    title: String?,
+    text: String,
+    modifier: Modifier,
+) {
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
+                .padding(CouliSpacing.space3),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            CouliIcons.alert,
+            contentDescription = null,
+            tint = CouliColors.statusWarningText,
+            modifier = Modifier.size(CouliSizes.iconMedium),
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
+            if (title != null) Text(text = title, style = CouliTextStyles.footnoteSemibold, color = CouliColors.statusWarningText)
+            Text(text = text, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
         }
     }
 }
 
-/** 放弃上一笔的二次确认（WithdrawAbandonConfirm / PayoutAccountPendingAbandonConfirm）。 */
+/** 在途状态行（W58）：16 转圈 +「正在处理，请稍候」次文字，role=status（polite），整行一个读屏元素。 */
+@Composable
+private fun PendingBusyRow(text: String) {
+    Row(
+        modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CouliLoading(description = "", size = LoadingSize.SMALL)
+        Text(text = text, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+    }
+}
+
+/**
+ * 卡底一行（W57）：左注释 12 次文字、右「查看提现记录 ›」14/500 链接色；放不下（大字号 / 窄屏）时链接整块换到下一行。链接视觉行高 = 文字 + 上下 4，
+ * 可点区由最小触控尺寸扩到 48（上下各扩约 8.5，不越过与按钮行之间的 12 间距）。
+ */
+@Composable
+private fun PendingFooter(
+    note: String,
+    link: Pair<String, () -> Unit>?,
+) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = note, style = CouliTypography.caption, color = CouliColors.textSecondary)
+        if (link != null) {
+            Row(
+                modifier =
+                    Modifier
+                        .clip(RoundedCornerShape(CouliRadius.small))
+                        .clickable(role = Role.Button, onClick = link.second)
+                        .padding(vertical = CouliSpacing.space1)
+                        .testTag(WalletTags.PENDING_RECORDS),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text = link.first, style = CouliTextStyles.footnoteMedium, color = CouliColors.textLink)
+                Icon(
+                    CouliIcons.chevron,
+                    contentDescription = null,
+                    tint = CouliColors.textLink,
+                    modifier = Modifier.size(CouliSizes.iconSmall),
+                )
+            }
+        }
+    }
+}
+
+/** 灰底明细块（待确认卡、放弃确认弹窗）：圆角 12、内边距 12，每行标签左（次文字）值右（主文字、可折行），行距 4。 */
+@Composable
+private fun DetailBlock(details: List<Pair<String, String>>) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.button))
+                .padding(CouliSpacing.space3),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+    ) {
+        details.forEach { (label, value) ->
+            Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.CenterVertically) {
+                Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                Text(
+                    text = value,
+                    style = CouliTypography.footnote.copy(textAlign = TextAlign.End),
+                    color = CouliColors.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 放弃上一笔的二次确认（WithdrawAbandonConfirm / PayoutAccountPendingAbandonConfirm，W61）：标题居中、说明句、灰底明细块；按钮槽位见
+ * [abandonDialogSlots]（G-W16）：主（右）【再想想】→ [onCancel]；次（左）【确定放弃】→ [onOk]（`.tapped(ABANDON_DIALOG)` 跟着放弃回调）；
+ * 返回键 / 点遮罩 = 【再想想】，不放弃。
+ */
 @Composable
 internal fun AbandonDialog(
     texts: WalletTexts,
@@ -743,16 +966,20 @@ internal fun AbandonDialog(
     onOk: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    val (primaryKey, secondaryKey) = abandonDialogSlots()
     CouliDialog(
         title = title,
-        confirmText = texts.text("pending_confirm.abandon.ok"),
-        onConfirm = onOk.tapped(WalletTags.ABANDON_DIALOG),
-        dismissText = texts.text("pending_confirm.abandon.cancel"),
-        onDismiss = onCancel,
+        confirmText = texts.text(primaryKey),
+        onConfirm = onCancel,
+        dismissText = texts.text(secondaryKey),
+        onDismiss = onOk.tapped(WalletTags.ABANDON_DIALOG),
         onDismissRequest = onCancel,
+        titleAlign = TextAlign.Center,
+        // r1 S2-1：画板 WithdrawAbandonConfirm 遮罩 = 令牌 overlayScrim（关系统 dim）
+        scrim = CouliColors.overlayScrim,
         body = {
             Column(
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
                 modifier = Modifier.testTag(WalletTags.ABANDON_DIALOG),
             ) {
                 Text(
@@ -760,17 +987,7 @@ internal fun AbandonDialog(
                     style = CouliTypography.footnote,
                     color = CouliColors.textPrimary,
                 )
-                details.forEach { (label, value) ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                        Text(
-                            text = value,
-                            style = CouliTypography.footnote,
-                            color = CouliColors.textPrimary,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
+                if (details.isNotEmpty()) DetailBlock(details)
                 if (extra != null) Text(text = extra, style = CouliTypography.caption, color = CouliColors.textSecondary)
             }
         },

@@ -125,7 +125,8 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
         overlay = {
             val toast = flow.toast ?: state.toast
             toast?.let {
-                WalletToast(it.message(texts), it.id, error = false) {
+                // W62：「已经处理完成」用次文字色信息图标（同提现页），其余提示不变
+                WalletToast(it.message(texts), it.id, error = false, info = it.isCompletedNotice()) {
                     controller.flow.consumeToast(it.id)
                     controller.consumeToast(it.id)
                 }
@@ -148,10 +149,13 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                         RetryErrorBar(it, texts, WalletTags.PAYOUT_REFRESH_ERROR, retryEnabled = !readBlocked) { controller.retry() }
                     }
                     state.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.PAYOUT_GUIDE) { controller.openGuide() } }
-                    flow.error?.let { ErrorBar(it, texts, WalletTags.PAYOUT_ERROR) }
-                    flow.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.FLOW_GUIDE) { controller.flow.openGuide() } }
                     val account = state.account
-                    if (account != null && account.bound && (!state.editing || flow.pending != null)) {
+                    val boundShown = account != null && account.bound && (!state.editing || flow.pending != null)
+                    // G-W13：表单在页上时，30307 / 30308 挪到姓名 / 账号字段下显示（只读错误键，不改分类），页顶不再重复
+                    val placedField = flow.error?.takeIf { !boundShown }?.let { payoutErrorField(it.key, state.form.method) }
+                    flow.error?.takeIf { placedField == null }?.let { ErrorBar(it, texts, WalletTags.PAYOUT_ERROR) }
+                    flow.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.FLOW_GUIDE) { controller.flow.openGuide() } }
+                    if (account != null && boundShown) {
                         // 构建时捕获渲染版本与这张卡的账号身份（APP-09 共性第 4、25 条），回调不在点击时读最新状态
                         val shownVersion = state.version
                         BoundCard(
@@ -160,7 +164,7 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                             enabled = flow.pending == null && state.loadError == null,
                         ) { controller.change(shownVersion, account) }
                     } else {
-                        PayoutFormCard(controller, state, flow, texts)
+                        PayoutFormCard(controller, state, flow, texts, placedField)
                     }
                 }
                 if ((state.editing && flow.pending == null) || state.account?.bound != true) {
@@ -322,10 +326,19 @@ private fun BoundCard(
             LabelValue(texts.text("payout.remaining_label"), texts.format("payout.remaining", mapOf("n" to n.toString())))
         }
         if (account.known) {
+            // G-W21：本月更换次数为 0 时置灰并读出原因（只加拒绝；次数为 null 时不置灰，服务端 30303 兜底不变）
+            val exhausted = account.changeRemaining == 0L
             CouliButton(
                 text = texts.text("payout.change"),
                 onClick = onChange,
-                enabled = enabled,
+                enabled = enabled && !exhausted,
+                accessibilityLabel =
+                    if (exhausted) {
+                        texts.text("payout.change") + PriceTerms.SPOKEN_PAUSE + texts.text("payout.remaining_label") +
+                            texts.format("payout.remaining", mapOf("n" to "0"))
+                    } else {
+                        null
+                    },
                 modifier = Modifier.fillMaxWidth().testTag(WalletTags.PAYOUT_CHANGE),
             )
         }
@@ -361,6 +374,7 @@ private fun PayoutFormCard(
     state: PayoutSnapshot,
     flow: FlowState,
     texts: WalletTexts,
+    placedField: String?,
 ) {
     val form = state.form
     val editable = flow.canSubmit
@@ -370,7 +384,10 @@ private fun PayoutFormCard(
     val errors = state.localErrors + flow.fieldErrors
     val errorText = flow.fieldErrorKey?.let(texts::text) ?: texts.text("error.20001")
 
-    fun errorOf(field: String): String? = errorText.takeIf { field in errors }
+    // G-W13：30307 / 30308 的业务错误显示在对应字段下（errors 里的 20001 / 本地校验优先），事件 = 该错误条的编号，播报一次
+    val placed = flow.error?.takeIf { placedField != null && placedField !in errors }
+
+    fun errorOf(field: String): String? = errorText.takeIf { field in errors } ?: placed?.takeIf { field == placedField }?.message(texts)
 
     // 这次错误事件（本地校验或服务端 20001）只交给按显示顺序的第一个错误字段：滚到它、移焦点并播报一次（APP-09 共性第 24 条）
     // 按屏幕位置：收款方式组（错误提示紧跟在两个选项之后）→ 账号字段 → 姓名
@@ -386,7 +403,7 @@ private fun PayoutFormCard(
     val first = shownOrder.firstOrNull { it in errors }
     val event = state.localErrorId to flow.fieldErrorId
 
-    fun eventOf(field: String): Any? = event.takeIf { field == first }
+    fun eventOf(field: String): Any? = event.takeIf { field == first } ?: placed?.id?.takeIf { field == placedField }
 
     fun tagOf(field: String): String = WalletTags.PAYOUT_FIELD_ERROR_PREFIX + field
     WalletCard {

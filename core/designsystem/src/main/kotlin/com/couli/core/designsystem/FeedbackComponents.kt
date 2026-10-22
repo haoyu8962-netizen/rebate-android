@@ -245,7 +245,7 @@ fun CouliToast(
     modifier: Modifier = Modifier,
     icon: ImageVector? = CouliIcons.check,
     announcementId: Any? = null,
-    /** 图标色（默认成功色，旧调用外观不变；购买流程按提示类别传次文字色 / 警告色，APP-06v B4）。 */
+    /** 图标色（默认成功色，旧调用外观不变；购买流程按提示类别传次文字色 / 警告色，APP-06v B4；钱包「已经处理完成」用次文字色，APP-09v-c W62）。 */
     iconTint: Color = CouliColors.statusSuccessText,
 ) {
     val announcer = rememberCouliAnnouncer()
@@ -301,8 +301,10 @@ fun CouliDialog(
     titleIconTint: Color = CouliColors.statusWarningText,
     /** 右上关闭的读屏名；给了才画，点击 = [onDismissRequest]（ProductPriceCompareNoRebate-v2，G-D10）。默认 null 不画。 */
     closeLabel: String? = null,
+    /** 标题对齐（APP-09v-c W60 / W61：钱包 44001 与放弃确认弹窗居中）；默认靠左，旧调用不变。仅在无标题图标、无关闭时生效。 */
+    titleAlign: TextAlign = TextAlign.Start,
     /**
-     * 遮罩色：给了（如 [CouliColors.overlayScrim]）就关掉系统窗口 dim、整屏铺这层颜色（购买浮层，APP-06v-b）；
+     * 遮罩色：给了（如 [CouliColors.overlayScrim]）就关掉系统窗口 dim、整屏铺这层颜色（购买浮层 APP-06v-b、钱包 44001 / 放弃确认 APP-09v-c）；
      * 默认 [Color.Unspecified] 沿用系统 dim，旧调用外观不变。
      */
     scrim: Color = Color.Unspecified,
@@ -344,6 +346,7 @@ fun CouliDialog(
                     titleIconTint = titleIconTint,
                     closeLabel = closeLabel,
                     onClose = onDismissRequest,
+                    titleAlign = titleAlign,
                 )
             }
         }
@@ -391,6 +394,8 @@ fun CouliDialogContent(
     /** 右上关闭：[closeLabel] 与 [onClose] 都给了才画；默认不画。 */
     closeLabel: String? = null,
     onClose: (() -> Unit)? = null,
+    /** 标题对齐：默认靠左（旧外观）；非靠左时标题占满宽度再按对齐排版（仅无图标、无关闭时）。 */
+    titleAlign: TextAlign = TextAlign.Start,
 ) {
     ScrollBodyLayout(
         modifier =
@@ -403,11 +408,13 @@ fun CouliDialogContent(
         header = {
             val close = onClose?.takeIf { closeLabel != null }
             if (titleIcon == null && close == null) {
+                val titleWidth = if (titleAlign == TextAlign.Start) Modifier else Modifier.fillMaxWidth()
                 Text(
                     text = title,
                     style = CouliTextStyles.bodySemibold,
                     color = CouliColors.textPrimary,
-                    modifier = Modifier.modalTitle(titleFocus),
+                    textAlign = titleAlign,
+                    modifier = titleWidth.modalTitle(titleFocus),
                 )
             } else {
                 DialogTitleRow(title, titleFocus, titleIcon, titleIconTint, closeLabel, close)
