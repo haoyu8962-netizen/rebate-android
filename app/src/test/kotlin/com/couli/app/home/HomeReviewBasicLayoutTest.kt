@@ -11,7 +11,6 @@ import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.shell.BASIC_MODE_ENABLE_TAG
 import com.couli.app.shell.BASIC_MODE_SETTINGS_TAG
-import com.couli.core.home.HomeDraftTexts
 import com.couli.core.home.HomeLevel
 import com.couli.feature.home.HomeTags
 import com.couli.generated.DefaultTexts
@@ -41,7 +40,8 @@ class HomeReviewBasicLayoutTest {
         host.launch(level = HomeLevel.BASIC)
         val root = rule.onRoot().fetchSemanticsNode()
         val density = root.layoutInfo.density.density
-        val search = rule.onNode(hasText(HomeDraftTexts.text("search.placeholder"))).fetchSemanticsNode()
+        // FU-AND-0725：基本模式改用 basic.search.placeholder，不能继续拿普通首页的旧文案定位。
+        val search = rule.onNode(hasText("搜索商品")).fetchSemanticsNode()
         val settings = rule.onNodeWithTag(BASIC_MODE_SETTINGS_TAG).fetchSemanticsNode()
         val notice = rule.onNode(hasText(DefaultTexts.text("privacy.basic_mode.notice").orEmpty())).fetchSemanticsNode()
         val enable = rule.onNodeWithTag(BASIC_MODE_ENABLE_TAG).fetchSemanticsNode()

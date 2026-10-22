@@ -150,7 +150,11 @@ fun BasicModePage(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
-            SearchEntry(onClick = onSearch, modifier = Modifier.weight(1f))
+            SearchEntry(
+                placeholderKey = HomeDraftTexts.BASIC_SEARCH_PLACEHOLDER,
+                onClick = onSearch,
+                modifier = Modifier.weight(1f),
+            )
             CouliIconButton(
                 icon = CouliIcons.settings,
                 label = ShellDraftTexts.SETTINGS_LABEL,
@@ -171,14 +175,18 @@ fun BasicModePage(
     }
 }
 
-/** 搜索入口（只是入口，点了经 Router 打开 Search）：组件库 [CouliSearchEntry]（按钮语义），占位「搜商品名，或粘贴商品链接」（G-V09，首页与基本模式同键）。 */
+/**
+ * 搜索入口（只是入口，点了经 Router 打开 Search）：组件库 [CouliSearchEntry]（按钮语义，读屏名随可见占位）。占位键（G-V09 更正）：
+ * 首页用 search.placeholder「搜商品名，或粘贴商品链接」，基本模式首页用 basic.search.placeholder「搜索商品」（TODO(CT-16g)）。
+ */
 @Composable
 private fun SearchEntry(
+    placeholderKey: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     CouliSearchEntry(
-        placeholder = HomeDraftTexts.text(HomeDraftTexts.SEARCH_PLACEHOLDER),
+        placeholder = HomeDraftTexts.text(placeholderKey),
         onClick = onClick,
         modifier = modifier,
     )
@@ -206,6 +214,7 @@ fun HomeWithSearch(
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
             SearchEntry(
+                placeholderKey = HomeDraftTexts.SEARCH_PLACEHOLDER,
                 onClick = onSearch,
                 modifier = Modifier.weight(1f).testTag(HOME_SEARCH_ENTRY_TAG),
             )

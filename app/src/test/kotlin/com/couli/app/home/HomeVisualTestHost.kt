@@ -103,6 +103,7 @@ internal class HomeVisualTestHost(
         val decision = if (level == HomeLevel.BASIC) "basic_mode" else "consented"
         val gate = PrivacyGate(HomeVisualPrivacyStore(decision), { HomeVisualFixtures.NOW }, bundledPolicyVersion = "3")
         gate.retryScheduler = RetryScheduler { _, _ -> }
+        gate.withdrawalCleanup = { tokens.clear() }
         privacy = AppPrivacy(gate, environmentSettled = { true }, clock = { HomeVisualFixtures.NOW }).also { it.coldStart() }
         val environment = EnvironmentGate { EnvironmentStartupReconciler.Outcome.UNCHANGED }.also { it.settleAtStartup() }
         routing =
@@ -222,6 +223,19 @@ internal class HomeVisualTestHost(
                 workScope = work,
             )
         clipboard.connect(privacy, routing, cleaners = null)
+    }
+
+    fun consentToFullMode() {
+        rule.runOnUiThread {
+            privacy.requestFullFunction()
+            privacy.agree()
+        }
+        idle()
+    }
+
+    fun withdrawToBasicMode() {
+        rule.runOnUiThread { privacy.withdraw() }
+        idle()
     }
 
     fun login() {
