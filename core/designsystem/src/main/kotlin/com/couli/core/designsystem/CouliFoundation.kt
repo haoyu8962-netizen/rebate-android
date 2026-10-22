@@ -124,6 +124,9 @@ object CouliTextStyles {
     val amountDisplay: TextStyle = CouliTypography.display.tabular()
     val amountTitle: TextStyle = CouliTypography.title.copy(fontWeight = FontWeight.SemiBold).tabular()
     val amountBody: TextStyle = bodySemibold.tabular()
+
+    /** 28/700 等宽（订单详情返利主数字，APP-08v O22）。 */
+    val amountHeading: TextStyle = CouliTypography.heading.copy(fontWeight = FontWeight.Bold).tabular()
 }
 
 /**

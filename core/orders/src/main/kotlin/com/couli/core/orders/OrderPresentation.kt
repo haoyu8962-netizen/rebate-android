@@ -461,9 +461,12 @@ data class OrderActionsView(
  * （CLAIM → FindOrder；REAUTH → AuthManage，G09；CONTACT_CS → Help，统一客服出口接入前，TODO(N-31) G09；APPEAL → Appeal，G08），
  * 状态固有按钮在后（CREDITED / CREDITED_PART_CLAWED【去提现】→ Withdraw；CLAWED_BACK【查看流水】→ Ledger），超过 2 个只留前 2 个，
  * 第一个为主按钮；不认识的 action 忽略。分享单同样处理。appeal_pending=true 时原因区下加「申诉中」块（G08）。
+ * 未知状态（display_status 不认识，G-O08）只有【查看流水】，不出任何写动作（服务端仍下发 reason.action 也忽略）。
  */
 object OrderDetailActions {
     const val MAX = 2
+    private const val LEDGER = "ledger"
+    private const val LEDGER_ROUTE = "Ledger"
 
     val REASON_ACTIONS: Map<String, Pair<String, String>> =
         linkedMapOf(
@@ -474,11 +477,16 @@ object OrderDetailActions {
         )
 
     fun of(detail: OrderDetail): OrderActionsView {
+        // 未知状态（G-O08，BR-TEXT-05 细则「未知状态下不显示写动作按钮」）：状态固有按钮与 reason.action 一律不出，只留查看类【查看流水】；
+        // 「申诉中」块是查看类，照旧
+        if (detail.summary.displayStatus == DisplayStatus.UNKNOWN) {
+            return OrderActionsView(listOf(OrderActionButton(LEDGER, LEDGER_ROUTE, primary = true)), detail.appealPending)
+        }
         val fromReason = detail.reasonAction.mapNotNull { REASON_ACTIONS[it] }.distinct()
         val inherent =
             when (detail.summary.displayStatus) {
                 DisplayStatus.CREDITED, DisplayStatus.CREDITED_PART_CLAWED -> listOf("withdraw" to "Withdraw")
-                DisplayStatus.CLAWED_BACK -> listOf("ledger" to "Ledger")
+                DisplayStatus.CLAWED_BACK -> listOf(LEDGER to LEDGER_ROUTE)
                 else -> emptyList()
             }
         val buttons =

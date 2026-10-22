@@ -131,9 +131,9 @@ internal fun OrderCard(
     }
 }
 
-/** 分享单「好友购买的其他商品」的占位（OrdersShare-v2）：占位底 + 文档图标（装饰），不写「商品图」。 */
+/** 分享单「好友购买的其他商品」的占位（OrdersShare-v2 / OrderDetailShare-v2）：占位底 + 文档图标（装饰），不写「商品图」。列表卡与详情共用。 */
 @Composable
-private fun OtherProductThumbnail() {
+internal fun OtherProductThumbnail() {
     Box(
         modifier =
             Modifier

@@ -206,10 +206,20 @@ enum class AmountGridTone {
     ON_SOLID,
 }
 
-/** 数值字号：17/600 或 22/600（GUIDE §7.2「数字格」）。 */
+/** 数值字号：17/600、22/600（GUIDE §7.2「数字格」），或 28/700（订单详情返利主数字，APP-08v O22）。 */
 enum class AmountValueSize {
     BODY,
     TITLE,
+    HEADING,
+    ;
+
+    internal val style: TextStyle
+        get() =
+            when (this) {
+                BODY -> CouliTextStyles.amountBody
+                TITLE -> CouliTextStyles.amountTitle
+                HEADING -> CouliTextStyles.amountHeading
+            }
 }
 
 /**
@@ -228,29 +238,33 @@ fun AmountGrid(
     mask: AmountMask? = null,
     stackOrder: List<Int>? = null,
     compactHelpRow: Boolean = false,
+    /** 逐格数值字号（按 [cells] 下标；缺省或缺项时用 [valueSize]）——订单详情「返利 28/700 + 实付 22/600」（APP-08v O22）。缺省 null 行为不变。 */
+    valueSizes: List<AmountValueSize>? = null,
 ) {
     val masked = mask?.hidden == true
     val cells = if (masked && mask != null) cells.map { it.masked(mask) } else cells
-    val valueStyle = if (valueSize == AmountValueSize.TITLE) CouliTextStyles.amountTitle else CouliTextStyles.amountBody
+    val valueStyle = valueSize.style
+    val styles = cells.indices.map { valueSizes?.getOrNull(it)?.style ?: valueStyle }
     val labelStyle = if (tone == AmountGridTone.ON_SOLID) CouliTypography.footnote else CouliTypography.caption
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val gap = CouliSpacing.space3
         val columnWidthPx = with(density) { ((maxWidth - gap) / 2).roundToPx() }
-        val widestSegment = widestSegment(cells, masked) { measurer.measure(it, valueStyle).size.width }
+        val widestSegment = widestSegment(cells, masked) { index, text -> measurer.measure(text, styles[index]).size.width }
         val stacked = density.fontScale >= CouliAlpha.LARGE_FONT_SCALE || widestSegment > columnWidthPx
         if (stacked) {
-            val ordered = stackOrder?.mapNotNull { cells.getOrNull(it) }?.takeIf { it.size == cells.size } ?: cells
+            val ordered = stackOrder?.filter { it in cells.indices }?.takeIf { it.size == cells.size } ?: cells.indices.toList()
             Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                ordered.forEach {
+                ordered.forEach { index ->
+                    val cell = cells[index]
                     AmountCellView(
-                        it,
+                        cell,
                         tone,
                         labelStyle,
-                        valueStyle,
+                        styles[index],
                         Modifier.fillMaxWidth(),
-                        masked = masked && it.isAmount,
+                        masked = masked && cell.isAmount,
                         compactHelp = compactHelpRow,
                     )
                 }
@@ -258,17 +272,28 @@ fun AmountGrid(
         } else {
             // 并排时两列标签行等高（有问号按钮的一列标签行是 48 命中区高），数值对齐；紧凑问号不撑高，无需对齐
             val alignRows = alignedLabelRows(cells, compactHelpRow)
-            Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
-                cells.forEach {
+            // 逐格字号不同时数值底对齐（画板 OrderDetail* 数字格 align-items: end）；缺省顶对齐不变
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(gap),
+                verticalAlignment =
+                    if (valueSizes !=
+                        null
+                    ) {
+                        Alignment.Bottom
+                    } else {
+                        Alignment.Top
+                    },
+            ) {
+                cells.forEachIndexed { index, cell ->
                     AmountCellView(
-                        it,
+                        cell,
                         tone,
                         labelStyle,
-                        valueStyle,
+                        styles[index],
                         Modifier.weight(1f),
                         alignLabelRow = alignRows,
                         masked =
-                            masked && it.isAmount,
+                            masked && cell.isAmount,
                         compactHelp = compactHelpRow,
                     )
                 }
@@ -287,8 +312,8 @@ private fun alignedLabelRows(
 private fun widestSegment(
     cells: List<AmountCell>,
     masked: Boolean,
-    width: (String) -> Int,
-): Int = cells.maxOfOrNull { cell -> cell.segments(masked && cell.isAmount).maxOf(width) } ?: 0
+    width: (index: Int, text: String) -> Int,
+): Int = cells.withIndex().maxOfOrNull { (index, cell) -> cell.segments(masked && cell.isAmount).maxOf { width(index, it) } } ?: 0
 
 /** 隐藏金额后的格：数值换遮罩、读屏不读金额、说明行换成不含金额的版本（或不显示）。 */
 private fun AmountCell.masked(mask: AmountMask): AmountCell =

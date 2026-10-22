@@ -43,6 +43,8 @@ import com.couli.core.designsystem.EndWrapRow
 import com.couli.core.designsystem.PriceTerms
 import com.couli.core.orders.AmountCellView
 import com.couli.core.orders.AmountCellsView
+import com.couli.core.orders.OrderActionButton
+import com.couli.core.orders.OrderActionsView
 import com.couli.core.orders.OrderAmountCells
 import com.couli.core.orders.OrderNumberView
 import com.couli.core.orders.OrderTexts
@@ -101,7 +103,7 @@ internal object OrderUi {
     /** 「已付定金」（契约键 order_list.deposit_amount「已付定金 {amount}」去掉金额作标签，金额在数值行）。 */
     private fun depositLabel(texts: OrderTexts): String = texts.format(OrderAmountCells.DEPOSIT_KEY, emptyMap()).trim()
 
-    /** 列表卡与详情：并排时实付在左、返利在右；纵排时返利在上（AdaptLargeTextOrderDetail，APP-08 共性第 5 条）。返回 (格, 纵排顺序)。 */
+    /** 列表卡：并排时实付在左、返利在右；纵排时返利在上（APP-08 共性第 5 条；详情见 [detailCells]）。返回 (格, 纵排顺序)。 */
     fun listCells(
         texts: OrderTexts,
         cells: AmountCellsView,
@@ -110,6 +112,27 @@ internal object OrderUi {
         val right = cells.right?.let { cell(texts, it) } ?: return listOf(left) to null
         return listOf(left, right) to listOf(1, 0)
     }
+
+    /**
+     * 详情（G-O07，按画板 OrderDetail* 与 AdaptLargeTextOrderDetail）：并排时返利在左、实付在右；纵排仍返利在上（自然顺序，返回 null）。
+     * 只调换两格的左右，单格原样；不改 [listCells]。
+     */
+    fun detailCells(
+        texts: OrderTexts,
+        cells: AmountCellsView,
+    ): Pair<List<AmountCell>, List<Int>?> {
+        val (list, _) = listCells(texts, cells)
+        return (if (list.size == 2) list.reversed() else list) to null
+    }
+
+    /**
+     * 详情按钮分区（G-O06）：按钮集合、顺序、最多 2 个、主次数据与去向都由 [com.couli.core.orders.OrderDetailActions] 定，这里只按 actionRaw 分到
+     * 两处——状态固有的【去提现】进底部固定栏，其余（reason.action 与【查看流水】）进状态卡内。返回 (卡内, 底栏)，各自保持原顺序与原对象。
+     */
+    fun splitActions(view: OrderActionsView): Pair<List<OrderActionButton>, List<OrderActionButton>> =
+        view.buttons.partition { it.actionRaw != WITHDRAW }
+
+    private const val WITHDRAW = "withdraw"
 
     /**
      * 状态胶囊 / 状态标题的图标（不只靠颜色：图标 + 文字；APP-08v O13，按画板）：预估类钟表；INVALID / NO_REBATE / UNKNOWN 用 i；CLAWED_BACK 警告三角；

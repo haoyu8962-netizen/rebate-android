@@ -179,4 +179,13 @@ object OrderTags {
     const val DETAIL_STALE_RETRY = "order_detail_stale_retry"
     const val DETAIL_BACK = "order_detail_back"
     const val DETAIL_TOAST = "order_detail_toast"
+
+    /** 未知状态卡内【刷新】（G-O08）。 */
+    const val DETAIL_REFRESH = "order_detail_refresh"
+
+    /** 状态卡标题行的 20 状态图标（装饰，O21）。 */
+    const val DETAIL_STATUS_ICON = "order_detail_status_icon"
+
+    /** 详情底部固定栏（整宽表面，只放【去提现】，G-O06）。 */
+    const val DETAIL_BOTTOM_BAR = "order_detail_bottom_bar"
 }

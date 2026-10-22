@@ -136,6 +136,8 @@ object OrderDraftTexts : OrderTexts {
             // 代拟：设计稿写「10月12日 10:30 提交，结果会通过站内信通知你」，OrderDetail 没有申诉提交时间（G08），去掉时间
             "order_detail.appeal_pending.desc" to "结果会通过站内信通知你",
             "order_detail.appeal_progress" to "查看申诉进度",
+            // G-O08：未知状态卡内【刷新】（字典无，三端同名草稿键，TODO(N-31)）
+            "order_detail.refresh" to "刷新",
             "order_detail.copy.done" to "已复制订单号",
             // 代拟：记 hash 失败不写剪贴板时的提示（APP-07 共性第 23 条；设计稿与规划都没有）
             "order_detail.copy.failed" to "复制失败，请重试",

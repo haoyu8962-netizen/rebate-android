@@ -773,7 +773,12 @@ class AppOrdersIntegrationTest {
             open("OrderDetail", mapOf("order_id" to id))
             idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_REASON, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
             assertTrue("$id 标题", texts(expected.first) > 0)
-            assertTrue("$id 说明", texts(expected.second) > 0)
+            if (id == "ord-punish") {
+                // D10-128 G-O03 / r1 S2-4：PUNISH 缺子原因字段，只标题，不显示代拟说明。
+                assertEquals("$id 不应显示代拟说明", 0, texts(expected.second))
+            } else {
+                assertTrue("$id 说明", texts(expected.second) > 0)
+            }
             for (action in listOf("appeal", "contact_cs", "ledger", "withdraw")) {
                 val shown =
                     composeRule
@@ -1612,16 +1617,16 @@ class AppOrdersIntegrationTest {
         assertEquals("弹系统框时没有用途说明浮层", listOf<PermissionPrompt?>(null), host.promptsAtRequest)
     }
 
-    /** 共性第 5 条：详情金额格横排时左实付、右返利（与列表卡一致）。 */
+    /** D10-128 G-O07 / 共性第 5 条：详情横排左返利、右实付；列表仍左实付、右返利。 */
     @Test
-    fun lesson5_detailAmountsPutPaidLeftAndRebateRight() {
+    fun lesson5_detailAmountsPutRebateLeftAndPaidRight() {
         launch()
         openOrders()
         open("OrderDetail", mapOf("order_id" to "ord-self-1"))
         idleUntil { composeRule.onAllNodesWithTag(OrderTags.DETAIL_AMOUNTS).fetchSemanticsNodes().isNotEmpty() }
         val paid = amountLabel("实付金额")
         val rebate = amountLabel("预估返")
-        assertTrue("横排：实付在左（${paid.left}）、返利在右（${rebate.left}）", paid.left < rebate.left)
+        assertTrue("详情横排：返利在左（${rebate.left}）、实付在右（${paid.left}）", rebate.left < paid.left)
     }
 
     /** 共性第 5 条：200% 字号纵排时返利在上、实付在下（详情）。 */
