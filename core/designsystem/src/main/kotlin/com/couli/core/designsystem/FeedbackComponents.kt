@@ -39,6 +39,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -448,6 +449,16 @@ internal fun ScrollBodyLayout(
     }
 }
 
+/**
+ * 一主一次的按钮行（弹窗、半屏共用，GUIDE §6）：放得下则等宽并排、次左主右；放不下（大字号 / 窄屏）纵排、主在上。半屏底部操作（如剪贴板用途说明
+ * HomeClipboardConsent-v3）经 [CouliSheet] 的 actions 槽用它，与 [CouliDialog] 同一排法。
+ */
+@Composable
+fun CouliButtonPair(
+    primary: @Composable () -> Unit,
+    secondary: @Composable () -> Unit,
+) = DialogButtons(primary = primary, secondary = secondary)
+
 /** 一主一次：并排放得下（两者都不折行）则等宽并排，次左主右；否则纵排，主在上（GUIDE §6）。 */
 @Composable
 private fun DialogButtons(
@@ -500,11 +511,17 @@ private fun DialogButtons(
 fun CouliSheet(
     title: String,
     onDismissRequest: () -> Unit,
+    /** 半屏内容区（把手下方、通栏宽）的修饰（如测试标记）；默认不加。 */
+    modifier: Modifier = Modifier,
     actions: (@Composable () -> Unit)? = null,
     restoreFocusTo: FocusRequester? = null,
     closeLabel: String? = null,
     dismissOnSwipe: Boolean = true,
     dismissOnClickOutside: Boolean = true,
+    /** false：不画可见标题（如识别到单张商品，HomeClipboardCard-v3），[title] 仍作读屏 paneTitle，打开焦点落到右上关闭（APP-11v）。 */
+    showTitle: Boolean = true,
+    /** 标题字号（默认 17/600；用途说明半屏 HomeClipboardConsent-v3 用 22/600）。 */
+    titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     content: @Composable () -> Unit,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
@@ -528,6 +545,9 @@ fun CouliSheet(
                 titleFocus = titleFocus,
                 onClose = closeLabel?.let { { onDismissRequest() } },
                 closeLabel = closeLabel,
+                showTitle = showTitle,
+                titleStyle = titleStyle,
+                modifier = modifier,
                 content = content,
             )
         }
@@ -543,31 +563,56 @@ fun CouliSheetBody(
     titleFocus: FocusRequester? = null,
     onClose: (() -> Unit)? = null,
     closeLabel: String? = null,
+    showTitle: Boolean = true,
+    titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     content: @Composable () -> Unit,
 ) {
     ScrollBodyLayout(
-        modifier = modifier.fillMaxWidth().padding(start = CouliSpacing.space4, end = CouliSpacing.space4, bottom = CouliSpacing.space6),
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .then(if (showTitle) Modifier else Modifier.semantics { paneTitle = title })
+                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, bottom = CouliSpacing.space6),
         gap = CouliSpacing.space4,
         dividerWhenScrollable = true,
         header = {
             // 标题 → 关闭 → 正文 → 操作（adaptation-a11y-spec §8：关闭在 DOM 里排在标题之后，视觉在右上角）
-            if (onClose != null && closeLabel != null) {
-                Row(verticalAlignment = Alignment.Top) {
+            when {
+                !showTitle -> {
+                    // 无可见标题：只留右上关闭（不留空标题行），打开焦点落到关闭；读屏名由 paneTitle 给
+                    if (onClose != null && closeLabel != null) {
+                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopEnd) {
+                            CouliIconButton(
+                                icon = CouliIcons.close,
+                                label = closeLabel,
+                                onClick = onClose,
+                                tint = CouliColors.textSecondary,
+                                modifier = Modifier.modalTitle(titleFocus, heading = false),
+                            )
+                        }
+                    }
+                }
+
+                onClose != null && closeLabel != null -> {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = title,
+                            style = titleStyle,
+                            color = CouliColors.textPrimary,
+                            modifier = Modifier.weight(1f).padding(top = CouliSpacing.space3).modalTitle(titleFocus),
+                        )
+                        CouliIconButton(icon = CouliIcons.close, label = closeLabel, onClick = onClose, tint = CouliColors.textSecondary)
+                    }
+                }
+
+                else -> {
                     Text(
                         text = title,
-                        style = CouliTextStyles.bodySemibold,
+                        style = titleStyle,
                         color = CouliColors.textPrimary,
-                        modifier = Modifier.weight(1f).padding(top = CouliSpacing.space3).modalTitle(titleFocus),
+                        modifier = Modifier.modalTitle(titleFocus),
                     )
-                    CouliIconButton(icon = CouliIcons.close, label = closeLabel, onClick = onClose, tint = CouliColors.textSecondary)
                 }
-            } else {
-                Text(
-                    text = title,
-                    style = CouliTextStyles.bodySemibold,
-                    color = CouliColors.textPrimary,
-                    modifier = Modifier.modalTitle(titleFocus),
-                )
             }
         },
         body = { Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) { content() } },
@@ -589,8 +634,12 @@ fun SheetHandle(modifier: Modifier = Modifier) {
 }
 
 /** 弹层标题：标题语义；给了 [focus] 时可被程序聚焦（打开时焦点进标题）。 */
-private fun Modifier.modalTitle(focus: FocusRequester?): Modifier =
-    semantics { heading() }.then(if (focus != null) Modifier.focusRequester(focus).focusable() else Modifier)
+private fun Modifier.modalTitle(
+    focus: FocusRequester?,
+    heading: Boolean = true,
+): Modifier =
+    (if (heading) semantics { heading() } else this)
+        .then(if (focus != null) Modifier.focusRequester(focus).focusable() else Modifier)
 
 private const val SKELETON_SECOND_LINE = 0.7f
 private const val SKELETON_PRICE_LINE = 0.4f

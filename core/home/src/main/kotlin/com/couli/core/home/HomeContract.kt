@@ -170,9 +170,9 @@ object HomeDraftTexts : HomeTexts {
             NOTICE_CLOSE to "关闭公告",
             // 代拟：公告图标的读屏（装饰，读屏跳过时不用）
             NOTICE_ICON to "公告",
-            // 代拟（G28）：弹窗关闭按钮、弹窗读屏名、banner 无 alt 时的读屏名
+            // 代拟（G28）：弹窗关闭按钮、banner 无 alt 时的读屏名；弹窗读屏名照 app-home.md §6 默认「首页弹窗」（G-V07，契约 alt 进锁后优先 alt）
             POPUP_CLOSE to "关闭",
-            POPUP_NAME to "活动弹窗",
+            POPUP_NAME to "首页弹窗",
             BANNER_IMAGE to "活动图片",
             // 代拟：轮播的位置读屏
             BANNER_POSITION to "第 {index} 张，共 {count} 张",

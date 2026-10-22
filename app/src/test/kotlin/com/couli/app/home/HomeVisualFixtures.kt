@@ -121,10 +121,11 @@ internal class HomeVisualPort(
 
 internal class HomeVisualApi : PageApi {
     val calls = mutableListOf<ApiCall>()
+    var reply: (ApiCall) -> ApiResult = { ApiResult.Success(JsonObject(emptyMap()), "visual-api", null) }
 
     override suspend fun send(call: ApiCall): ApiResult {
         calls += call
-        return ApiResult.Success(JsonObject(emptyMap()), "visual-api", null)
+        return reply(call)
     }
 
     override fun cancelOwned(owner: CallOwnership) = Unit

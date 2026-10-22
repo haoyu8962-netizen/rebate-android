@@ -27,6 +27,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -47,6 +48,9 @@ import com.couli.core.clipboard.ParseRow
 import com.couli.core.clipboard.PasteEntry
 import com.couli.core.designsystem.BuyButtonState
 import com.couli.core.designsystem.CouliAnnouncer
+import com.couli.core.designsystem.CouliButton
+import com.couli.core.designsystem.CouliButtonSize
+import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
@@ -57,9 +61,12 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.DisclaimerKeys
+import com.couli.core.designsystem.EndWrapRow
 import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.designsystem.ProductCardList
 import com.couli.core.designsystem.ProductCardMapper
+import com.couli.core.designsystem.couliCard
 import kotlinx.coroutines.delay
 
 /** 剪贴板界面的测试标记（App 层）。 */
@@ -143,6 +150,7 @@ fun HomeClipboardTop(
                         detail = platform?.detail,
                         badge = platform?.badge,
                         messageLabel = platform?.label,
+                        keepLastClause = invite,
                     )
                 }
             }
@@ -249,6 +257,7 @@ private fun InviteConfirmBar(
             onAction = { clipboard.confirmManualInvite(current) },
             onClose = { clipboard.consumeResult(current) },
             enabled = enabled,
+            keepLastClause = true,
         )
     }
 }
@@ -295,8 +304,8 @@ fun ClipboardResultHost(clipboard: AppClipboard) {
 }
 
 /**
- * 30132 的提示（ShareHubInvalid 的提示样式：错误底色圆角 12、内边距 12，图标 + 「这个口令暂时识别不了」+【用商品名搜索】，窄屏时换行）。只在发起页
- * 仍是当前页时显示（[origin] 与结果的发起页相同）。出现时读屏播报一次。
+ * 30132 的提示（HomeClipboardResults-v3 ①，APP-11v A18）：白卡（圆角 16、内边距 16），左 20 信息图标 + 「这个口令暂时识别不了」+ 右侧描边次按钮【用商品名搜索】；
+ * 放不下时按钮整体换到下一行靠右。只在发起页仍是当前页时显示（[origin] 与结果的发起页相同）。出现时读屏播报一次。
  */
 @Composable
 fun UnrecognizedInline(
@@ -312,66 +321,24 @@ fun UnrecognizedInline(
     // 每个新结果读一次（按结果编号，APP-07 共性第 33 条）：连续两次 30132 文字相同、视图不重建，实时区域不会再读
     AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
     // 按结果编号独立节点：旧节点的点击回调只带旧结果（FU-CLIP 共性第 3 条）
-    key(current.id) { UnrecognizedRow(clipboard, current, blocked, modifier) }
-}
-
-@Composable
-private fun UnrecognizedRow(
-    clipboard: AppClipboard,
-    current: ClipboardResult.Unrecognized,
-    blocked: Boolean,
-    modifier: Modifier,
-) {
-    val busy by clipboard.busy.collectAsStateWithLifecycle()
-    val disabled = blocked || busy
-    Row(
-        modifier =
-            modifier
-                .fillMaxWidth()
-                .background(CouliColors.statusErrorBackground, RoundedCornerShape(CouliRadius.button))
-                .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1)
-                .testTag(ClipboardScreens.UNRECOGNIZED),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusErrorText,
-            modifier = Modifier.size(CouliSizes.iconMedium),
+    key(current.id) {
+        val busy by clipboard.busy.collectAsStateWithLifecycle()
+        InlineResultCard(
+            icon = CouliIcons.info,
+            text = current.text,
+            actionText = ClipboardDraftTexts.text("clipboard.search_by_name"),
+            enabled = !blocked && !busy,
+            onAction = { clipboard.searchByName(current) },
+            modifier = modifier.testTag(ClipboardScreens.UNRECOGNIZED),
+            actionModifier = Modifier.testTag(ClipboardScreens.SEARCH_BY_NAME),
         )
-        FlowRow(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = current.text,
-                style = CouliTypography.footnote,
-                color = CouliColors.statusErrorText,
-                modifier = Modifier.padding(vertical = CouliSpacing.space2),
-            )
-            Box(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .wrapClick(enabled = !disabled) { clipboard.searchByName(current) }
-                        .testTag(ClipboardScreens.SEARCH_BY_NAME),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Text(
-                    text = ClipboardDraftTexts.text("clipboard.search_by_name"),
-                    style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-                    color = if (disabled) CouliColors.textSecondary else CouliColors.brandEmphasis,
-                )
-            }
-        }
     }
 }
 
 /**
- * 网络异常结果的显式重试（R24；与 30132 提示同一样式）：文案 + 【重试】，复用已批准的候选重发同一个请求，不读此刻的剪贴板。只在发起页仍是当前页时
- * 显示；42901 禁用期与 parse 在途时置灰（执行层另在 [AppClipboard.retryResult] 拦）。出现时读屏播报一次。
+ * 网络异常结果的显式重试（R24；HomeClipboardResults-v3 ⑤，与 30132 提示同一卡式）：左 20 警示图标 + 文案 + 右侧描边次按钮【重试】，复用已批准的候选
+ * 重发同一个请求，不读此刻的剪贴板。只在发起页仍是当前页时显示；42901 禁用期与 parse 在途时置灰（执行层另在 [AppClipboard.retryResult] 拦）。
+ * 出现时读屏播报一次。
  */
 @Composable
 fun RetryInline(
@@ -385,46 +352,55 @@ fun RetryInline(
     val current = result as? ClipboardResult.Notice ?: return
     if (!origin(current.origin) || !clipboard.canRetry(current)) return
     AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
-    val disabled = blocked || busy
     key(current.id) {
-        Row(
-            modifier =
-                modifier
-                    .fillMaxWidth()
-                    .background(CouliColors.statusErrorBackground, RoundedCornerShape(CouliRadius.button))
-                    .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space1)
-                    .testTag(ClipboardScreens.RETRY),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            Icon(
-                CouliIcons.alert,
-                contentDescription = null,
-                tint = CouliColors.statusErrorText,
-                modifier = Modifier.size(CouliSizes.iconMedium),
-            )
-            Text(
-                text = current.text,
-                style = CouliTypography.footnote,
-                color = CouliColors.statusErrorText,
-                modifier = Modifier.weight(1f).padding(vertical = CouliSpacing.space2),
-            )
-            Box(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .wrapClick(enabled = !disabled) { clipboard.retryResult(current) }
-                        .testTag(ClipboardScreens.RETRY_ACTION),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Text(
-                    text = ClipboardDraftTexts.text("clipboard.retry"),
-                    style = CouliTypography.footnote.copy(fontWeight = CouliTextStyles.bodySemibold.fontWeight),
-                    color = if (disabled) CouliColors.textSecondary else CouliColors.brandEmphasis,
-                )
-            }
-        }
+        InlineResultCard(
+            icon = CouliIcons.alert,
+            text = current.text,
+            actionText = ClipboardDraftTexts.text("clipboard.retry"),
+            enabled = !blocked && !busy,
+            onAction = { clipboard.retryResult(current) },
+            modifier = modifier.testTag(ClipboardScreens.RETRY),
+            actionModifier = Modifier.testTag(ClipboardScreens.RETRY_ACTION),
+        )
     }
+}
+
+/** ①⑤ 的卡：白卡 + 左图标（装饰，读屏跳过）+ 14 主文字 + 右描边次按钮（组件库 SECONDARY 紧凑，命中区 48）；放不下时按钮换行靠右。 */
+@Composable
+private fun InlineResultCard(
+    icon: ImageVector,
+    text: String,
+    actionText: String,
+    enabled: Boolean,
+    onAction: () -> Unit,
+    modifier: Modifier,
+    actionModifier: Modifier,
+) {
+    EndWrapRow(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .couliCard()
+                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space3, bottom = CouliSpacing.space3),
+        horizontalGap = CouliSpacing.space3,
+        verticalGap = CouliSpacing.space2,
+        start = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+                Icon(icon, contentDescription = null, tint = CouliColors.textPrimary, modifier = Modifier.size(CouliSizes.iconMedium))
+                Text(text = text, style = CouliTypography.footnote, color = CouliColors.textPrimary)
+            }
+        },
+        end = {
+            CouliButton(
+                text = actionText,
+                onClick = onAction,
+                variant = CouliButtonVariant.SECONDARY,
+                size = CouliButtonSize.COMPACT,
+                enabled = enabled,
+                modifier = actionModifier,
+            )
+        },
+    )
 }
 
 /**
@@ -478,15 +454,30 @@ private fun CardListSheet(
     val title = ClipboardDraftTexts.text("clipboard.card_list.title")
     // 弹层打开时焦点进标题（读出）；弹层没关、换成新的一组结果时按结果编号再读一次标题（APP-07 共性第 33 条）
     AnnounceResult(result.id, title, surfaceAnnouncesChanges = true)
+    // 卡下口径一句：只看显示了价格的卡（④ 价格不可用的卡不显示金额，不配口径句），按其下发的 disclaimer_keys 选（[DisclaimerKeys.listFooterPriceKey]）
+    val basis =
+        remember(result) {
+            val shownKeys =
+                result.rows
+                    .mapNotNull { it.card }
+                    .map { ProductCardMapper.map(it, SearchDraftTexts).data }
+                    .filter { it.price != null && !it.priceUnavailable }
+                    .map { it.disclaimerKeys }
+            DisclaimerKeys.listFooterPriceKey(shownKeys)?.let(DisclaimerKeys::text)
+        }
+    // HomeClipboardCard-v3（APP-11v A17）：只有一条结果时不画可见标题（只把手 + 右上关闭），标题仍是读屏 paneTitle；多条按列表（无专稿，保留标题）
     CouliSheet(
         title = title,
         onDismissRequest = { clipboard.consumeResult(result) },
         closeLabel = ClipboardDraftTexts.text("clipboard.card_list.close"),
+        showTitle = result.rows.size > 1,
     ) {
         // 弹层内容按结果编号独立节点：换成新的一组结果时旧卡片、旧按钮整体丢弃，旧回调不会转调新结果（FU-CLIP 共性第 3 条）
         key(result.id) {
             CardListRows(result, clipboard, blocked, statusVersion)
         }
+        // 卡下口径一句（price_basis / price_basis.general，按各卡下发的 disclaimer_keys 选；没有带价格口径的卡不出）
+        basis?.let { Text(text = it, style = CouliTypography.caption, color = CouliColors.textSecondary) }
     }
 }
 
@@ -516,7 +507,16 @@ private fun CardListRows(
                             .wrapClick(enabled = !blocked, onClick = open)
                             .testTag(ClipboardScreens.CARD_PREFIX + index),
                 ) {
-                    ProductCardList(data = mapped.data, onBuy = open, buyState = buyState, retryLaterText = mapped.retryLaterText)
+                    // ④ 价格不可用的「稍后再试」按 HomeClipboardResults-v3 画成卡内右下描边次按钮（仍不可点，行为不变）
+                    ProductCardList(
+                        data = mapped.data,
+                        onBuy = open,
+                        buyState = buyState,
+                        retryLaterText = mapped.retryLaterText,
+                        retryLaterOutlined = true,
+                        // 单张（HomeClipboardCard-v3）卡直接排在半屏里、不再套卡框；多张仍按搜索卡外观逐张成卡
+                        framed = result.rows.size > 1,
+                    )
                 }
             } else {
                 ErrorRow(result, row, index, clipboard, enabled = !blocked)

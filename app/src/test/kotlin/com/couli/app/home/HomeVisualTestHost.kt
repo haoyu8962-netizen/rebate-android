@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,6 +33,7 @@ import com.couli.core.config.EnvironmentStartupReconciler
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliTheme
 import com.couli.core.designsystem.LocalProductImageLoader
+import com.couli.core.designsystem.ProductImageLoader
 import com.couli.core.home.HomeLevel
 import com.couli.core.network.ApiClient
 import com.couli.core.network.ClientIdentity
@@ -67,6 +69,14 @@ internal class HomeVisualTestHost(
     val system = HomeVisualClipboard()
     val tokens = MemorySessionTokens()
     var config = HomeVisualFixtures.config
+    var images: ProductImageLoader = HomeVisualFixtures.images
+    var overlay: @Composable () -> Unit = {}
+    var surface = Color.Unspecified
+        private set
+    var border = Color.Unspecified
+        private set
+    var scrim = Color.Unspecified
+        private set
     var aiBackground = Color.Unspecified
         private set
     private lateinit var agent: AppAgent
@@ -83,7 +93,7 @@ internal class HomeVisualTestHost(
         dark: Boolean = false,
         fontScale: Float = 1f,
         statusBar: Boolean = false,
-        autoRead: Boolean = false,
+        autoRead: Boolean? = false,
     ) {
         context
             .getSharedPreferences(CouliPreferenceNamespaces.CLIPBOARD, Context.MODE_PRIVATE)
@@ -114,10 +124,13 @@ internal class HomeVisualTestHost(
             val density = LocalDensity.current
             CompositionLocalProvider(
                 LocalDensity provides Density(density.density, fontScale),
-                LocalProductImageLoader provides HomeVisualFixtures.images,
+                LocalProductImageLoader provides images,
             ) {
                 CouliTheme(darkTheme = dark) {
                     aiBackground = CouliColors.brandSubtle
+                    surface = CouliColors.backgroundSurface
+                    border = CouliColors.borderControl
+                    scrim = CouliColors.overlayScrim
                     Column(Modifier.fillMaxSize().background(CouliColors.backgroundCanvas)) {
                         if (statusBar) Spacer(Modifier.height(54.dp))
                         AppShell(
@@ -129,6 +142,7 @@ internal class HomeVisualTestHost(
                             clipboard = clipboard,
                             agent = agent,
                         )
+                        overlay()
                     }
                 }
             }
@@ -176,7 +190,7 @@ internal class HomeVisualTestHost(
                 port = port,
                 lkg = null,
                 prefs = null,
-                images = HomeVisualFixtures.images,
+                images = images,
                 envKey = { "test" },
                 configData = { config },
                 track = {},
@@ -191,7 +205,7 @@ internal class HomeVisualTestHost(
             ).also { it.connect() }
     }
 
-    private fun connectClipboard(autoRead: Boolean) {
+    private fun connectClipboard(autoRead: Boolean?) {
         clipboard =
             AppClipboard(
                 system = system,

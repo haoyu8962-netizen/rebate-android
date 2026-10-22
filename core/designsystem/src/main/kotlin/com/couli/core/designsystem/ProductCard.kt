@@ -161,6 +161,10 @@ fun ProductCardList(
      */
     onInfo: (() -> Unit)? = null,
     infoFocus: FocusRequester? = null,
+    /** 「稍后再试」画成描边次按钮（剪贴板识别结果④，APP-11v A18）；默认 false 保持原外观。 */
+    retryLaterOutlined: Boolean = false,
+    /** false：不画卡框（白底、阴影与 12 内边距），内容直接贴容器边排（半屏里的单张识别卡 HomeClipboardCard-v3）；默认 true 保持原外观。 */
+    framed: Boolean = true,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val toggleInfo: () -> Unit = onInfo ?: { expanded = !expanded }
@@ -171,12 +175,13 @@ fun ProductCardList(
     val metrics = rememberAmountMetrics()
     val density = LocalDensity.current
     val priceBlockMinWidth = remember(shown, priceSize, metrics) { shown.listPriceBlockMinWidth(metrics, priceSize) }
-    BoxWithConstraints(modifier = modifier.fillMaxWidth().couliCard()) {
+    val inset = if (framed) CouliSpacing.space3 else CouliSpacing.space0
+    BoxWithConstraints(modifier = modifier.fillMaxWidth().then(if (framed) Modifier.couliCard() else Modifier)) {
         // 右栏宽 = 卡宽 − 两侧内边距 − 左图 − 间距；任一金额段放不下右栏时价格区移到整卡宽度
-        val rightColumn = maxWidth - CouliSpacing.space3 * 2 - CouliSizes.listThumbnail - CouliSpacing.space3
+        val rightColumn = maxWidth - inset * 2 - CouliSizes.listThumbnail - CouliSpacing.space3
         val priceFullWidth = priceBlockMinWidth > with(density) { rightColumn.roundToPx() }
         Column(
-            modifier = Modifier.padding(CouliSpacing.space3),
+            modifier = Modifier.padding(inset),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
@@ -209,6 +214,7 @@ fun ProductCardList(
                         state = buyState,
                         amountHidden = shown.amountHidden,
                         retryLaterText = retryLaterText,
+                        retryLaterOutlined = retryLaterOutlined,
                     )
                 },
             )

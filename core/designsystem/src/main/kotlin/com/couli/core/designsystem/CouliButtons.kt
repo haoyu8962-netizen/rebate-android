@@ -229,6 +229,8 @@ fun BuyButton(
     retryLaterText: String = base,
     loadingDescription: String? = null,
     size: CouliButtonSize = CouliButtonSize.COMPACT,
+    /** RETRY_LATER 画成描边次按钮外观（仍不可点；剪贴板识别结果④ HomeClipboardResults-v3，APP-11v A18）。默认 false 保持原外观。 */
+    retryLaterOutlined: Boolean = false,
 ) {
     val text =
         when (state) {
@@ -236,6 +238,10 @@ fun BuyButton(
             BuyButtonState.RETRY_LATER -> retryLaterText
             else -> base
         }
+    if (state == BuyButtonState.RETRY_LATER && retryLaterOutlined) {
+        OutlinedDisabledButton(text = text, size = size, modifier = modifier)
+        return
+    }
     val showsAmount = !amountHidden && context in BuyButtonModel.contextsShowingAmount
     val spoken =
         when {
@@ -252,6 +258,34 @@ fun BuyButton(
         loadingDescription = loadingDescription,
         accessibilityLabel = spoken,
     )
+}
+
+/** 不可点的描边次按钮外观：surface 底 + 控件边 + 次文字色；语义与禁用的 [CouliButton] 相同（按钮角色、不可用）。 */
+@Composable
+private fun OutlinedDisabledButton(
+    text: String,
+    size: CouliButtonSize,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(CouliRadius.button)
+    Box(
+        modifier =
+            modifier
+                .defaultMinSize(minWidth = CouliSizes.touchTarget, minHeight = CouliSizes.touchTarget)
+                .clip(shape)
+                .background(CouliColors.backgroundSurface)
+                .border(CouliSizes.hairline, CouliColors.borderControl, shape)
+                .clickable(enabled = false, role = Role.Button) {}
+                .padding(buttonPadding(CouliButtonVariant.SECONDARY, size)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = buttonTextStyle(CouliButtonVariant.SECONDARY, size),
+            color = CouliColors.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 /** 图标按钮：视觉图标 [iconSize]，命中区不小于 48（Android）。[label] 是读屏名称，必须由调用方给。 */

@@ -1,8 +1,10 @@
 package com.couli.feature.home
 
+import android.view.WindowManager
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,19 +18,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
@@ -45,17 +51,23 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIcons
@@ -66,6 +78,7 @@ import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.StateAction
+import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.rememberProductGridColumns
 import com.couli.core.home.HomeDraftTexts
 import com.couli.core.home.HomeErrors
@@ -249,9 +262,10 @@ private fun HomeToastHost(
 private const val TOAST_MS = 2_500L
 
 /**
- * 首页弹窗（MainPopup 版式，G14 ⑦⑧，F-HOME-08）：系统模态对话框承载——返回键、点遮罩等同关闭；读屏只能访问弹窗内容，顺序为 弹窗名 → 关闭 → 图片
- * （关闭按钮在语义树里先于图片，出现时焦点到关闭），关闭后焦点回到首页原处（对话框收起由系统还原）。只显示图片 + 关闭；关闭按钮与弹窗同时出现、
- * 命中区 48dp、不被图片遮挡，点一次即关，不以任何前置条件为关闭条件。回调捕获的是这个弹窗实例的票据（共性第 17 条）。
+ * 首页弹窗（MainPopupStatic / MainPopupDark 版式，APP-11v A15；G14 ⑦⑧，F-HOME-08）：系统模态对话框承载——返回键、点遮罩等同关闭；读屏只能访问
+ * 弹窗内容，顺序为 弹窗名 → 关闭 → 图片（关闭按钮语义遍历序先于图片，出现时焦点到关闭），关闭后焦点回到首页原处（对话框收起由系统还原）。
+ * 只有图片区 + 右上角圆底关闭：无衬底卡、无关闭行；图片圆角 16、按图宽高比、左右各留 32（窗口矮时按高度收）；关闭视觉 40、命中区 48，压在图片右上角、
+ * 绘制与触摸都在图片之上，与弹窗同时出现，点一次即关，不以任何前置条件为关闭条件。`ad_label` 原样显示在图片左上。回调捕获这个弹窗实例的票据（共性第 17 条）。
  */
 @Composable
 private fun HomePopupDialog(
@@ -259,57 +273,62 @@ private fun HomePopupDialog(
     controller: HomeController,
 ) {
     val ticket = popup.ticket
+    // 对话框是独立窗口：显式接续首页的字号缩放（系统 200% 时弹窗内文字同样放大）
+    val density = LocalDensity.current
     Dialog(
         onDismissRequest = { controller.closePopup(ticket) },
-        properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = true),
+        properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = true, usePlatformDefaultWidth = false),
     ) {
-        val closeFocus = remember { FocusRequester() }
-        // 对话框内容已组合：真正显示，这时才计数（G14 ⑤）
-        LaunchedEffect(ticket) {
-            controller.popupShown(ticket)
-            runCatching { closeFocus.requestFocus() }
-        }
-        val name = HomeDraftTexts.text(HomeDraftTexts.POPUP_NAME)
-        Column(
+        CompositionLocalProvider(LocalDensity provides density) { HomePopupContent(popup, controller) }
+    }
+}
+
+@Composable
+private fun HomePopupContent(
+    popup: HomePopupUi,
+    controller: HomeController,
+) {
+    val ticket = popup.ticket
+    PopupScrim()
+    // 对话框内容已组合：真正显示，这时才计数（G14 ⑤）
+    LaunchedEffect(ticket) { controller.popupShown(ticket) }
+    val name = HomeDraftTexts.text(HomeDraftTexts.POPUP_NAME)
+    val ratio = popup.image.width.toFloat() / popup.image.height.coerceAtLeast(1)
+    BoxWithConstraints(modifier = Modifier.safeDrawingPadding(), contentAlignment = Alignment.Center) {
+        // 宽 = 窗口宽 − 左右各 32（最宽 POPUP_MAX_WIDTH）；高按图比例，超出窗口高 − 上下各 24 时按高度收、宽随之收
+        val maxImageWidth = (maxWidth - CouliSpacing.space8 * 2).coerceIn(0.dp, POPUP_MAX_WIDTH.dp)
+        val maxImageHeight = (maxHeight - CouliSpacing.space6 * 2).coerceAtLeast(0.dp)
+        val width = minOf(maxImageWidth, maxImageHeight * ratio)
+        val shape = RoundedCornerShape(CouliRadius.card)
+        // 关闭层独立于图片比例与裁剪：外框至少容下关闭命中区（48 + 距边 4×2），图片在外框内居中、单独裁圆角；
+        // 常规比例下外框 = 图片框，关闭照旧压在图片右上；横图 / 细长图 / 短视口下关闭仍完整 48 且在图片之上（后绘制、先接触摸）
+        val closeLayer = CouliSizes.touchTarget + CouliSpacing.space1 * 2
+        Box(
             modifier =
                 Modifier
-                    .widthIn(max = POPUP_MAX_WIDTH.dp)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(CouliRadius.card))
-                    .background(CouliColors.backgroundSurface)
-                    .semantics { paneTitle = name }
-                    .testTag(HomeTags.POPUP),
+                    .size(
+                        width.coerceAtLeast(closeLayer).coerceAtMost(maxWidth),
+                        (width / ratio).coerceAtLeast(closeLayer).coerceAtMost(maxHeight),
+                    ).semantics {
+                        paneTitle = name
+                        isTraversalGroup = true
+                    }.testTag(HomeTags.POPUP),
         ) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Box(
-                    modifier =
-                        Modifier
-                            .size(CouliSizes.touchTarget)
-                            .focusRequester(closeFocus)
-                            .clickable(role = Role.Button) { controller.closePopup(ticket) }
-                            .semantics { contentDescription = HomeDraftTexts.text(HomeDraftTexts.POPUP_CLOSE) }
-                            .testTag(HomeTags.POPUP_CLOSE),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        CouliIcons.close,
-                        contentDescription = null,
-                        tint = CouliColors.textPrimary,
-                        modifier = Modifier.size(CouliSizes.iconMedium),
-                    )
-                }
-            }
-            Box(modifier = Modifier.padding(start = CouliSpacing.space3, end = CouliSpacing.space3, bottom = CouliSpacing.space3)) {
+            Box(
+                modifier =
+                    Modifier
+                        .align(Alignment.Center)
+                        .size(width, width / ratio)
+                        .couliCard(shape = shape)
+                        .clip(shape),
+            ) {
                 Image(
                     bitmap = popup.image,
                     contentDescription = name,
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.Crop,
                     modifier =
                         Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = POPUP_IMAGE_MAX_HEIGHT.dp)
-                            .aspectRatio(popup.image.width.toFloat() / popup.image.height.coerceAtLeast(1))
-                            .clip(RoundedCornerShape(CouliRadius.small))
+                            .fillMaxSize()
                             .then(
                                 if (popup.tappable) {
                                     Modifier.clickable(role = Role.Button) { controller.tapPopup(ticket) }
@@ -318,15 +337,77 @@ private fun HomePopupDialog(
                                 },
                             ).testTag(HomeTags.POPUP_IMAGE),
                 )
-                // 推广标识（R1-03）：非 null 原样显示在图片角上，读屏读出
+                // 推广标识（R1-03）：非 null 原样显示在图片左上，读屏读出
                 popup.adLabel?.let { AdLabel(it, Modifier.align(Alignment.TopStart).padding(CouliSpacing.space2)) }
             }
+            PopupCloseButton(
+                onClick = { controller.closePopup(ticket) },
+                modifier = Modifier.align(Alignment.TopEnd).padding(CouliSpacing.space1),
+            )
         }
     }
 }
 
-private const val POPUP_MAX_WIDTH = 320
-private const val POPUP_IMAGE_MAX_HEIGHT = 420
+/**
+ * 遮罩用令牌 `overlay.scrim`（浅 / 深随主题）：关掉系统 Dialog 默认 dim（只能是黑色、且会与令牌重复叠加），
+ * 改由铺满屏幕的对话框窗口背景画令牌色；点遮罩关闭仍由 Dialog 的点外部处理。
+ */
+@Composable
+private fun PopupScrim() {
+    val view = LocalView.current
+    val scrim = CouliColors.overlayScrim.toArgb()
+    SideEffect {
+        (view.parent as? DialogWindowProvider)?.window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            // 窗口铺满屏幕，令牌遮罩覆盖整屏（内容仍按图片居中，点内容以外仍按点遮罩关闭）
+            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+            decorView.setBackgroundColor(scrim)
+        }
+    }
+}
+
+/** 弹窗关闭：命中区 48（外层），视觉 40 圆底（background.surface + 卡片阴影，深色随令牌）+ 24 关闭图标；语义遍历序排在图片之前。 */
+@Composable
+private fun PopupCloseButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // 打开时焦点到关闭：按钮在 BoxWithConstraints 的子组合里，挂上后才请求（外层效果先于子组合执行会落空）
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(focus) { runCatching { focus.requestFocus() } }
+    Box(
+        modifier =
+            modifier
+                .size(CouliSizes.touchTarget)
+                .focusRequester(focus)
+                // 触摸模式下 clickable 不可聚焦，这里显式可聚焦，打开时焦点能落到关闭
+                .focusable()
+                .clickable(role = Role.Button, onClick = onClick)
+                .semantics {
+                    contentDescription = HomeDraftTexts.text(HomeDraftTexts.POPUP_CLOSE)
+                    traversalIndex = -1f
+                }.testTag(HomeTags.POPUP_CLOSE),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier.size(POPUP_CLOSE_VISUAL.dp).couliCard(shape = CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                CouliIcons.close,
+                contentDescription = null,
+                tint = CouliColors.textPrimary,
+                modifier = Modifier.size(CouliSizes.iconLarge),
+            )
+        }
+    }
+}
+
+/** 弹窗图片最宽（折叠屏内屏 / 平板不随窗口无限放大）；手机 390 宽时 = 326（左右各 32）。 */
+private const val POPUP_MAX_WIDTH = 400
+
+/** 关闭按钮视觉直径（画板 44，任务书取 ≈40，命中区仍 48，与图片右上各留 8）。 */
+private const val POPUP_CLOSE_VISUAL = 40
 
 /**
  * 首页根视图的全局置灰（03 §6.2 第 8 步，G27）：`ui.grayscale=true` 时给首页根视图加饱和度 0 的颜色矩阵；只作用于调用处的根视图。

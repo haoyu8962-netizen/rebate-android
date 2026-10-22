@@ -13,11 +13,12 @@ internal object ClipboardDraftTexts {
     /** TODO(N-30) 待定稿，不得提审。键 → 草稿文字。 */
     val DRAFTS: Map<String, String> =
         mapOf(
-            // ---- HomeClipboard / HomeClipboardInvite：提示条按钮（设计稿按钮字「粘贴」；读屏名）与关闭
+            // ---- HomeClipboard / HomeClipboardInvite-v3：提示条按钮（商品条设计稿按钮字「粘贴」；邀请条按 HomeClipboardInvite-v3 与 BR-INV-04 为「绑定」，
+            // APP-11v A6，三端同键；行为不变）、读屏名与关闭
             "clipboard.prompt.action" to "粘贴",
             "clipboard.prompt.action_label" to "粘贴查返利",
-            "clipboard.invite_prompt.action" to "粘贴",
-            "clipboard.invite_prompt.action_label" to "粘贴并绑定邀请人",
+            "clipboard.invite_prompt.action" to "绑定",
+            "clipboard.invite_prompt.action_label" to "绑定邀请人",
             "clipboard.prompt.close" to "关闭",
             // ---- Android 自绘粘贴按钮（BR-ID-16「粘贴查返利」）与 SearchTyping 的说明文字
             "clipboard.paste_entry" to "粘贴查返利",
