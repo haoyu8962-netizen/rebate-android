@@ -21,6 +21,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.printToString
 import androidx.lifecycle.SavedStateHandle
@@ -1047,7 +1048,11 @@ class AppWalletIntegrationTest {
         assertTrue(ledger.contains("20260928200040011100"))
         assertTrue(texts("已复制交易流水号") > 0)
         // FAILED + change_payout_account：展开后【修改收款账号】→ PayoutAccount
-        composeRule.onNodeWithTag(WalletTags.RECORD_PREFIX + "W2026100800003", useUnmergedTree = true).performScrollTo()
+        // APP-09v-b W20/G-W08：行已是月份卡的子节点，滚动容器按后代tag找行，不依赖一记录一个Lazy项。
+        composeRule.onNodeWithTag(WalletTags.RECORDS_LIST).performScrollToNode(
+            androidx.compose.ui.test
+                .hasTestTag(WalletTags.RECORD_PREFIX + "W2026100800003"),
+        )
         composeRule.onNodeWithText("提现 ¥8", useUnmergedTree = true).performClick()
         settle()
         idleUntil { has(WalletTags.RECORD_CHANGE_ACCOUNT) }

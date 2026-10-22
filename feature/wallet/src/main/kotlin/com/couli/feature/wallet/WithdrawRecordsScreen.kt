@@ -2,17 +2,17 @@
 
 package com.couli.feature.wallet
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -20,16 +20,17 @@ import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -38,25 +39,15 @@ import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
-import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
-import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.EmptyState
-import com.couli.core.designsystem.EndWrapRow
 import com.couli.core.designsystem.ErrorState
-import com.couli.core.designsystem.PriceTerms
-import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
-import com.couli.core.designsystem.couliCard
-import com.couli.core.wallet.TradeNoRow
 import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletTexts
-import com.couli.core.wallet.Withdrawal
-import com.couli.core.wallet.WithdrawalText
-import java.time.Instant
-import java.time.ZoneId
+import kotlinx.coroutines.flow.filter
 import kotlinx.serialization.json.JsonPrimitive
 
 class WithdrawRecordsViewModel(
@@ -88,8 +79,9 @@ class WithdrawRecordsViewModel(
 /**
  * 提现记录（WithdrawRecords 路由，`withdrawal_id?`；设计稿 WithdrawRecords、WithdrawRecordsPending / Paying / Paid / Failed / Empty、
  * WithdrawAbandonCompleted）：
- * 按月分组（created_at 在 +08:00 下取月份）；列表卡「提现 {amount}」+ 状态 +「{日期} · {通道} {脱敏串}」+ 副文案（G08）；整卡展开 / 收起（读屏名
- * 「展开详情 / 收起详情」）；详情明细、交易流水号【复制】、「不能自行撤销」+【联系客服】、【修改收款账号】。金额不受隐藏开关影响（G23）。
+ * 按月分组（created_at 在 +08:00 下取月份）；一月一张卡，收起行「提现 {amount}」+ 状态胶囊 +「{日期} · {通道} {脱敏串}」+ 副文案首句（G08、G-W08）；
+ * 整行展开 / 收起（读屏名「展开详情 / 收起详情」，读屏描述含完整副文案）；展开项单独成卡：状态块、【修改收款账号】、明细、交易流水号【复制】、
+ * 「不能自行撤销」+【联系客服】（APP-09v-b，见 WithdrawRecordRow / WithdrawRecordDetail）。金额不受隐藏开关影响（G23）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -143,8 +135,9 @@ fun WithdrawRecordsScreen(config: WalletPageConfig) {
             }
 
             else -> {
-                Column(modifier = Modifier.padding(CouliSpacing.space4), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                    repeat(SKELETONS) { Skeleton(Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space8)) }
+                // 首次加载骨架（W35）：与收起行同结构的 3 行，位置同列表（上 8、左右 16）
+                Column(modifier = Modifier.padding(start = CouliSpacing.space4, top = CouliSpacing.space2, end = CouliSpacing.space4)) {
+                    RecordSkeletonCard(SKELETONS, RECORDS_LOADING_TAG, texts.text("wallet.loading"))
                 }
             }
         }
@@ -167,10 +160,66 @@ private fun RecordsList(
             ?.let { it as? JsonPrimitive }
             ?.takeIf { it.isString }
             ?.content
-    val now = config.deps.clock()
+    val focusId = (config.params[WalletRoutes.WITHDRAWAL_ID] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val listState = rememberLazyListState()
+    val keeper = remember { RecordListKeeper() }
+    val ctx = RecordRenderContext(controller, state, texts, slaText, config.deps.clock(), keeper)
+    val sections = if (state.phase == RecordsSnapshot.EMPTY) emptyList() else recordSections(state.items, focusId)
+    RecordPaging(controller, state, keeper)
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // 评审 r1 S2-1 / r2 S2：分段、记录内容（状态、原因、退回说明等决定行高的字段）、详情、展开集、SLA 文案、列表宽度
+        // 任一变化，都按变化前「视口最上面的记录 + 偏移」恢复；ID / 月份 / 顺序不变而上方记录变高变矮也算
+        val signature =
+            listOf(
+                sections.map { section -> section.key to section.items },
+                slaText,
+                state.details,
+                state.expanded,
+                maxWidth,
+            )
+        val lazyOffset = if (state.error != null) 1 else 0
+        SideEffect { keeper.content(signature, sections, lazyOffset, listState) }
+        LaunchedEffect(signature) { keeper.restore(listState) }
+        RecordsLazyList(sections, ctx, listState)
+    }
+}
+
+/**
+ * 翻页触发（评审 r1 S1）：列表最后一条记录真实摆进视口（裁切后有高度）才调 [WithdrawRecordsController.loadMore]——与改版前「一记录一项」时
+ * 末条可见即预组合页脚、页脚组合即翻页的时机一致；按月合段后页脚的屏外预组合不再触发。追加后末条换人、条数变化即重新等待；
+ * 同一末条离开视口又回来会再调一次（与旧页脚重新进入组合相同）。是否真的发请求、去重、游标仍全由控制器决定。
+ */
+@Composable
+private fun RecordPaging(
+    controller: WithdrawRecordsController,
+    state: RecordsSnapshot,
+    keeper: RecordListKeeper,
+) {
+    val lastId = state.items.lastOrNull()?.withdrawalId
+    if (state.phase != RecordsSnapshot.CONTENT || state.nextCursor == null || lastId == null) return
+    LaunchedEffect(lastId, state.items.size) {
+        snapshotFlow { keeper.visibleLast == lastId }.filter { it }.collect { controller.loadMore() }
+    }
+}
+
+@Composable
+private fun RecordsLazyList(
+    sections: List<RecordSection>,
+    ctx: RecordRenderContext,
+    listState: LazyListState,
+) {
+    val controller = ctx.controller
+    val state = ctx.state
+    val texts = ctx.texts
     LazyColumn(
-        modifier = Modifier.fillMaxSize().testTag(WalletTags.RECORDS_LIST),
-        contentPadding = PaddingValues(CouliSpacing.space4),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { ctx.keeper.list(it) }
+                .testTag(WalletTags.RECORDS_LIST),
+        state = listState,
+        // W18：上 8、左右 16、下 0
+        contentPadding = PaddingValues(start = CouliSpacing.space4, top = CouliSpacing.space2, end = CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         // 已有旧列表时刷新失败（共性第 30 条）：独立的错误与【重试】
@@ -184,38 +233,32 @@ private fun RecordsList(
         }
         if (state.phase == RecordsSnapshot.EMPTY) {
             item {
-                Box(modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.testTag(WalletTags.RECORDS_EMPTY)) {
+                // W31：流水图标、图示上留白 48（EmptyState 自带上内边距 24，这里补足其余）；仍在可下拉的列表里（共性第 82 条）
+                Box(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = CouliSpacing.space12 - CouliSpacing.space6)
+                            .semantics { liveRegion = LiveRegionMode.Polite }
+                            .testTag(WalletTags.RECORDS_EMPTY),
+                ) {
                     EmptyState(
                         title = texts.text("withdraw_records.empty.title"),
                         message = texts.text("withdraw_records.empty.desc"),
-                        icon = CouliIcons.wallet,
+                        icon = CouliIcons.ledger,
                     )
                 }
             }
             return@LazyColumn
         }
-        val groups = state.items.groupBy { monthOf(it.createdAtMillis) }
-        groups.forEach { (month, items) ->
-            item(key = "month_${month.first}_${month.second}") {
-                Text(
-                    text =
-                        texts.format(
-                            "withdraw_records.month",
-                            mapOf("year" to month.first.toString(), "month" to month.second.toString()),
-                        ),
-                    style = CouliTextStyles.footnoteSemibold,
-                    color = CouliColors.textSecondary,
-                    modifier = Modifier.semantics { heading() },
-                )
-            }
-            items(items, key = { it.withdrawalId }) { item ->
-                RecordCard(controller, state, item, texts, slaText, now)
-            }
+        // W20 / G-W08：定位置顶区单独一项；其余按原顺序把相邻同月的记录合成一项（月份标题 + 月卡 / 展开卡）
+        sections.forEach { section ->
+            item(key = section.key) { RecordSectionItem(section, ctx) }
         }
         item(key = "footer") {
             when {
                 state.nextCursor != null -> {
-                    LaunchedEffect(state.items.size) { controller.loadMore() }
+                    // 翻页不在这里触发（评审 r1 S1）：页脚会被 Lazy 预组合，见 RecordPaging
                     val error = state.moreError
                     if (error != null) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
@@ -229,7 +272,8 @@ private fun RecordsList(
                             )
                         }
                     } else {
-                        Skeleton(Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space4))
+                        // W35：加载更多骨架与收起行同结构
+                        RecordSkeletonCard(1, RECORDS_LOADING_MORE_TAG, texts.text("wallet.loading"))
                     }
                 }
 
@@ -238,6 +282,8 @@ private fun RecordsList(
                         text = texts.text("withdraw_records.end"),
                         style = CouliTypography.caption,
                         color = CouliColors.textSecondary,
+                        // W30：居中
+                        textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space2).testTag(WalletTags.RECORDS_END),
                     )
                 }
@@ -245,185 +291,5 @@ private fun RecordsList(
         }
     }
 }
-
-@Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod", "ComplexCondition") // 一张卡的摘要、明细、流水号与三个入口
-@Composable
-private fun RecordCard(
-    controller: WithdrawRecordsController,
-    state: RecordsSnapshot,
-    item: Withdrawal,
-    texts: WalletTexts,
-    slaText: String?,
-    now: Long,
-) {
-    val version = state.version
-    val expanded = item.withdrawalId in state.expanded
-    val detail = state.details[item.withdrawalId]
-    val display = WithdrawalText.of(detail ?: item, slaText, texts)
-    val lines = WithdrawalText.render(display, texts)
-    val amount = CouliFormat.money(item.amountFen)
-    val title = texts.format("withdraw_records.item", mapOf("amount" to amount))
-    val status = texts.text(display.titleKey)
-    val channel =
-        texts.format(
-            "withdraw_records.channel_line",
-            mapOf(
-                "date" to CouliFormat.timeListPast(item.createdAtMillis, now),
-                "account" to "${item.payoutChannelName} ${item.maskedAccount}",
-            ),
-        )
-    val toggleLabel = texts.text(if (expanded) "withdraw_records.collapse" else "withdraw_records.expand")
-    Column(
-        modifier = Modifier.fillMaxWidth().couliCard().testTag(WalletTags.RECORD_PREFIX + item.withdrawalId),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        // 整卡（摘要部分）是一个目标：展开 / 收起
-        Column(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(role = Role.Button, onClickLabel = toggleLabel) { controller.toggle(version, item.withdrawalId) }
-                    .padding(CouliSpacing.space4)
-                    .semantics(mergeDescendants = true) {
-                        stateDescription = toggleLabel
-                        contentDescription =
-                            listOf(title, status, spokenMask(texts, channel)).plus(lines).joinToString(PriceTerms.SPOKEN_PAUSE)
-                    },
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-        ) {
-            EndWrapRow(
-                modifier = Modifier.fillMaxWidth(),
-                start = {
-                    Text(
-                        text = if (expanded) texts.text("withdraw_detail.amount") + " " + amount else title,
-                        style = CouliTextStyles.bodySemibold,
-                        color = CouliColors.textPrimary,
-                    )
-                },
-                end = { Text(text = status, style = CouliTextStyles.footnoteMedium, color = CouliColors.textPrimary) },
-            )
-            if (!expanded) Text(text = channel, style = CouliTypography.caption, color = CouliColors.textSecondary)
-            lines.forEach { Text(text = it, style = CouliTypography.footnote, color = CouliColors.textSecondary) }
-        }
-        if (expanded) {
-            Column(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, bottom = CouliSpacing.space4)
-                        .testTag(WalletTags.RECORD_DETAIL_PREFIX + item.withdrawalId),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            ) {
-                DetailRows(detail ?: item, display.netKey, texts)
-                val tradeNo = detail?.let { TradeNoRow.copyText(it.status, it.channelOrderId) }
-                if (tradeNo != null) {
-                    EndWrapRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        start = {
-                            Text(
-                                text = texts.text("withdraw_detail.trade_no") + " " + tradeNo,
-                                style = CouliTypography.footnote,
-                                color = CouliColors.textPrimary,
-                                modifier = Modifier.testTag(WalletTags.RECORD_TRADE_NO),
-                            )
-                        },
-                        end = {
-                            CouliButton(
-                                text = texts.text("withdraw_detail.copy"),
-                                onClick = { controller.copy(version, item.withdrawalId) },
-                                variant = CouliButtonVariant.TEXT,
-                                size = CouliButtonSize.COMPACT,
-                                accessibilityLabel = texts.text("withdraw_detail.copy") + texts.text("withdraw_detail.trade_no"),
-                                modifier = Modifier.testTag(WalletTags.RECORD_COPY),
-                            )
-                        },
-                    )
-                }
-                if (display.showChangeAccount) {
-                    CouliButton(
-                        text = texts.text("withdraw_detail.change_account"),
-                        onClick = { controller.changeAccount(version, item.withdrawalId) },
-                        size = CouliButtonSize.COMPACT,
-                        modifier = Modifier.testTag(WalletTags.RECORD_CHANGE_ACCOUNT),
-                    )
-                }
-                val reviewing = WithdrawalText.isReviewing(item.status)
-                if (display.knownChannel && (reviewing || item.status == "PAYING" || item.status == "FAILED")) {
-                    EndWrapRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        start = {
-                            Text(
-                                text = texts.text(if (reviewing) "withdraw.irrevocable" else "withdraw_detail.doubt"),
-                                style = CouliTypography.caption,
-                                color = CouliColors.textSecondary,
-                            )
-                        },
-                        end = {
-                            CouliButton(
-                                text = texts.text("withdraw_detail.cs"),
-                                onClick = controller::contact,
-                                variant = CouliButtonVariant.TEXT,
-                                size = CouliButtonSize.COMPACT,
-                                modifier = Modifier.testTag(WalletTags.RECORD_CS),
-                            )
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** 详情明细：申请金额、手续费、预计 / 实际到账（按状态）、代扣个税（tax_fen>0）、收款账号、申请时间（BR-TEXT-11）。 */
-@Composable
-private fun DetailRows(
-    item: Withdrawal,
-    netKey: String?,
-    texts: WalletTexts,
-) {
-    // (标签, 显示值, 读屏值)：金额读「12.34 元」，脱敏号读「星号」
-    fun money(fen: Long) = Triple(CouliFormat.money(fen), CouliFormat.moneySpoken(fen), "")
-    val rows =
-        buildList {
-            add(texts.text("withdraw_detail.amount") to money(item.amountFen))
-            if (netKey != null) add(texts.text("withdraw_detail.fee") to money(item.feeFen))
-            if (item.taxFen > 0) add(texts.text("withdraw_detail.tax") to money(item.taxFen))
-            if (netKey != null) {
-                val label =
-                    if (netKey ==
-                        WithdrawalText.NET_ACTUAL
-                    ) {
-                        "withdraw_detail.net_label.actual"
-                    } else {
-                        "withdraw_detail.net_label.expected"
-                    }
-                add(texts.text(label) to money(item.netFen))
-            }
-            val account = "${item.payoutChannelName} ${item.maskedAccount}"
-            add(texts.text("withdraw_detail.payout") to Triple(account, spokenMask(texts, account), ""))
-            val time = CouliFormat.timeMinute(item.createdAtMillis)
-            add(texts.text("withdraw_detail.created") to Triple(time, time, ""))
-        }
-    rows.forEach { (label, shown) ->
-        val (value, spoken) = shown.first to shown.second
-        Row(
-            modifier =
-                Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
-                    contentDescription =
-                        label + PriceTerms.SPOKEN_PAUSE + spoken
-                },
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-        ) {
-            Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-            Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
-        }
-    }
-}
-
-private val SHANGHAI: ZoneId = ZoneId.of("Asia/Shanghai")
-
-/** created_at 在 +08:00 下的（年, 月）。 */
-private fun monthOf(millis: Long): Pair<Int, Int> = Instant.ofEpochMilli(millis).atZone(SHANGHAI).let { it.year to it.monthValue }
 
 private const val SKELETONS = 3

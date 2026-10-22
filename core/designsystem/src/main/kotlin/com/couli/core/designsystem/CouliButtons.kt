@@ -67,6 +67,10 @@ fun CouliButton(
     leadingIcon: ImageVector? = null,
     /** 外部交互源（目录页展示「按下」态用）；不给时组件自建。 */
     interactionSource: MutableInteractionSource? = null,
+    /** 前置图标尺寸（APP-09v-b W27：提现记录【复制】传 16）；默认 20 不变。 */
+    leadingIconSize: Dp = CouliSizes.iconMedium,
+    /** 文字样式覆盖（APP-09v-b：记录页 14/500 链接与描边按钮）；null 按种类与尺寸取默认样式。 */
+    textStyle: TextStyle? = null,
 ) {
     val interaction = interactionSource ?: remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -75,7 +79,7 @@ fun CouliButton(
     val colors = buttonColors(variant, enabled = enabled, pressed = pressed)
     val shape = RoundedCornerShape(CouliRadius.button)
     val padding = buttonPadding(variant, size)
-    val style = buttonTextStyle(variant, size)
+    val style = textStyle ?: buttonTextStyle(variant, size)
     Box(
         modifier =
             modifier
@@ -109,7 +113,7 @@ fun CouliButton(
                     strokeWidth = CouliSizes.hairline * 2,
                 )
             } else if (leadingIcon != null) {
-                Icon(leadingIcon, contentDescription = null, tint = colors.content, modifier = Modifier.size(CouliSizes.iconMedium))
+                Icon(leadingIcon, contentDescription = null, tint = colors.content, modifier = Modifier.size(leadingIconSize))
             }
             Text(text = text, style = style, color = colors.content, textAlign = TextAlign.Center)
         }
