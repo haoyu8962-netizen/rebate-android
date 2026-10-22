@@ -64,6 +64,8 @@ object MeDraftTexts : MeTexts {
             "me.bell" to "消息中心",
             "me.guide_bar.close" to "关闭提示",
             "me.amount_hidden" to "金额已隐藏",
+            // APP-12v G-M13：眼睛切换为显示后的播报（草稿，待 content 登记）
+            "me.amount_shown" to "金额已显示",
             "invite.copy_code.done" to "已复制邀请码",
             "me.copy_failed" to "复制失败，请重试",
             "me.load_failed" to "资料没有加载出来",

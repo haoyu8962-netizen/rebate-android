@@ -221,7 +221,6 @@ fun MeTabScreen(
     val masked by (mask?.hidden ?: noMask).collectAsStateWithLifecycle()
     val blocked by deps.gates.read.blocked
         .collectAsStateWithLifecycle()
-    val toast by controller.toast.collectAsStateWithLifecycle()
     var resumes by remember { mutableLongStateOf(0L) }
     OnResumed(controller) {
         resumes += 1
@@ -230,6 +229,7 @@ fun MeTabScreen(
     val texts = deps.texts
     val view = controller.view(snapshot, masked)
     val scroll = remember(identity) { deps.tabScroll.of(identity) }
+    val eye = rememberMeEyeSpeaker(controller)
     val pullState = rememberPullToRefreshState()
     Box(
         modifier =
@@ -256,7 +256,6 @@ fun MeTabScreen(
                         .fillMaxWidth()
                         .verticalScroll(scroll)
                         .testTag(MeTags.ME_SCROLL),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
                 PageTitleBar(
                     title = texts.text("me.title"),
@@ -272,13 +271,20 @@ fun MeTabScreen(
                     },
                 )
                 Column(
-                    modifier = Modifier.padding(horizontal = CouliSpacing.space4).padding(bottom = CouliSpacing.space4),
+                    // 标题栏到首卡 8（M1）；左右 16、底 16、块间 12
+                    modifier =
+                        Modifier.padding(
+                            start = CouliSpacing.space4,
+                            top = CouliSpacing.space2,
+                            end = CouliSpacing.space4,
+                            bottom = CouliSpacing.space4,
+                        ),
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
                 ) {
                     if (view.loginPrompt) {
                         GuestCard(deps, controller)
                     } else {
-                        MemberBody(deps, controller, snapshot, view, mask, blocked, resumes)
+                        MemberBody(deps, controller, snapshot, view, mask, blocked, resumes, eye)
                     }
                     MeGrid(deps, controller, view)
                 }
@@ -289,12 +295,15 @@ fun MeTabScreen(
                 modifier = Modifier.align(Alignment.TopCenter),
             )
         }
-        MeToastHost(toast?.message(texts), toast?.id) { toast?.id?.let(controller::consumeToast) }
         val error = snapshot.error?.takeIf { snapshot.me != null && snapshot.identity == identity }
-        MeToastHost(error?.message(texts), error?.id) { error?.id?.let(deps.repo::consumeError) }
+        // 复制结果与刷新失败一次只显示一条、刷新失败优先（G-M14）；整个提示宿主按执行器（身份）隔离（评审 r1 S1）
+        MeNotices(texts, controller, error, deps.repo::consumeError)
+        // 眼睛切换播报节点在滚动容器外、页面最上层（评审 r2 S2）：卡顶滚出视口时也在可见语义树里
+        MeEyeLiveRegion(eye)
     }
 }
 
+/** 游客卡（MeGuest）：内边距 16、头像行与按钮间 16；标题 17/600、说明 14 次文字。 */
 @Composable
 private fun GuestCard(
     deps: MeDeps,
@@ -306,14 +315,14 @@ private fun GuestCard(
             Modifier
                 .fillMaxWidth()
                 .couliCard()
-                .padding(CouliSpacing.space5)
+                .padding(CouliSpacing.space4)
                 .testTag(MeTags.ME_GUEST),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.CenterVertically) {
             Avatar()
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                Text(text = texts.text("me.guest.title"), style = CouliTypography.title, color = CouliColors.textPrimary)
+                Text(text = texts.text("me.guest.title"), style = CouliTextStyles.bodySemibold, color = CouliColors.textPrimary)
                 Text(text = texts.text("me.guest.desc"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
             }
         }
@@ -325,17 +334,18 @@ private fun GuestCard(
     }
 }
 
+/** 默认头像：56 圆、muted 底、人形 32 次文字色（身份卡与游客卡共用；页面私有，不进 DS，G-M17）。 */
 @Composable
 private fun Avatar() {
     Box(
-        modifier = Modifier.size(CouliSpacing.space16).background(CouliColors.backgroundMuted, CircleShape),
+        modifier = Modifier.size(AVATAR).background(CouliColors.backgroundMuted, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(CouliIcons.user, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSizes.iconLarge))
+        Icon(CouliIcons.user, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSpacing.space8))
     }
 }
 
-@Suppress("LongParameterList", "LongMethod")
+@Suppress("LongParameterList")
 @Composable
 private fun MemberBody(
     deps: MeDeps,
@@ -345,6 +355,7 @@ private fun MemberBody(
     mask: com.couli.core.clientcore.AmountMaskStore?,
     blocked: Boolean,
     resumes: Long,
+    eye: MeEyeSpeaker,
 ) {
     val texts = deps.texts
     var closedAt by remember(controller) { mutableLongStateOf(-1L) }
@@ -358,61 +369,7 @@ private fun MemberBody(
         me != null -> {
             val version = snapshot.version
             IdentityCard(deps, controller, me.nickname, view, version)
-            val withdrawable = view.withdrawableFen ?: 0L
-            val estimated = view.estimatedFen ?: 0L
-            val hidden = texts.text("me.amount_hidden")
-            val maskText = MeView.MASK
-            WalletHeroCard(
-                texts =
-                    WalletHeroTexts(
-                        label = texts.text("me.withdrawable"),
-                        amount = CouliFormat.money(withdrawable),
-                        amountSpoken = texts.text("me.withdrawable") + " " + CouliFormat.moneySpoken(withdrawable),
-                        withdraw = texts.text("me.withdraw"),
-                        records = null,
-                        hideLabel = texts.text("amount_mask.hide"),
-                        showLabel = texts.text("amount_mask.show"),
-                        hiddenSpoken = texts.text("me.withdrawable") + " " + hidden,
-                    ),
-                onWithdraw = { controller.withdraw(version) },
-                amountHidden = view.masked,
-                hiddenMask = maskText,
-                onToggleHidden = if (mask != null) ({ controller.toggleMask(mask) }) else null,
-                modifier = Modifier.testTag(MeTags.ME_BALANCE),
-                withdrawModifier = Modifier.testTag(MeTags.ME_WITHDRAW),
-                bottom = {
-                    Column(
-                        modifier =
-                            Modifier
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription =
-                                        texts.text("me.estimated") + " " + if (view.masked) hidden else CouliFormat.moneySpoken(estimated)
-                                }.testTag(MeTags.ME_ESTIMATED),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-                        ) {
-                            Icon(
-                                CouliIcons.clock,
-                                contentDescription = null,
-                                tint = CouliColors.rebateSolidText,
-                                modifier = Modifier.size(CouliSizes.iconSmall),
-                            )
-                            Text(
-                                text = texts.text("me.estimated"),
-                                style = CouliTextStyles.footnoteMedium,
-                                color = CouliColors.rebateSolidText,
-                            )
-                        }
-                        Text(
-                            text = if (view.masked) maskText else CouliFormat.money(estimated),
-                            style = CouliTextStyles.amountTitle,
-                            color = CouliColors.rebateSolidText,
-                        )
-                    }
-                },
-            )
+            HeroCard(texts, controller, view, mask, version, eye)
         }
 
         snapshot.phase == MeSnapshot.ERROR && snapshot.identity == controller.identity -> {
@@ -421,37 +378,170 @@ private fun MemberBody(
                     title = texts.text("me.load_failed"),
                     message = snapshot.error?.message(texts),
                     retry = StateAction(texts.text("me.retry"), enabled = !blocked) { controller.refresh() },
+                    actionModifier = Modifier.testTag(MeTags.ME_RETRY),
                 )
             }
         }
 
         else -> {
-            Column(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .semantics(mergeDescendants = true) { contentDescription = texts.text("me.loading") }
-                        .testTag(MeTags.ME_LOADING),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-            ) {
-                Skeleton(Modifier.fillMaxWidth().heightIn(min = CouliSpacing.space16 + CouliSpacing.space8))
-                Skeleton(Modifier.fillMaxWidth().heightIn(min = CouliSpacing.space16 + CouliSpacing.space16))
-            }
+            MeSkeleton(texts)
         }
     }
 }
 
+/**
+ * 余额主卡（M9–M12）：首行紧凑（眼睛 20、48 命中区外溢，已有参数 compactHeader）；【提现】至少 96 宽；预估块钟表 14 +「预估收益」14 常规、数值 22/600、纵向 2。
+ * 眼睛切换后 polite 播报一次「金额已隐藏 / 金额已显示」（G-M13）：只在用户点眼睛、且开关确实变了时播，进入页面不播。
+ */
+@Composable
+private fun HeroCard(
+    texts: com.couli.core.me.MeTexts,
+    controller: MeTabController,
+    view: MeViewModel,
+    mask: com.couli.core.clientcore.AmountMaskStore?,
+    version: Long,
+    eye: MeEyeSpeaker,
+) {
+    // 播报经页面宿主上的常驻 polite liveRegion 单一出口（评审 r1 / r2 S2），不主动播报
+    HeroCardBody(texts, controller, view, mask, version, eye::announce)
+}
+
+@Composable
+private fun HeroCardBody(
+    texts: com.couli.core.me.MeTexts,
+    controller: MeTabController,
+    view: MeViewModel,
+    mask: com.couli.core.clientcore.AmountMaskStore?,
+    version: Long,
+    announce: (String) -> Unit,
+) {
+    val withdrawable = view.withdrawableFen ?: 0L
+    val hidden = texts.text("me.amount_hidden")
+    WalletHeroCard(
+        texts =
+            WalletHeroTexts(
+                label = texts.text("me.withdrawable"),
+                amount = CouliFormat.money(withdrawable),
+                amountSpoken = texts.text("me.withdrawable") + " " + CouliFormat.moneySpoken(withdrawable),
+                withdraw = texts.text("me.withdraw"),
+                records = null,
+                hideLabel = texts.text("amount_mask.hide"),
+                showLabel = texts.text("amount_mask.show"),
+                hiddenSpoken = texts.text("me.withdrawable") + " " + hidden,
+            ),
+        onWithdraw = { controller.withdraw(version) },
+        amountHidden = view.masked,
+        hiddenMask = MeView.MASK,
+        onToggleHidden =
+            if (mask != null) {
+                {
+                    val before = mask.hidden.value
+                    controller.toggleMask(mask)
+                    val after = mask.hidden.value
+                    if (after != before) announce(texts.text(if (after) "me.amount_hidden" else AMOUNT_SHOWN))
+                }
+            } else {
+                null
+            },
+        modifier = Modifier.testTag(MeTags.ME_BALANCE),
+        withdrawModifier = Modifier.widthIn(min = WITHDRAW_MIN_WIDTH).testTag(MeTags.ME_WITHDRAW),
+        compactHeader = true,
+        bottom = { Estimated(texts, view, hidden) },
+    )
+}
+
+@Composable
+private fun Estimated(
+    texts: com.couli.core.me.MeTexts,
+    view: MeViewModel,
+    hidden: String,
+) {
+    val estimated = view.estimatedFen ?: 0L
+    Column(
+        modifier =
+            Modifier
+                .semantics(mergeDescendants = true) {
+                    contentDescription =
+                        texts.text("me.estimated") + " " + if (view.masked) hidden else CouliFormat.moneySpoken(estimated)
+                }.testTag(MeTags.ME_ESTIMATED),
+        verticalArrangement = Arrangement.spacedBy(ESTIMATED_GAP),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
+            Icon(
+                CouliIcons.clock,
+                contentDescription = null,
+                tint = CouliColors.rebateSolidText,
+                modifier = Modifier.size(CouliSizes.iconTiny),
+            )
+            Text(text = texts.text("me.estimated"), style = CouliTypography.footnote, color = CouliColors.rebateSolidText)
+        }
+        Text(
+            text = if (view.masked) MeView.MASK else CouliFormat.money(estimated),
+            style = CouliTextStyles.amountTitle,
+            color = CouliColors.rebateSolidText,
+        )
+    }
+}
+
+/** 加载骨架（M17，无稿）：按新结构——身份卡块（56 圆 + 两条横块）→ 主卡块 → 一组宫格块；整块合并读屏「加载中」。 */
+@Composable
+private fun MeSkeleton(texts: com.couli.core.me.MeTexts) {
+    val card = RoundedCornerShape(CouliRadius.card)
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .semantics(mergeDescendants = true) { contentDescription = texts.text("me.loading") }
+                .testTag(MeTags.ME_LOADING),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(AVATAR).background(CouliColors.backgroundMuted, CircleShape).testTag(MeTags.ME_SKELETON_AVATAR))
+            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+                Skeleton(Modifier.size(SKELETON_NAME_WIDTH, CouliSpacing.space4).testTag(MeTags.ME_SKELETON_NAME))
+                Skeleton(Modifier.size(SKELETON_INVITE_WIDTH, CouliSpacing.space3).testTag(MeTags.ME_SKELETON_INVITE))
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = SKELETON_BALANCE_HEIGHT)
+                .background(CouliColors.backgroundMuted, card)
+                .testTag(MeTags.ME_SKELETON_BALANCE),
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = SKELETON_GRID_HEIGHT)
+                .background(CouliColors.backgroundMuted, card)
+                .testTag(MeTags.ME_SKELETON_GRID),
+        )
+    }
+}
+
+/**
+ * 通知引导条（MeHidden，M3 / M4，G-M10）：muted 底、圆角 12、内边距 4/4/4/12；铃铛 20 次文字色；正文 14，最后一句「去开启」600 下划线链接色
+ * （[guideSpans] 切分失败整句普通）。正文区一个按钮（合并读屏整句一次），只跳系统通知设置；关闭按钮视觉 20、命中 48。
+ */
 @Composable
 private fun GuideBar(
     texts: com.couli.core.me.MeTexts,
     onOpen: () -> Unit,
     onClose: () -> Unit,
 ) {
+    val sentence = texts.text("perm.push.guide_bar")
+    val link = CouliColors.textLink
+    val styled = remember(sentence, link) { guideSpans(sentence, link) }
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
+                .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.button))
+                .padding(CouliSpacing.space1)
                 .testTag(MeTags.ME_GUIDE_BAR),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -461,29 +551,30 @@ private fun GuideBar(
                     .weight(1f)
                     .heightIn(min = CouliSizes.touchTarget)
                     .clickable(role = Role.Button, onClick = onOpen)
-                    .padding(start = CouliSpacing.space3, top = CouliSpacing.space2, bottom = CouliSpacing.space2),
+                    .padding(start = CouliSpacing.space2, top = CouliSpacing.space2, bottom = CouliSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
             Icon(
                 CouliIcons.bell,
                 contentDescription = null,
-                tint = CouliColors.statusWarningText,
+                tint = CouliColors.textSecondary,
                 modifier = Modifier.size(CouliSizes.iconMedium),
             )
-            Text(text = texts.text("perm.push.guide_bar"), style = CouliTypography.footnote, color = CouliColors.textPrimary)
+            Text(text = styled, style = CouliTypography.footnote, color = CouliColors.textPrimary)
         }
         CouliIconButton(
             icon = CouliIcons.close,
             label = texts.text("me.guide_bar.close"),
             onClick = onClose,
             tint = CouliColors.textSecondary,
-            iconSize = CouliSizes.iconSmall,
+            iconSize = CouliSizes.iconMedium,
             modifier = Modifier.testTag(MeTags.ME_GUIDE_CLOSE),
         )
     }
 }
 
+/** 身份卡（M5–M8）：内边距 16、头像与文字间 12；昵称 17/600 可折行；邀请码行见 [InviteFlow]。 */
 @Composable
 private fun IdentityCard(
     deps: MeDeps,
@@ -494,46 +585,51 @@ private fun IdentityCard(
 ) {
     val texts = deps.texts
     Row(
-        modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space5),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
+        modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar()
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
             Text(
                 text = nickname,
-                style = CouliTypography.title,
+                style = CouliTextStyles.bodySemibold,
                 color = CouliColors.textPrimary,
                 modifier = Modifier.testTag(MeTags.ME_NICKNAME),
             )
-            // G05：invite_code 为 null 时整块不显示（不显示原因）
+            // G05：invite_code 为 null 时码与复制都不显示（不显示原因）
             val code = view.inviteCode
-            if (code != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = texts.text("me.invite_code") + " " + code,
-                        style = CouliTypography.footnote,
-                        color = CouliColors.textSecondary,
-                        modifier = Modifier.weight(1f, fill = false).testTag(MeTags.ME_INVITE_CODE),
-                    )
-                    CouliIconButton(
-                        icon = CouliIcons.copy,
-                        label = texts.text("me.copy") + texts.text("me.invite_code"),
-                        // 捕获渲染时的码与版本（共性第 63 条）
-                        onClick = { controller.copyInviteCode(version, code) },
-                        tint = CouliColors.brandPrimary,
-                        iconSize = CouliSizes.iconSmall,
-                        modifier = Modifier.testTag(MeTags.ME_COPY),
-                    )
+            val inviterKey = view.inviterTextKey
+            if (code != null || inviterKey != null) {
+                InviteFlow(hasCode = code != null) { onCodeLayout ->
+                    if (code != null) {
+                        Text(
+                            text = inviteCodeText(texts.text("me.invite_code"), code, CouliColors.textPrimary),
+                            style = CouliTypography.caption,
+                            color = CouliColors.textSecondary,
+                            onTextLayout = onCodeLayout,
+                            modifier = Modifier.testTag(MeTags.ME_INVITE_CODE),
+                        )
+                        CouliIconButton(
+                            icon = CouliIcons.copy,
+                            label = texts.text("me.copy") + texts.text("me.invite_code"),
+                            // 捕获渲染时的码与版本（共性第 63 条）
+                            onClick = { controller.copyInviteCode(version, code) },
+                            tint = CouliColors.textLink,
+                            iconSize = CouliSizes.iconSmall,
+                            // 视觉 16、48 命中区以图标为中心外溢（不撑高本行，照 WalletHeroHeader 紧凑眼睛）
+                            modifier = Modifier.meCompactHit().testTag(MeTags.ME_COPY),
+                        )
+                    }
+                    if (inviterKey != null) {
+                        Text(
+                            text = texts.text(inviterKey),
+                            style = CouliTypography.caption,
+                            color = CouliColors.textSecondary,
+                            modifier = Modifier.testTag(MeTags.ME_INVITER),
+                        )
+                    }
                 }
-            }
-            view.inviterTextKey?.let { key ->
-                Text(
-                    text = texts.text(key),
-                    style = CouliTypography.footnote,
-                    color = CouliColors.textSecondary,
-                    modifier = Modifier.testTag(MeTags.ME_INVITER),
-                )
             }
         }
     }
@@ -565,9 +661,18 @@ private fun gridIcon(key: String) =
         "me.grid.ledger" -> CouliIcons.ledger
         "me.grid.find_order" -> CouliIcons.claim
         "me.grid.invite" -> CouliIcons.invite
-        "me.grid.earnings" -> CouliIcons.trend
+        "me.grid.earnings" -> CouliIcons.barChart
         "me.grid.help" -> CouliIcons.help
         "me.grid.cs" -> CouliIcons.headset
         "me.grid.auth" -> CouliIcons.link
         else -> CouliIcons.settings
     }
+
+private val AVATAR = CouliSpacing.space12 + CouliSpacing.space2
+private val WITHDRAW_MIN_WIDTH = CouliSpacing.space16 + CouliSpacing.space8
+private val ESTIMATED_GAP = CouliSpacing.space1 / 2
+private val SKELETON_NAME_WIDTH = CouliSpacing.space16 + CouliSpacing.space8
+private val SKELETON_INVITE_WIDTH = CouliSpacing.space16 * 2 + CouliSpacing.space4
+private val SKELETON_BALANCE_HEIGHT = CouliSpacing.space16 * 2 + CouliSpacing.space12
+private val SKELETON_GRID_HEIGHT = CouliSpacing.space16 + CouliSpacing.space12 + CouliSpacing.space2
+private const val AMOUNT_SHOWN = "me.amount_shown"

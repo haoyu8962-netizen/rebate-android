@@ -120,7 +120,8 @@ class MeVectorTest {
         check(vectors.getValue("sources").jsonArray.isNotEmpty(), "manifest.sources")
         check(vectors.getValue("gaps").jsonArray.isNotEmpty(), "manifest.gaps")
         check(
-            vectors.keys == (groups + listOf("version", "sources", "gaps")).toSet(),
+            // APP-12v：只新增的截图报文组由 MeVisualFixtureTest 校验；原业务组及断言保持。
+            vectors.keys - "visualMe" == (groups + listOf("version", "sources", "gaps")).toSet(),
             "manifest.groups",
         )
 

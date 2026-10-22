@@ -413,6 +413,13 @@ object MeTags {
     const val ME_SCROLL = "me_scroll"
     const val TOAST = "me_toast"
 
+    // 加载骨架各分区（APP-12v-a M17）
+    const val ME_SKELETON_AVATAR = "me_skeleton_avatar"
+    const val ME_SKELETON_NAME = "me_skeleton_name"
+    const val ME_SKELETON_INVITE = "me_skeleton_invite"
+    const val ME_SKELETON_BALANCE = "me_skeleton_balance"
+    const val ME_SKELETON_GRID = "me_skeleton_grid"
+
     const val SETTINGS_PAGE = "settings_page"
     const val SETTINGS_ROW_PREFIX = "settings_row_"
     const val SETTINGS_FOOTER = "settings_footer"

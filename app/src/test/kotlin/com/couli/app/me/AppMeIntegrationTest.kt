@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -54,6 +55,8 @@ import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.SystemClipboard
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentStartupReconciler
+import com.couli.core.designsystem.CouliAnnouncer
+import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.me.MeDraftTexts
 import com.couli.core.me.MeLocalStore
 import com.couli.core.network.ApiClient
@@ -100,11 +103,16 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -114,6 +122,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestName
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
@@ -131,6 +140,13 @@ import org.robolectric.annotation.GraphicsMode
 class AppMeIntegrationTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @get:Rule val testName = TestName()
+    private val visualTransport get() = testName.methodName.startsWith("visual")
+    private val visualAnnouncements = mutableListOf<String>()
+    private val visualA11y by lazy { MeVisualAnnouncementProbe(composeRule) }
+
+    @Volatile private var visualReadFailure = false
 
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val now = OffsetDateTime.parse("2026-10-10T12:00:00+08:00").toInstant().toEpochMilli()
@@ -390,11 +406,13 @@ class AppMeIntegrationTest {
                     return handler?.invoke(request) ?: defaultAnswer(recorded)
                 }
             }
-        server.start()
+        if (!visualTransport) server.start()
     }
 
     @After
-    fun tearDown() = server.shutdown()
+    fun tearDown() {
+        if (!visualTransport) server.shutdown()
+    }
 
     // ---------------------------------------------------------------- 搭建（与 AppModule 同一套接线）
 
@@ -429,7 +447,8 @@ class AppMeIntegrationTest {
         val api =
             ApiClient(
                 identity = ClientIdentity(appId = "couli", platform = "android", appVersion = "1.0.0", build = "1", channel = "official"),
-                baseUrl = { server.url("/").toString() },
+                baseUrl = ::visualBaseUrl,
+                http = visualClient(),
                 context = {
                     NetworkContext(
                         when (privacy.conclusion) {
@@ -530,16 +549,28 @@ class AppMeIntegrationTest {
             login.customerService = me.cs::open
         }
         val content: @androidx.compose.runtime.Composable () -> Unit = {
-            navController = rememberNavController()
-            AppShell(
-                routing = routing,
-                privacy = privacy,
-                homeContent = { Box(Modifier.fillMaxSize()) },
-                navController = navController,
-                login = login,
-                clipboard = clipboard,
-                me = me,
-            )
+            CompositionLocalProvider(
+                LocalCouliAnnouncer provides
+                    if (visualTransport) {
+                        CouliAnnouncer {
+                            visualAnnouncements += it
+                            visualA11y.announcer.announce(it)
+                        }
+                    } else {
+                        LocalCouliAnnouncer.current
+                    },
+            ) {
+                navController = rememberNavController()
+                AppShell(
+                    routing = routing,
+                    privacy = privacy,
+                    homeContent = { Box(Modifier.fillMaxSize()) },
+                    navController = navController,
+                    login = login,
+                    clipboard = clipboard,
+                    me = me,
+                )
+            }
         }
         if (restorer != null) restorer.setContent(content) else composeRule.setContent(content)
         settle()
@@ -743,6 +774,140 @@ class AppMeIntegrationTest {
     private fun body(recorded: Recorded): JsonObject = Json.parseToJsonElement(recorded.body).jsonObject
 
     // ---------------------------------------------------------------- AC-S1-77：游客、个性化、撤回、基本模式
+
+    /** 新视觉用例仅替换 HTTP I/O：真实 ApiClient / AppMe / AppLogin / 清理器 / Router / 统一剪贴板仍参与。 */
+    private fun visualBaseUrl() = if (visualTransport) "https://me-fixture.invalid/" else server.url("/").toString()
+
+    private fun visualClient() = if (visualTransport) visualHttp() else OkHttpClient()
+
+    private fun visualHttp(): OkHttpClient =
+        OkHttpClient
+            .Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val buffer = Buffer()
+                request.body?.writeTo(buffer)
+                val recorded = Recorded(request.method, request.url.encodedPath, buffer.readUtf8(), request.headers.toMap())
+                synchronized(requests) { requests += recorded }
+                val response =
+                    if (recorded.path == "/v1/me" && visualReadFailure) {
+                        envelope("null", 50001, "me-visual-a1b2c3")
+                    } else {
+                        defaultAnswer(recorded)
+                    }
+                Response
+                    .Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .headers(response.headers)
+                    .body(response.getBody()!!.readUtf8().toResponseBody())
+                    .build()
+            }.build()
+
+    private fun visualQueue(errorFirst: Boolean = false) {
+        launch()
+        open("Me")
+        idleUntil { meLoaded() && has(MeTags.ME_COPY) }
+        visualAnnouncements.clear()
+        composeRule.mainClock.autoAdvance = false
+        if (!errorFirst) composeRule.onNodeWithTag(MeTags.ME_COPY, useUnmergedTree = true).performClick()
+        visualReadFailure = true
+        composeRule.runOnUiThread { checkNotNull(me.deps.tab.bound).refresh() }
+        idleUntil { me.deps.repo.state.value.error != null }
+        composeRule.mainClock.advanceTimeByFrame()
+        settle()
+        if (errorFirst) {
+            assertTrue(
+                composeRule
+                    .onNodeWithTag(MeTags.TOAST, useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .meNoticeText()
+                    .contains("a1b2c3"),
+            )
+            composeRule.onNodeWithTag(MeTags.ME_COPY, useUnmergedTree = true).performClick()
+            composeRule.mainClock.advanceTimeByFrame()
+            composeRule.waitForIdle()
+            assertNotNull(
+                "复制已通过统一写入口成功，结果仍在排队",
+                me.deps.tab.bound!!
+                    .toast.value,
+            )
+        }
+    }
+
+    @Test
+    fun visualGm14RealPageQueuesRefreshBeforeUnifiedCopy() {
+        visualQueue()
+        assertEquals("同帧只能一条轻提示", 1, composeRule.onAllNodesWithTag(MeTags.TOAST, useUnmergedTree = true).fetchSemanticsNodes().size)
+        assertEquals(1, system.writes)
+        assertEquals("K7M3QX", system.content)
+        assertEquals(1, visualA11y.messages.size)
+        assertTrue(visualA11y.messages.single().contains("a1b2c3"))
+        composeRule.mainClock.advanceTimeBy(2_100)
+        settle()
+        assertEquals(listOf(visualA11y.messages.first(), t("invite.copy_code.done")), visualA11y.messages)
+        composeRule.mainClock.advanceTimeBy(2_100)
+        settle()
+        assertFalse(has(MeTags.TOAST))
+        assertEquals(2, visualA11y.messages.size)
+    }
+
+    @Test
+    fun visualGm14AccountSwitchInvalidatesQueuedCopyThroughSessionSync() {
+        visualQueue(errorFirst = true)
+        val old = me.deps.tab.bound
+        visualReadFailure = false
+        visualTransition().check(t("invite.copy_code.done"), finished = { me.identity.value.account == "user-two" }) {
+            // switchSession 原辅助会 settle；这里仍走相同真实入口，但检查从操作前覆盖到每一帧。
+            tokens.save("access-user-two", "refresh-user-two", "full", "user-two")
+            login.syncSession()
+            me.syncIdentity()
+        }
+        assertFalse(old!!.alive())
+        assertEquals("user-two", me.identity.value.account)
+        assertFalse(has(MeTags.TOAST))
+        assertEquals(1, system.writes)
+        assertEquals("K7M3QX", system.content)
+    }
+
+    @Test
+    fun visualGm14LogoutEntryInvalidatesQueuedCopyAndKeepsGuest() {
+        visualQueue(errorFirst = true)
+        val old = me.deps.tab.bound
+        val identity = me.identity.value
+        visualReadFailure = false
+        // 与设置确认按钮相同的真实 AppMe 出口，不在测试宿主里手动清队列。
+        visualTransition().check(t("invite.copy_code.done"), finished = { routing.session.value == SessionState.GUEST }) {
+            me.logout(identity) { true }
+        }
+        assertFalse(old!!.alive())
+        assertTrue(has(MeTags.ME_GUEST))
+        assertFalse(has(MeTags.TOAST))
+        assertEquals(1, count("POST", "/v1/auth/logout"))
+        assertEquals(1, system.writes)
+    }
+
+    @Test
+    fun visualGm14WithdrawConsentEntryInvalidatesQueueThroughRegisteredCleaners() {
+        visualQueue(errorFirst = true)
+        val old = me.deps.tab.bound
+        visualReadFailure = false
+        visualTransition().check(t("invite.copy_code.done"), finished = { privacy.conclusion == PrivacyState.BASIC_MODE }) {
+            me.withdrawConsent(me.identity.value)
+        }
+        assertFalse(old!!.alive())
+        assertNull(tokens.accessToken)
+        assertNull(me.deps.repo.state.value.me)
+        assertFalse(has(MeTags.TOAST))
+        val records = all("POST", "/v1/consents").filter { body(it)["type"]?.jsonPrimitive?.content == "privacy" }
+        assertEquals(1, records.size)
+        assertEquals("false", body(records.single())["accepted"]!!.jsonPrimitive.content)
+        assertEquals(1, system.writes)
+    }
+
+    private fun visualTransition() = MeVisualTransitionProbe(composeRule, visualAnnouncements) { me.identity.value.toString() }
 
     @Test
     fun ac77_guestMeAndSettingsShowOnlyGuestItemsAndNeverAskForMe() {
