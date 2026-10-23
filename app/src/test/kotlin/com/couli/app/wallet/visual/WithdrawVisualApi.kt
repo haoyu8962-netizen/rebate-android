@@ -29,6 +29,11 @@ internal class WithdrawVisualApi : WalletApi {
     var pendingHold: CompletableDeferred<Unit>? = null
     var pendingAnswer: ApiResult = WithdrawVisualFixtures.failure(40901)
 
+    // APP-09v-d：发码 / 验证的逐次答复（空队列时沿用原固定成功答复，c 的用例行为不变）。
+    val smsAnswers = ArrayDeque<ApiResult>()
+    val stepUpAnswers = ArrayDeque<ApiResult>()
+    var stepUpHold: CompletableDeferred<Unit>? = null
+
     override suspend fun send(call: ApiCall): ApiResult {
         calls += call
         events += call.operationId
@@ -53,13 +58,18 @@ internal class WithdrawVisualApi : WalletApi {
             }
 
             "sendSmsCode" -> {
-                WithdrawVisualFixtures.ok(WithdrawVisualFixtures.obj("""{"resend_after_sec":60,"expires_in_sec":300}"""))
+                smsAnswers.removeFirstOrNull()
+                    ?: WithdrawVisualFixtures.ok(WithdrawVisualFixtures.obj("""{"resend_after_sec":60,"expires_in_sec":300}"""))
             }
 
             "stepUp" -> {
-                WithdrawVisualFixtures.ok(
-                    WithdrawVisualFixtures.obj("""{"step_up_token":"fixture-verified-token","expire_at":"2099-01-01T00:00:00+08:00"}"""),
-                )
+                stepUpHold?.await()
+                stepUpAnswers.removeFirstOrNull()
+                    ?: WithdrawVisualFixtures.ok(
+                        WithdrawVisualFixtures.obj(
+                            """{"step_up_token":"fixture-verified-token","expire_at":"2099-01-01T00:00:00+08:00"}""",
+                        ),
+                    )
             }
 
             else -> {

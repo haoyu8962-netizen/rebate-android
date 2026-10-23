@@ -136,6 +136,8 @@ object WalletDraftTexts : WalletTexts {
             "step_up.code_label" to "验证码",
             "step_up.resend_in" to "{sec} 秒后重新获取",
             "step_up.resend" to "重新获取",
+            // 半屏格下一行倒计时（APP-09v-d W67 / G-W19）：与登录验证码页同键同句（LoginDraftTexts「login.code.countdown」），契约补键后字典优先
+            "login.code.countdown" to "{n} 秒后可重新获取",
             "step_up.submit" to "验证并提交",
             "step_up.close" to "关闭",
             "step_up.code_spoken" to "验证码，已输入 {n} 位，共 6 位",

@@ -13,7 +13,8 @@ class WithdrawVisualFundsGuardTest {
         val baseline = resource("funds-baseline.json")
         assertEquals("49a1eb9aeec26dd10b38a46c91d92a9ce326bf0a", baseline.getValue("base").jsonPrimitive.content)
         val files = baseline.getValue("files").jsonObject
-        assertTrue("清单不得被清空", files.size >= 44)
+        // test-change APP-09v-d：brief §5 明列 StepUpSheet.kt 不在冻结范围（W63–W68 要改），清单去掉这一项，44 → 43；其余 43 项与前 305 行不变。
+        assertTrue("清单不得被清空", files.size >= 43)
         files.forEach { (path, expected) ->
             assertEquals("资金保护文件被改：$path", expected.jsonPrimitive.content, digest(File(WithdrawVisualFixtures.root, path).readBytes()))
         }

@@ -1445,7 +1445,8 @@ class AppWalletIntegrationTest {
         click(WalletTags.WITHDRAW_SUBMIT)
         idleUntil { stepUpReady() }
         assertEquals(1, count("POST", SMS_PATH))
-        assertTrue(texts("秒后重新获取") > 0)
+        // test-change APP-09v-d（W67 / G-W19 / G-W26）：半屏倒计时改取 login.code.countdown「{n} 秒后可重新获取」
+        assertTrue(texts("秒后可重新获取") > 0)
     }
 
     @Test

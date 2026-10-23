@@ -246,6 +246,7 @@ step "订单详情视觉整页浅 / 深快照（APP-08v-b：OrderDetail* 14 态 
 step "提现记录视觉整页浅 / 深快照（APP-09v-b：WithdrawRecords-v2 / Pending / Paid / Failed / 自动判定 / 打款中 / 空态 / States-v2 与 More 证据稿局部 / 深色 / 骨架 / 翻页错误 / 定位异月 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*WithdrawRecordsVisualSnapshotTest"
 step "我的视觉整页浅 / 深快照（APP-12v-a：Me / MeEarningsEntry / MeGuest / MeHidden / MeMinor / MeStates 版式 / MeDark / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*MeVisualSnapshotTest"
 step "提现页视觉整页浅 / 深快照（APP-09v-c：Withdraw / 计算中 / 估算失败 / 说明半屏 / 实名引导 / PageStates 21 码与提交错误 / 提交中 / 44001 / 待确认三态 / 放弃确认 / 已放弃 / 已完成 / 深色 / 200% / 840；收款账号页共用件回归）" $GRADLE :app:verifyRoborazziDebug --tests "*WithdrawVisualSnapshotTest" --tests "*WithdrawVisualPayoutSnapshotTest"
+step "二次验证半屏视觉浅 / 深快照（APP-09v-d：WithdrawStepUp-v2 / WithdrawStepUpDark / 空 / 错误 + 倒计时 / 提交中 / 可重新获取 / 200% w390 w320 短视口 / 840；四宿主回归：提现、收款账号、换手机号、注销）" $GRADLE :app:verifyRoborazziDebug --tests "*StepUpVisualSnapshotTest" --tests "*StepUpVisualAccountTest" --tests "*StepUpVisualR1FixTest"
 # APP-04（Android 第 2 轮评审 R2-05、共性第 44、55 条）：真实系统 WebView 仪器测试，含加载锁定 H5 一致性页、逐项断言
 # window.__RESULT__ 的 ConformancePageTest。以 am instrument 输出的「OK (N tests)」为唯一成功判据；任何失败、没有在线的设备
 # 或模拟器都让本步失败（不跳过）

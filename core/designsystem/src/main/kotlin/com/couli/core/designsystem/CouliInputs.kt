@@ -246,6 +246,7 @@ fun PhoneField(
  * 验证码输入（组件清单 §3.2 `CodeInput`）：一个整串 `BasicTextField`（数字键盘 + 短信验证码自动填充语义），格子在装饰里画：
  * 6 格（格高 56 = T7，间距 space.2，当前格 2 border.active）；[cells] 为 false 时是单框（后台动态码）。
  * [submitting]（输满自动提交中）时置灰不可输入；[error] 时格子红框。下方一行 [message]（「正在登录…」或错误说明）由调用方给文案。
+ * [inputModifier] 加在实际输入框（格子款的 `BasicTextField`）上，给调用方挂焦点请求与测试标签（APP-09v-d 二次验证半屏）；默认不变。
  */
 @Composable
 fun CodeInput(
@@ -260,6 +261,7 @@ fun CodeInput(
     error: Boolean = false,
     message: String? = null,
     interactionSource: MutableInteractionSource? = null,
+    inputModifier: Modifier = Modifier,
 ) {
     val interaction = interactionSource ?: remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -270,7 +272,7 @@ fun CodeInput(
                 value = value,
                 onValueChange = { next -> onValueChange(next.filter(Char::isDigit).take(length)) },
                 modifier =
-                    Modifier.fillMaxWidth().semantics {
+                    Modifier.fillMaxWidth().then(inputModifier).semantics {
                         contentDescription = accessibilityLabel
                         contentType = ContentType.SmsOtpCode
                     },
