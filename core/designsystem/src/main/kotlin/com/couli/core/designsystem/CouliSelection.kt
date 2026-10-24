@@ -33,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -48,6 +49,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -183,6 +185,10 @@ fun AgreementCheckRow(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     interactionSource: MutableInteractionSource? = null,
+    /** 句子样式（APP-09v-e：实名同意、劳务协议用 14 主文字）；默认 12 次文字不变（登录、目录页）。行高与圆形对齐都跟它走。 */
+    textStyle: TextStyle = CouliTypography.caption,
+    /** 句子颜色；默认次文字色不变。 */
+    textColor: Color = CouliColors.textSecondary,
 ) {
     val interaction = interactionSource ?: remember { MutableInteractionSource() }
     val linkColor = CouliColors.textLink
@@ -194,7 +200,7 @@ fun AgreementCheckRow(
                 links.forEach { addStyle(SpanStyle(color = linkColor), it.start, it.end) }
             }
         }
-    val style = CouliTypography.caption
+    val style = textStyle
     Layout(
         contents =
             listOf(
@@ -203,7 +209,7 @@ fun AgreementCheckRow(
                         CheckboxGlyph(checked = checked, enabled = enabled, modifier = Modifier.testTag(AGREEMENT_CIRCLE_TAG))
                     }
                 },
-                { Text(text = styled, style = style, color = CouliColors.textSecondary) },
+                { Text(text = styled, style = style, color = textColor) },
             ),
         modifier =
             modifier

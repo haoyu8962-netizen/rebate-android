@@ -16,8 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,22 +30,28 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.couli.core.designsystem.CouliButton
+import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
-import com.couli.core.designsystem.CouliRadius
+import com.couli.core.designsystem.CouliDivider
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTag
+import com.couli.core.designsystem.CouliTagTone
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.PriceTerms
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
+import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.wallet.PayoutAccountDisplay
 import com.couli.core.wallet.PayoutAccountForm
@@ -141,7 +147,13 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                             .weight(1f)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
-                            .padding(CouliSpacing.space4),
+                            // W69：上 8、左右 16、下 16，块间 12
+                            .padding(
+                                start = CouliSpacing.space4,
+                                top = CouliSpacing.space2,
+                                end = CouliSpacing.space4,
+                                bottom = CouliSpacing.space4,
+                            ),
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
                 ) {
                     PayoutPending(controller, flow, texts, blocked)
@@ -153,7 +165,10 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                     val boundShown = account != null && account.bound && (!state.editing || flow.pending != null)
                     // G-W13：表单在页上时，30307 / 30308 挪到姓名 / 账号字段下显示（只读错误键，不改分类），页顶不再重复
                     val placedField = flow.error?.takeIf { !boundShown }?.let { payoutErrorField(it.key, state.form.method) }
-                    flow.error?.takeIf { placedField == null }?.let { ErrorBar(it, texts, WalletTags.PAYOUT_ERROR) }
+                    // W79 / W81：只按错误键换展示语气（30303 次数类 → 警告、40901 → 中性），分类、键、播报不变
+                    flow.error?.takeIf { placedField == null }?.let {
+                        ErrorBar(it, texts, WalletTags.PAYOUT_ERROR, tone = payoutErrorTone(it.key))
+                    }
                     flow.guideRoute?.let { route -> GuideEntry(route, texts, WalletTags.FLOW_GUIDE) { controller.flow.openGuide() } }
                     if (account != null && boundShown) {
                         // 构建时捕获渲染版本与这张卡的账号身份（APP-09 共性第 4、25 条），回调不在点击时读最新状态
@@ -163,16 +178,18 @@ fun PayoutAccountScreen(config: WalletPageConfig) {
                             texts,
                             enabled = flow.pending == null && state.loadError == null,
                         ) { controller.change(shownVersion, account) }
+                        // W77：「不能解绑…」在卡外，INFO 提示条
+                        InfoNote(texts.text("payout.bound_note"))
                     } else {
                         PayoutFormCard(controller, state, flow, texts, placedField)
                     }
                 }
                 if ((state.editing && flow.pending == null) || state.account?.bound != true) {
+                    // W76：底栏无底色（透出页面画布色），仍随键盘上移
                     Box(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .background(CouliColors.backgroundSurface)
                                 .navigationBarsPadding()
                                 .imePadding()
                                 .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3),
@@ -295,7 +312,21 @@ private fun methodName(
         else -> ""
     }.trim()
 
-/** 已绑定（PayoutAccountBound / BoundBank）：只显示服务端返回的脱敏字段；不认识的方式只显示脱敏串、不出【更换收款账号】。 */
+/** 30303 次数类（收款账号）→ 警告；40901 核验中 → 中性（G-W22）；其余仍是错误语气。只读错误键，不改错误分类。 */
+private fun payoutErrorTone(key: String): WalletBarTone =
+    when {
+        key.startsWith(PAYOUT_LIMIT_KEY_PREFIX) -> WalletBarTone.WARNING
+        key == BUSY_KEY -> WalletBarTone.NEUTRAL
+        else -> WalletBarTone.ERROR
+    }
+
+private const val PAYOUT_LIMIT_KEY_PREFIX = "error.30303.payout_account_"
+private const val BUSY_KEY = "error.40901"
+
+/**
+ * 已绑定（PayoutAccountBound / BoundBank，W77）：「当前收款账号」+ 右侧方式胶囊 → 账号 22/600 等宽 → 分隔线 → 明细（标签左、值右等宽）→
+ * 【更换收款账号】描边次按钮。只显示服务端返回的脱敏字段；不认识的方式只显示脱敏串、不出胶囊与【更换收款账号】。
+ */
 @Composable
 private fun BoundCard(
     account: PayoutAccountDisplay,
@@ -304,26 +335,40 @@ private fun BoundCard(
     onChange: () -> Unit,
 ) {
     WalletCard(modifier = Modifier.testTag(WalletTags.PAYOUT_BOUND)) {
-        Text(text = texts.text("payout.current"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
         val method =
             when (account.methodRaw) {
                 WalletJson.ALIPAY -> texts.text("payout.channel.alipay")
                 WalletJson.BANK_CARD -> texts.text("payout.channel.bank_card")
                 else -> null
             }
-        method?.let { Text(text = it, style = CouliTextStyles.footnoteMedium, color = CouliColors.textPrimary) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        ) {
+            Text(
+                text = texts.text("payout.current"),
+                style = CouliTypography.footnote,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.weight(1f),
+            )
+            method?.let { CouliTag(text = it, tone = CouliTagTone.NEUTRAL) }
+        }
         val value = listOfNotNull(account.bankName?.takeIf { it.isNotBlank() }, account.maskedAccount).joinToString(" ")
         Text(
             text = value,
-            style = CouliTextStyles.bodySemibold,
+            style = CouliTextStyles.amountTitle,
             color = CouliColors.textPrimary,
             modifier = Modifier.semantics { contentDescription = spokenMask(texts, value) },
         )
-        account.maskedPayee?.let { payee ->
-            LabelValue(texts.text("payout.payee_label"), payee, spoken = spokenMask(texts, payee))
-        }
-        account.changeRemaining?.let { n ->
-            LabelValue(texts.text("payout.remaining_label"), texts.format("payout.remaining", mapOf("n" to n.toString())))
+        CouliDivider()
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            account.maskedPayee?.let { payee ->
+                LabelValue(texts.text("payout.payee_label"), payee, spoken = spokenMask(texts, payee))
+            }
+            account.changeRemaining?.let { n ->
+                LabelValue(texts.text("payout.remaining_label"), texts.format("payout.remaining", mapOf("n" to n.toString())))
+            }
         }
         if (account.known) {
             // G-W21：本月更换次数为 0 时置灰并读出原因（只加拒绝；次数为 null 时不置灰，服务端 30303 兜底不变）
@@ -331,6 +376,7 @@ private fun BoundCard(
             CouliButton(
                 text = texts.text("payout.change"),
                 onClick = onChange,
+                variant = CouliButtonVariant.SECONDARY,
                 enabled = enabled && !exhausted,
                 accessibilityLabel =
                     if (exhausted) {
@@ -339,13 +385,14 @@ private fun BoundCard(
                     } else {
                         null
                     },
+                textStyle = CouliTextStyles.bodySemibold,
                 modifier = Modifier.fillMaxWidth().testTag(WalletTags.PAYOUT_CHANGE),
             )
         }
-        Text(text = texts.text("payout.bound_note"), style = CouliTypography.caption, color = CouliColors.textSecondary)
     }
 }
 
+/** 明细行（W77）：标签左（14 次文字）、值右（14 主文字等宽）；整行合并成一个读屏项，值按逐字读。 */
 @Composable
 private fun LabelValue(
     label: String,
@@ -362,11 +409,22 @@ private fun LabelValue(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
+        Text(
+            text = value,
+            style = TABULAR_FOOTNOTE,
+            color = CouliColors.textPrimary,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
-/** 表单（PayoutAccount / PayoutAccountBank）：单选「支付宝 / 本人借记卡」（G14）；开户行由用户填写（G12，不做卡 BIN 识别）。 */
+private val TABULAR_FOOTNOTE: TextStyle = with(CouliTextStyles) { CouliTypography.footnote.tabular() }
+
+/**
+ * 表单（PayoutAccount / PayoutAccountBank）：卡外说明句 → 收款方式单选卡（G14 只两项，G-W29）→ 字段卡 → 卡外「保存时需要短信验证」INFO 条。
+ * 开户行由用户填写（G12 / G-W23，不做卡 BIN 识别、不承诺三要素核验）。
+ */
 @Suppress("LongMethod")
 @Composable
 private fun PayoutFormCard(
@@ -406,28 +464,54 @@ private fun PayoutFormCard(
     fun eventOf(field: String): Any? = event.takeIf { field == first } ?: placed?.id?.takeIf { field == placedField }
 
     fun tagOf(field: String): String = WalletTags.PAYOUT_FIELD_ERROR_PREFIX + field
-    WalletCard {
-        Text(text = texts.text("payout.intro"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(text = texts.text("payout.method"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        MethodOption(
-            title = texts.text("payout.alipay"),
-            desc = texts.text("payout.alipay_desc"),
-            selected = form.method == WalletJson.ALIPAY,
-            enabled = editable,
-            tag = WalletTags.PAYOUT_METHOD_ALIPAY,
-            error = errorOf(PayoutAccountForm.PAYOUT_METHOD),
-        ) { controller.chooseMethod(WalletJson.ALIPAY, owner) }
-        MethodOption(
-            title = texts.text("payout.bank"),
-            desc = texts.text("payout.bank_desc"),
-            selected = form.method == WalletJson.BANK_CARD,
-            enabled = editable,
-            tag = WalletTags.PAYOUT_METHOD_BANK,
-            error = errorOf(PayoutAccountForm.PAYOUT_METHOD),
-        ) { controller.chooseMethod(WalletJson.BANK_CARD, owner) }
-        if (PayoutAccountForm.PAYOUT_METHOD in errors) {
-            FieldErrorText(errorText, tagOf(PayoutAccountForm.PAYOUT_METHOD), eventOf(PayoutAccountForm.PAYOUT_METHOD))
+    // W70：说明句在卡外，14 次文字，左缩进 4
+    Text(
+        text = texts.text("payout.intro"),
+        style = CouliTypography.footnote,
+        color = CouliColors.textSecondary,
+        modifier = Modifier.padding(horizontal = CouliSpacing.space1),
+    )
+    // W71：收款方式独立成卡（左右内距 16；标题上 12；两项之间 1dp 分隔线）
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .couliCard()
+                .padding(horizontal = CouliSpacing.space4),
+    ) {
+        Text(
+            text = texts.text("payout.method"),
+            style = CouliTypography.footnote,
+            color = CouliColors.textSecondary,
+            modifier = Modifier.padding(top = CouliSpacing.space3),
+        )
+        Column(modifier = Modifier.fillMaxWidth().selectableGroup()) {
+            MethodOption(
+                title = texts.text("payout.alipay"),
+                desc = texts.text("payout.alipay_desc"),
+                selected = form.method == WalletJson.ALIPAY,
+                enabled = editable,
+                tag = WalletTags.PAYOUT_METHOD_ALIPAY,
+                error = errorOf(PayoutAccountForm.PAYOUT_METHOD),
+            ) { controller.chooseMethod(WalletJson.ALIPAY, owner) }
+            CouliDivider()
+            MethodOption(
+                title = texts.text("payout.bank"),
+                desc = texts.text("payout.bank_desc"),
+                selected = form.method == WalletJson.BANK_CARD,
+                enabled = editable,
+                tag = WalletTags.PAYOUT_METHOD_BANK,
+                error = errorOf(PayoutAccountForm.PAYOUT_METHOD),
+            ) { controller.chooseMethod(WalletJson.BANK_CARD, owner) }
         }
+        if (PayoutAccountForm.PAYOUT_METHOD in errors) {
+            Box(modifier = Modifier.padding(bottom = CouliSpacing.space3)) {
+                FieldErrorText(errorText, tagOf(PayoutAccountForm.PAYOUT_METHOD), eventOf(PayoutAccountForm.PAYOUT_METHOD))
+            }
+        }
+    }
+    // W72：标签与框 8、字段间 16
+    WalletCard(spacing = CouliSpacing.space4) {
         if (form.method == WalletJson.BANK_CARD) {
             WalletField(
                 label = texts.text("payout.card_no"),
@@ -440,6 +524,7 @@ private fun PayoutFormCard(
                 errorTag = tagOf(PayoutAccountForm.CARD_NO),
                 enabled = editable,
                 keyboardType = KeyboardType.Number,
+                labelGap = CouliSpacing.space2,
             )
             WalletField(
                 label = texts.text("payout.bank_name"),
@@ -451,6 +536,7 @@ private fun PayoutFormCard(
                 errorEvent = eventOf(PayoutAccountForm.BANK_NAME),
                 errorTag = tagOf(PayoutAccountForm.BANK_NAME),
                 enabled = editable,
+                labelGap = CouliSpacing.space2,
             )
         } else {
             WalletField(
@@ -464,28 +550,31 @@ private fun PayoutFormCard(
                 errorTag = tagOf(PayoutAccountForm.ALIPAY_LOGON_ID),
                 enabled = editable,
                 keyboardType = KeyboardType.Email,
+                labelGap = CouliSpacing.space2,
             )
         }
-        WalletField(
-            label = texts.text("payout.payee"),
-            value = form.payeeName,
-            onValueChange = { controller.onPayeeChange(it, owner) },
-            tag = WalletTags.PAYOUT_PAYEE,
-            placeholder = texts.text("payout.payee_placeholder"),
-            error = errorOf(PayoutAccountForm.PAYEE_NAME),
-            errorEvent = eventOf(PayoutAccountForm.PAYEE_NAME),
-            errorTag = tagOf(PayoutAccountForm.PAYEE_NAME),
-            enabled = editable,
-        )
-        Text(text = texts.text("payout.payee_note"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Text(
-            text = texts.text(if (form.method == WalletJson.BANK_CARD) "payout.bank_note" else "payout.step_up_note"),
-            style = CouliTypography.caption,
-            color = CouliColors.textSecondary,
-        )
+        // W73：姓名提示紧贴姓名框下 8（字段辅助位）
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            WalletField(
+                label = texts.text("payout.payee"),
+                value = form.payeeName,
+                onValueChange = { controller.onPayeeChange(it, owner) },
+                tag = WalletTags.PAYOUT_PAYEE,
+                placeholder = texts.text("payout.payee_placeholder"),
+                error = errorOf(PayoutAccountForm.PAYEE_NAME),
+                errorEvent = eventOf(PayoutAccountForm.PAYEE_NAME),
+                errorTag = tagOf(PayoutAccountForm.PAYEE_NAME),
+                enabled = editable,
+                labelGap = CouliSpacing.space2,
+            )
+            Text(text = texts.text("payout.payee_note"), style = CouliTypography.caption, color = CouliColors.textSecondary)
+        }
     }
+    // W74 / W75：卡外 INFO 条；银行卡也只说「保存时需要短信验证」（G-W23：不承诺三要素核验，开户行仍由用户填写）
+    InfoNote(texts.text(if (form.method == WalletJson.BANK_CARD) "payout.bank_note" else "payout.step_up_note"))
 }
 
+/** 收款方式单选行（W71）：24 圆（选中 7 品牌色描边、未选 1 控件边）、间距 12、标题 17（选中 600 / 未选 400）+ 说明 12；行 ≥48，上下内距 12。 */
 @Suppress("LongParameterList")
 @Composable
 private fun MethodOption(
@@ -505,24 +594,35 @@ private fun MethodOption(
                 .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onSelect.tapped(tag))
                 // 收款方式组的字段错误关联到每个选项的无障碍说明（共性第 36 条）
                 .semantics { if (error != null) error(error) }
-                .padding(vertical = CouliSpacing.space2)
-                .testTag(tag),
+                .testTag(tag)
+                .padding(vertical = CouliSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         Box(
             modifier =
                 Modifier
-                    .size(CouliSizes.iconMedium)
+                    .size(CouliSizes.iconLarge)
+                    .background(CouliColors.backgroundSurface, CircleShape)
                     .border(
-                        if (selected) CouliSpacing.space1 + CouliSizes.hairline else CouliSizes.hairline,
+                        if (selected) RADIO_SELECTED_RING else CouliSizes.hairline,
                         if (selected) CouliColors.brandPrimary else CouliColors.borderControl,
                         CircleShape,
                     ),
         )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = CouliTextStyles.bodyMedium, color = CouliColors.textPrimary)
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(RADIO_TEXT_GAP)) {
+            Text(
+                text = title,
+                style = if (selected) CouliTextStyles.bodySemibold else CouliTypography.body,
+                color = CouliColors.textPrimary,
+            )
             Text(text = desc, style = CouliTypography.caption, color = CouliColors.textSecondary)
         }
     }
 }
+
+/** 选中圈描边 7（画板 border 7px）= 8 − 1。 */
+private val RADIO_SELECTED_RING = CouliSpacing.space2 - CouliSizes.hairline
+
+/** 单选标题与说明间 2（画板 gap 2px）。 */
+private val RADIO_TEXT_GAP = CouliSpacing.space1 / 2

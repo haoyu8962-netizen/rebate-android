@@ -36,7 +36,10 @@ class WithdrawVisualFundsGuardTest {
         val old = stored.mapKeys { (name, _) -> aliases[name] ?: name }
         assertEquals("别名还原不能覆盖或丢失向量组", stored.size, old.size)
         val actual = WithdrawVisualFixtures.obj(File(WithdrawVisualFixtures.root, "specs/wallet-vectors.json").readText())
-        assertEquals(old.keys + "visualWithdraw", actual.keys)
+        // test-change（APP-09v-e，编排裁定）：既有组（含 visualWithdraw）一个不少、逐组哈希不变；只允许新增以 visual 开头的组。
+        assertTrue("既有组不得删除", actual.keys.containsAll(old.keys + "visualWithdraw"))
+        val added = actual.keys - old.keys - "visualWithdraw"
+        assertTrue("只允许新增 visual 开头的组：$added", added.all { it.startsWith("visual") })
         old.forEach { (name, sha) -> assertEquals(name, sha.jsonPrimitive.content, digest(actual.getValue(name).toString().toByteArray())) }
     }
 

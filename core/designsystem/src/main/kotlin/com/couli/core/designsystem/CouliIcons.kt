@@ -139,6 +139,24 @@ object CouliIcons {
         )
     }
 
+    /** 盾牌带勾（实名认证说明卡 RealName；路径照抄画板）。 */
+    val shieldCheck: ImageVector by lazy {
+        lineIcon(
+            "ShieldCheck",
+            "M12 3.5 5 6v5.5c0 4.2 2.8 7.4 7 9 4.2-1.6 7-4.8 7-9V6l-7-2.5Z",
+            "m9 12 2.2 2.2L15 10",
+        )
+    }
+
+    /** 文档（劳务协议名 LaborAgreement-v2；折角纸 + 两行，路径照抄画板）。 */
+    val document: ImageVector by lazy {
+        lineIcon(
+            "Document",
+            "M7 3.5h7l4 4v13H7v-17Z",
+            "M14 3.5v4h4M9.5 12h6M9.5 15.5h6",
+        )
+    }
+
     val info: ImageVector by lazy {
         lineIcon(
             "Info",

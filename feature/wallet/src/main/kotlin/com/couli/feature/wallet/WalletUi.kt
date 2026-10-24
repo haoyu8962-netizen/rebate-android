@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -228,36 +227,101 @@ internal fun guideLabelKey(route: String): String =
 /** [RetryErrorBar] 的【重试】标记 = 错误条标记 + 这个后缀。 */
 const val RETRY_SUFFIX = "_retry"
 
-/** 错误条：图标 + 文字，出现时 assertive 播报一次（[Notice.id] 变化重新播报）。 */
+/** [ErrorBar] 的语气（APP-09v-e W79 / W81 / W92）：只换展示，不改错误分类、键与播报。 */
+internal enum class WalletBarTone {
+    /** 错误（红色浅底、红字 500、20 三角）：默认，读取失败、提交失败。 */
+    ERROR,
+
+    /** 警告（警告浅底、警告字色 500、20 三角）：收款账号 30303 次数类。 */
+    WARNING,
+
+    /** 中性（浅灰底、主文字 14、20 次文字色信息图标）：40901 核验中（G-W22，不加常转圈）。 */
+    NEUTRAL,
+}
+
+/**
+ * 错误条：图标 + 文字，出现时 assertive 播报一次（[Notice.id] 变化重新播报）。W92：默认 ERROR 语气（红底、红字 500、20 三角，提现页、记录页、钱包页同变）；
+ * [tone] 只换配色与图标，liveRegion、tag 不变。
+ */
 @Composable
 internal fun ErrorBar(
     notice: Notice,
     texts: WalletTexts,
     tag: String,
     modifier: Modifier = Modifier,
+    tone: WalletBarTone = WalletBarTone.ERROR,
 ) {
     val text = notice.message(texts)
     if (text.isEmpty()) return
+    val background =
+        when (tone) {
+            WalletBarTone.ERROR -> CouliColors.statusErrorBackground
+            WalletBarTone.WARNING -> CouliColors.statusWarningBackground
+            WalletBarTone.NEUTRAL -> CouliColors.backgroundMuted
+        }
+    val content =
+        when (tone) {
+            WalletBarTone.ERROR -> CouliColors.statusErrorText
+            WalletBarTone.WARNING -> CouliColors.statusWarningText
+            WalletBarTone.NEUTRAL -> CouliColors.textPrimary
+        }
     Row(
         modifier =
             modifier
                 .fillMaxWidth()
-                .background(CouliColors.statusErrorBackground, RoundedCornerShape(CouliRadius.button))
+                .background(background, RoundedCornerShape(CouliRadius.button))
                 .padding(CouliSpacing.space3)
                 .semantics { liveRegion = if (notice.assertive) LiveRegionMode.Assertive else LiveRegionMode.Polite }
                 .testTag(tag),
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
         Icon(
-            CouliIcons.alert,
+            if (tone == WalletBarTone.NEUTRAL) CouliIcons.info else CouliIcons.alert,
             contentDescription = null,
-            tint = CouliColors.statusErrorText,
-            modifier = Modifier.size(CouliSizes.iconSmall),
+            tint = if (tone == WalletBarTone.NEUTRAL) CouliColors.textSecondary else content,
+            modifier = Modifier.padding(top = BAR_ICON_TOP).size(CouliSizes.iconMedium),
+        )
+        Text(
+            text = text,
+            style = if (tone == WalletBarTone.NEUTRAL) CouliTypography.footnote else CouliTextStyles.footnoteMedium,
+            color = content,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * 说明提示条（INFO 语气：浅灰底、圆角 12、内边距 12；20 次文字色图标 + 14 主文字；APP-09v-e W74 / W77 / W91）。页面常驻说明，不播报。
+ * [icon] 默认信息图标（实名第二条用人像图标，以画板为准）。
+ */
+@Composable
+internal fun InfoNote(
+    text: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector = CouliIcons.info,
+) {
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.button))
+                .padding(CouliSpacing.space3),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = CouliColors.textSecondary,
+            modifier = Modifier.padding(top = BAR_ICON_TOP).size(CouliSizes.iconMedium),
         )
         Text(text = text, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
     }
 }
+
+/** 20 图标与 14/21 文字首行居中：(21 − 20) / 2 ≈ 0.5。 */
+private val BAR_ICON_TOP = CouliSizes.hairline / 2
 
 /**
  * 警告提示条（钱包 Wallet* 画板：警告浅底、圆角 12、内边距 12；20 图标 + 两行文字都是警告字色，首行 [textStyle]、次行 14 常规）：
@@ -367,15 +431,16 @@ internal fun Announce(
     }
 }
 
-/** 白卡片（圆角 16、内边距 16）。 */
+/** 白卡片（圆角 16、内边距 16）；[spacing] 卡内块间距，默认 12（APP-09v-e 表单卡字段间 16）。 */
 @Composable
 internal fun WalletCard(
     modifier: Modifier = Modifier,
+    spacing: Dp = CouliSpacing.space3,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
         modifier = modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        verticalArrangement = Arrangement.spacedBy(spacing),
         content = content,
     )
 }
@@ -421,6 +486,8 @@ internal fun WalletField(
     /** 这次错误事件的编号（只给本次事件里的第一个错误字段）：变化时滚到错误提示、移焦点并播报一次（APP-09 共性第 24 条）。 */
     errorEvent: Any? = null,
     errorTag: String? = null,
+    /** 标签与框（及框与字段错误）的间距（APP-09v-e W72 / W90：收款账号、实名传 8）；默认 4 不变。金额框固定 8。 */
+    labelGap: Dp = CouliSpacing.space1,
     /**
      * 提现金额框样式（APP-09v-c W38 / W54）：标签与框间 8、框视觉高 56、「¥」17 次文字、输入 28/600 等宽、禁用浅边 + 灰底。默认 false = 原样式
      * （实名、收款账号不变）。
@@ -431,7 +498,7 @@ internal fun WalletField(
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(if (amount) CouliSpacing.space2 else CouliSpacing.space1),
+        verticalArrangement = Arrangement.spacedBy(if (amount) CouliSpacing.space2 else labelGap),
     ) {
         Text(
             text = label,
@@ -690,53 +757,6 @@ internal fun OnVisibility(onChange: (Boolean) -> Unit) {
             }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
-    }
-}
-
-/** 勾选行（单独同意、劳务协议）：整行可点，默认不勾，读屏读勾选状态。 */
-@Composable
-internal fun CheckRow(
-    text: String,
-    checked: Boolean,
-    onToggle: () -> Unit,
-    tag: String,
-    enabled: Boolean = true,
-) {
-    val toggle = onToggle.tapped(tag)
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = CouliSizes.touchTarget)
-                .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = { toggle() })
-                .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(CouliSizes.iconMedium)
-                    .background(
-                        if (checked) CouliColors.brandPrimary else CouliColors.backgroundSurface,
-                        RoundedCornerShape(CouliRadius.small),
-                    ).border(
-                        CouliSizes.hairline,
-                        if (checked) CouliColors.brandPrimary else CouliColors.borderControl,
-                        RoundedCornerShape(CouliRadius.small),
-                    ),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (checked) {
-                Icon(
-                    CouliIcons.check,
-                    contentDescription = null,
-                    tint = CouliColors.backgroundSurface,
-                    modifier = Modifier.size(CouliSizes.iconSmall),
-                )
-            }
-        }
-        Text(text = text, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
     }
 }
 

@@ -46,6 +46,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -284,6 +285,8 @@ fun LockedSheet(
     showHandle: Boolean = false,
     scrim: Color? = null,
     bodyBottomInset: Dp = 0.dp,
+    /** 标题样式（APP-09v-e W93：实名同意半屏 22/600）；默认 17/600 不变（二次验证、换手机号、注销）。 */
+    titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     content: @Composable () -> Unit,
 ) {
     // 收起只可能来自系统返回（手势与点外部都已关掉）：返回键收起后由 onDismissRequest 走关闭按钮的同一出口
@@ -316,6 +319,7 @@ fun LockedSheet(
                 actions = actions,
                 subtitle = subtitle,
                 bodyBottomInset = bodyBottomInset,
+                titleStyle = titleStyle,
                 content = content,
             )
         } else {
@@ -326,6 +330,7 @@ fun LockedSheet(
                 titleFocus = titleFocus,
                 onClose = closeLabel?.let { { onClose() } },
                 closeLabel = closeLabel,
+                titleStyle = titleStyle,
                 content = {
                     subtitle?.invoke()
                     content()
@@ -352,6 +357,8 @@ fun FitSheetBody(
     actions: @Composable () -> Unit,
     subtitle: (@Composable () -> Unit)? = null,
     bodyBottomInset: Dp = 0.dp,
+    /** 标题样式；默认 17/600 不变。 */
+    titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     content: @Composable () -> Unit,
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
@@ -371,7 +378,7 @@ fun FitSheetBody(
                         ) {
                             Text(
                                 text = title,
-                                style = CouliTextStyles.bodySemibold,
+                                style = titleStyle,
                                 color = CouliColors.textPrimary,
                                 modifier =
                                     Modifier
