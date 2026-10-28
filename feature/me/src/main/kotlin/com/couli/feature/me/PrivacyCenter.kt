@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonVariant
@@ -172,8 +173,9 @@ class PrivacyCenterConfig(
 )
 
 /**
- * 隐私中心（设计稿 PrivacyCenter、PrivacyCenterBasic、PrivacyCenterWithdraw；AC-S1-77、AC-S1-135）：清单与协议卡片 → 个性化推荐开关 → 「系统权限」一节（标题、提示与本端
- * 条目；Android 清单为空，G26）→ 撤回同意说明 +【撤回同意】；基本模式原位显示「开启完整功能 / 同意隐私政策后…」+【开启完整功能】。
+ * 隐私中心（设计稿 PrivacyCenter、PrivacyCenterBasic-v2、PrivacyCenterWithdraw、PrivacyCenterForceUpdate；AC-S1-77、AC-S1-135；APP-12w-b 视觉）：清单与协议
+ * 卡片 → 个性化推荐卡 → 「系统权限」一节（标题、提示与本端条目；Android 清单为空，G26 / G-P15）→ 撤回同意卡（说明 +【撤回同意】次按钮）；基本模式原位显示
+ * 「开启完整功能」卡（标题 +【开启完整功能】，G-P08 不再画副句）。显隐只看 [PrivacyCenterView.model]，回调原样转交执行器。
  */
 @Suppress("LongMethod")
 @Composable
@@ -200,35 +202,57 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
         texts = texts,
         onBack = config.onBack,
         overlay = { MeToastHost(state.toast?.message(texts), state.toast?.id) { state.toast?.id?.let(controller::consumeToast) } },
+        contentPadding = SETTINGS_CONTENT_PADDING,
     ) {
         if (identity.level == MeLevel.BASIC && !controller.forceUpdate) {
             NoteStrip(text = texts.text("privacy.basic_mode.notice"))
         }
-        RowCard(
-            listOf(
-                {
-                    NavRow(texts.text("privacy_center.collect_list"), MeTags.PRIVACY_LIST_PREFIX + "collect", onClick = {
-                        controller.openDoc(PrivacyCenterController.TYPE_PRIVACY)
-                    })
-                },
-                {
-                    NavRow(texts.text("privacy_center.share_list"), MeTags.PRIVACY_LIST_PREFIX + "share", onClick = {
-                        controller.openDoc(PrivacyCenterController.TYPE_SDK_LIST)
-                    })
-                },
-                {
-                    NavRow(texts.text("privacy_center.privacy_policy"), MeTags.PRIVACY_POLICY, onClick = {
-                        controller.openDoc(PrivacyCenterController.TYPE_PRIVACY)
-                    })
-                },
-                {
-                    NavRow(texts.text("privacy_center.agreement"), MeTags.PRIVACY_AGREEMENT, onClick = {
-                        controller.openDoc(PrivacyCenterController.TYPE_AGREEMENT)
-                    })
-                },
-            ),
+        // 清单与协议卡（P2）：卡内上下 4、行上下 4 + 命中 48、chevron 20；四行去向与标记原样
+        SettingsGroup(
+            label = null,
+            first = true,
+            rows =
+                listOf(
+                    {
+                        SettingsNavRow(
+                            title = texts.text("privacy_center.collect_list"),
+                            tag = MeTags.PRIVACY_LIST_PREFIX + "collect",
+                            value = null,
+                            onClick = { controller.openDoc(PrivacyCenterController.TYPE_PRIVACY) },
+                            chevron = true,
+                        )
+                    },
+                    {
+                        SettingsNavRow(
+                            title = texts.text("privacy_center.share_list"),
+                            tag = MeTags.PRIVACY_LIST_PREFIX + "share",
+                            value = null,
+                            onClick = { controller.openDoc(PrivacyCenterController.TYPE_SDK_LIST) },
+                            chevron = true,
+                        )
+                    },
+                    {
+                        SettingsNavRow(
+                            title = texts.text("privacy_center.privacy_policy"),
+                            tag = MeTags.PRIVACY_POLICY,
+                            value = null,
+                            onClick = { controller.openDoc(PrivacyCenterController.TYPE_PRIVACY) },
+                            chevron = true,
+                        )
+                    },
+                    {
+                        SettingsNavRow(
+                            title = texts.text("privacy_center.agreement"),
+                            tag = MeTags.PRIVACY_AGREEMENT,
+                            value = null,
+                            onClick = { controller.openDoc(PrivacyCenterController.TYPE_AGREEMENT) },
+                            chevron = true,
+                        )
+                    },
+                ),
         )
         if (model.personalizationSwitch) {
+            // 个性化卡（P3）：卡内边距 16，开关垂直居中
             RowCard(
                 listOf {
                     SwitchRow(
@@ -238,14 +262,20 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
                         texts = texts,
                         tag = MeTags.PRIVACY_SWITCH,
                         enabled = !withdrawing,
+                        verticalPadding = CouliSpacing.space4,
                         onChange = controller::setPersonalization,
                     )
                 },
             )
         }
         if (model.permissionSection) {
+            // 系统权限分节头（P4）：左右缩进 4、上 8
             Column(
-                modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space2).testTag(MeTags.PRIVACY_PERMISSIONS),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = CouliSpacing.space1, top = CouliSpacing.space2, end = CouliSpacing.space1)
+                        .testTag(MeTags.PRIVACY_PERMISSIONS),
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
             ) {
                 Text(
@@ -276,35 +306,27 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
             }
         }
         if (model.enableFullButton) {
-            Text(
-                text = texts.text("privacy_center.basic_title"),
-                style = CouliTypography.title,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.padding(top = CouliSpacing.space3).semantics { heading() },
-            )
-            Text(text = texts.text("privacy_center.basic_desc"), style = CouliTypography.body, color = CouliColors.textSecondary)
-            CouliButton(
-                text = texts.text("privacy.basic_mode.enable"),
-                onClick = controller::enableFull,
-                modifier = Modifier.fillMaxWidth().testTag(MeTags.PRIVACY_ENABLE_FULL),
-            )
+            // 「开启完整功能」卡（P7）：标题 → 主按钮；不再画副句（G-P08）
+            PrivacyActionCard(title = texts.text("privacy_center.basic_title"), desc = null) {
+                CouliButton(
+                    text = texts.text("privacy.basic_mode.enable"),
+                    onClick = controller::enableFull,
+                    modifier = Modifier.fillMaxWidth().testTag(MeTags.PRIVACY_ENABLE_FULL),
+                )
+            }
         }
         if (model.withdrawButton) {
-            Text(
-                text = texts.text("privacy_center.withdraw_title"),
-                style = CouliTypography.title,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.padding(top = CouliSpacing.space3).semantics { heading() },
-            )
-            Text(text = texts.text("privacy_center.withdraw_desc"), style = CouliTypography.body, color = CouliColors.textSecondary)
-            CouliButton(
-                text = texts.text("privacy_center.withdraw"),
-                onClick = controller::askWithdraw,
-                variant = CouliButtonVariant.SECONDARY,
-                enabled = !withdrawing,
-                loading = withdrawing,
-                modifier = Modifier.fillMaxWidth().testTag(MeTags.PRIVACY_WITHDRAW),
-            )
+            // 撤回同意卡（P6，G-P09 / G-P17）：标题 → 说明（纯文字）→ 通栏次按钮；入口、可用态、loading 原样
+            PrivacyActionCard(title = texts.text("privacy_center.withdraw_title"), desc = texts.text("privacy_center.withdraw_desc")) {
+                CouliButton(
+                    text = texts.text("privacy_center.withdraw"),
+                    onClick = controller::askWithdraw,
+                    variant = CouliButtonVariant.SECONDARY,
+                    enabled = !withdrawing,
+                    loading = withdrawing,
+                    modifier = Modifier.fillMaxWidth().testTag(MeTags.PRIVACY_WITHDRAW),
+                )
+            }
         }
     }
     val confirm = state.confirm
@@ -320,6 +342,8 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
             onDismissRequest = { controller.cancelWithdraw(confirm) },
             dismissOnClickOutside = false,
             dismissTag = MeTags.WITHDRAW_DIALOG,
+            titleAlign = TextAlign.Center,
+            scrim = CouliColors.overlayScrim,
         )
     }
 }

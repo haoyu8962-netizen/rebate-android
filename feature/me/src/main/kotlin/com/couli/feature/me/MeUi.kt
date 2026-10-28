@@ -348,6 +348,7 @@ internal fun ValueRow(
 /**
  * 开关行（A11yFocusStyles）：整行一个节点、角色为开关，读作「{名称}，开关，已打开 / 已关闭」（名称 + 状态由系统按 Switch 角色读出）。[enabled] 为 false 时不可切换。
  * descBelow 为 true 时（NotifySettings，APP-12w-a S21）：标题与开关一行，说明通栏放在整行下方；仍是同一个开关节点。默认 false 外观不变。
+ * verticalPadding：行上下内边距（默认 12 = 旧外观；隐私中心个性化卡传 16，APP-12w-b P3）。
  */
 @Suppress("LongParameterList")
 @Composable
@@ -359,11 +360,12 @@ internal fun SwitchRow(
     tag: String,
     enabled: Boolean = true,
     descBelow: Boolean = false,
+    verticalPadding: Dp = CouliSpacing.space3,
     onChange: (Boolean) -> Unit,
 ) {
     val state = texts.text(if (checked) "me.switch.on" else "me.switch.off")
     if (descBelow) {
-        SwitchRowDescBelow(title, desc, checked, state, tag, enabled, onChange)
+        SwitchRowDescBelow(title, desc, checked, state, tag, enabled, verticalPadding, onChange)
         return
     }
     Row(
@@ -376,7 +378,7 @@ internal fun SwitchRow(
                     toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
                     contentDescription = title
                     stateDescription = state
-                }.padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
+                }.padding(horizontal = CouliSpacing.space4, vertical = verticalPadding)
                 .testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
@@ -600,6 +602,7 @@ private fun SwitchRowDescBelow(
     state: String,
     tag: String,
     enabled: Boolean,
+    verticalPadding: Dp,
     onChange: (Boolean) -> Unit,
 ) {
     Column(
@@ -611,7 +614,7 @@ private fun SwitchRowDescBelow(
                     toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
                     contentDescription = title
                     stateDescription = state
-                }.padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3)
+                }.padding(horizontal = CouliSpacing.space4, vertical = verticalPadding)
                 .testTag(tag),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {

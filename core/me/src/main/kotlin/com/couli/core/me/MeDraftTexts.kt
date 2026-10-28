@@ -221,7 +221,7 @@ object MeDraftTexts : MeTexts {
             "appeal.again" to "再次申诉",
             "cs.title" to "联系客服",
             "cs.handoff.desc" to "客服在微信里接待。点下方按钮会打开微信，进入凑狸企业微信客服的会话",
-            "cs.safety" to "客服不会向你索要登录验证码和密码",
+            "cs.safety" to "客服不会向你索要验证码或密码",
             "cs.open_wechat" to "打开微信",
             "cs.handoff.go_help" to "先看看帮助中心",
             "cs.open_failed.title" to "暂时打不开客服",

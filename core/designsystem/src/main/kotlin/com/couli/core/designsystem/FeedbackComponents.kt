@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -629,6 +630,11 @@ fun CouliSheet(
     titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     /** 标题前的装饰槽（授权半屏的 32 平台图标，G-D14）；默认 null 不画，旧调用外观不变。读屏仍只读标题文字。 */
     titleLeading: (@Composable () -> Unit)? = null,
+    /**
+     * true：居中头部（客服半屏 CsOpenFailed-v2，G-P05）——[titleLeading] 画在标题上方（间距 12）、两者水平居中；关闭仍在右侧、与标题同一行、
+     * 读屏在标题之后。默认 false 外观不变。
+     */
+    headerCentered: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     RestoreFocusOnDispose(restoreFocusTo)
@@ -655,6 +661,7 @@ fun CouliSheet(
                 showTitle = showTitle,
                 titleStyle = titleStyle,
                 titleLeading = titleLeading,
+                headerCentered = headerCentered,
                 modifier = modifier,
                 content = content,
             )
@@ -675,6 +682,8 @@ fun CouliSheetBody(
     titleStyle: TextStyle = CouliTextStyles.bodySemibold,
     /** 标题前的装饰槽；默认 null 不画（见 [CouliSheet]）。 */
     titleLeading: (@Composable () -> Unit)? = null,
+    /** 居中头部（见 [CouliSheet]）；默认 false 外观不变。 */
+    headerCentered: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     ScrollBodyLayout(
@@ -688,6 +697,10 @@ fun CouliSheetBody(
         header = {
             // 标题 → 关闭 → 正文 → 操作（adaptation-a11y-spec §8：关闭在 DOM 里排在标题之后，视觉在右上角）
             when {
+                headerCentered && showTitle -> {
+                    CenteredSheetHeader(title, titleStyle, titleFocus, titleLeading, onClose?.takeIf { closeLabel != null }, closeLabel)
+                }
+
                 !showTitle -> {
                     // 无可见标题：只留右上关闭（不留空标题行），打开焦点落到关闭；读屏名由 paneTitle 给
                     if (onClose != null && closeLabel != null) {
@@ -743,6 +756,50 @@ fun CouliSheetBody(
         body = { Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) { content() } },
         footer = actions,
     )
+}
+
+/**
+ * 居中半屏头部（[CouliSheet] headerCentered = true）：[leading] → 12 → 标题（居中，左右各让出关闭的 48 以保持居中）；关闭垂直居中于标题行、
+ * 不撑高该行（命中 48 向上下外扩），在标题之后组合（读屏 标题 → 关闭）。
+ */
+@Suppress("LongParameterList")
+@Composable
+private fun CenteredSheetHeader(
+    title: String,
+    titleStyle: TextStyle,
+    titleFocus: FocusRequester?,
+    leading: (@Composable () -> Unit)?,
+    onClose: (() -> Unit)?,
+    closeLabel: String?,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+    ) {
+        leading?.invoke()
+        Box(modifier = Modifier.fillMaxWidth()) {
+            val side = if (onClose != null) CouliSizes.touchTarget else CouliSpacing.space0
+            Text(
+                text = title,
+                style = titleStyle,
+                color = CouliColors.textPrimary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = side).modalTitle(titleFocus),
+            )
+            if (onClose != null && closeLabel != null) {
+                Box(modifier = Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
+                    CouliIconButton(
+                        icon = CouliIcons.close,
+                        label = closeLabel,
+                        onClick = onClose,
+                        tint = CouliColors.textSecondary,
+                        modifier = Modifier.wrapContentHeight(unbounded = true),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** 半屏把手 36 × 4。 */

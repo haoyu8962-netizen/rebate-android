@@ -1,32 +1,23 @@
 package com.couli.feature.me
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
-import com.couli.core.designsystem.CouliRadius
+import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
-import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
-import com.couli.core.designsystem.couliCard
 import com.couli.core.me.AboutView
 import com.couli.core.me.Diagnostics
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,62 +80,43 @@ fun AboutScreen(
     }
     val toast by controller.toast.collectAsStateWithLifecycle()
     val texts = deps.texts
+    // 视觉（APP-12w-b P12–P18，设计稿 About-v2 / AboutBeforeFiling / AboutDark）：内容上 8、左右 16、底 16，块间 16；成功轻提示带对勾、失败不带（G-P12）
     MeSubPage(
         tag = MeTags.ABOUT_PAGE,
         title = texts.text("about.title"),
         texts = texts,
         onBack = onBack,
-        overlay = { MeToastHost(toast?.message(texts), toast?.id) { toast?.id?.let(controller::consumeToast) } },
+        overlay = {
+            MeToastHost(
+                toast?.message(texts),
+                toast?.id,
+                icon = if (toast?.key == AboutController.DONE_KEY) CouliIcons.check else null,
+            ) { toast?.id?.let(controller::consumeToast) }
+        },
+        contentPadding = SETTINGS_CONTENT_PADDING,
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space6),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            // App 图标：没有图标资源，用品牌色文字块代替（compare 写明）
-            Box(
-                modifier = Modifier.size(CouliSpacing.space16).background(CouliColors.brandPrimary, RoundedCornerShape(CouliRadius.card)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(text = texts.text("about.app_name"), style = CouliTextStyles.bodySemibold, color = CouliColors.textInverse)
-            }
-            Text(
-                text = texts.text("about.app_name"),
-                style = CouliTypography.title,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { heading() },
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) {
+            AboutHeader(
+                name = texts.text("about.app_name"),
+                version = texts.format("about.version", mapOf("version" to deps.env.appVersion(), "build" to deps.env.appBuild())),
             )
-            Text(
-                text = texts.format("about.version", mapOf("version" to deps.env.appVersion(), "build" to deps.env.appBuild())),
-                style = CouliTypography.footnote,
-                color = CouliColors.textSecondary,
-            )
-        }
-        controller.filing()?.let { filing ->
-            Column(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .couliCard()
-                        .padding(CouliSpacing.space4)
-                        .testTag(MeTags.ABOUT_FILING),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-            ) {
-                Text(
-                    text = texts.text("about.filing_title"),
-                    style = CouliTextStyles.bodySemibold,
-                    color = CouliColors.textPrimary,
-                    modifier = Modifier.semantics { heading() },
+            controller.filing()?.let { filing -> AboutFiling(label = texts.text("about.filing_title"), text = filing) }
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+                CouliButton(
+                    text = texts.text("about.copy_diagnostics"),
+                    onClick = controller::copyDiagnostics,
+                    variant = CouliButtonVariant.SECONDARY,
+                    leadingIcon = CouliIcons.copy,
+                    modifier = Modifier.fillMaxWidth().testTag(MeTags.ABOUT_COPY),
                 )
-                Text(text = filing, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                Text(
+                    text = texts.text("about.copy_desc"),
+                    style = CouliTypography.caption,
+                    color = CouliColors.textSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
-        CouliButton(
-            text = texts.text("about.copy_diagnostics"),
-            onClick = controller::copyDiagnostics,
-            variant = CouliButtonVariant.SECONDARY,
-            modifier = Modifier.fillMaxWidth().testTag(MeTags.ABOUT_COPY),
-        )
-        Text(text = texts.text("about.copy_desc"), style = CouliTypography.caption, color = CouliColors.textSecondary)
     }
 }
