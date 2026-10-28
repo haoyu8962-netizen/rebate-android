@@ -33,6 +33,8 @@ object AccountDraftTexts : WalletTexts, MeTexts {
             "deletion.estimated",
             "deletion.negative",
             "deletion.negative.note",
+            // APP-13v G-D12：不可去提现时的提示句（资金术语）
+            "deletion.withdraw_hint.no_withdraw",
         )
 
     /** TODO(N-37) 待定稿，不得提审。键 → 草稿文字。 */
@@ -40,22 +42,24 @@ object AccountDraftTexts : WalletTexts, MeTexts {
         linkedMapOf(
             // ---- 注销说明与条件确认（DeleteAccount、DeleteAccountNegative）
             "deletion.title" to "账号注销",
-            "deletion.intro" to "注销是不可恢复的操作，请先确认下面的内容",
+            "deletion.intro" to "注销完成后无法恢复，请先确认下面的内容",
             "deletion.funds.title" to "账户资金",
             // 资金术语，BR-TEXT-12
             "deletion.withdrawable" to "可提现余额",
             "deletion.estimated" to "预估收益",
             "deletion.negative" to "待抵扣",
-            "deletion.negative.note" to "有订单被平台扣回返利，余额暂时为负。后续返利入账会先抵扣，余额回到 0 或以上后可以重新申请注销",
+            "deletion.negative.note" to "待抵扣是余额为负时、需要由之后的结算入账抵扣的金额，抵扣回正后可以申请注销",
             "deletion.withdraw_hint" to "注销后余额和预估收益都会放弃，建议先提现",
+            // APP-13v G-D12：从风控来源 / 受限会话进入（没有【去提现】）时的句子，不再建议先提现
+            "deletion.withdraw_hint.no_withdraw" to "注销后余额和预估收益都会放弃",
             "deletion.go_withdraw" to "去提现",
             "deletion.contact_cs" to "联系客服",
             "deletion.notice.title" to "注销须知",
             "deletion.notice.1" to "提交后有 7 天冷静期，冷静期内可以随时撤回",
             "deletion.notice.2" to "冷静期内账号只能查看，不能领券购买、提现和邀请好友",
             "deletion.notice.3" to "冷静期满后进入注销处理，自提交起 15 个工作日内完成",
-            "deletion.notice.4" to "注销后手机号、昵称、实名信息、收款账号等会被删除，账号无法恢复",
-            "deletion.notice.5" to "注销后用同一手机号可以重新注册，但不能再领新人奖励",
+            "deletion.notice.4" to "注销后手机号、昵称、实名信息、收款账号等会被删除或匿名化，账号无法恢复；法律法规要求保留的交易与涉税记录除外",
+            "deletion.notice.5" to "注销后用同一手机号可以重新注册；注销完成后 180 天内，新账号不能领取新人奖励",
             "deletion.notice.6" to "有进行中的提现时不能申请，请等提现完成",
             // 资金术语，BR-TEXT-12
             "deletion.waiver" to "放弃未提现余额和预估收益",
@@ -113,7 +117,7 @@ object AccountDraftTexts : WalletTexts, MeTexts {
             "phone_change.cant_use_old" to "原手机号不能用了？联系客服",
             "phone_change.new_phone" to "新手机号",
             "phone_change.prefix" to "+86",
-            "phone_change.new_hint" to "新手机号不能是已经注册过本 App 的手机号",
+            "phone_change.new_hint" to "新手机号不能是其他凑狸账号正在使用的号码",
             "phone_change.submit_hint" to "提交后，当前手机号会换成新手机号",
             "phone_change.submit" to "提交",
             "phone_change.done.title" to "手机号已更换",
