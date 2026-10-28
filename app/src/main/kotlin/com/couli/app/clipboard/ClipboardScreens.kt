@@ -32,7 +32,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -591,8 +590,9 @@ fun ClipboardConsentHost(clipboard: AppClipboard) {
 }
 
 /**
- * 设置页「打开 App 自动识别剪贴板」一行（Settings / SettingsGuest；只 Android）：标题 17、副标题 12，右侧开关；读屏为开关角色，名称为标题、
- * 说明为副标题。设备级、默认关闭（打开时没有有效功能同意先出用途弹层，FU-AND-0722）；已同意隐私政策的游客也显示，基本模式与撤回同意后不显示（由调用方按隐私结论决定是否组合本行）。
+ * 设置页「打开 App 自动识别剪贴板」一行（Settings / SettingsGuest；只 Android）：标题 17、副标题 12（纵向 2），上下内边距 8，
+ * 右侧开关；读屏为开关角色，读作「名称，副标题，开关，已打开 / 已关闭」——状态由开关角色读出，副标题只作说明、
+ * 不再覆盖状态描述（APP-12w-a G-S12）。设备级、默认关闭（打开时没有有效功能同意先出用途弹层，FU-AND-0722）；已同意隐私政策的游客也显示，基本模式与撤回同意后不显示（由调用方按隐私结论决定是否组合本行）。
  * APP-12：这一行原样挂进正式设置页的「通用」组（存储与键不变，基本模式不显示）。
  */
 @Composable
@@ -608,13 +608,12 @@ fun ClipboardSettingsRow(clipboard: AppClipboard) {
                 .toggleable(value = enabled, role = Role.Switch, onValueChange = clipboard::setAutoSwitch)
                 .semantics(mergeDescendants = true) {
                     toggleableState = if (enabled) ToggleableState.On else ToggleableState.Off
-                    stateDescription = desc
                 }.padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2)
                 .testTag(ClipboardScreens.SETTINGS_ROW),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space0)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
             Text(text = title, style = CouliTypography.body, color = CouliColors.textPrimary)
             Text(text = desc, style = CouliTypography.caption, color = CouliColors.textSecondary)
         }

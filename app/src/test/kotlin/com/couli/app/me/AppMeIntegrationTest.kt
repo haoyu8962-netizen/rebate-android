@@ -14,7 +14,10 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -733,9 +736,16 @@ class AppMeIntegrationTest {
         tag: String,
         value: String,
     ) {
-        composeRule.onNodeWithTag(tag, useUnmergedTree = true).performTextReplacement(value)
+        editable(tag).performTextReplacement(value)
         settle()
     }
+
+    /**
+     * APP-12w-a test-change（G-S09 / G-S18，只改查找方式）：昵称输入换成组件库 CouliTextField 后，标记只能挂在外层，可编辑节点是它的子节点；
+     * 这里取「带标记或在标记之下、且可设置文字」的唯一节点。旧 OutlinedTextField 时就是带标记的节点本身，断言与计数不变。
+     */
+    private fun editable(tag: String) =
+        composeRule.onNode(hasSetTextAction() and (hasTestTag(tag) or hasAnyAncestor(hasTestTag(tag))), useUnmergedTree = true)
 
     private fun count(
         method: String,
@@ -2601,8 +2611,7 @@ class AppMeIntegrationTest {
     // ---------------------------------------------------------------- 工具
 
     private fun fieldText(tag: String): String =
-        composeRule
-            .onNodeWithTag(tag, useUnmergedTree = true)
+        editable(tag)
             .fetchSemanticsNode()
             .config
             .getOrNull(SemanticsProperties.EditableText)

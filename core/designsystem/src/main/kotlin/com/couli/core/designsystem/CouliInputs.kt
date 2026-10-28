@@ -66,6 +66,8 @@ private fun fieldBorder(
  * 文本输入框（组件清单 §3.2 `CouliTextField` / `CouliTextArea`）：`BasicTextField` + 组件库外框（最小高 52 = T6，圆角 12）。
  * [placeholder] 是占位；[error] 不为空时红框 + 图标 + 文字（读屏报错误）；[clearLabel] 给了且有内容时右侧带清除（命中区 48）；
  * [maxLength] 给了时下方右侧显示字数。多行用 [singleLine] = false（申诉说明等）。[interactionSource] 供目录页展示输入中态。
+ * [showErrorText] 为 false 时 [error] 仍写进错误语义并画红框，但不画下方错误提示行（调用方自己画错误句，如昵称页的可聚焦错误行，APP-12w-a）；
+ * [clearButtonModifier] 挂到右侧清除按钮上（如测试标记）。两者默认值下外观与行为不变。
  */
 @Composable
 fun CouliTextField(
@@ -85,6 +87,8 @@ fun CouliTextField(
     leading: (@Composable () -> Unit)? = null,
     fieldContentType: ContentType? = null,
     interactionSource: MutableInteractionSource? = null,
+    showErrorText: Boolean = true,
+    clearButtonModifier: Modifier = Modifier,
 ) {
     val interaction = interactionSource ?: remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -121,16 +125,27 @@ fun CouliTextField(
                     border = border,
                     singleLine = singleLine,
                     leading = leading,
-                    clearLabel = clearLabel?.takeIf { value.isNotEmpty() && editable },
-                    onClear = { onValueChange("") },
+                    clearButton =
+                        clearLabel?.takeIf { value.isNotEmpty() && editable }?.let { label ->
+                            {
+                                CouliIconButton(
+                                    icon = CouliIcons.close,
+                                    label = label,
+                                    onClick = { onValueChange("") },
+                                    modifier = clearButtonModifier,
+                                    tint = CouliColors.textSecondary,
+                                    iconSize = CouliSizes.iconMedium,
+                                )
+                            }
+                        },
                 )
             },
         )
-        FieldFooter(error = error, counter = maxLength?.let { "${value.length}/$it" })
+        FieldFooter(error = error?.takeIf { showErrorText }, counter = maxLength?.let { "${value.length}/$it" })
     }
 }
 
-/** 输入框外框：最小高 52、圆角 12、状态描边；禁用 / 只读铺 muted 底；可带前缀与清除。 */
+/** 输入框外框：最小高 52、圆角 12、状态描边；禁用 / 只读铺 muted 底；可带前缀与清除（[clearButton] 由调用方组好，给了时右侧不留内边距）。 */
 @Composable
 private fun FieldFrame(
     inner: @Composable () -> Unit,
@@ -140,8 +155,7 @@ private fun FieldFrame(
     border: BorderStroke,
     singleLine: Boolean,
     leading: (@Composable () -> Unit)?,
-    clearLabel: String?,
-    onClear: () -> Unit,
+    clearButton: (@Composable () -> Unit)?,
 ) {
     val shape = RoundedCornerShape(CouliRadius.button)
     Row(
@@ -152,7 +166,7 @@ private fun FieldFrame(
                 .clip(shape)
                 .background(if (muted) CouliColors.backgroundMuted else CouliColors.backgroundSurface)
                 .border(border, shape)
-                .padding(start = CouliSpacing.space4, end = if (clearLabel != null) 0.dp else CouliSpacing.space4),
+                .padding(start = CouliSpacing.space4, end = if (clearButton != null) 0.dp else CouliSpacing.space4),
         verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top,
     ) {
         leading?.invoke()
@@ -160,15 +174,7 @@ private fun FieldFrame(
             if (showPlaceholder) Text(text = placeholder, style = CouliTypography.body, color = CouliColors.textSecondary)
             inner()
         }
-        if (clearLabel != null) {
-            CouliIconButton(
-                icon = CouliIcons.close,
-                label = clearLabel,
-                onClick = onClear,
-                tint = CouliColors.textSecondary,
-                iconSize = CouliSizes.iconMedium,
-            )
-        }
+        clearButton?.invoke()
     }
 }
 

@@ -543,8 +543,11 @@ fun SettingsScreen(config: SettingsConfig) {
         title = texts.text("settings.title"),
         texts = texts,
         onBack = config.onBack,
+        contentPadding = SETTINGS_CONTENT_PADDING,
         overlay = {
-            MeToastHost(state.toast?.message(texts), state.toast?.id) { state.toast?.id?.let(controller::consumeToast) }
+            MeToastHost(state.toast?.message(texts), state.toast?.id, toastIcon(state.toast)) {
+                state.toast?.id?.let(controller::consumeToast)
+            }
             // 已有资料时刷新失败：保留资料，提示一次（统一错误文案 + trace6，R1-06）
             val refreshError = snapshot.error?.takeIf { snapshot.me != null && snapshot.identity == controller.identity }
             if (state.toast ==
@@ -555,50 +558,55 @@ fun SettingsScreen(config: SettingsConfig) {
         },
     ) {
         if (controller.identity.member) AccountStatus(deps, controller, snapshot, readBlocked)
-        model.groups.forEach { group ->
-            if (group.name.isNotEmpty()) MeDraftTexts.settingsKey(group.name)?.let { GroupLabel(texts.text(it)) }
-            RowCard(
-                group.rows.mapNotNull { row ->
-                    if (row.id == SettingsItems.ID_CLIPBOARD) {
-                        config.clipboardRow
-                    } else {
-                        { SettingsRowView(deps, controller, row, version, state) }
-                    }
-                },
+        model.groups.forEachIndexed { index, group ->
+            SettingsGroup(
+                label =
+                    group.name
+                        .takeIf { it.isNotEmpty() }
+                        ?.let(MeDraftTexts::settingsKey)
+                        ?.let(texts::text),
+                first = index == 0,
+                rows =
+                    group.rows.mapNotNull { row ->
+                        if (row.id == SettingsItems.ID_CLIPBOARD) {
+                            config.clipboardRow
+                        } else {
+                            { SettingsRowView(deps, controller, row, version, state) }
+                        }
+                    },
             )
         }
-        if (identityAllowsAgentRow(controller.identity.level)) config.agentRow?.let { row -> RowCard(listOf(row)) }
+        if (identityAllowsAgentRow(controller.identity.level)) config.agentRow?.let { row -> SettingsGroup(null, false, listOf(row)) }
         when (model.footer) {
             SettingsItems.FOOTER_LOGOUT -> {
+                // 距上一张卡 20 = 列间距 12 + 8（S9）
                 CouliButton(
                     text = texts.text("settings.logout"),
                     onClick = { controller.askLogout(version) },
                     enabled = !state.busy,
                     variant = CouliButtonVariant.SECONDARY,
                     loading = state.busy && state.dialog == null && state.sub == SettingsState.NONE,
-                    modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space3).testTag(MeTags.SETTINGS_LOGOUT),
+                    modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space2).testTag(MeTags.SETTINGS_LOGOUT),
+                    size = SETTINGS_LOGOUT_SIZE,
+                    textStyle = SETTINGS_LOGOUT_TEXT,
                 )
             }
 
             SettingsItems.FOOTER_LOGIN -> {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space3).testTag(MeTags.SETTINGS_FOOTER),
-                    verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-                ) {
-                    Text(text = texts.text("settings.guest_footer"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                    CouliButton(
-                        text = texts.text("settings.go_login"),
-                        onClick = { controller.login(version) },
-                        modifier = Modifier.fillMaxWidth().testTag(MeTags.SETTINGS_LOGIN),
-                    )
-                }
+                // 游客：居中说明 + 文字链接「去登录」（命中 48、视觉不撑高，间距 8；G-S08 ①）
+                GuestFooter(
+                    note = texts.text("settings.guest_footer"),
+                    link = texts.text("settings.go_login"),
+                ) { controller.login(version) }
             }
 
             else -> {
+                // 基本模式：提示条（muted、info 20、14/500）→ 通栏主按钮，间距 20（G-S08 ④）
+                BasicModeNotice(texts.text("privacy.basic_mode.notice"))
                 CouliButton(
                     text = texts.text("privacy.basic_mode.enable"),
                     onClick = { controller.enableFull(version) },
-                    modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space3).testTag(MeTags.SETTINGS_ENABLE_FULL),
+                    modifier = Modifier.fillMaxWidth().padding(top = CouliSpacing.space2).testTag(MeTags.SETTINGS_ENABLE_FULL),
                 )
             }
         }
@@ -616,6 +624,9 @@ fun SettingsScreen(config: SettingsConfig) {
                 dismissText = texts.text("settings.clear_cache.confirm_cancel"),
                 onDismissRequest = { controller.closeDialog(dialog) },
                 confirmTag = MeTags.CLEAR_DIALOG,
+                // G-S07：标题居中 + 令牌遮罩（组件库已有参数）
+                titleAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -629,6 +640,9 @@ fun SettingsScreen(config: SettingsConfig) {
                 onDismissRequest = { controller.closeDialog(dialog) },
                 dismissOnClickOutside = false,
                 confirmTag = MeTags.LOGOUT_DIALOG,
+                // G-S07：标题居中 + 令牌遮罩（组件库已有参数）
+                titleAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                scrim = CouliColors.overlayScrim,
             )
         }
     }
@@ -656,6 +670,7 @@ private fun AccountStatus(
                     retry =
                         com.couli.core.designsystem
                             .StateAction(texts.text("me.retry"), enabled = !blocked) { controller.retryMe() },
+                    actionModifier = Modifier.testTag(MeTags.SETTINGS_ME_RETRY),
                 )
             }
         }
@@ -710,11 +725,13 @@ private fun SettingsRowView(
             SettingsItems.ID_NICKNAME, SettingsItems.ID_PHONE -> row.clickable
             else -> true
         }
-    NavRow(
+    // 动作行「重新显示下单须知」不画 ›（BR-ATTR-21），仍可点、读屏仍是按钮（S5）
+    SettingsNavRow(
         title = texts.text(key),
         tag = MeTags.SETTINGS_ROW_PREFIX + key,
         value = value,
         onClick = if (clickable) ({ controller.onRow(row, version) }) else null,
+        chevron = clickable && row.id != SettingsItems.ID_RESET_TIP,
     )
 }
 
@@ -746,16 +763,19 @@ private fun AgreementSheet(
         onDismissRequest = { controller.closeSheet(sheet) },
         closeLabel = texts.text("me.close"),
     ) {
-        Column(modifier = Modifier.testTag(MeTags.AGREEMENT_SHEET), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-            choices.forEach { (_, params) ->
+        // 两条列表行（17、chevron 20、分隔线、上下 8，命中 48；G-S08 ②），文字与半屏标题左齐；行与行之间只隔分隔线（不再是按钮间距 12）
+        Column(
+            modifier = Modifier.fillMaxWidth().testTag(MeTags.AGREEMENT_SHEET),
+            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space0),
+        ) {
+            choices.forEachIndexed { index, (_, params) ->
                 val type = (params["type"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 val user = type == "agreement"
-                CouliButton(
-                    text = texts.text(if (user) "settings.agreement.user" else "settings.agreement.privacy"),
-                    onClick = { controller.openAgreement(params, version, sheet) },
-                    variant = CouliButtonVariant.SECONDARY,
-                    modifier = Modifier.fillMaxWidth().testTag(if (user) MeTags.AGREEMENT_USER else MeTags.AGREEMENT_PRIVACY),
-                )
+                AgreementSheetRow(
+                    title = texts.text(if (user) "settings.agreement.user" else "settings.agreement.privacy"),
+                    tag = if (user) MeTags.AGREEMENT_USER else MeTags.AGREEMENT_PRIVACY,
+                    divider = index > 0,
+                ) { controller.openAgreement(params, version, sheet) }
             }
         }
     }

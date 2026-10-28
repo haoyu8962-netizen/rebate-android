@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,16 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.error
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
-import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
-import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.couliCard
@@ -185,51 +179,54 @@ internal fun NicknamePage(
         .collectAsStateWithLifecycle()
     val check = controller.check(state.input)
     val errorFocus = remember { FocusRequester() }
-    MeSubPage(tag = MeTags.NICKNAME_PAGE, title = texts.text("nickname.title"), texts = texts, onBack = onBack) {
+    // 【保存】在底部固定白底操作栏（S19）；可用条件与回调原样，30415 后不置灰（G-S10）
+    MeSubPage(
+        tag = MeTags.NICKNAME_PAGE,
+        title = texts.text("nickname.title"),
+        texts = texts,
+        onBack = onBack,
+        contentPadding = SETTINGS_CONTENT_PADDING,
+        bottomSurface = true,
+        bottom = {
+            CouliButton(
+                text = texts.text("nickname.save"),
+                onClick = { controller.save() },
+                enabled = check.saveEnabled && !blocked && controller.editable,
+                loading = state.saving,
+                modifier = Modifier.fillMaxWidth().testTag(MeTags.NICKNAME_SAVE),
+            )
+        },
+    ) {
         val error = state.error?.message(texts)
+        // 白卡内边距 16、纵向 8：可见标签 → 输入框 → 错误 / 提示行 + 计数 → 说明句（S17 / S18）
         Column(
             modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
         ) {
-            OutlinedTextField(
+            NicknameLabel(texts.text("nickname.label"))
+            NicknameField(
                 value = state.input,
                 onValueChange = controller::onInput,
-                label = { Text(texts.text("nickname.label")) },
-                singleLine = true,
-                isError = state.fieldError,
+                label = texts.text("nickname.label"),
+                clearLabel = texts.text("nickname.clear"),
+                fieldError = error?.takeIf { state.fieldError },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CouliColors.brandPrimary),
-                trailingIcon = {
-                    if (state.input.isNotEmpty()) {
-                        CouliIconButton(
-                            icon = CouliIcons.close,
-                            label = texts.text("nickname.clear"),
-                            onClick = controller::clear,
-                            tint = CouliColors.textSecondary,
-                            iconSize = CouliSizes.iconSmall,
-                            modifier = Modifier.testTag(MeTags.NICKNAME_CLEAR),
-                        )
-                    }
-                },
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .semantics { if (state.fieldError && error != null) error(error) }
-                        .testTag(MeTags.NICKNAME_INPUT),
+                modifier = Modifier.fillMaxWidth().testTag(MeTags.NICKNAME_INPUT),
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
                 val hint =
                     when {
                         check.length > NicknameInput.MAX -> texts.text("nickname.too_long")
                         check.length == 0 && state.input.isNotEmpty() -> texts.text("nickname.empty")
                         else -> null
                     }
-                Text(
-                    text = hint.orEmpty(),
-                    style = CouliTypography.caption,
-                    color = CouliColors.statusErrorText,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    if (error != null) {
+                        ErrorFocusText(error, state.error?.id, errorFocus, MeTags.NICKNAME_ERROR, icon = CouliIcons.alert)
+                    } else if (hint != null) {
+                        NicknameHint(hint)
+                    }
+                }
                 Text(
                     text = texts.format("nickname.counter", mapOf("n" to check.length.toString())),
                     style = CouliTypography.caption,
@@ -237,18 +234,8 @@ internal fun NicknamePage(
                     modifier = Modifier.testTag(MeTags.NICKNAME_COUNTER),
                 )
             }
-            if (error != null) {
-                ErrorFocusText(error, state.error?.id, errorFocus, MeTags.NICKNAME_ERROR)
-            }
+            Text(text = texts.text("nickname.hint"), style = CouliTypography.caption, color = CouliColors.textSecondary)
         }
-        Text(text = texts.text("nickname.hint"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-        CouliButton(
-            text = texts.text("nickname.save"),
-            onClick = { controller.save() },
-            enabled = check.saveEnabled && !blocked && controller.editable,
-            loading = state.saving,
-            modifier = Modifier.fillMaxWidth().testTag(MeTags.NICKNAME_SAVE),
-        )
     }
 }
 
@@ -393,20 +380,18 @@ internal fun NotifySettingsPage(
         title = texts.text("notify.title"),
         texts = texts,
         onBack = onBack,
+        contentPadding = SETTINGS_CONTENT_PADDING,
         overlay = { MeToastHost(state.toast?.message(texts), state.toast?.id) { state.toast?.id?.let(controller::consumeToast) } },
     ) {
         if (state.system != STATUS_GRANTED) {
+            // 警告提示条 + 文字链接「去设置」（S20 / G-S08 ③ / G-S14）：只跳系统里本 App 的通知设置，不申请权限（BR-ID-13）
             NoteStrip(
                 text = texts.text("perm.push.denied_forever"),
                 modifier = Modifier.testTag(MeTags.NOTIFY_BAR),
-                icon = CouliIcons.bell,
+                icon = CouliIcons.alert,
+                tone = NoteTone.WARNING,
             ) {
-                CouliButton(
-                    text = texts.text("perm.go_settings"),
-                    onClick = controller::goSettings,
-                    variant = CouliButtonVariant.SECONDARY,
-                    modifier = Modifier.testTag(MeTags.NOTIFY_GO_SETTINGS),
-                )
+                NotifyGoSettingsLink(texts.text("perm.go_settings"), onClick = controller::goSettings)
             }
         }
         val service = state.service
@@ -420,6 +405,7 @@ internal fun NotifySettingsPage(
                         texts = texts,
                         tag = MeTags.NOTIFY_SWITCH,
                         enabled = !state.switching && !blocked,
+                        descBelow = true,
                         onChange = controller::toggle,
                     )
                 },

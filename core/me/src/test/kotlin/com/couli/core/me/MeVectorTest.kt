@@ -121,7 +121,8 @@ class MeVectorTest {
         check(vectors.getValue("gaps").jsonArray.isNotEmpty(), "manifest.gaps")
         check(
             // APP-12v：只新增的截图报文组由 MeVisualFixtureTest 校验；原业务组及断言保持。
-            vectors.keys - "visualMe" == (groups + listOf("version", "sources", "gaps")).toSet(),
+            // APP-12w-a（test-change）：再扣除只新增的 visualSettings（由 SettingsVisualFixtureTest 校验），其余根键与业务组断言不变。
+            vectors.keys - setOf("visualMe", "visualSettings") == (groups + listOf("version", "sources", "gaps")).toSet(),
             "manifest.groups",
         )
 
