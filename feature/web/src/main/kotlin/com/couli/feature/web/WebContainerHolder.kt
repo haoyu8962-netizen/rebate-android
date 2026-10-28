@@ -74,9 +74,20 @@ internal open class WebContainerHolder : ViewModel() {
             existing.detach()
             return existing
         }
-        val contextWrapper = MutableContextWrapper(context)
-        wrapper = contextWrapper
-        return create(contextWrapper).also { webView = it }
+        return create(contextFor(context)).also { webView = it }
+    }
+
+    /**
+     * 这个实例建 WebView 用的上下文：第一次建一个包着 [context] 的 [MutableContextWrapper]，之后每次进入组合换成当前 Activity
+     * （可信容器的页面槽位在切号时还会在它上面新建 WebView，F-X-25）。
+     */
+    protected fun contextFor(context: Context): Context {
+        val existing = wrapper
+        if (existing != null) {
+            existing.baseContext = context
+            return existing
+        }
+        return MutableContextWrapper(context).also { wrapper = it }
     }
 
     /**
@@ -127,7 +138,7 @@ internal open class WebContainerHolder : ViewModel() {
 
     override fun onCleared() = teardown()
 
-    private fun View.detach() {
+    protected fun View.detach() {
         (parent as? ViewGroup)?.removeView(this)
     }
 }

@@ -91,6 +91,12 @@ class NetworkHooks(
      */
     val onSessionStored: (generation: Long) -> Unit = {},
     /**
+     * 保存登录拿到的新会话之前（F-X-25 S1-01）：参数是新会话的账号。在保存登录所用的同一把锁里、写新令牌之前同步调用（网络线程），
+     * 接收方据此先持久写入「可信 Web 数据待清理」标记（账号与当前归属不同时），再让新会话落盘——中间被杀进程也不丢补清。返回标记是否已写成
+     * （写失败不阻止保存：冷启动的归属比对兜底）。要快、不得回调进 ApiClient。缺省什么都不做。
+     */
+    val beforeSessionSave: (account: String?) -> Boolean = { true },
+    /**
      * 逻辑调用入口时的导航票据（APP-12 G09）：App 给「此刻的导航状态」（栈顶条目、经 Router 的导航次数、选中的 Tab、进后台次数）；不透明，网络层只原样
      * 保存、交回 [onRiskNotice]。[ApiClient.send] 在调用方线程调用，其余入口在执行线程调用；要快、不阻塞。缺省 null。
      */

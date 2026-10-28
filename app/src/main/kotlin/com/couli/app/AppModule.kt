@@ -60,6 +60,7 @@ import com.couli.app.update.variantUpdateStore
 import com.couli.app.wallet.AppWallet
 import com.couli.app.web.AppWeb
 import com.couli.app.web.BridgeHostRegistry
+import com.couli.app.web.TrustedWebAuth
 import com.couli.core.bridge.WebConfigReader
 import com.couli.core.clientcore.AmountMaskStore
 import com.couli.core.clientcore.AtomicTextFile
@@ -124,6 +125,9 @@ import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
+import com.couli.feature.web.AndroidTrustedWebStore
+import com.couli.feature.web.TrustedWebViewFactory
+import com.couli.feature.web.WebViewCaches
 import com.couli.generated.ClientPlatform
 import com.couli.generated.InstallChannel
 import dagger.Module
@@ -166,6 +170,7 @@ object AppModule {
         privacyGate: Provider<PrivacyGate>,
         bridges: BridgeHostRegistry,
         readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
+        webAuth: TrustedWebAuth = TrustedWebAuth.NONE,
     ): EnvironmentSwitchCleanerRegistry =
         EnvironmentSwitchCleanerRegistry().apply {
             // 运行中切换环境（调试面板，在主线程）：开始时同步关环境闸门，并在任何等待之前同步作废网络世代、取消全部在途请求
@@ -224,6 +229,9 @@ object AppModule {
             register { _, _ -> agentInstance?.onEnvironmentSwitching() }
             register { _, _ -> homeLkgStore(context).clearAll() }
             register { _, _ -> homePrefsStore(context).clearAll() }
+            // F-X-25（I5）：明确清会话——不读凭据，直接隔离全部可信页面并登记可信 Web 数据待清理（清理成功后重载为新文档）；
+            // 排在清令牌之前（闸门已在切换开始时关闭、在途请求与桥调用已作废）
+            register { _, _ -> webAuth.sessionCleared(WEB_AUTH_ENVIRONMENT_SWITCH) }
             // 会话令牌（APP-03a）先清，再清整个 couli.session 等命名空间，最后删 Keystore 里的会话密钥（旧密文从此解不开）
             register { _, _ -> tokens.clear() }
             register(SharedPreferencesNamespaceCleaner(context))
@@ -280,6 +288,7 @@ object AppModule {
         orders: Provider<AppOrders>,
         wallet: Provider<AppWallet>,
         readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
+        webAuth: TrustedWebAuth = TrustedWebAuth.NONE,
     ): ApiClient {
         val main = Handler(Looper.getMainLooper())
         return ApiClient(
@@ -318,7 +327,8 @@ object AppModule {
                     onForceUpdateChecked = { min, stillValid -> main.post { if (stillValid()) update.on10405(min) } },
                     // 刷新失败清会话（clear_session_login / clear_session_stay_force_update）：同步守卫的会话状态，普通状态下跳登录
                     // （LoginSessionExpired，APP-05a）
-                    onEffect = { effect -> main.post { login.get().onNetworkEffect(effect) } },
+                    // F-X-25（I5）：刷新被拒 / 10404 确实清掉了本世代会话时，先在清理的同步区里登记可信 Web 数据待清理（不靠再读凭据）
+                    onEffect = webAuth.effectHook({ tokens.loginEpoch }) { effect -> main.post { login.get().onNetworkEffect(effect) } },
                     // 10402：单飞重新注册设备后沿用原键重放 1 次（BR-ID-09）
                     reRegisterDevice = device::reRegister,
                     // 有效世代的 10402（含重放里的）一律先隔离所用凭据（F-ALL-08，共性第 25 条）
@@ -326,21 +336,26 @@ object AppModule {
                     // 重放里再次 10402、预算用完：按清理世代登记一次恢复，启动唯一的退避注册链（R1-02）
                     recoverDevice = device::recoverAfterRejection,
                     // 会话保存、刷新、清理完成（APP-05a 共性第 14 条）：带世代切到主线程，同步 Router（受限转 full 时经守卫恢复待办）
-                    onSessionStored = { generation ->
-                        main.post {
-                            login.get().onSessionStored(generation)
-                            // 订单（APP-08）：会话换代即作废列表、详情、待跟单卡的在途请求，清掉旧账号的结果与缓存
-                            orders.get().onSessionChanged()
-                            // 钱包（APP-09）：会话换代即清掉已显示的余额、金额与已填内容，重置禁用期与 step-up token，按新会话重取
-                            wallet.get().onSessionChanged()
-                            // 「我的」（APP-12）：按新会话重算身份（清 Me 快照、移出只能登录访问的页面、推送会话跟踪）
-                            meInstance?.syncIdentity()
-                            // 首页（APP-11）：会话换代即作废旧控制器、按新身份重建（旧账号作用域的 LKG 清掉）
-                            homeInstance?.sync()
-                            // Agent 页（APP-10）：会话换代即作废旧控制器（不发 cancel），按新身份重建（从空对话开始）
-                            agentInstance?.sync()
-                        }
-                    },
+                    // F-X-25（I1）：先在保存 / 刷新 / 清除的同步区里把新身份交给切号协调器——账号变化或登出时可信页面在这里就被隔离，
+                    // 不等切到主线程（旧文档不会在这段时间里按新会话调桥）
+                    // F-X-25（S1-01）：保存登录拿到的新会话之前，账号变了先持久登记可信 Web 数据待清（中间被杀进程也不丢补清）
+                    beforeSessionSave = webAuth::beforeSessionSave,
+                    onSessionStored =
+                        webAuth.sessionHook { generation ->
+                            main.post {
+                                login.get().onSessionStored(generation)
+                                // 订单（APP-08）：会话换代即作废列表、详情、待跟单卡的在途请求，清掉旧账号的结果与缓存
+                                orders.get().onSessionChanged()
+                                // 钱包（APP-09）：会话换代即清掉已显示的余额、金额与已填内容，重置禁用期与 step-up token，按新会话重取
+                                wallet.get().onSessionChanged()
+                                // 「我的」（APP-12）：按新会话重算身份（清 Me 快照、移出只能登录访问的页面、推送会话跟踪）
+                                meInstance?.syncIdentity()
+                                // 首页（APP-11）：会话换代即作废旧控制器、按新身份重建（旧账号作用域的 LKG 清掉）
+                                homeInstance?.sync()
+                                // Agent 页（APP-10）：会话换代即作废旧控制器（不发 cancel），按新身份重建（从空对话开始）
+                                agentInstance?.sync()
+                            }
+                        },
                     // 10006 的统一落点（APP-12 G09）：入口时的导航票据（AppRouting 建好之前没有，落点一律不放行）与切到主线程后的一处判断
                     navigationTicket = { navTickets?.ticket() },
                     onRiskNotice = { ticket, stillValid -> main.post { meInstance?.on10006(ticket, stillValid) } },
@@ -386,6 +401,7 @@ object AppModule {
         device: Provider<DeviceRegistry>,
         tracker: Provider<TrackerQueue>,
         bridges: BridgeHostRegistry,
+        webAuth: TrustedWebAuth = TrustedWebAuth.NONE,
     ): CredentialCleanerRegistry =
         CredentialCleanerRegistry().apply {
             // 第一步：作废并取消全部在途请求（含还在等连接、TLS 的），已捕获凭据的请求不再写出（APP-03a A-R2-01）
@@ -394,6 +410,8 @@ object AppModule {
             register(AppAgent.AGENT_CONTROLLER_CLEANER) { agentInstance?.onConsentWithdrawing() }
             // APP-04：作废全部容器里在途的桥调用（撤回之后晚到的结果不交回页面）
             register(BRIDGE_CALLS_CLEANER) { bridges.invalidateAll() }
+            // F-X-25（I5）：撤回同意清会话——不读凭据，直接隔离全部可信页面并登记可信 Web 数据待清理
+            register(TRUSTED_WEB_CLEANER) { webAuth.sessionCleared(WEB_AUTH_PRIVACY_WITHDRAWAL) }
             // 首页（APP-11 R1-01）：在任何存储清理之前先作废首页控制器与预览实例（已排程的写入不再发起；存储层的世代票据挡住已在等锁的写入）
             register(AppHome.HOME_CONTROLLER_CLEANER) { homeInstance?.onConsentWithdrawing() }
             registerPlaceholderCredentialCleaners(context)
@@ -737,6 +755,7 @@ object AppModule {
         trade: Provider<AppTrade>,
         pendingInvite: PendingInviteCode,
         lastLoginMethod: LastLoginMethodStore,
+        webAuth: TrustedWebAuth = TrustedWebAuth.NONE,
     ): AppLogin =
         AppLogin(
             client = client,
@@ -762,6 +781,8 @@ object AppModule {
             // 换号的生产通知（G07，代码复审 r1 S2-2）：网络层每次保存 / 清理会话都转给剪贴板，由它按登录世代判断是否换号、清商品摘要；
             // 每次取当前实例（不捕获构造时的对象）
             login.sessionStoredListener = { clipboard.get().onSessionStored() }
+            // F-X-25（I5、S0-02）：退出登录、原会话确已结束时直接登记可信 Web 数据待清（不读凭据、不靠快照）
+            login.onLoggedOut = webAuth::onLoggedOut
             loginBuilt = true
         }
 
@@ -1152,7 +1173,60 @@ object AppModule {
         inFlight: InFlightCalls,
         login: Provider<AppLogin>,
         clipboard: Provider<AppClipboard>,
-    ): AppWeb = AppWeb(context, config, client, routing, privacy, update, tracker, permissions, bridges, tokens, inFlight, login, clipboard)
+        webAuth: TrustedWebAuth,
+    ): AppWeb =
+        AppWeb(
+            context,
+            config,
+            client,
+            routing,
+            privacy,
+            update,
+            tracker,
+            permissions,
+            bridges,
+            tokens,
+            inFlight,
+            login,
+            clipboard,
+            webAuth,
+        )
+
+    /** 可信 WebView 的切号协调器（F-X-25）：全 App 一份，建好即读持久待清标记（有则补清，冷启动可信页先等补清）。 */
+    @Provides
+    @Singleton
+    fun trustedAuthSync(
+        @ApplicationContext context: Context,
+        store: AndroidTrustedWebStore,
+    ): com.couli.core.bridge.TrustedAuthSync = TrustedWebAuth.create(context, store)
+
+    /**
+     * 可信容器的存储（F-X-25 v2，D10-309）：支持多配置文件时每次切号换新的可信配置文件，不支持时先拆后清默认配置文件；路径在本安装
+     * 第一次创建时判定并写盘，之后不换。
+     */
+    @Provides
+    @Singleton
+    fun trustedWebStore(
+        @ApplicationContext context: Context,
+    ): AndroidTrustedWebStore = TrustedWebAuth.store(context)
+
+    /** 可信 WebView 的唯一工厂（D10-310 (6)）：建好即挂在当前可信存储上。 */
+    @Provides
+    @Singleton
+    fun trustedWebViewFactory(store: AndroidTrustedWebStore): TrustedWebViewFactory = TrustedWebAuth.factory(store)
+
+    /** 切号入口（F-X-25）：会话钩子、明确清会话的清理项与可信容器经它取同一份协调器与 WebView 工厂。 */
+    @Provides
+    @Singleton
+    fun trustedWebAuth(
+        sync: Provider<com.couli.core.bridge.TrustedAuthSync>,
+        client: Provider<ApiClient>,
+        webViews: Provider<TrustedWebViewFactory>,
+    ): TrustedWebAuth =
+        TrustedWebAuth(sync, client, webViews).also { auth ->
+            // 设置页「清除缓存」的临时实例经可信工厂建（P 只清当前可信配置文件，D10-310 (6)）
+            WebViewCaches.trustedWebViews = auth::webViews
+        }
 
     /**
      * 剪贴板识别（APP-07；BR-ID-16、BR-INV-04）：系统剪贴板经 [AndroidSystemClipboard]；parse 经 ApiClient（请求带提示条 / 发起页的归属）；
@@ -1245,6 +1319,9 @@ object AppModule {
     private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
     private const val IN_FLIGHT_CALLS_CLEANER = "in_flight_calls"
     private const val BRIDGE_CALLS_CLEANER = "bridge_calls"
+    private const val TRUSTED_WEB_CLEANER = "trusted_web_data"
+    private const val WEB_AUTH_ENVIRONMENT_SWITCH = "environment_switch"
+    private const val WEB_AUTH_PRIVACY_WITHDRAWAL = "privacy_withdrawal"
     private const val CLIPBOARD_HASHES_CLEANER = "clipboard_hashes"
     private const val FAKE_ACCOUNT_CLEANER = "fake_account"
 }

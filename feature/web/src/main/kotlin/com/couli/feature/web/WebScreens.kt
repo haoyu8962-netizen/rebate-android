@@ -55,6 +55,7 @@ import com.couli.core.bridge.BridgeHost
 import com.couli.core.bridge.BridgeUi
 import com.couli.core.bridge.ExternalNavDecision
 import com.couli.core.bridge.ExternalNavPolicy
+import com.couli.core.bridge.TrustedAuthSync
 import com.couli.core.clientcore.ClientEvent
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
@@ -91,21 +92,56 @@ internal class TrustedWebHolder : WebContainerHolder() {
     var controller by mutableStateOf<TrustedWebViewController?>(null)
     var onOpenExternal: (String) -> Unit = {}
 
+    /** 当前这份目标的可信页面槽位（F-X-25 v2：切号时槽位不变，里面的 WebView 与控制器换新）。 */
+    var page: TrustedWebPage? = null
+
+    /** 正在第一次建页面（组合里）：这时交来的 WebView 直接由 AndroidView 取走，不必再推进代次。 */
+    private var creating = false
+
     /** 当前这份 WebView 用的地址与可信配置（第一次进入组合时取；首次没加载成、重试时换成重新生成的一份，R3-03）。 */
     var target: TrustedWebTarget? = null
 
     /** 当前 WebView 是否已按可信源开始加载过（没有的话重试要换新地址与配置重建，而不是 reload 空页）。 */
     var loaded = false
 
-    /** WebView 的代次：重试时换新地址与配置要重建 WebView（桥的可信源规则在建控制器时装上），代次一变 AndroidView 随之重建。 */
+    /**
+     * WebView 的代次：重试时换新地址与配置要重建页面；切号时页面槽位拆掉旧 WebView、在新存储上新建（被盖住时在后台建好）。代次一变
+     * AndroidView 随之重建，挂上槽位此刻的那份 WebView（拆后到建前是空白占位）。
+     */
     var generation by mutableIntStateOf(0)
 
-    /** 换一份 [fresh] 目标重建 WebView 与控制器（拆掉旧的；不是出栈拆除，容器实例仍在）。 */
+    /** 取这个实例的页面槽位（第一次时用 [create] 建）。 */
+    fun obtainPage(
+        context: Context,
+        create: (Context) -> TrustedWebPage,
+    ): TrustedWebPage {
+        val wrapped = contextFor(context)
+        page?.let { return it }
+        creating = true
+        try {
+            return create(wrapped).also { page = it }
+        } finally {
+            creating = false
+        }
+    }
+
+    /** 槽位此刻要显示的视图：当前 WebView（先从上一次组合的位置摘下），没有时是空白占位。 */
+    fun currentView(context: Context): View = page?.webView?.also { it.detach() } ?: View(context)
+
+    /** 槽位换了 WebView（切号新建、拆除）：控制器跟着换，界面按新代次重挂。 */
+    fun onPageChanged(current: TrustedWebPage) {
+        if (page !== current) return
+        controller = current.controller
+        if (!creating) generation += 1
+    }
+
+    /** 换一份 [fresh] 目标重建页面（拆掉旧的；不是出栈拆除，容器实例仍在）。 */
     fun rebuild(fresh: TrustedWebTarget) {
         target = fresh
         controller = null
         loaded = false
         replaceWebView()
+        page = null
         generation += 1
     }
 }
@@ -121,10 +157,11 @@ data class TrustedWebTarget(
  * 作用域（随路由出栈取消，被盖住时不取消）建宿主；返回 null 时不注入桥。地址不在可信源里时不加载，直接显示错误页。
  *
  * WebView 始终在同一个组合位置（R1-04、共性第 36 条）：immersive 只改内容区的上边距（标题栏浮在页面上或占位），错误页与加载提示
- * 都是盖在 WebView 上的覆盖层，切换时不重建 WebView、不丢地址、历史与表单。WebView 与控制器归 [TrustedWebHolder]，出栈时拆除。
+ * 都是盖在 WebView 上的覆盖层，切换时不重建 WebView、不丢地址、历史与表单。页面槽位（[TrustedWebPage]）与其 WebView、控制器归
+ * [TrustedWebHolder]，出栈时拆除。
  */
 @Composable
-@Suppress("CyclomaticComplexMethod", "LongMethod") // 标题栏的各个 setNavBar 参数、覆盖层与容器实例的保留
+@Suppress("CyclomaticComplexMethod", "LongMethod", "LongParameterList") // 标题栏的各个 setNavBar 参数、覆盖层与容器实例的保留
 fun TrustedWebScreen(
     url: String,
     config: TrustedWebConfig,
@@ -136,6 +173,16 @@ fun TrustedWebScreen(
      * WebView 并明确加载新地址；已加载过的照旧 reload。https、白名单与桥的可信源仍按新配置校验。
      */
     retarget: (() -> TrustedWebTarget)? = null,
+    /**
+     * 切号协调器（F-X-25）：页面槽位建好即登记（被盖住、退出组合不注销，随容器出栈拆除才注销）。生产的可信会话容器必须传 App 的那一份；
+     * 身份未比对或存在待清理时首次加载由它在存储就绪后发起，补清失败显示错误页，【重试】先补清再加载。
+     */
+    authSync: TrustedAuthSync? = null,
+    /**
+     * 可信 WebView 工厂（F-X-25 D10-310 (6)）：生产的可信会话容器必须传 App 的那一份（建好即挂在当前可信存储上）；null 为默认配置文件
+     * （不涉及会话的独立容器、既有测试，WebView 由 [LocalWebViewFactory] 建）。
+     */
+    webViews: TrustedWebViewFactory? = null,
 ) {
     val holder: TrustedWebHolder = viewModel(key = TRUSTED_HOLDER_KEY)
     if (holder.target == null) holder.target = TrustedWebTarget(url, config)
@@ -143,7 +190,10 @@ fun TrustedWebScreen(
     holder.onClose = onClose
     holder.onOpenExternal = onOpenExternal
     val navBar = holder.navBar
-    val factory = LocalWebViewFactory.current
+    val base = LocalWebViewFactory.current
+    // 会话容器（交了协调器）必须同时交可信工厂，不静默落回默认配置文件（评审 v2 r1 S2-06）
+    require((authSync == null) == (webViews == null)) { "TrustedWebScreen: authSync and webViews must be passed together" }
+    val factory = webViews ?: remember(base) { TrustedWebViewFactory.defaultProfile(base) }
     BackHandler { holder.controller?.takeIf { it.canGoBack() }?.goBack() ?: holder.close() }
     LifecycleEvents(onResume = { holder.controller?.onResume() }, onPause = { holder.controller?.onPause() })
     StatusBarAppearance(navBar.statusBarStyle)
@@ -167,9 +217,10 @@ fun TrustedWebScreen(
                         modifier = Modifier.fillMaxSize(),
                         factory = { context ->
                             val target = holder.target ?: TrustedWebTarget(url, config)
-                            holder.obtain(context) { wrapped ->
-                                createTrustedWebView(wrapped, holder, target.url, target.config, hostFactory, factory)
+                            holder.obtainPage(context) { wrapped ->
+                                createTrustedPage(wrapped, holder, target, hostFactory, factory, authSync)
                             }
+                            holder.currentView(context)
                         },
                     )
                 }
@@ -199,42 +250,64 @@ fun TrustedWebScreen(
     }
 }
 
-/** 建这个实例的 WebView 与可信控制器（只在第一次进入组合时）；拆除动作登记进 [holder]。 */
+/** 建这个实例的页面槽位（只在第一次进入组合时）：WebView 与可信控制器由槽位经 [webViews] 建；拆除动作登记进 [holder]。 */
 @Suppress("LongParameterList")
-private fun createTrustedWebView(
+private fun createTrustedPage(
     context: Context,
     holder: TrustedWebHolder,
-    url: String,
-    config: TrustedWebConfig,
+    target: TrustedWebTarget,
     hostFactory: (BridgeUi, CoroutineScope) -> BridgeHost?,
-    factory: (Context) -> WebView,
-): WebView =
-    factory(context).also { webView ->
-        val ui =
-            ContainerUi(
-                toast = { message, long -> Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show() },
-                loading = { holder.loading = it },
-                navBar = holder.navBar::apply,
-                close = holder::close,
-            )
-        val callbacks =
-            object : TrustedWebCallbacks {
-                override fun onOpenExternal(url: String) = holder.onOpenExternal(url)
+    webViews: TrustedWebViewFactory,
+    authSync: TrustedAuthSync?,
+): TrustedWebPage {
+    val url = target.url
+    val config = target.config
+    val ui =
+        ContainerUi(
+            toast = { message, long -> Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show() },
+            loading = { holder.loading = it },
+            navBar = holder.navBar::apply,
+            close = holder::close,
+        )
+    val callbacks =
+        object : TrustedWebCallbacks {
+            override fun onOpenExternal(url: String) = holder.onOpenExternal(url)
 
-                override fun onLoadFailed() {
-                    holder.failed = true
-                }
-
-                override fun onTitle(title: String) {
-                    holder.pageTitle = title
-                }
+            override fun onLoadFailed() {
+                holder.failed = true
             }
-        val controller = TrustedWebViewController(webView, config, hostFactory(ui, holder.viewModelScope), callbacks)
-        holder.controller = controller
-        holder.onTeardown(invalidate = controller::invalidateCalls, destroy = controller::destroy)
-        holder.failed = !config.allows(url)
-        holder.loaded = controller.load(url)
-    }
+
+            override fun onTitle(title: String) {
+                holder.pageTitle = title
+            }
+
+            override fun onAuthRecovered() {
+                // 补清成功、已在新存储上建好新账号的文档：收起补清失败时的错误页
+                holder.failed = false
+                holder.loaded = true
+            }
+        }
+    var created: TrustedWebPage? = null
+    val page =
+        TrustedWebPage(context, webViews, config, { hostFactory(ui, holder.viewModelScope) }, callbacks, authSync) {
+            created?.let(holder::onPageChanged)
+        }
+    created = page
+    page.onRetired = { holder.onPageChanged(page) }
+    holder.page = page
+    holder.controller = page.controller
+    holder.onTeardown(
+        invalidate = {
+            page.webView?.let { web -> (web.parent as? android.view.ViewGroup)?.removeView(web) }
+            page.invalidateCalls()
+        },
+        destroy = page::destroy,
+    )
+    holder.failed = !config.allows(url)
+    holder.loaded = page.load(url)
+    holder.controller = page.controller
+    return page
+}
 
 /**
  * 【重试】（R3-03、F-AND-26）：每次都按重新读取的生效配置生成新的一份（[retarget]）并与当前这份比较——
@@ -242,8 +315,22 @@ private fun createTrustedWebView(
  *   按新的一份校验后重建 WebView 与控制器并明确加载新地址（桥的可信源规则在建控制器时装上）；
  * - 地址与可信配置都没变的，按当前这份再判一次后 reload。
  * 新的一份不可信（不是 https、不在白名单）时继续显示加载失败，不加载。
+ * 切号隔离中的（补清 / 身份比对失败，F-X-25 I3）：先交协调器补清，成功后由它新建并加载入口地址；不在这里直接加载或重建。
  */
 private fun retry(
+    holder: TrustedWebHolder,
+    retarget: (() -> TrustedWebTarget)?,
+) {
+    val blocked = holder.page?.takeIf { it.authBlocked }
+    if (blocked != null) {
+        holder.failed = false
+        blocked.retryAuth()
+    } else {
+        retryLoad(holder, retarget)
+    }
+}
+
+private fun retryLoad(
     holder: TrustedWebHolder,
     retarget: (() -> TrustedWebTarget)?,
 ) {

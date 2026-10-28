@@ -279,12 +279,24 @@ class BridgeHost(
         if (!envelope.structureValid || method == null) return reply(BridgeProtocol.response(id, BridgeCode.INVALID_PARAMS))
         val state = caller()
         val params = envelope.params ?: JsonObject(emptyMap())
-        val ctx = BridgeContext(method, origin, isMainFrame, userGesture, state.privacy, state.loggedIn, params)
+        val ctx = BridgeContext(method, origin, isMainFrame, userGesture, state.privacy, state.loggedIn, params, documentIsolated)
         val decision = protocol().decide(ctx)
         if (!decision.allow) return reject(id, method, decision.errorCode ?: BridgeCode.NOT_ALLOWED, reply, decision.data)
         val contract = BridgeContract.methods.getValue(method)
         if (contract.sinceAndroid == null || method !in IMPLEMENTED) return reject(id, method, BridgeCode.NOT_SUPPORTED, reply)
         start(id, contract, params, state, Reply(reply, deliver))
+    }
+
+    /** 本容器当前文档处于切号隔离（F-X-25 I1）：新调用一律在协议准入处拒绝，不进任何处理器。 */
+    @Volatile private var documentIsolated = false
+
+    /**
+     * 进入 / 解除文档隔离（F-X-25 I1，任何线程）。进入时同时作废全部在途调用（被作废的以 90500 结束，迟到的结果不交回）；隔离期间的
+     * 新调用经 [BridgeProtocol.decide] 拒绝，处理器不执行；已准入的调用结算时也复核（S2-01）。F-X-25 v2 里隔离的宿主不再解除（随旧 WebView 拆除）。
+     */
+    fun setDocumentIsolated(isolated: Boolean) {
+        documentIsolated = isolated
+        if (isolated) invalidate()
     }
 
     /**
@@ -415,7 +427,8 @@ class BridgeHost(
                 // 只移除自己的登记：invalidate 之后同一个 id 可能已被新的调用占用
                 val mine = inFlight[id] === self
                 if (mine) inFlight.remove(id)
-                mine && (generation == owner.generation || self === exempt)
+                // S2-01（F-X-25 I1）：准入之后才进入隔离的调用，结算时同样按隔离拒绝，不把结果交回旧文档
+                mine && (generation == owner.generation || self === exempt) && !documentIsolated
             } && sessionHolds(owner, outcome)
         val after = (outcome as? BridgeOutcome.Ok)?.afterReply
         when {
@@ -483,7 +496,7 @@ class BridgeHost(
 
     /** 回复执行完之后的复核：宿主世代没变（没有被作废）、会话与隐私仍是调用开始时的。 */
     private fun stillCurrent(owner: Owner): Boolean {
-        val sameGeneration = synchronized(lock) { generation == owner.generation }
+        val sameGeneration = synchronized(lock) { generation == owner.generation } && !documentIsolated
         val now = caller()
         return sameGeneration && now.privacy == owner.state.privacy && now.sameSession(owner.state)
     }

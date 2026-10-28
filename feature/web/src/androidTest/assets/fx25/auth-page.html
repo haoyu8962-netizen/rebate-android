@@ -1,0 +1,108 @@
+<!doctype html><meta charset="utf-8"><title>F-X-25 invariant probe</title>
+<script src="/__CACHE__"></script>
+<script>
+'use strict';
+window.fx25Document = crypto.randomUUID();
+window.fx25Events = [];
+window.fx25Replies = [];
+window.fx25Storage = null;
+window.fx25Seeded = false;
+const key = '__KEY__';
+function audit(value) {
+  if (window.__fx25Audit) window.__fx25Audit.postMessage(JSON.stringify(value));
+}
+if (window.__REBATE_BRIDGE__) {
+  window.__REBATE_BRIDGE__.subscribe(function (event) {
+    if (event.event === 'auth.changed') {
+      window.fx25Events.push(event);
+      audit({type: 'auth', document: window.fx25Document, data: event.data});
+    }
+  });
+}
+function database(action) {
+  return new Promise(function (resolve, reject) {
+    const open = indexedDB.open(key, 1);
+    open.onupgradeneeded = function () { open.result.createObjectStore('identity'); };
+    open.onerror = function () { reject(open.error); };
+    open.onsuccess = function () {
+      const db = open.result;
+      const tx = db.transaction('identity', 'readwrite');
+      const request = action(tx.objectStore('identity'));
+      let result;
+      request.onsuccess = function () { result = request.result; };
+      tx.oncomplete = function () { db.close(); resolve(result === undefined ? null : result); };
+      tx.onerror = function () { db.close(); reject(tx.error); };
+      tx.onabort = function () { db.close(); reject(tx.error); };
+    };
+  });
+}
+window.fx25Seed = async function () {
+  document.cookie = key + '=user-a; Path=/; Secure; SameSite=Lax';
+  localStorage.setItem(key, 'user-a');
+  sessionStorage.setItem(key, 'user-a');
+  await database(function (store) { return store.put('user-a', 'owner'); });
+  window.fx25Seeded = true;
+};
+window.fx25Read = async function () {
+  const owner = await database(function (store) { return store.get('owner'); });
+  window.fx25Storage = {
+    cookie: document.cookie.split('; ').includes(key + '=user-a'),
+    local: localStorage.getItem(key), session: sessionStorage.getItem(key), indexed: owner
+  };
+};
+window.fx25Call = function (id, method) {
+  return window.__REBATE_BRIDGE__.postMessage({v: 1, id: id, method: method, params: {}}).then(function (reply) {
+    window.fx25Replies.push(reply);
+    audit({type: 'reply', document: window.fx25Document, reply: reply});
+    return reply;
+  });
+};
+// v3 迟到写入：旧文档在 setInterval(0) 与 pagehide 里用属性赋值和 setItem 写 local / session、写 document.cookie、IndexedDB；
+// 发 sendBeacon 与 fetch(keepalive)（回环服务把切号后到达的扣到 rotate 之后再带 Set-Cookie 放出）。net = 'always' 时定时器里也发网络请求，
+// 'pagehide' 只在 pagehide 里发（F 路径：隔离前已在途的 keepalive 是 D10-310 (2) 写明的残余风险，不在本用例里制造）。
+window.fx25Writes = 0;
+window.fx25Armed = false;
+window.fx25Arm = function (net) {
+  function writeAll(tag) {
+    window.fx25Writes += 1;
+    try {
+      localStorage[key + '_lp'] = tag;
+      localStorage.setItem(key + '_ls', tag);
+      sessionStorage[key + '_sp'] = tag;
+      sessionStorage.setItem(key + '_ss', tag);
+      document.cookie = key + '_late=' + tag + '; Path=/; Secure; SameSite=Lax';
+      database(function (store) { return store.put(tag, 'late'); }).catch(function () {});
+    } catch (e) {}
+  }
+  function send(tag) {
+    try { navigator.sendBeacon('/fx25-late?beacon=' + tag, 'x'); } catch (e) {}
+    try {
+      fetch('/fx25-late?keepalive=' + tag, {method: 'POST', body: 'x', keepalive: true, credentials: 'include'})
+        .catch(function () {});
+    } catch (e) {}
+  }
+  setInterval(function () {
+    writeAll('interval');
+    if (net === 'always') send('interval');
+  }, 0);
+  window.addEventListener('pagehide', function () {
+    writeAll('pagehide');
+    send('pagehide');
+    audit({type: 'pagehide', document: window.fx25Document});
+  });
+  window.fx25Armed = true;
+};
+window.fx25ReadLate = async function () {
+  let indexed = null;
+  try { indexed = await database(function (store) { return store.get('late'); }); } catch (e) { indexed = 'read-failed'; }
+  const cookies = document.cookie.split('; ');
+  window.fx25Late = {
+    cookie: cookies.some(function (c) { return c.indexOf(key + '_late=') === 0; }),
+    server: cookies.some(function (c) { return c.indexOf(key + '_srv=') === 0; }),
+    localProperty: localStorage.getItem(key + '_lp'), localSetItem: localStorage.getItem(key + '_ls'),
+    sessionProperty: sessionStorage.getItem(key + '_sp'), sessionSetItem: sessionStorage.getItem(key + '_ss'),
+    indexed: indexed
+  };
+};
+audit({type: 'ready', document: window.fx25Document});
+</script>

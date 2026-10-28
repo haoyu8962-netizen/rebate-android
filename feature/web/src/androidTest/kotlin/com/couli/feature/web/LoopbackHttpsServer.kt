@@ -7,7 +7,9 @@ import java.net.InetAddress
 import java.net.Socket
 import java.security.KeyStore
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
@@ -44,6 +46,9 @@ class LoopbackHttpsServer(
     private val socket: SSLServerSocket
     private val workers = Executors.newCachedThreadPool()
 
+    /** 已接受、尚未服务完的连接：关停时一并关掉，不让残留连接（及阻塞在读上的工作线程）拖进下一个用例。 */
+    private val clients: MutableSet<Socket> = Collections.newSetFromMap(ConcurrentHashMap())
+
     @Volatile
     private var closed = false
 
@@ -59,10 +64,35 @@ class LoopbackHttpsServer(
     }
 
     private fun acceptLoop() {
-        while (!closed) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: break
-            workers.execute { runCatching { client.use(::serve) } }
+        var accepting = true
+        while (accepting && !closed) {
+            val client = runCatching { socket.accept() }.getOrNull()
+            accepting = client != null && dispatch(client)
         }
+    }
+
+    /**
+     * 把连接交给工作线程。关停竞态（accept 刚返回、[close] 已关池）下 execute 会抛 RejectedExecutionException——它若逃出 accept
+     * 线程就是未捕获异常、整个仪器进程崩溃。这里先登记再查关停标志：关停后到达或被池拒收的连接直接关掉、结束 accept 循环，不抛出。
+     */
+    private fun dispatch(client: Socket): Boolean {
+        clients += client
+        val handed =
+            !closed &&
+                runCatching {
+                    workers.execute {
+                        try {
+                            runCatching { client.use(::serve) }
+                        } finally {
+                            clients -= client
+                        }
+                    }
+                }.isSuccess
+        if (!handed) {
+            clients -= client
+            runCatching { client.close() }
+        }
+        return handed
     }
 
     private fun serve(client: Socket) {
@@ -101,10 +131,13 @@ class LoopbackHttpsServer(
     /** 某个主机收到的请求。 */
     fun to(host: String): List<Recorded> = synchronized(requests) { requests.filter { it.host == host } }
 
+    /** 关停顺序：置关停标志 → 关监听（停 accept）→ 关残留连接（解开阻塞在读上的工作线程）→ 关池并有界等待退出。可重复调用。 */
     override fun close() {
         closed = true
         runCatching { socket.close() }
+        clients.toList().forEach { runCatching { it.close() } }
         workers.shutdownNow()
+        runCatching { workers.awaitTermination(SHUTDOWN_WAIT_MS, TimeUnit.MILLISECONDS) }
     }
 
     private fun readLine(input: InputStream): String? {
@@ -134,5 +167,6 @@ class LoopbackHttpsServer(
         private val PASSWORD = "test-only".toCharArray()
         private const val BACKLOG = 16
         private const val BUFFER = 4096
+        private const val SHUTDOWN_WAIT_MS = 2_000L
     }
 }

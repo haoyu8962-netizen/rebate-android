@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
@@ -19,6 +20,7 @@ import com.couli.core.bridge.AuthPages
 import com.couli.core.bridge.BridgeHost
 import com.couli.core.bridge.BridgeProtocol
 import java.io.ByteArrayInputStream
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 可信容器的来源配置。
@@ -54,14 +56,22 @@ interface TrustedWebCallbacks {
     fun onTitle(title: String) = Unit
 
     fun onPageStarted() = Unit
+
+    /** 切号隔离已解除（F-X-25：换存储成功、已在新 WebView 上建好新账号的文档）：外层收起此前因补清失败显示的错误页。 */
+    fun onAuthRecovered() = Unit
 }
 
 /**
  * 可信容器（TrustedWebView，03 §5.1）：只加载可信 H5 源的 https 主框架（Debug 本机源例外）；注入桥传输层（[BridgeTransport]）；
  * 证书错误一律取消（CSB-02）；非 https 的导航一律取消；跳到白名单外的 https 地址交给 [TrustedWebCallbacks.onOpenExternal]。
  * [host] 为 null 时不注入桥（系统 WebView 不支持传输层也一样）。
+ *
+ * 切号（F-X-25 v2，D10-309）：一个控制器只管一份 WebView、一份文档序列。生产里由 [TrustedWebPage] 建（WebView 出自
+ * [TrustedWebViewFactory]）。[isolate] 之后（任何线程、同步）：桥调用一律拒绝、不交新令牌、[load] / [reload] / [goBack] / 页面发起的
+ * 导航一律拦下、后台拦截入口对**全部** http(s) 请求（主框架 204、其余 403，含 beacon / keepalive）不放行——隔离不再解除，这份
+ * WebView 随后由 [retire] 拆掉（about:blank 提交、下树、传输层 dispose、destroy），新文档一定建在新的 WebView 与新控制器上。
  */
-@Suppress("TooManyFunctions") // 加载、生命周期事件、返回、回弹与销毁逐项一个入口
+@Suppress("TooManyFunctions") // 加载、生命周期事件、返回、回弹、切号隔离、拆除与销毁逐项一个入口
 class TrustedWebViewController(
     private val webView: WebView,
     private val config: TrustedWebConfig,
@@ -77,6 +87,23 @@ class TrustedWebViewController(
     /** 桥是否已注入（系统 WebView 不支持 WEB_MESSAGE_LISTENER / DOCUMENT_START_SCRIPT 时为 false）。 */
     val bridgeInstalled: Boolean
 
+    /** 切号隔离中（F-X-25 I1）；任何线程写，后台拦截线程读。隔离后不再解除。 */
+    @Volatile private var isolated = false
+    private var destroyed = false
+
+    /** 等新文档就绪的那次加载（[loadDocument]）；只在主线程读写。 */
+    private var awaiting: Awaiting? = null
+
+    /** 拆除中等 about:blank 提交的回调（[retire]）；只在主线程读写。 */
+    private var retiring: ((Boolean) -> Unit)? = null
+
+    private class Awaiting(
+        val completed: (Boolean) -> Unit,
+    ) {
+        /** 这次加载提交的可信文档的世代（提交前为 null）。 */
+        var generation: Long? = null
+    }
+
     init {
         webView.applyContainerSettings(config.appVersion)
         gesture.attach(webView)
@@ -91,16 +118,18 @@ class TrustedWebViewController(
                 }
             }
         bridgeInstalled = transport?.install(config.originRules) == true
+        transport?.onDocumentBound = ::onDocumentBound
     }
 
-    /** 加载 [url]：只接受可信源，授权页不进容器（初始地址同样检查，APP-04 三端共性第 16 条）；其余不加载并返回 false。 */
+    /** 加载 [url]：只接受可信源，授权页不进容器（初始地址同样检查，APP-04 三端共性第 16 条）；其余不加载并返回 false。隔离中不加载。 */
     fun load(url: String): Boolean {
-        if (!config.allows(url) || AuthPages.isAuthPage(url)) return false
+        if (!loadable(url)) return false
         webView.loadUrl(url)
         return true
     }
 
     fun reload() {
+        if (isolated || destroyed) return
         transport?.onNavigationStarting()
         webView.reload()
     }
@@ -121,17 +150,10 @@ class TrustedWebViewController(
         transport?.emit(EVENT_PAUSE)
     }
 
-    /** 登录状态变化：auth.changed（只带 logged_in）。 */
-    fun onAuthChanged(loggedIn: Boolean) {
-        transport?.emit(
-            EVENT_AUTH,
-            kotlinx.serialization.json.JsonObject(mapOf("logged_in" to kotlinx.serialization.json.JsonPrimitive(loggedIn))),
-        )
-    }
-
-    fun canGoBack(): Boolean = webView.canGoBack()
+    fun canGoBack(): Boolean = !isolated && !destroyed && webView.canGoBack()
 
     fun goBack() {
+        if (isolated || destroyed) return
         transport?.onNavigationStarting()
         webView.goBack()
     }
@@ -139,25 +161,129 @@ class TrustedWebViewController(
     /** 路由出栈的第一步（立即）：作废全部在途调用（正在触发这次导航的那一次先结算，第 43 条）、停止加载。 */
     fun invalidateCalls() {
         transport?.onNavigationStarting()
-        webView.stopLoading()
+        if (!destroyed) webView.stopLoading()
     }
 
     /**
      * 最终拆除：拆传输层、销毁 WebView。关闭本容器的那次桥调用（nav.open 清栈、nav.close）还没把回复交给页面时，等它交出之后再拆
-     * （共性第 53 条）——传输层不能因为先拆掉而丢掉这条回复。只拆一次。
+     * （共性第 53 条）——传输层不能因为先拆掉而丢掉这条回复。只拆一次。拆除中、等新文档中的协调器请求随之结束（销毁即已拆，新文档不会来）。
      */
-    fun destroy() {
-        if (destroyed) return
+    fun destroy(afterRelease: () -> Unit = {}) {
+        if (destroyed) return afterRelease()
         destroyed = true
+        // 拆除中途出栈：WebView 真正销毁之后才确认拆除（评审 v2 r2 S2-3(b)）
+        val pendingRetire = retiring
+        retiring = null
+        failAwaiting()
         val release = {
             transport?.dispose()
             webView.stopLoading()
             webView.destroy()
+            pendingRetire?.invoke(true)
+            afterRelease()
         }
         transport?.afterClosingCallReplied(release) ?: release()
     }
 
-    private var destroyed = false
+    /** 渲染进程已退出（评审 v2 r1 S2-05）：这份文档已不存在，拆除不必等 about:blank（等不到），直接下树销毁并确认。 */
+    @Volatile private var rendererGone = false
+
+    // ---- 切号（F-X-25 v2；由 TrustedWebPage 调用）
+
+    /** 当前主框架仍可信（按本容器的规则与当前生效配置）；没有文档、已销毁为 false。主线程。 */
+    internal val currentTrusted: Boolean get() = !destroyed && transport?.currentTrustedOrigin() != null
+
+    /** 当前文档的令牌已确认绑定。主线程。 */
+    internal val tokenDelivered: Boolean get() = !destroyed && transport?.documentBound == true
+
+    /** 同步进入隔离（任何线程，I1）：宿主拒绝一切调用并作废在途调用、握手不再交令牌、导航与全部请求拦下。不再解除。 */
+    internal fun isolate() {
+        isolated = true
+        transport?.isolate()
+        if (Looper.myLooper() == Looper.getMainLooper()) failAwaiting() else main.post { failAwaiting() }
+    }
+
+    /** auth.changed 的专用投递（I7，主线程）：交给持当前令牌的文档执行，[completed] 的 true 为已执行。 */
+    internal fun notifyAuthChanged(
+        data: JsonObject,
+        completed: (Boolean) -> Unit,
+    ) {
+        val channel = transport
+        if (destroyed || channel == null) return completed(false)
+        channel.emitAuthChanged(data, completed)
+    }
+
+    /**
+     * 新建页加载入口（主线程）：[completed] 的 true 只在这次加载提交了可信新文档、且它的令牌已确认绑定时给出（没有桥时提交即就绪）；
+     * 加载失败、落到别处、渲染进程退出、被隔离或销毁为 false。
+     */
+    internal fun loadDocument(
+        url: String,
+        completed: (Boolean) -> Unit,
+    ) {
+        failAwaiting()
+        if (!loadable(url)) return completed(false)
+        awaiting = Awaiting(completed)
+        webView.loadUrl(url)
+    }
+
+    /**
+     * 拆掉这份 WebView（主线程，I1 先拆后清）：停止加载 → 加载 about:blank 并等它提交完成（旧文档的 pagehide 在这之前执行完，期间的
+     * 请求被隔离拦下）→ 从父视图摘下 → 传输层 dispose → destroy，之后 [completed] 才给 true。about:blank 一直不提交就不回调（协调器按
+     * 超时失败处理，旧 WebView 保持隔离、不强制销毁）。只在隔离之后调用。
+     */
+    internal fun retire(completed: (Boolean) -> Unit) {
+        if (destroyed) return completed(true)
+        retiring = completed
+        if (rendererGone) return finishRetire()
+        webView.stopLoading()
+        webView.loadUrl(ABOUT_BLANK)
+    }
+
+    /** 没有隔离、没有销毁，地址是可信源且不是授权页（APP-04 共性第 16 条）。 */
+    private fun loadable(url: String): Boolean = !isolated && !destroyed && config.allows(url) && !AuthPages.isAuthPage(url)
+
+    private fun finishRetire() {
+        val pending = retiring ?: return
+        retiring = null
+        destroyed = true
+        failAwaiting()
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        transport?.dispose()
+        webView.destroy()
+        pending(true)
+    }
+
+    private fun failAwaiting() {
+        val attempt = awaiting ?: return
+        awaiting = null
+        attempt.completed(false)
+    }
+
+    /** 新文档的令牌已确认绑定：它就是这次加载要等的那份文档时，就绪。 */
+    private fun onDocumentBound(generation: Long) {
+        val attempt = awaiting ?: return
+        if (attempt.generation == generation) {
+            awaiting = null
+            attempt.completed(true)
+        }
+    }
+
+    /** 等待中的加载提交了主框架：可信新文档等令牌绑定（没有桥时提交即就绪）；落到别处按失败。 */
+    private fun onDocumentCommitted(
+        attempt: Awaiting,
+        url: String?,
+    ) {
+        val trusted = url != null && config.allows(url) && !AuthPages.isAuthPage(url)
+        if (!trusted) return failAwaiting()
+        val channel = transport
+        if (channel == null || !bridgeInstalled) {
+            awaiting = null
+            attempt.completed(true)
+            return
+        }
+        attempt.generation = channel.generation
+    }
 
     /** [target] 与当前地址只差片段（同一文档内的跳转）。 */
     private fun sameDocument(
@@ -165,8 +291,7 @@ class TrustedWebViewController(
         target: String,
     ): Boolean = current != null && '#' in target && current.substringBefore('#') == target.substringBefore('#')
 
-    private fun visible(value: Boolean) =
-        kotlinx.serialization.json.JsonObject(mapOf("visible" to kotlinx.serialization.json.JsonPrimitive(value)))
+    private fun visible(value: Boolean) = JsonObject(mapOf("visible" to kotlinx.serialization.json.JsonPrimitive(value)))
 
     // onRenderProcessGone 已实现（返回 true 并显示错误页）；该检查认不出 Kotlin 内部类里的覆写
     @SuppressLint("MissingOnRenderProcessGone")
@@ -175,6 +300,8 @@ class TrustedWebViewController(
             view: WebView,
             request: WebResourceRequest,
         ): Boolean {
+            // 切号隔离（F-X-25 I1）：页面发起的导航一律取消
+            if (isolated) return true
             val url = request.url.toString()
             val https = url.startsWith(HTTPS_PREFIX, ignoreCase = true)
             return when {
@@ -215,14 +342,17 @@ class TrustedWebViewController(
          * 主框架：授权页、不可信源（含平台域）的请求——包括不经 shouldOverrideUrlLoading 的表单 POST——不发出，回 **204 No Content**：
          * 204 的导航响应不提交新文档，原页面（DOM、表单、地址、历史）保持不动（R1-07、共性第 37 条；不用替代文档冒充取消）。
          * 放行的主框架请求（前进后退、刷新、POST、初始地址）在发出前就作废旧页面的调用（第 29 条）。
+         * 切号隔离中（F-X-25 I1）：一律不放行——主框架 204，其余（脚本、XHR / fetch、sendBeacon、keepalive）403，旧文档不能再借
+         * 网络响应的 Set-Cookie 写回（没有「重载期放行」）。
          */
-        @Suppress("ReturnCount") // 非网络、主框架拦下、主框架放行、子框架
+        @Suppress("ReturnCount") // 非网络、隔离、主框架拦下、主框架放行、子框架
         override fun shouldInterceptRequest(
             view: WebView,
             request: WebResourceRequest,
         ): WebResourceResponse? {
             val url = request.url.toString()
             if (!url.startsWith(HTTP_PREFIX, ignoreCase = true)) return null
+            if (isolated) return if (request.isForMainFrame) ExternalWebViewController.noContentResponse() else blockedResponse()
             if (request.isForMainFrame) {
                 if (AuthPages.isAuthPage(url) || !config.allows(url)) return ExternalWebViewController.noContentResponse()
                 main.post { transport?.onNavigationStarting() }
@@ -239,6 +369,10 @@ class TrustedWebViewController(
             transport?.onMainFrameNavigation()
             // 切换页面：之前页面上的点击不再算作这个页面的手势（APP-04 三端共性第 5 条）
             gesture.clear()
+            if (url == ABOUT_BLANK && retiring != null) return
+            // 新文档提交（如渲染进程退出后【重试】reload 起了新进程）：之后的拆除照常走 about:blank（评审 v2 r2 S2-3(a)）
+            if (url != ABOUT_BLANK) rendererGone = false
+            awaiting?.let { onDocumentCommitted(it, url) }
             // 兜底：没经过 shouldOverrideUrlLoading 的主框架导航（如表单 POST）落到不可信源时停止加载
             if (url != null && !config.allows(url) && url != ABOUT_BLANK) {
                 view.stopLoading()
@@ -252,6 +386,8 @@ class TrustedWebViewController(
             view: WebView,
             url: String?,
         ) {
+            // 拆除：about:blank 已提交完成（旧文档的 pagehide 已执行完）
+            if (url == ABOUT_BLANK && retiring != null) return finishRetire()
             // 方法列表在页面打开后可能变过（远程禁用名单）：加载完成时按当前生效列表补推一次（F-X-24 三端口径 A）
             transport?.onPageFinished()
         }
@@ -263,6 +399,7 @@ class TrustedWebViewController(
         ) {
             // CSB-02：证书错误一律取消，不提供「继续访问」
             handler.cancel()
+            failAwaiting()
             callbacks.onLoadFailed()
         }
 
@@ -271,13 +408,20 @@ class TrustedWebViewController(
             request: WebResourceRequest,
             error: WebResourceError,
         ) {
-            if (request.isForMainFrame) callbacks.onLoadFailed()
+            if (request.isForMainFrame) {
+                failAwaiting()
+                callbacks.onLoadFailed()
+            }
         }
 
         override fun onRenderProcessGone(
             view: WebView,
             detail: RenderProcessGoneDetail,
         ): Boolean {
+            rendererGone = true
+            failAwaiting()
+            // 拆除正等 about:blank 时渲染进程没了：文档已不存在，按已拆确认（S2-05）
+            if (retiring != null) finishRetire()
             callbacks.onLoadFailed()
             return true
         }

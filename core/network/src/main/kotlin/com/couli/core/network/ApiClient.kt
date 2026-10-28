@@ -2258,6 +2258,8 @@ class ApiClient(
         try {
             synchronized(refreshLock) {
                 val target = if (sessionQuarantined && owner.session == null) tokens.generation else generation
+                // F-X-25 S1-01：写新令牌之前先让可信 Web 协调器持久登记待清（账号变了时），再保存新会话
+                hooks.beforeSessionSave(userId)
                 if (tokens.saveIf(target, pair.access, pair.refresh, pair.scope, userId)) {
                     liftQuarantine()
                     SavedLogin.Saved(tokens.loginEpoch)

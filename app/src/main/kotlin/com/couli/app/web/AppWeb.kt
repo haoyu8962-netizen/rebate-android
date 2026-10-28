@@ -84,6 +84,8 @@ class AppWeb(
     private val login: Provider<AppLogin>,
     /** 剪贴板（APP-07）：clipboard.write 经唯一写入口记 hash；clipboard.setAutoDetect 只对发起调用的容器实例临时抑制（G06）。 */
     private val clipboard: Provider<AppClipboard>,
+    /** 切号入口（F-X-25）：每个可信容器登记进同一份协调器。缺省只给不建可信容器的单元测试。 */
+    private val webAuth: TrustedWebAuth = TrustedWebAuth.NONE,
 ) {
     private val bridgeLogin = BridgeLogin({ login.get() }, routing) { update.checkRound }
 
@@ -108,6 +110,14 @@ class AppWeb(
      */
     fun trustedConfig(loopbackOrigins: Set<String> = emptySet()): TrustedWebConfig =
         TrustedWebConfig(WebConfigReader.trustedOrigins(data()), loopbackOrigins.onlyInDebug(), appVersion)
+
+    /**
+     * 可信容器的切号协调器（F-X-25）：App 唯一的一份；取的时候按此刻的会话身份快照与持久归属比对一次（一致、同一身份都不触发任何动作）。
+     */
+    fun trustedAuthSync(): com.couli.core.bridge.TrustedAuthSync? = webAuth.syncForContainer()
+
+    /** 可信容器的 WebView 工厂（F-X-25 D10-310 (6)）：App 唯一的一份，建好即挂在当前可信存储上。 */
+    fun trustedWebViews(): com.couli.feature.web.TrustedWebViewFactory? = webAuth.webViews()
 
     /** H5 路由 [spec] 的页面地址（生效配置的 h5_base_url + h5_path + 参数；[paramsJson] 为路由参数）；拼不出为 null。 */
     fun h5Url(

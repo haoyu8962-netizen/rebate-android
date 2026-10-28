@@ -42,7 +42,10 @@ data class EnvelopeParse(
     val structureValid: Boolean = valid,
 )
 
-/** 一次调用的判定输入（三端测试接线约定）。[privacy] 取 [BridgePrivacy]。 */
+/**
+ * 一次调用的判定输入（三端测试接线约定）。[privacy] 取 [BridgePrivacy]。
+ * [documentIsolated]：发起调用的文档处于切号隔离（F-X-25 I1）——任何方法（含匿名、只读、取令牌）一律 90500，处理器不执行。
+ */
 data class BridgeContext(
     val method: String,
     val origin: String,
@@ -51,6 +54,7 @@ data class BridgeContext(
     val privacy: String,
     val loggedIn: Boolean,
     val params: JsonObject,
+    val documentIsolated: Boolean = false,
 )
 
 /** 判定结果：放行时 [errorCode] 为 null。[data] 是拒绝响应附带的 data（远程禁用的 `{reason: method_disabled}`），其余为 null。 */
@@ -75,6 +79,7 @@ data class BridgeDecision(
  * 没有 Android 依赖，配置全部由构造参数注入（不读生产域与全局状态）。
  *
  * [decide] 的判定顺序（同一处判定，H5 不能绕开）：
+ * 0. 文档隔离（F-X-25 I1，[BridgeContext.documentIsolated]）：切号后被隔离的旧文档（随后拆除销毁）的一切调用 90500，排在所有判定之前；
  * 1. origin 与框架：只认白名单里的完整 origin（https、主机转小写逐字相等、不通配子域、443 规范化）且是主框架，否则 90403；
  *    [loopbackOrigins] 是 Debug 构建另加的本机一致性测试源（允许 http，逐字相等），Release 传空；
  * 1a. 远程禁用：方法名逐字在 [disabledMethods]（生效配置的 bridge_disabled_methods）里 → 90403 + data.reason=method_disabled，
@@ -114,6 +119,7 @@ class BridgeProtocol(
 
     @Suppress("ReturnCount", "CyclomaticComplexMethod") // 判定顺序逐步返回（见类说明）
     fun decide(ctx: BridgeContext): BridgeDecision {
+        if (ctx.documentIsolated) return BridgeDecision.deny(BridgeCode.NATIVE_ERROR)
         if (!ctx.isMainFrame || !isTrustedOrigin(ctx.origin)) return BridgeDecision.deny(BridgeCode.NOT_ALLOWED)
         if (ctx.method in disabledMethods) return BridgeDecision.METHOD_DISABLED
         val method = BridgeContract.methods[ctx.method] ?: return BridgeDecision.deny(BridgeCode.NOT_SUPPORTED)

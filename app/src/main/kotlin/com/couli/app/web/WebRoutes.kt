@@ -70,6 +70,10 @@ private fun TrustedRoute(
     freshUrl: () -> String,
 ) {
     val config = remember(web) { web.trustedConfig() }
+    // F-X-25：切号协调器（同一份）；容器建好即登记，存在待清理时首次加载等补清
+    val authSync = remember(web) { web.trustedAuthSync() }
+    // F-X-25 D10-310 (6)：可信 WebView 一律经同一个工厂建（建好即挂在当前可信存储上）
+    val webViews = remember(web) { web.trustedWebViews() }
     // 容器所在的回退栈条目：clipboard.setAutoDetect 的临时抑制只对这个容器实例生效（APP-07 G06）
     val entryId = (LocalLifecycleOwner.current as? NavBackStackEntry)?.id
     TrustedWebScreen(
@@ -80,6 +84,8 @@ private fun TrustedRoute(
         onOpenExternal = { url -> openExternal(routing, url) },
         onClose = onClose,
         retarget = { TrustedWebTarget(freshUrl(), web.trustedConfig()) },
+        authSync = authSync,
+        webViews = webViews,
     )
 }
 

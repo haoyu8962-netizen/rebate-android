@@ -83,5 +83,8 @@ internal fun DebugConformancePage(
         },
         onOpenExternal = {},
         onClose = onClose,
+        // F-X-25：一致性页同样是可信容器，登记进同一份切号协调器
+        authSync = remember(web) { web.trustedAuthSync() },
+        webViews = remember(web) { web.trustedWebViews() },
     )
 }

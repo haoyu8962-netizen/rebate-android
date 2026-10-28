@@ -32,6 +32,13 @@ import kotlinx.serialization.json.JsonPrimitive
  *   闭包里的 `__couliBridgeMethods(token, list)`：令牌是本传输层随机生成、只拼进原生注入的脚本与原生执行的推送脚本，页面脚本拿不到，
  *   调用时令牌不符或列表不是字符串数组一律不改。页面能看到的列表只影响它自己的 has()，桥准入始终以原生生效名单为准。
  *
+ * - 文档令牌（F-X-25）：启动脚本为每份文档生成随机 nonce，经握手交给原生；原生按当前主框架文档发一个随机令牌，用 evaluateJavascript 调
+ *   `__couliBridgeBindDocument(nonce, token)` 绑定（nonce 不符、已绑定过都返回 false：旧文档的绑定脚本在新文档里重放无效）。主框架的
+ *   桥调用带本文档令牌，令牌不是当前文档已发出的那一个（旧文档、还没绑定、伪造）一律 90500、不进宿主；绑定之前页面发起的调用在启动脚本里
+ *   排队，绑定后再发。auth.changed 走专用通道 `__couliBridgeEvent(token, data)`：只有持当前令牌的文档执行，执行结果即投递确认。
+ * - 切号隔离（F-X-25 I1，[isolate]）：宿主拒绝一切调用、隔离中的旧文档握手不再拿事件通道与令牌。v2 方案（D10-309）里隔离的传输层不再
+ *   解除：旧 WebView 随后被拆除销毁（[dispose]），新文档一定建在新 WebView 与新的传输层上。
+ *
  * 系统 WebView 不支持这两项能力时 [install] 返回 false：不注入任何东西，页面里没有 `__REBATE_BRIDGE__`，H5 SDK 自己返回 90001
  * （保守降级，不改用 addJavascriptInterface）。
  */
@@ -64,6 +71,29 @@ internal class BridgeTransport(
 
     /** 主框架每换一次文档加一：旧文档的响应与事件不再送出。 */
     private var documentGeneration = 0L
+
+    /** 已为哪一份文档发出令牌（每份文档只发一次）与令牌本身；只在主线程读写。 */
+    private var issuedGeneration = NO_GENERATION
+    private var issuedToken: String? = null
+
+    /** 令牌已确认绑定到哪一份文档（绑定脚本在该文档里执行并返回 true）。 */
+    private var boundGeneration = NO_GENERATION
+
+    /** 切号隔离中（F-X-25 I1）；任何线程写。 */
+    @Volatile private var fenced = false
+
+    /** 每份文档最近一次握手带来的 nonce（S2-03：旧文档迟到的握手抢先绑定失败后，按最新 nonce 补发）；只在主线程读写。 */
+    private var latestNonce: Pair<Long, String>? = null
+
+    /** 当前文档的令牌已确认绑定（主线程）。 */
+    val documentBound: Boolean
+        get() = !disposed && boundGeneration != NO_GENERATION && boundGeneration == documentGeneration
+
+    /** 当前文档的令牌绑定确认时回调（主线程，参数为文档世代）；控制器据此判断新建页的新文档已就绪。 */
+    var onDocumentBound: ((Long) -> Unit)? = null
+
+    /** 当前文档世代（主线程）。 */
+    val generation: Long get() = documentGeneration
 
     /** 安装传输层；[originRules] 为 `scheme://host[:port]` 形式的可信源（WebView 的 allowedOriginRules 语法）。 */
     fun install(originRules: Set<String>): Boolean {
@@ -139,14 +169,44 @@ internal class BridgeTransport(
         host.invalidate()
     }
 
-    /** 下发事件（只发 events 白名单里的、只发给已握手的主框架）。 */
+    /** 本传输层没有隔离（隔离后不再解除：随 WebView 一起拆除）。 */
+    private fun admitted(): Boolean = !fenced
+
+    /** 进入切号隔离（任何线程）：宿主拒绝一切调用并作废在途调用；之后旧文档的握手不再拿通道与令牌，普通事件不再下发。 */
+    fun isolate() {
+        fenced = true
+        host.setDocumentIsolated(true)
+    }
+
+    /** 下发事件（只发 events 白名单里的、只发给已握手的主框架；隔离中的旧文档不发）。 */
     fun emit(
         name: String,
         data: JsonObject = JsonObject(emptyMap()),
     ) {
+        if (!admitted()) return
         val body = BridgeProtocol.event(name, data) ?: return
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) mainFrameProxy?.postMessage(body)
     }
+
+    /**
+     * auth.changed 的专用投递（F-X-25 A，主线程）：只发给令牌已确认绑定的当前文档，经 evaluateJavascript 交给持该令牌的文档执行；
+     * [completed] 的 true 表示事件已在该文档里执行（交给了它的订阅者）。不受隔离影响（隔离前已绑定的旧文档照样收到）。
+     */
+    fun emitAuthChanged(
+        data: JsonObject,
+        completed: (Boolean) -> Unit,
+    ) {
+        val token = issuedToken
+        val body = BridgeProtocol.event(TrustedWebViewController.EVENT_AUTH, data)
+        // 源被远程撤下的文档也有令牌（S2-07），事件只给当前仍可信的
+        val deliverable = documentBound && currentTrustedOrigin() != null
+        if (body == null || token == null || !deliverable) return completed(false)
+        webView.evaluateJavascript(eventScript(token, body)) { result -> completed(result == ReplyConfirmation.EXECUTED) }
+    }
+
+    /** 当前主框架的 origin：仍在安装时的可信源规则里、按当前生效配置仍可信时给出，否则 null（主线程）。 */
+    fun currentTrustedOrigin(): String? =
+        webView.url?.let(BridgeProtocol::originOf)?.takeIf { !disposed && it in originRules && host.acceptsOrigin(it) }
 
     /** 已拆（[dispose]）：之后不再向页面送出任何回复与事件。 */
     private var disposed = false
@@ -176,6 +236,7 @@ internal class BridgeTransport(
         host.dispose()
     }
 
+    @Suppress("ReturnCount") // 握手、令牌不符、正常调用逐项返回
     private fun onMessage(
         message: WebMessageCompat,
         sourceOrigin: Uri,
@@ -184,15 +245,26 @@ internal class BridgeTransport(
     ) {
         val data = message.data ?: return
         val origin = sourceOrigin.toString()
-        if (data == HELLO) {
-            // 握手只认主框架与可信源：事件通道不会落到子框架或别的 origin
-            if (isMainFrame && host.acceptsOrigin(origin)) mainFrameProxy = proxy
+        if (data == HELLO || data.startsWith(HELLO_PREFIX)) {
+            // 握手放到主线程队列末尾再处理：WebView 的 onPageStarted 是提交时投递的消息，而消息通道是同步回调，新文档的握手可能先于
+            // 它的 onPageStarted 到达；排在后面处理，握手才按新文档的世代登记（否则令牌会记在旧世代上，新文档的调用被当成无令牌）
+            main.post { onHello(data.removePrefix(HELLO).removePrefix(":"), origin, isMainFrame, proxy) }
             return
         }
         val generation = documentGeneration
         val current = { generation == documentGeneration && !disposed }
+        val raw = callBody(data, isMainFrame, generation)
+        if (raw == null) {
+            // 主框架没带本文档的令牌（旧文档、还没绑定、伪造）：90500，不进宿主（F-X-25 P08）
+            BridgeProtocol.parseStructure(data.substringAfterTokenPrefix()).id?.let { id ->
+                if (current() && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                    proxy.postMessage(BridgeProtocol.response(id, BridgeCode.NATIVE_ERROR))
+                }
+            }
+            return
+        }
         host.handle(
-            data,
+            raw,
             origin,
             isMainFrame,
             gesture.recent(),
@@ -201,6 +273,74 @@ internal class BridgeTransport(
             if (current() && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) proxy.postMessage(reply)
         }
     }
+
+    /**
+     * 握手：只认主框架。事件通道只给当前生效配置仍可信的源（不会落到子框架或别的 origin）；文档令牌只证明「调用出自这份主框架文档」，
+     * 不授予任何能力——源被远程撤下的文档同样拿令牌，它的调用照旧进宿主、由协议准入按 90403 立即拒绝（评审 v2 r1 S2-07：不再让调用
+     * 在页内排队永远挂着）。隔离中的旧文档不拿通道、不拿令牌（F-X-25 I1：hello 不能绕过隔离）；每份文档只发一次令牌，带 nonce 的握手才发。
+     */
+    @Suppress("ReturnCount") // 不可信 / 隔离 / 已拆、没带 nonce、这份文档已发过令牌逐项返回
+    private fun onHello(
+        nonce: String,
+        origin: String,
+        isMainFrame: Boolean,
+        proxy: JavaScriptReplyProxy,
+    ) {
+        val generation = documentGeneration
+        if (!isMainFrame || !admitted() || disposed) return
+        if (host.acceptsOrigin(origin)) mainFrameProxy = proxy
+        if (nonce.isEmpty()) return
+        latestNonce = generation to nonce
+        if (issuedGeneration == generation) return
+        bind(generation, nonce)
+    }
+
+    /** 给 [generation] 这份文档发令牌并绑定 [nonce]（主线程）。 */
+    private fun bind(
+        generation: Long,
+        nonce: String,
+    ) {
+        val token = newToken()
+        issuedGeneration = generation
+        issuedToken = token
+        webView.evaluateJavascript(bindScript(nonce, token)) { result ->
+            if (result == ReplyConfirmation.EXECUTED && generation == documentGeneration && !disposed) {
+                boundGeneration = generation
+                onDocumentBound?.invoke(generation)
+            } else if (issuedGeneration == generation && token == issuedToken) {
+                // 没绑上（nonce 不是这份文档的、文档已换）：作废这次发出的令牌。S2-03：旧文档迟到的握手抢在前面用掉了这一代的发放时，
+                // 这份文档自己的握手已被跳过——按这一代最近一次握手的 nonce 补发一次
+                issuedGeneration = NO_GENERATION
+                issuedToken = null
+                val latest = latestNonce?.takeIf { it.first == generation && it.second != nonce }
+                val stillThisDocument = generation == documentGeneration && admitted() && !disposed
+                if (latest != null && stillThisDocument) bind(generation, latest.second)
+            }
+        }
+    }
+
+    /**
+     * 取出调用正文：主框架必须带当前文档已发出的令牌（不符为 null）；子框架照旧原文交给宿主（宿主按非主框架 90403 拒绝）。
+     */
+    @Suppress("ReturnCount") // 子框架、格式不对、主框架核对令牌逐项返回
+    private fun callBody(
+        data: String,
+        isMainFrame: Boolean,
+        generation: Long,
+    ): String? {
+        if (!data.startsWith(CALL_PREFIX)) return if (isMainFrame) null else data
+        val rest = data.substring(CALL_PREFIX.length)
+        val separator = rest.indexOf(':')
+        if (separator <= 0) return null
+        val token = rest.substring(0, separator)
+        val body = rest.substring(separator + 1)
+        if (!isMainFrame) return body
+        // 令牌只证明归属（是当前文档发的）；隔离由宿主准入统一判（隔离中的旧文档持有效令牌同样被宿主 90500 拒绝）
+        return body.takeIf { issuedGeneration == generation && token == issuedToken }
+    }
+
+    private fun String.substringAfterTokenPrefix(): String =
+        if (startsWith(CALL_PREFIX)) substring(CALL_PREFIX.length).substringAfter(':') else this
 
     /**
      * 会触发导航的那次调用的回复（APP-04 共性第 59、62 条，Android 在 APP-05a 补上）：JavaScriptReplyProxy.postMessage 没有「已执行」回调，
@@ -231,6 +371,32 @@ internal class BridgeTransport(
         /** 启动脚本定义的回复接收函数（evaluateJavascript 交回复用，共性第 59 条）。 */
         const val RECEIVE = "__couliBridgeReceive"
 
+        /** 启动脚本定义的文档令牌绑定函数（F-X-25；原生私有，不是桥方法或事件）。 */
+        const val BIND_DOCUMENT = "__couliBridgeBindDocument"
+
+        /** 启动脚本定义的 auth.changed 专用接收函数（F-X-25；只认当前文档令牌）。 */
+        const val AUTH_EVENT = "__couliBridgeEvent"
+
+        /** 主框架桥调用的前缀：`__couli_call__:<令牌>:<请求>`。 */
+        private const val CALL_PREFIX = "__couli_call__:"
+        private const val NO_GENERATION = -1L
+
+        /** 绑定脚本：nonce 与令牌按 JSON 字面量嵌入；绑定函数不在、nonce 不符、已绑定过都得到 false。 */
+        fun bindScript(
+            nonce: String,
+            token: String,
+        ): String =
+            "(function(){var f=window.$BIND_DOCUMENT;return typeof f==='function'&&f(" + JsonPrimitive(nonce).toString() + "," +
+                JsonPrimitive(token).toString() + ")===true;})();"
+
+        /** auth.changed 投递脚本：令牌与事件正文按 JSON 字面量嵌入；接收函数不在、令牌不是本文档的得到 false。 */
+        fun eventScript(
+            token: String,
+            body: String,
+        ): String =
+            "(function(){var f=window.$AUTH_EVENT;return typeof f==='function'&&f(" + JsonPrimitive(token).toString() + "," +
+                JsonPrimitive(body).toString() + ")===true;})();"
+
         /** 等回复脚本执行完的上限（之后按结束处理）。 */
         const val CONFIRM_TIMEOUT_MS = 3_000L
 
@@ -242,6 +408,7 @@ internal class BridgeTransport(
             "(function(){if(!window.$RECEIVE)return false;window.$RECEIVE(" + JsonPrimitive(reply).toString() + ");return true;})();"
 
         private const val HELLO = "__couli_hello__"
+        private const val HELLO_PREFIX = "$HELLO:"
         private const val DUPLICATE_ID_PLACEHOLDER = ""
 
         private const val TOKEN_BYTES = 16
@@ -287,6 +454,9 @@ internal class BridgeTransport(
                 .replace("__UPDATE_METHODS__", UPDATE_METHODS)
                 .replace("__CHANNEL__", CHANNEL)
                 .replace("__RECEIVE__", RECEIVE)
+                .replace("__BIND__", BIND_DOCUMENT)
+                .replace("__AUTH_EVENT__", AUTH_EVENT)
+                .replace("__CALL__", CALL_PREFIX)
                 .replace("__HELLO__", HELLO)
                 .replace("__DUPLICATE__", BridgeProtocol.response(DUPLICATE_ID_PLACEHOLDER, BridgeCode.INVALID_PARAMS))
         }
@@ -298,6 +468,24 @@ internal class BridgeTransport(
               if (window.__REBATE_BRIDGE__) return;
               var channel = window.__CHANNEL__;
               if (!channel) return;
+              var post = channel.postMessage.bind(channel);
+              var isTop = window === window.top;
+              // per-document nonce and token (F-X-25): native binds a token to exactly this document; main-frame calls carry it
+              var docNonce = '';
+              try {
+                var nonceBytes = new Uint8Array(16);
+                window.crypto.getRandomValues(nonceBytes);
+                for (var b = 0; b < nonceBytes.length; b++) docNonce += (nonceBytes[b] + 256).toString(16).slice(1);
+              } catch (error) {
+                docNonce = String(Math.random()).slice(2) + String(Date.now());
+              }
+              var docToken = null;
+              var outbox = [];
+              function send(text) {
+                if (!isTop) { post(text); return; }
+                if (docToken === null) { outbox.push(text); return; }
+                post('__CALL__' + docToken + ':' + text);
+              }
               // no prototype: ids such as __proto__ or constructor are plain own keys (A-R2-07, lesson 50)
               var pending = Object.create(null);
               var listeners = [];
@@ -348,6 +536,27 @@ internal class BridgeTransport(
               channel.onmessage = function (event) { receive(event.data); };
               // replies of navigating calls arrive via evaluateJavascript, so the host knows when they have run (lesson 59)
               Object.defineProperty(window, '__RECEIVE__', { value: function (data) { receive(data); }, writable: false, configurable: false });
+              Object.defineProperty(window, '__BIND__', {
+                value: function (nonce, token) {
+                  if (docToken !== null || nonce !== docNonce || typeof token !== 'string' || token.length === 0) return false;
+                  docToken = token;
+                  var queued = outbox;
+                  outbox = [];
+                  for (var q = 0; q < queued.length; q++) post('__CALL__' + token + ':' + queued[q]);
+                  return true;
+                },
+                writable: false,
+                configurable: false
+              });
+              Object.defineProperty(window, '__AUTH_EVENT__', {
+                value: function (token, data) {
+                  if (docToken === null || token !== docToken || typeof data !== 'string') return false;
+                  receive(data);
+                  return true;
+                },
+                writable: false,
+                configurable: false
+              });
               var bridge = {
                 version: __VERSION__,
                 get methods() { return methods; },
@@ -360,7 +569,7 @@ internal class BridgeTransport(
                   }
                   return new Promise(function (resolve) {
                     if (request && typeof request.id === 'string') pending[request.id] = resolve;
-                    channel.postMessage(JSON.stringify(request));
+                    send(JSON.stringify(request));
                   });
                 },
                 subscribe: function (listener) {
@@ -372,7 +581,7 @@ internal class BridgeTransport(
                 }
               };
               Object.defineProperty(window, '__REBATE_BRIDGE__', { value: Object.freeze(bridge), writable: false, configurable: false });
-              if (window === window.top) channel.postMessage('__HELLO__');
+              if (isTop) post('__HELLO__:' + docNonce);
             })();
             """.trimIndent()
     }

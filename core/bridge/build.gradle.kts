@@ -16,4 +16,6 @@ dependencies {
 
     // BridgeVectorTest 读 specs/bridge-vectors.json（kotlinx-serialization-json 由 core:generated 带来）
     testImplementation(libs.kotlinx.coroutines.test)
+    // F-X-25：用真实 SessionTokens.replaceIf 轮换凭据，验证刷新不等于身份变化。
+    testImplementation(project(":core:network"))
 }

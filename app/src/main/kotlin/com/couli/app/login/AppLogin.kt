@@ -433,6 +433,9 @@ class AppLogin(
     /** 登录有效完成时的登录世代（APP-12 推送上报只认它为「真实登录成功」，共性第 3 条；AppModule 接 AppMe）。 */
     var onLoginCompleted: (loginEpoch: Long) -> Unit = {}
 
+    /** 退出登录、原会话确已结束时（F-X-25：AppModule 接到可信 Web 协调器的 sessionCleared("logout")）；在清会话的锁里调用，要快。 */
+    var onLoggedOut: () -> Unit = {}
+
     /** 登录页配置。[restricted]：从强更页进入（APP-02c 已有标记：强更 below_min 时 Login 只能从强更页进入）。 */
     fun pageConfig(restricted: Boolean): LoginPageConfig {
         val expired = sessionExpiredPending
@@ -578,7 +581,11 @@ class AppLogin(
     override fun sessionEnded() = routing.router.onSessionEnded()
 
     /** 登出收尾（APP-05a 共性第 25 条）：只清原会话（登录世代不晚于 [loginEpoch]）归属的待办。 */
-    override fun sessionEndedThrough(loginEpoch: Long) = routing.router.onSessionEnded(throughSession = loginEpoch)
+    override fun sessionEndedThrough(loginEpoch: Long) {
+        routing.router.onSessionEnded(throughSession = loginEpoch)
+        // F-X-25（I5、S0-02）：退出登录的原会话确已结束（与清除同一把锁里）：直接登记可信 Web 数据待清，不读凭据、不靠快照
+        onLoggedOut()
+    }
 
     /** 第三方登录完成：登录这一步完成（重置计时），待办暂缓（APP-05b 共性第 3 条）。 */
     override fun prerequisiteDoneHeld() {
