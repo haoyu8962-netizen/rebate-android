@@ -310,6 +310,24 @@ object CouliIcons {
             "M14 9.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0Z",
         )
     }
+
+    /** 锁（账号状态封禁头部 RiskNoticeBanned-v2，G-R06；rect rx2 + 锁扣，路径照抄画板）。 */
+    val lock: ImageVector by lazy {
+        lineIcon(
+            "Lock",
+            "M7.5 10.5H16.5A2 2 0 0 1 18.5 12.5V18A2 2 0 0 1 16.5 20H7.5A2 2 0 0 1 5.5 18V12.5A2 2 0 0 1 7.5 10.5Z",
+            "M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5",
+        )
+    }
+
+    /** 暂停圆（账号状态冻结头部 RiskNoticeFrozen，G-R06；圆 r8.5 + 两竖，路径照抄画板）。 */
+    val pauseCircle: ImageVector by lazy {
+        lineIcon(
+            "PauseCircle",
+            "M3.5 12a8.5 8.5 0 1 0 17 0a8.5 8.5 0 1 0 -17 0Z",
+            "M10 9v6M14 9v6",
+        )
+    }
 }
 
 internal object CouliIconMetrics {

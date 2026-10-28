@@ -564,6 +564,8 @@ internal fun ErrorFocusText(
 internal fun LinkText(
     text: String,
     tag: String,
+    style: TextStyle = CouliTypography.body,
+    color: Color = CouliColors.brandPrimary,
     onClick: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -577,7 +579,7 @@ internal fun LinkText(
                 .testTag(tag),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, style = CouliTypography.body, color = CouliColors.brandPrimary)
+        Text(text = text, style = style, color = color)
     }
 }
 

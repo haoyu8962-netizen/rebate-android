@@ -1031,7 +1031,7 @@
   {"h": "40fe01ca34871f53e64ae0b81d230d485eb20807cc6434016590850836ebca1d", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliDimens.kt"},
   {"h": "0afff7da16e6c6397bebda58bf51ab0d6a561030eb996b6fbd1668eff98e5a00", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliFormat.kt"},
   {"h": "a5e7d9b577b3e768fed2e2f3b7779621cb5dae17d13536723a5c97959e14416e", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliFoundation.kt"},
-  {"h": "69f7d5e4f1cc48ea2ffa077a624d8dc304aec0ff46ce2e3457bea3d272badfe2", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliIcons.kt"},
+  {"h": "2b2935347dd19d436ea2bbe72c0c41ab4dd01b0810ae850d3110f13cc95939a0", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliIcons.kt"},
   {"h": "6c36dd7392dca952c91907d9a55f91e539f835308753b15247beeb6ad25cd295", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliInputs.kt"},
   {"h": "1d5e36803f70faa47a0f7eec3e34752630ecd0c9050e38c12b6eaa8a4c1bf154", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliLists.kt"},
   {"h": "024bf7900f9c1d6d32bfcec461f882eb6d150418bd4cb94cc00bef001cd4f386", "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliLogin.kt"},
@@ -1147,8 +1147,8 @@
   {"h": "263c4e35c7bbbeb434b639614d48bc096c667544de15257f9befe8165d205c37", "p": "core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateWithdrawalInterruptionTest.kt"},
   {"h": "a652e5014a700ec820b96873f4515f7380a7484875c3cfae3a6b44798f3ac7e3", "p": "core/privacy/src/test/kotlin/com/couli/core/privacy/PrivacyGateWithdrawalRetryTest.kt"},
   {"h": "074b8bb2dc5115677c593fce6852abdda92e31b8d7f904fcec5f023c25067f2d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AccountPorts.kt"},
-  {"h": "d0c7eb7a3ef2c13903f559488685574f26fcb25c5d61cba496661eab71f2a384", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AccountUi.kt"},
-  {"h": "663af998a8dd711c7fc37a8f23d4f56c685becc3e9d364b715725b56c4ef54f5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Appeal.kt"},
+  {"h": "48d8248b4a7163f27f098871e477963ba01480f6913445094509e759f0d0d286", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AccountUi.kt"},
+  {"h": "f1008d65f59549295745e313256ef3aeb70cc2434ab280042ec18fc167bd0406", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Appeal.kt"},
   {"h": "0c93bf7cebfa8855c666457aabe10d1a6938428530589f00949a4f7840541e34", "p": "feature/me/src/main/kotlin/com/couli/feature/me/DeleteAccountController.kt"},
   {"h": "8fc3c8315b70b1a2d44d714874d2b837c8d65c2a4d47ddd0a469228589bb3651", "p": "feature/me/src/main/kotlin/com/couli/feature/me/DeleteAccountScreen.kt"},
   {"h": "15bb7b7309b5cbe2176283e6e193f2a8f93ceb9face2cdac2191468c825050dd", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MePageHolder.kt"},
@@ -1157,7 +1157,7 @@
   {"h": "1da16aa59dec0cf7b30987851bc546f59ce27c1cd7326c2445d9e33e6b6a1791", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabParts.kt"},
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
   {"h": "6340722a2b00bd20b43a325a6868d2d8e161d6d679544b6a6e28d28e6c327b11", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
-  {"h": "85583f304403039d3fd0e3d2e53d1c436c1f96c019ec1b7dc54c41e68143a43f", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
+  {"h": "e40024c70b407759276ced7c4ed7d1c00f2a72e5b7c53d231a7b66abb7e209c5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
   {"h": "05a504079d329ea7706619fe51eafcb9322da943fd6bf2ebdd6f0f3e3e64e8f2", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Settings.kt"},
   {"h": "7a8c3227342e6ad1e0c2e650849c652bb74d9d5518c9dba466b9ece080607943", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsParts.kt"},
   {"h": "7d35ddb31a80dcac00ecba01449496e906b24204c682701ea886f6849390f2ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsSubPages.kt"},
@@ -1309,7 +1309,7 @@
   "    const val CS_CLOSE = \"cs_close\"",
   "}"
  ],
- "draftWithoutSafety": "5fd442199537db1cc613812ec8677937854cff0504614c8482b33b9480e6a673",
+ "draftWithoutSafety": "d5e95f11dd66459ff812199e5cbc8aa8558a814937848ca5f154ee79b465b26b",
  "feedbackOutsideSheet": "e26e7bd23f7ad41d4b973faa67892f12b14a10ec7c8ccc4662bb8aae891684f6",
  "meUi": {
   "MeSubPage": [

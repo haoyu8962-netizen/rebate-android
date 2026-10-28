@@ -27,17 +27,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import com.couli.core.designsystem.CouliButton
@@ -348,11 +351,32 @@ val LocalAccountDeps: androidx.compose.runtime.ProvidableCompositionLocal<Accoun
  * 「| 注销账号」链接（RiskNotice 封禁态底部、AppealResultUpheld；G01：按路由可用性显示，since=null 时隐藏；经 Router 打开 DeleteAccount，来源 risk_notice）。
  */
 @Composable
-internal fun DeleteAccountLink(tag: String) {
+internal fun DeleteAccountLink(
+    tag: String,
+    linkStyle: TextStyle = CouliTypography.body,
+    linkColor: Color = CouliColors.brandPrimary,
+    separatorColor: Color = CouliColors.borderControl,
+    separatorSilent: Boolean = false,
+) {
     val account = LocalAccountDeps.current ?: return
-    if (DeleteAccountController.ROUTE !in account.env.availableRoutes()) return
-    Text(text = "|", style = CouliTypography.footnote, color = CouliColors.borderControl)
-    LinkText(account.texts.text("settings.delete_account"), tag) {
+    if (!deletionAvailable()) return
+    Text(
+        text = "|",
+        style = CouliTypography.footnote,
+        color = separatorColor,
+        modifier = if (separatorSilent) Modifier.clearAndSetSemantics {} else Modifier,
+    )
+    LinkText(account.texts.text("settings.delete_account"), tag, linkStyle, linkColor) {
         account.env.openDeletion(com.couli.core.me.account.AccountRaw.RISK_NOTICE)
     }
+}
+
+/**
+ * 注销入口是否可用（G01 / G-R17）：宿主提供了注销依赖且路由表含 DeleteAccount。[DeleteAccountLink] 的显隐与封禁说明句 / 「接下来可以」第 3 条
+ * 用的是同一判据（APP-12w-c：句子提到注销 ⇔ 页面有注销入口）。只读，不发请求。
+ */
+@Composable
+internal fun deletionAvailable(): Boolean {
+    val account = LocalAccountDeps.current ?: return false
+    return DeleteAccountController.ROUTE in account.env.availableRoutes()
 }

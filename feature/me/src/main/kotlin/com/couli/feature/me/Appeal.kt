@@ -3,16 +3,13 @@
 
 package com.couli.feature.me
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -22,17 +19,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
 import com.couli.core.designsystem.CouliFormat
-import com.couli.core.designsystem.CouliRadius
+import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTextField
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
@@ -404,9 +402,14 @@ fun AppealScreen(config: AppealConfig) {
     val content = state.phase == AppealState.CONTENT
     MeSubPage(
         tag = MeTags.APPEAL_PAGE,
-        title = texts.text(if (content && layout == AppealView.PROGRESS) "appeal.progress.title" else "appeal.title"),
+        // G-R12：提交版式「申诉」，处理中 / 结果版式都是「申诉进度」（键已有）；返回在所有版式保留
+        title = texts.text(if (content && layout != AppealView.SUBMIT) "appeal.progress.title" else "appeal.title"),
         texts = texts,
         onBack = config.onBack,
+        // R11：上 8、左右 16、底 16
+        contentPadding = SETTINGS_CONTENT_PADDING,
+        // R15 / R27：【提交申诉】与维持结果的【再次申诉】+ 出口行在白底固定栏（键盘弹起贴在键盘上，G-R22）
+        bottomSurface = true,
         bottom =
             if (content && layout == AppealView.SUBMIT) {
                 {
@@ -419,6 +422,8 @@ fun AppealScreen(config: AppealConfig) {
                         modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_SUBMIT),
                     )
                 }
+            } else if (content && layout == AppealView.RESULT_UPHELD) {
+                { AppealUpheldBar(texts, controller, state) }
             } else {
                 null
             },
@@ -462,7 +467,82 @@ fun AppealScreen(config: AppealConfig) {
             onDismissRequest = { controller.cancelLogout(dialog) },
             dismissOnClickOutside = false,
             confirmTag = MeTags.APPEAL_LOGOUT_DIALOG,
+            titleAlign = TextAlign.Center,
+            scrim = CouliColors.overlayScrim,
         )
+    }
+}
+
+/**
+ * 维持结果的白底固定栏（R27）：次按钮【再次申诉】+ 出口行（客服 | 注销 | 退出，冻结组只有客服——条件与改前相同）。
+ * 回调与去向不变：again(version) / contactCs / askLogout / DeleteAccountLink。
+ */
+@Composable
+private fun AppealUpheldBar(
+    texts: MeTexts,
+    controller: AppealController,
+    state: AppealState,
+) {
+    val version = state.version
+    val frozen = controller.frozenLayout()
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+    ) {
+        CouliButton(
+            text = texts.text("appeal.again"),
+            onClick = { controller.again(version) },
+            variant = CouliButtonVariant.SECONDARY,
+            modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_AGAIN),
+        )
+        RiskExitRow {
+            LinkText(
+                texts.text("appeal.contact_cs"),
+                MeTags.APPEAL_CS,
+                CouliTypography.footnote,
+                CouliColors.textLink,
+                controller::contactCs,
+            )
+            if (!frozen) {
+                DeleteAccountLink(
+                    AccountTags.APPEAL_DELETE,
+                    linkStyle = CouliTypography.footnote,
+                    linkColor = CouliColors.textLink,
+                    separatorColor = CouliColors.borderSubtle,
+                    separatorSilent = true,
+                )
+                ExitSeparator()
+                LinkText(
+                    texts.text("risk.logout"),
+                    MeTags.APPEAL_LOGOUT,
+                    CouliTypography.footnote,
+                    CouliColors.textLink,
+                    controller::askLogout,
+                )
+            }
+        }
+    }
+}
+
+/** 本次 getMe 的原因键（表外类别与 null 为 null，不显示原始编码）。 */
+private fun riskReasonKey(state: AppealState): String? =
+    RiskReasonText.key((state.risk?.get("reason_category") as? JsonPrimitive)?.takeIf { it.isString }?.content)
+
+/** 本次 getMe 的 frozen_until（只取服务端字段，不推算）。 */
+private fun frozenUntil(state: AppealState) =
+    (state.risk?.get("frozen_until") as? JsonPrimitive)?.takeIf { it.isString }?.content?.let(MeJson::instant)
+
+/** 当前状态胶囊（G-R11）：色调只按本次 risk.state——banned = error + 三角、frozen = warning + 三角、其余 = pending 无图标。 */
+@Composable
+private fun RiskStatePill(
+    text: String,
+    riskState: String?,
+) {
+    when (riskState) {
+        "banned" -> StatusPill(text, PillTone.ERROR, CouliIcons.alert)
+        "frozen" -> StatusPill(text, PillTone.WARNING, CouliIcons.alert)
+        else -> StatusPill(text, PillTone.PENDING)
     }
 }
 
@@ -474,21 +554,18 @@ private fun TargetCard(
     state: AppealState,
 ) {
     val texts = deps.texts
-    val risk = state.risk
     val rows = mutableListOf<@Composable () -> Unit>()
-    rows += { ValueRow(texts.text("appeal.type"), texts.text("appeal.type.account")) }
+    rows += { InlineRow(texts.text("appeal.type"), texts.text("appeal.type.account")) }
     AppealCopy.currentStateKey(controller.riskState())?.let { key ->
-        rows +=
-            { ValueRow(texts.text("appeal.current_state"), texts.text(key)) }
+        val text = texts.text(key)
+        rows += { InlineRow(texts.text("appeal.current_state"), text) { RiskStatePill(text, controller.riskState()) } }
     }
-    val reason = RiskReasonText.key((risk?.get("reason_category") as? JsonPrimitive)?.takeIf { it.isString }?.content)
-    reason?.let { key -> rows += { ValueRow(texts.text("appeal.reason"), texts.text(key)) } }
-    val until = (risk?.get("frozen_until") as? JsonPrimitive)?.takeIf { it.isString }?.content?.let(MeJson::instant)
+    riskReasonKey(state)?.let { key -> rows += { InlineRow(texts.text("appeal.reason"), texts.text(key)) } }
+    val until = frozenUntil(state)
     if (until != null && controller.riskState() == "frozen") {
-        rows += { ValueRow(texts.text("appeal.frozen_until"), CouliFormat.timeListFuture(until, deps.clock())) }
+        rows += { InlineRow(texts.text("appeal.frozen_until"), CouliFormat.timeListFuture(until, deps.clock())) }
     }
-    GroupLabel(texts.text("appeal.target"))
-    RowCard(rows)
+    AppealInfoCard(texts.text("appeal.target")) { rows.forEach { it() } }
 }
 
 @Composable
@@ -499,27 +576,40 @@ private fun AppealSubmitBody(
 ) {
     val texts = deps.texts
     TargetCard(deps, controller, state)
-    GroupLabel(texts.text("appeal.content_label"))
     val error = state.error?.message(texts)
     val errorFocus = remember { FocusRequester() }
-    OutlinedTextField(
-        value = state.input,
-        onValueChange = controller::onInput,
-        minLines = 4,
-        isError = state.fieldError,
-        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CouliColors.brandPrimary),
-        label = { Text(texts.text("appeal.content_label")) },
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .semantics { if (state.fieldError && error != null) error(error) }
-                .testTag(MeTags.APPEAL_INPUT),
-    )
-    if (error != null) {
-        // 提交失败 assertive 播报一次，焦点移到错误提示（真正可聚焦的目标，布局完成后移焦，R1-09；保留输入）
-        ErrorFocusText(error, state.error?.id, errorFocus, MeTags.APPEAL_ERROR)
+    AppealInfoCard(texts.text("appeal.content_label")) {
+        // R13 / G-R14：组件库多行输入（占位草稿键、读屏名称「申诉说明」）；错误语义由组件 error 承担（与改前 semantics { error } 同条件），
+        // 错误文字仍由下方 ErrorFocusText 显示（showErrorText = false 不重复）；最小高 160 用 leading 槽里 0 宽占位撑高（组件库不改）
+        CouliTextField(
+            value = state.input,
+            onValueChange = controller::onInput,
+            singleLine = false,
+            placeholder = texts.text("appeal.placeholder"),
+            accessibilityLabel = texts.text("appeal.content_label"),
+            error = if (state.fieldError) error else null,
+            showErrorText = false,
+            leading = { Spacer(Modifier.height(APPEAL_INPUT_MIN_HEIGHT)) },
+            modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_INPUT),
+        )
+        if (error != null) {
+            // 提交失败 assertive 播报一次，焦点移到错误提示（真正可聚焦的目标，布局完成后移焦，R1-09；保留输入）
+            ErrorFocusText(error, state.error?.id, errorFocus, MeTags.APPEAL_ERROR)
+        }
     }
     NoteStrip(text = texts.text(AppealCopy.submitNote(controller.frozenLayout(), controller.riskState())))
+}
+
+/** 申诉内容卡（R18 / R26）：类型 + 说明原文；「原因」行不加（申诉记录不带原因，G-R11）。 */
+@Composable
+private fun AppealContentCard(
+    texts: MeTexts,
+    content: String,
+) {
+    AppealInfoCard(texts.text("appeal.content_section")) {
+        InlineRow(texts.text("appeal.type"), texts.text("appeal.type.account"))
+        InlineRow(texts.text("appeal.content"), content)
+    }
 }
 
 @Composable
@@ -530,11 +620,17 @@ private fun AppealProgressBody(
     val texts = deps.texts
     val frozen = controller.frozenLayout()
     val latest = controller.latest()
+    // R16：状态卡（胶囊 pending + 时钟 → 标题 22/600 → 说明 14）
     Column(
-        modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_PROGRESS),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag(MeTags.APPEAL_PROGRESS)
+                .couliCard()
+                .padding(CouliSpacing.space4),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
     ) {
-        Badge(texts.text("appeal.progress.badge"))
+        StatusPill(texts.text("appeal.progress.badge"), PillTone.PENDING, CouliIcons.clock)
         Text(
             text = texts.text("appeal.progress.heading"),
             style = CouliTypography.title,
@@ -547,38 +643,39 @@ private fun AppealProgressBody(
             color = CouliColors.textSecondary,
         )
     }
+    // R17：步骤内容与时间取值原样，步态由版式决定（已提交 ✓ / 处理中 当前 / 处理结果 未到）
     val created = (latest?.get("created_at") as? JsonPrimitive)?.content?.let(MeJson::instant)
-    RowCard(
+    AppealTimeline(
         listOf(
-            { TimelineRow(texts.text("appeal.timeline.submitted"), created?.let(CouliFormat::timeMinute)) },
-            {
-                TimelineRow(
-                    texts.text("appeal.timeline.processing"),
-                    AppealCopy.processingDesc(frozen, controller.riskState())?.let(texts::text),
-                )
-            },
-            {
-                TimelineRow(
-                    texts.text("appeal.timeline.result"),
-                    texts.text(if (frozen) "appeal.timeline.result_pending.frozen" else "appeal.timeline.result_pending.banned"),
-                )
-            },
+            TimelineStep(texts.text("appeal.timeline.submitted"), created?.let(CouliFormat::timeMinute), StepState.DONE),
+            TimelineStep(
+                texts.text("appeal.timeline.processing"),
+                AppealCopy.processingDesc(frozen, controller.riskState())?.let(texts::text),
+                StepState.CURRENT,
+            ),
+            TimelineStep(
+                texts.text("appeal.timeline.result"),
+                texts.text(if (frozen) "appeal.timeline.result_pending.frozen" else "appeal.timeline.result_pending.banned"),
+                StepState.PENDING,
+            ),
         ),
     )
-    (latest?.get("content") as? JsonPrimitive)?.content?.let { text ->
-        GroupLabel(texts.text("appeal.content_section"))
-        Column(modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4)) {
-            Text(text = text, style = CouliTypography.body, color = CouliColors.textPrimary)
-        }
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+    (latest?.get("content") as? JsonPrimitive)?.content?.let { text -> AppealContentCard(texts, text) }
+    // R19：底部句居中、14 次文字 + 链接 14/500 text.link（句子左侧补 8 与链接内边距对称，整句居中）
+    RiskExitRow {
         Text(
             text = texts.text("appeal.footer"),
             style = CouliTypography.footnote,
             color = CouliColors.textSecondary,
-            modifier = Modifier.weight(1f, false),
+            modifier = Modifier.padding(start = CouliSpacing.space2),
         )
-        LinkText(texts.text("appeal.contact_cs"), MeTags.APPEAL_CS, controller::contactCs)
+        LinkText(
+            texts.text("appeal.contact_cs"),
+            MeTags.APPEAL_CS,
+            CouliTextStyles.footnoteMedium,
+            CouliColors.textLink,
+            controller::contactCs,
+        )
     }
 }
 
@@ -601,19 +698,22 @@ private fun AppealResultBody(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
         if (layout == AppealView.RESULT_LIFTED) {
-            Text(
-                text = texts.text(AppealCopy.liftedTitle(frozen, risk)),
-                style = CouliTypography.title,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { heading() },
+            // R20：头部图标块（success + 圆勾）；卡（结论胶囊 / 处理时间 / 账号状态，行键与条件原样）；提示条原样（G-R10）
+            RiskHeader(
+                icon = CouliIcons.check,
+                title = texts.text(AppealCopy.liftedTitle(frozen, risk)),
+                desc = texts.text(AppealCopy.liftedDesc(risk)),
+                blockColor = CouliColors.statusSuccessBackground,
+                iconTint = CouliColors.statusSuccessText,
             )
-            Text(text = texts.text(AppealCopy.liftedDesc(risk)), style = CouliTypography.footnote, color = CouliColors.textSecondary)
             val rows = mutableListOf<@Composable () -> Unit>()
-            rows += { ValueRow(texts.text("appeal.conclusion"), texts.text("appeal.passed")) }
-            closed?.let { at -> rows += { ValueRow(texts.text("appeal.closed_at"), CouliFormat.timeMinute(at)) } }
-            AppealCopy.currentStateKey(risk)?.let { key -> rows += { ValueRow(texts.text("appeal.account_state"), texts.text(key)) } }
-            RowCard(rows)
+            val passed = texts.text("appeal.passed")
+            rows += { RiskInfoRow(texts.text("appeal.conclusion"), passed) { StatusPill(passed, PillTone.SUCCESS, CouliIcons.check) } }
+            closed?.let { at -> rows += { RiskInfoRow(texts.text("appeal.closed_at"), CouliFormat.timeMinute(at)) } }
+            AppealCopy.currentStateKey(risk)?.let { key -> rows += { RiskInfoRow(texts.text("appeal.account_state"), texts.text(key)) } }
+            RiskInfoCard(rows)
             AppealCopy.liftedNote(frozen, risk)?.let { NoteStrip(text = texts.text(it)) }
+            // G-R13：第一个动作是主按钮，其余是居中文字链接；去向与回调不变（同一个 action(raw, version)）
             AppealCopy.liftedActions(frozen, risk).forEachIndexed { index, raw ->
                 val key =
                     when (raw) {
@@ -622,93 +722,102 @@ private fun AppealResultBody(
                         "view_messages" -> "appeal.view_messages"
                         else -> "appeal.contact_cs"
                     }
-                CouliButton(
-                    text = texts.text(key),
-                    onClick = { controller.action(raw, version) },
-                    variant = if (index == 0) com.couli.core.designsystem.CouliButtonVariant.PRIMARY else CouliButtonVariant.SECONDARY,
-                    modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_ACTION_PREFIX + raw),
-                )
-            }
-        } else {
-            Badge(texts.text("appeal.upheld.badge"))
-            Text(
-                text = texts.text("appeal.upheld.title"),
-                style = CouliTypography.title,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.semantics { heading() },
-            )
-            Text(text = texts.text("appeal.upheld.desc"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-            val rows = mutableListOf<@Composable () -> Unit>()
-            closed?.let { at ->
-                rows += { TimelineRow(texts.format("appeal.upheld.result_line", mapOf("time" to CouliFormat.timeMinute(at))), null) }
-            }
-            AppealCopy.currentStateKey(risk)?.let { key ->
-                rows +=
-                    { ValueRow(texts.text(if (frozen) "appeal.current_frozen_state" else "appeal.current_account_state"), texts.text(key)) }
-            }
-            if (rows.isNotEmpty()) RowCard(rows)
-            GroupLabel(texts.text("appeal.next"))
-            NoteStrip(text = nextSteps(texts, frozen, risk))
-            CouliButton(
-                text = texts.text("appeal.again"),
-                onClick = { controller.again(version) },
-                modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_AGAIN),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                LinkText(texts.text("appeal.contact_cs"), MeTags.APPEAL_CS, controller::contactCs)
-                if (!frozen) {
-                    Text(text = "|", style = CouliTypography.footnote, color = CouliColors.borderControl)
-                    LinkText(texts.text("risk.logout"), MeTags.APPEAL_LOGOUT, controller::askLogout)
-                    DeleteAccountLink(AccountTags.APPEAL_DELETE)
+                val onAction = { controller.action(raw, version) }
+                if (index == 0) {
+                    CouliButton(
+                        text = texts.text(key),
+                        onClick = onAction,
+                        variant = CouliButtonVariant.PRIMARY,
+                        modifier = Modifier.fillMaxWidth().testTag(MeTags.APPEAL_ACTION_PREFIX + raw),
+                    )
+                } else {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        LinkText(
+                            texts.text(key),
+                            MeTags.APPEAL_ACTION_PREFIX + raw,
+                            CouliTypography.footnote,
+                            CouliColors.textLink,
+                            onAction,
+                        )
+                    }
                 }
             }
+        } else {
+            // R22：状态卡（warning 胶囊 + 标题 + 说明 + 处理时间）
+            Column(
+                modifier = Modifier.fillMaxWidth().couliCard().padding(CouliSpacing.space4),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+            ) {
+                StatusPill(texts.text("appeal.upheld.badge"), PillTone.WARNING, CouliIcons.alert)
+                Text(
+                    text = texts.text("appeal.upheld.title"),
+                    style = CouliTypography.title,
+                    color = CouliColors.textPrimary,
+                    modifier = Modifier.semantics { heading() },
+                )
+                Text(text = texts.text("appeal.upheld.desc"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+                closed?.let { at -> InlineRow(texts.text("appeal.closed_at"), CouliFormat.timeMinute(at)) }
+            }
+            // R23：已提交 ✓（created_at，与处理中版式同取法）→ 处理中 ✓ → 处理结果 ⚠（600，说明「维持原处理结果 · 时间」）
+            val created = (latest?.get("created_at") as? JsonPrimitive)?.content?.let(MeJson::instant)
+            AppealTimeline(
+                listOf(
+                    TimelineStep(texts.text("appeal.timeline.submitted"), created?.let(CouliFormat::timeMinute), StepState.DONE),
+                    TimelineStep(
+                        texts.text("appeal.timeline.processing"),
+                        AppealCopy.processingDesc(frozen, risk)?.let(texts::text),
+                        StepState.DONE,
+                    ),
+                    TimelineStep(
+                        texts.text("appeal.timeline.result"),
+                        closed?.let { at -> texts.format("appeal.upheld.result_line", mapOf("time" to CouliFormat.timeMinute(at))) },
+                        StepState.WARNING,
+                    ),
+                ),
+            )
+            CurrentStateCard(deps, state, frozen, risk)
+            // R25：接下来可以（逐条成行；条目与显隐条件原样，冻结组那句按画板放首位）
+            BulletCard(texts.text("appeal.next"), nextSteps(texts, frozen, risk, deletionAvailable()))
+            (latest?.get("content") as? JsonPrimitive)?.content?.let { text -> AppealContentCard(texts, text) }
         }
     }
 }
 
+/** 当前账号状态卡（R24）：只读本次 getMe，与账号状态页同条件——状态胶囊、原因（有才显示）、限制期限（banned）/ 预计恢复（frozen 且有值）。 */
+@Composable
+private fun CurrentStateCard(
+    deps: MeDeps,
+    state: AppealState,
+    frozen: Boolean,
+    risk: String?,
+) {
+    val texts = deps.texts
+    val rows = mutableListOf<@Composable () -> Unit>()
+    AppealCopy.currentStateKey(risk)?.let { key ->
+        val text = texts.text(key)
+        rows += { InlineRow(texts.text("appeal.state"), text) { RiskStatePill(text, risk) } }
+    }
+    riskReasonKey(state)?.let { key -> rows += { InlineRow(texts.text("appeal.reason"), texts.text(key)) } }
+    if (risk == "banned") rows += { InlineRow(texts.text("risk.limit"), texts.text("risk.limit.long")) }
+    val until = frozenUntil(state)
+    if (until != null && risk == "frozen") {
+        rows += { InlineRow(texts.text("appeal.frozen_until"), CouliFormat.timeListFuture(until, deps.clock())) }
+    }
+    if (rows.isEmpty()) return
+    AppealInfoCard(texts.text(if (frozen) "appeal.current_frozen_state" else "appeal.current_account_state")) { rows.forEach { it() } }
+}
+
+/** 「接下来可以」各条（条目与条件同改前；第 3 条提到注销 ⇔ 有注销入口，与 DeleteAccountLink 同判据，G-R17）。 */
 private fun nextSteps(
     texts: MeTexts,
     frozen: Boolean,
     risk: String?,
-): String {
-    val lines = mutableListOf(texts.text("appeal.next.again"), texts.text("appeal.next.cs"))
+    withDeletion: Boolean,
+): List<String> {
+    val lines = mutableListOf<String>()
     if (AppealCopy.upheldFrozenNext(frozen, risk)) lines += texts.text("appeal.next.frozen")
-    if (!frozen) lines += texts.text("appeal.next.logout")
-    return lines.joinToString("\n")
-}
-
-@Composable
-private fun Badge(text: String) {
-    Text(
-        text = text,
-        style = CouliTextStyles.captionSemibold,
-        color = CouliColors.statusPendingText,
-        modifier =
-            Modifier
-                .background(CouliColors.statusPendingBackground, RoundedCornerShape(CouliRadius.pill))
-                .padding(horizontal = CouliSpacing.space2, vertical = CouliSpacing.space1),
-    )
-}
-
-@Composable
-private fun TimelineRow(
-    title: String,
-    desc: String?,
-) {
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = com.couli.core.designsystem.CouliSizes.touchTarget)
-                .semantics(mergeDescendants = true) {}
-                .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-    ) {
-        Text(text = title, style = CouliTypography.body, color = CouliColors.textPrimary)
-        desc?.let { Text(text = it, style = CouliTypography.caption, color = CouliColors.textSecondary) }
-    }
+    lines += texts.text("appeal.next.again")
+    lines += texts.text("appeal.next.cs")
+    if (!frozen) lines += texts.text(if (withDeletion) "appeal.next.logout.with_deletion" else "appeal.next.logout")
+    return lines
 }

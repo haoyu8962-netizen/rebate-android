@@ -1,15 +1,11 @@
 package com.couli.feature.me
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,8 +13,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.core.designsystem.CouliButton
@@ -26,7 +20,6 @@ import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
 import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIcons
-import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
@@ -339,6 +332,14 @@ fun RiskNoticeScreen(config: RiskNoticeConfig) {
         title = texts.text("risk.title"),
         texts = texts,
         onBack = onBack,
+        // R1：内容上 24、左右 16、底 16（块间 24 在 RiskContent 里）
+        contentPadding =
+            PaddingValues(
+                start = CouliSpacing.space4,
+                top = CouliSpacing.space6,
+                end = CouliSpacing.space4,
+                bottom = CouliSpacing.space4,
+            ),
         bottom =
             if (model != null) {
                 {
@@ -378,8 +379,8 @@ fun RiskNoticeScreen(config: RiskNoticeConfig) {
                         retry = StateAction(texts.text("me.retry"), enabled = !blocked) { controller.load() },
                     )
                 }
-                // 读取失败时联系客服与退出登录始终可用（封禁场景，brief §2.10）
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { RiskFooter(texts, controller) }
+                // 读取失败时联系客服与退出登录始终可用（封禁场景，brief §2.10）；出口行与封禁态同一个 RiskFooter
+                RiskFooter(texts, controller)
             }
 
             else -> {
@@ -398,26 +399,53 @@ fun RiskNoticeScreen(config: RiskNoticeConfig) {
             onDismissRequest = { controller.cancelLogout(dialog) },
             dismissOnClickOutside = false,
             confirmTag = MeTags.RISK_LOGOUT_DIALOG,
+            titleAlign = TextAlign.Center,
+            scrim = CouliColors.overlayScrim,
         )
     }
 }
 
+/**
+ * 出口行（G-R04）：联系客服 | 注销账号 | 退出登录（画板顺序），14 号 text.link、分隔符 border.subtle 且不读；放不下整块换行。
+ * 去向不变：客服 / 退出仍是执行器的 contactCs / askLogout，注销仍是 DeleteAccountLink（按路由可用性显示，自带前面的「|」）。
+ */
 @Composable
 private fun RiskFooter(
     texts: com.couli.core.me.MeTexts,
     controller: RiskNoticeController,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        LinkText(texts.text("risk.contact_cs"), MeTags.RISK_CS, controller::contactCs)
-        Text(text = "|", style = CouliTypography.footnote, color = CouliColors.borderControl)
-        LinkText(texts.text("risk.logout"), MeTags.RISK_LOGOUT, controller::askLogout)
-        DeleteAccountLink(AccountTags.RISK_DELETE)
+    RiskExitRow {
+        LinkText(texts.text("risk.contact_cs"), MeTags.RISK_CS, CouliTypography.footnote, CouliColors.textLink, controller::contactCs)
+        DeleteAccountLink(
+            AccountTags.RISK_DELETE,
+            linkStyle = CouliTypography.footnote,
+            linkColor = CouliColors.textLink,
+            separatorColor = CouliColors.borderSubtle,
+            separatorSilent = true,
+        )
+        ExitSeparator()
+        LinkText(texts.text("risk.logout"), MeTags.RISK_LOGOUT, CouliTypography.footnote, CouliColors.textLink, controller::askLogout)
     }
 }
 
 @Suppress("LongMethod", "CyclomaticComplexMethod")
 @Composable
 private fun RiskContent(
+    deps: MeDeps,
+    controller: RiskNoticeController,
+    state: RiskState,
+    model: RiskNoticeModel,
+    blocked: Boolean,
+) {
+    // R1：块间 24（头部 → 信息卡 → 分区错误 → 提示条）
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space6)) {
+        RiskBlocks(deps, controller, state, model, blocked)
+    }
+}
+
+@Suppress("LongMethod", "CyclomaticComplexMethod")
+@Composable
+private fun RiskBlocks(
     deps: MeDeps,
     controller: RiskNoticeController,
     state: RiskState,
@@ -477,44 +505,47 @@ private fun RiskContent(
                 Triple("risk.normal.title", null, null)
             }
         }
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = CouliSpacing.space4),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Box(
-            modifier =
-                Modifier
-                    .size(CouliSpacing.space16 + CouliSpacing.space4)
-                    .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.card)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(if (frozen) CouliIcons.clock else CouliIcons.alert, contentDescription = null, tint = CouliColors.textSecondary)
+    // G-R17：封禁说明句提到注销 ⇔ 页面有注销入口（与 DeleteAccountLink 同一判据 deletionAvailable()）；内测版换不含注销的句子
+    val desc = if (descKey == "risk.banned.desc" && !deletionAvailable()) "risk.banned.desc.no_deletion" else descKey
+    // R2 / G-R06：图标块 96、图标 32（封禁锁 / 冻结暂停圆）、标题 22/600、间距 16 / 8；normal 无稿（R10），图标维持改前的三角，只随尺寸
+    val icon =
+        when {
+            frozen -> CouliIcons.pauseCircle
+            layout == RiskLayout.NORMAL -> CouliIcons.alert
+            else -> CouliIcons.lock
         }
-        Text(
-            text = texts.text(titleKey),
-            style = CouliTypography.heading,
-            color = CouliColors.textPrimary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.semantics { heading() }.testTag(MeTags.RISK_TITLE),
-        )
-        descKey?.let {
-            Text(text = texts.text(it), style = CouliTypography.footnote, color = CouliColors.textSecondary, textAlign = TextAlign.Center)
-        }
-    }
+    RiskHeader(
+        icon = icon,
+        title = texts.text(titleKey),
+        desc = desc?.let(texts::text),
+        titleTag = MeTags.RISK_TITLE,
+    )
     if (layout == RiskLayout.NORMAL) return
     val rows = mutableListOf<@Composable () -> Unit>()
     // G08：表外 category 与 null 不显示原因行（不显示原始编码）
-    model.reasonKey?.let { key -> rows += { ValueRow(texts.text("risk.reason"), texts.text(key), MeTags.RISK_REASON) } }
-    if (!frozen) rows += { ValueRow(texts.text("risk.limit"), texts.text("risk.limit.long"), MeTags.RISK_LIMIT) }
-    model.frozenUntilText?.let { until -> rows += { ValueRow(texts.text("risk.frozen_until"), until, MeTags.RISK_UNTIL) } }
+    model.reasonKey?.let { key -> rows += { RiskInfoRow(texts.text("risk.reason"), texts.text(key), MeTags.RISK_REASON) } }
+    if (!frozen) rows += { RiskInfoRow(texts.text("risk.limit"), texts.text("risk.limit.long"), MeTags.RISK_LIMIT) }
+    model.frozenUntilText?.let { until -> rows += { RiskInfoRow(texts.text("risk.frozen_until"), until, MeTags.RISK_UNTIL) } }
     if (layout == RiskLayout.BANNED_APPEALING || layout == RiskLayout.FROZEN_APPEALING) {
-        rows += { ValueRow(texts.text("risk.appeal"), texts.text("risk.appeal.processing")) }
+        // R4 / G-R07：值画成状态胶囊（处理中 = pending + 时钟），整行仍只读、不加点击与箭头
+        val processing = texts.text("risk.appeal.processing")
+        rows += {
+            RiskInfoRow(texts.text("risk.appeal"), processing) { StatusPill(processing, PillTone.PENDING, CouliIcons.clock) }
+        }
     }
-    if (model.upheldLine) rows += { ValueRow(texts.text("risk.latest_appeal"), texts.text("risk.upheld"), MeTags.RISK_UPHELD) }
+    if (model.upheldLine) {
+        val upheld = texts.text("risk.upheld")
+        rows += {
+            RiskInfoRow(
+                texts.text("risk.latest_appeal"),
+                upheld,
+                MeTags.RISK_UPHELD,
+            ) { StatusPill(upheld, PillTone.WARNING, CouliIcons.alert) }
+        }
+    }
     state.withdrawals.forEach { row ->
         rows += {
-            ValueRow(
+            RiskInfoRow(
                 texts.text("risk.withdrawals"),
                 texts.format(
                     "risk.withdrawal_row",
@@ -524,7 +555,7 @@ private fun RiskContent(
             )
         }
     }
-    if (rows.isNotEmpty()) RowCard(rows)
+    if (rows.isNotEmpty()) RiskInfoCard(rows)
     state.appealsError?.let { notice ->
         SectionError(notice.message(texts), texts.text("me.retry"), MeTags.RISK_APPEALS_ERROR, MeTags.RISK_APPEALS_RETRY, !blocked) {
             controller.retryAppeals()
