@@ -15,6 +15,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -27,6 +29,8 @@ import com.couli.core.designsystem.CouliDialog
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.ModalFocus
+import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.me.MeLevel
 import com.couli.core.me.MePlatform
 import com.couli.core.me.Personalization
@@ -196,6 +200,7 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
     OnResumed(controller) { resumes += 1 }
     val model = remember(controller, resumes) { controller.model() }
     val texts = deps.texts
+    val withdrawFocus = remember { FocusRequester() }
     MeSubPage(
         tag = MeTags.PRIVACY_PAGE,
         title = texts.text("privacy_center.title"),
@@ -324,11 +329,13 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
                     variant = CouliButtonVariant.SECONDARY,
                     enabled = !withdrawing,
                     loading = withdrawing,
-                    modifier = Modifier.fillMaxWidth().testTag(MeTags.PRIVACY_WITHDRAW),
+                    modifier = Modifier.fillMaxWidth().couliFocusTarget(withdrawFocus).testTag(MeTags.PRIVACY_WITHDRAW),
                 )
             }
         }
     }
+    // F-AND-73：确认框关闭（取消 / 系统返回 / 确认）后焦点回到【撤回同意】；只观察确认框是否在，不碰下面的确认框块
+    if (state.confirm != null) ReturnFocusOnClose(withdrawFocus)
     val confirm = state.confirm
     if (confirm != null) {
         // 确认框生成时捕获执行器与一次性编号（共性第 7、20 条）；【取消】主按钮、【确认撤回】次按钮（BR-TEXT-14 表 D）；点遮罩不执行、系统返回 = 取消
@@ -345,5 +352,23 @@ fun PrivacyCenterScreen(config: PrivacyCenterConfig) {
             titleAlign = TextAlign.Center,
             scrim = CouliColors.overlayScrim,
         )
+    }
+}
+
+/** 所在分支离开组合（确认框关闭）时，等关闭动画结束、底层恢复可达后把焦点还给 [target]；目标已不在界面上（页面先关了）时什么都不做。 */
+@Composable
+private fun ReturnFocusOnClose(target: FocusRequester) {
+    val view = LocalView.current
+    DisposableEffect(target, view) {
+        onDispose {
+            view.postDelayed({
+                @Suppress("SwallowedException") // 页面已离开（按钮不在树上）时 requestFocus 抛 IllegalStateException：不还焦点
+                try {
+                    target.requestFocus()
+                } catch (detached: IllegalStateException) {
+                    Unit
+                }
+            }, ModalFocus.RESTORE_DELAY_MILLIS)
+        }
     }
 }

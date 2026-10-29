@@ -278,6 +278,7 @@ class PayoutVisualFormTest {
             "INFO 条左侧 20dp 次文字色信息图标",
             pixels.countNear(icon, host.color("text.secondary").argb(), 40) > 12 * d,
         )
+        pixels.assertInfoIconInk(icon, host, "INFO 条图标")
     }
 
     private fun unbound() {

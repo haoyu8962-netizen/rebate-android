@@ -505,21 +505,28 @@ private fun AppealUpheldBar(
                 controller::contactCs,
             )
             if (!frozen) {
-                DeleteAccountLink(
-                    AccountTags.APPEAL_DELETE,
-                    linkStyle = CouliTypography.footnote,
-                    linkColor = CouliColors.textLink,
-                    separatorColor = CouliColors.borderSubtle,
-                    separatorSilent = true,
-                )
-                ExitSeparator()
-                LinkText(
-                    texts.text("risk.logout"),
-                    MeTags.APPEAL_LOGOUT,
-                    CouliTypography.footnote,
-                    CouliColors.textLink,
-                    controller::askLogout,
-                )
+                // 「| 注销账号」「| 退出登录」各自成组（折行时分隔符随链接换行，F-AND-75 ②）
+                if (deletionAvailable()) {
+                    ExitLinkGroup {
+                        DeleteAccountLink(
+                            AccountTags.APPEAL_DELETE,
+                            linkStyle = CouliTypography.footnote,
+                            linkColor = CouliColors.textLink,
+                            separatorColor = CouliColors.borderSubtle,
+                            separatorSilent = true,
+                        )
+                    }
+                }
+                ExitLinkGroup {
+                    ExitSeparator()
+                    LinkText(
+                        texts.text("risk.logout"),
+                        MeTags.APPEAL_LOGOUT,
+                        CouliTypography.footnote,
+                        CouliColors.textLink,
+                        controller::askLogout,
+                    )
+                }
             }
         }
     }

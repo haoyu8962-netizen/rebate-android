@@ -23,6 +23,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -109,9 +110,17 @@ internal fun rememberIntroFold(): IntroFold {
     return remember(key, ime, density) { IntroFold(ime, density) }
 }
 
-/** 输入法是否弹起（底部 ime inset 大于 0）。 */
+/**
+ * 输入法是否弹起（底部 ime inset 大于 0）。经派生状态读取：键盘动画逐帧变化的 inset 只在「开 / 关」切换时让读取方重组，
+ * 不再每帧重组整个表单（F-AND-77 ②）；首帧判定仍由 [IntroFold.onCodeRow] 在回报当下读 inset 兜住。
+ */
 @Composable
-internal fun imeOpen(): Boolean = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+internal fun imeOpen(): Boolean {
+    val ime = WindowInsets.ime
+    val density = LocalDensity.current
+    val open by remember(ime, density) { derivedStateOf { ime.getBottom(density) > 0 } }
+    return open
+}
 
 /** 页面标题区（BindPhone-v2）：22/600 标题（读屏标题）+ 14 次文字副标题（[benefit] 为 null 时不画），纵向 8，左对齐。 */
 @Composable

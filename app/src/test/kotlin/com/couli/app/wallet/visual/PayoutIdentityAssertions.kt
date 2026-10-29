@@ -1,5 +1,6 @@
 package com.couli.app.wallet.visual
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -16,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.couli.app.product.productPixels
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIcons
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -59,7 +61,53 @@ internal fun ComposeContentTestRule.assertInfoBar(
         pixels.countNear(Rect(left - 30 * d, bounds.top, left - 4 * d, bounds.top + 22 * d), host.color("text.secondary").argb(), 40) >
             12 * d,
     )
+    pixels.assertInfoIconInk(Rect(left - 30 * d, bounds.top, left - 4 * d, bounds.top + 22 * d), host, "INFO 条图标：$text")
 }
+
+/**
+ * FU-AND-0728 U1（F-AND-68，变异 M13「INFO 图标改主文字色」）：INFO 图标颜色判据收紧（上面「近次文字色像素 > 12dp」那条照旧保留，不放宽）。
+ * 旧判据只数容差 40 的近次文字色像素，主文字色图标的抗锯齿边缘（主文字色与浅灰底的混合）也会落进去。这里改看「墨心」：图标框里离 INFO 底色最远的像素
+ * （抗锯齿边缘都是墨色与底色的混合，离底色不会比墨心更远）必须贴近 text.secondary；并且框里不得出现贴近 text.primary 的像素
+ * （次文字色图标与浅灰底的任何混合色离主文字色都在 170 以上，三通道差之和）。
+ */
+internal fun Bitmap.assertInfoIconInk(
+    icon: Rect,
+    host: PayoutIdentityVisualHost,
+    what: String,
+) {
+    val secondary = host.color("text.secondary").argb()
+    val primary = host.color("text.primary").argb()
+    val background = host.color("background.muted").argb()
+    var core = background
+    var coreDistance = -1
+    var primaryLike = 0
+    for (x in icon.left.toInt().coerceAtLeast(0) until icon.right.toInt().coerceAtMost(width)) {
+        for (y in icon.top.toInt().coerceAtLeast(0) until icon.bottom.toInt().coerceAtMost(height)) {
+            val pixel = getPixel(x, y)
+            val distance = inkDistance(pixel, background)
+            if (distance > coreDistance) {
+                coreDistance = distance
+                core = pixel
+            }
+            if (inkDistance(pixel, primary) <= INK_TOLERANCE) primaryLike += 1
+        }
+    }
+    assertTrue("$what：图标框里有墨迹（墨心离底色 $coreDistance）", coreDistance >= INK_PRESENT)
+    assertTrue(
+        "$what：图标墨心是次文字色（实际 #${Integer.toHexString(core)}，离 text.secondary ${inkDistance(core, secondary)}）",
+        inkDistance(core, secondary) <= INK_TOLERANCE,
+    )
+    assertEquals("$what：图标框里没有主文字色像素", 0, primaryLike)
+}
+
+/** 三通道差之和（不看 alpha）。 */
+private fun inkDistance(
+    a: Int,
+    b: Int,
+): Int = listOf(16, 8, 0).sumOf { abs((a ushr it and 255) - (b ushr it and 255)) }
+
+private const val INK_TOLERANCE = 24
+private const val INK_PRESENT = 96
 
 /** ERROR 语气错误条（W92：红底、红字 500、20dp 三角，assertive 播报不变）。图标尺寸与参考图标墨迹比对。 */
 internal fun ComposeContentTestRule.assertErrorTone(

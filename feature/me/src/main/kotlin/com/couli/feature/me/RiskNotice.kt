@@ -416,15 +416,22 @@ private fun RiskFooter(
 ) {
     RiskExitRow {
         LinkText(texts.text("risk.contact_cs"), MeTags.RISK_CS, CouliTypography.footnote, CouliColors.textLink, controller::contactCs)
-        DeleteAccountLink(
-            AccountTags.RISK_DELETE,
-            linkStyle = CouliTypography.footnote,
-            linkColor = CouliColors.textLink,
-            separatorColor = CouliColors.borderSubtle,
-            separatorSilent = true,
-        )
-        ExitSeparator()
-        LinkText(texts.text("risk.logout"), MeTags.RISK_LOGOUT, CouliTypography.footnote, CouliColors.textLink, controller::askLogout)
+        // 「| 注销账号」「| 退出登录」各自成组（折行时分隔符随链接换行）；注销组只在入口可用时出现（与 DeleteAccountLink 同一判据）
+        if (deletionAvailable()) {
+            ExitLinkGroup {
+                DeleteAccountLink(
+                    AccountTags.RISK_DELETE,
+                    linkStyle = CouliTypography.footnote,
+                    linkColor = CouliColors.textLink,
+                    separatorColor = CouliColors.borderSubtle,
+                    separatorSilent = true,
+                )
+            }
+        }
+        ExitLinkGroup {
+            ExitSeparator()
+            LinkText(texts.text("risk.logout"), MeTags.RISK_LOGOUT, CouliTypography.footnote, CouliColors.textLink, controller::askLogout)
+        }
     }
 }
 

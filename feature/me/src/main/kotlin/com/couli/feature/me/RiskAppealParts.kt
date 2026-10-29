@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -378,6 +379,16 @@ internal fun RiskExitRow(content: @Composable FlowRowScope.() -> Unit) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1, Alignment.CenterHorizontally),
         itemVerticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+/** 出口行里「| 链接」一组（F-AND-75 ②）：分隔符与其后的链接同组、间距同出口行（4），放不下时整组换行，分隔符不挂行尾。 */
+@Composable
+internal fun ExitLinkGroup(content: @Composable RowScope.() -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
+        verticalAlignment = Alignment.CenterVertically,
         content = content,
     )
 }

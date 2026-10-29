@@ -137,7 +137,7 @@
   {"h": "a6cff96723a113f30a86ba9b1e0350c01cb1fc1a44a1de8cfd75a1d590873e1b", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualToastTest.kt"},
   {"h": "4973ed3df17f491eb459d9a87b69ef1aad110768ae44661613f7deeae8b08b18", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/DialogSlotMappingTest.kt"},
   {"h": "3dd9d35a9123415ec93305971e8bbcf63211e0a1dd17fbe35f85e2549d328f8c", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/LaborVisualTest.kt"},
-  {"h": "5e42fc2443be031cdf3b1cffefcf708f1b57ffc9fb21a501e238856abb9973b9", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityAssertions.kt"},
+  {"h": "3a2b7ad2151d512e55048207c1414adfb30437fac65f56f50ad142ac36f03de1", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityAssertions.kt"},
   {"h": "59fbb15bea35e868cff804a54dedc84f24e555d8a2fd934d259c82a40f9d7b8b", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualA11yTest.kt"},
   {"h": "954230cd916fa04f7345769ad15d2c66c0f66f88347152362b31e20b67bea7ec", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualAdaptationTest.kt"},
   {"h": "784cd5b0053ba79fe9c77b04acb53490abb6e2abdfa281ec5c6a5b17a2fef45f", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualFixtureTest.kt"},
@@ -147,9 +147,9 @@
   {"h": "ad513fb087f6c3213ad9d772baf6b2edac9d7f21883a0375451e40ad70017b9d", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualProbe.kt"},
   {"h": "800438a50730f71ef57eaf528220bd80c729d52ec89eae60456c3af1ad20f80e", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualSnapshotTest.kt"},
   {"h": "05ffbb5d4c2015a80faeec0919f04b448e7870578297bd3a05e1e0236e7507d8", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutIdentityVisualSourceContractTest.kt"},
-  {"h": "f1ee0622f4f4504a008658b9103155078688f33bbfc1a4a0eccfaf87da6d9638", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualBoundTest.kt"},
+  {"h": "9c6b660eb7768368dc92c81994fffeab890609f23ed9c4cee045840a2829ca39", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualBoundTest.kt"},
   {"h": "22d45c532064a602710e88b62d825255902b7ea04222298b9f5e95c3c6ed2c69", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualErrorTest.kt"},
-  {"h": "99d1da244fb4445875999e46a7906942748a6c02ba0065032d544971a52cd069", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualFormTest.kt"},
+  {"h": "4a3c080ae0593029b13f646abb5564ae681659778058402359e051109403259e", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualFormTest.kt"},
   {"h": "e41dffea748966b1dce59292dd9a59ec2c263fe1376093a40d7e181e258ae631", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/PayoutVisualPendingTest.kt"},
   {"h": "6fa9ad3ff5061054b3951a5e32011d3ff23d0ba86cd9218bccba1309aa6e209d", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/RealNameConsentVisualTest.kt"},
   {"h": "f27134a728d44a5c517243659c524e089b0b19e5daef46e09f6360e44440559a", "p": "app/src/test/kotlin/com/couli/app/wallet/visual/RealNameVisualTest.kt"},
@@ -1380,15 +1380,15 @@
   {"h": "f117bd6f885e5756045c92ea90246ed6eb78c518f081da58949a1c7e4eb38780", "p": "app/src/test/snapshots/risk-v/AppealResultLifted-v2-back-kept-GR12-light.png"},
   {"h": "9013cbce14340b0890c63497e8caf242759eb702981241737996c32011639763", "p": "app/src/test/snapshots/risk-v/AppealResultLiftedFrozen-v2-light.png"},
   {"h": "f3726a8090279307176cb4a2e0651e37a9fd7dd4ad07bd3964231854df6c640f", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-dark.png"},
-  {"h": "eec96459c77c8332a85a215605e033c52d83e77ec6e8388aede915aadcc48252", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-font200-w320-light.png"},
-  {"h": "3cbdb4c3d155edb5770eda57aca478bff0c5f4eccc617036ce023aa59dea5ff8", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-font200-w390-light.png"},
+  {"h": "916ec272b295c1b611ee89fd58458c7e1b21d2efe4f69937e22aa4d74b2e8114", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-font200-w320-light.png"},
+  {"h": "46be5f9c2e81dab279abe05962b6e5521472e30b2d88968a85de409757196c17", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-font200-w390-light.png"},
   {"h": "9e70902cd5eb3784caeba881ad2e9c98023cfa9aa5834698a7ce87633fd16de4", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-light.png"},
   {"h": "90f6ea2e1acf144bf8208cddf17659f27dfd7f191d252bc498b022bed2af0a07", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-w840-light.png"},
   {"h": "09649e588b6b38f129584f075111ec32e599c25e43d005e945367c18ba6c1c6e", "p": "app/src/test/snapshots/risk-v/AppealResultUpheldFrozen-v2-light.png"},
   {"h": "c8ff8259e8f40ea144027317a739a127d5a3a104eb4e4ddbf0697a3266f37bfe", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-dark.png"},
-  {"h": "0d73de4a0bc8daf3e59bfd76f64dc43cc37255a00a8320a8f073b1d389081871", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w320-light.png"},
-  {"h": "a20ce644afb11a9f709dfef26bae9dbad90e762704e1aba9f55e2003c2e2a333", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-dark.png"},
-  {"h": "e8678cbbb4a1d130c9c39b3a4e64dcc8b64f61db582bc217c0a5f91ba5d74152", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-light.png"},
+  {"h": "fe73b58f475ee00b0ebba6787987ca13dd6d2eba82d913b6fda127790af98433", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w320-light.png"},
+  {"h": "dbceead8c704bb94aecb75594807bdb3e15a784451093736bcb7b19d4a56e723", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-dark.png"},
+  {"h": "f21318d4a57475a71a693a1ad5476a8344152a4dc3a5cc42b44b99b1dddbd9b5", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-light.png"},
   {"h": "a379c220c83cecb636fdf061ee008373de4d2119643aa0fecb30d16a92c336fd", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-no-subline-GR08-light.png"},
   {"h": "f412733a82e22bfb3a1875c1b0e3d535ae25c9592812fb0bff887aef9404172f", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-w840-light.png"},
   {"h": "06fe433d77afbd736d0f6cbdd7334bb54cc0416646f66757147bc3e4c22fcf29", "p": "app/src/test/snapshots/risk-v/RiskNoticeBannedAppealing-v2-choice-not-compared-GR01-light.png"},
@@ -1413,7 +1413,7 @@
   {"h": "900eee56703a4eb1d2142bdbb0677fc3d096e1afd8ed1f12202ac34072491a77", "p": "app/src/test/snapshots/risk-v/risk-load-error-dark.png"},
   {"h": "6e8a71613a02a0b93427c3dd64d80addc81e108ac356464df78332e70c4cf281", "p": "app/src/test/snapshots/risk-v/risk-load-error-light.png"},
   {"h": "db6c296ce6fbcf1ba91955f80be28f8b32d591bf4ea527f2c20e68ff2ffcbef2", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-dark.png"},
-  {"h": "b1d016bdb472228306e55feb578600ee73a54229b82c8b5c8ee853730a3f051f", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-font200-w320-light.png"},
+  {"h": "fc2b79cafb8480529df44d041c6a22ba5d89b588f610f37af155a76704a6742f", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-font200-w320-light.png"},
   {"h": "8e84813459edbea0abceac093d1011943d0ec3689d6fc64ca939c83c0c3e3385", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-light.png"},
   {"h": "52eb5978150d207a49025da46c0a0fe59587b04d580013192a4eb7d07d1d4276", "p": "app/src/test/snapshots/risk-v/risk-normal-dark.png"},
   {"h": "f02190b0ca2281e8acfa65a93d186373f1ef1c8458a84cb59122b66ca7155a82", "p": "app/src/test/snapshots/risk-v/risk-normal-light.png"},
@@ -2049,7 +2049,7 @@
   {"h": "d21a60f5a84c2757ddc8607db9e3fa376d16e476a7622fd5bfd0aea6aad88f7e", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/WithdrawalText.kt"},
   {"h": "4d70bec1e70b0587abcc7ab7ae4d73b1a65bc7b038f396d51ecf52994e39e268", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpController.kt"},
   {"h": "311c5c20c851912507c280896947a906df4a876704e9d7b84546c53cf12950f9", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpPorts.kt"},
-  {"h": "202e7f626182f53db679e1807f118c317150b8de941bbb8c2df8a3320d5e7d60", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
+  {"h": "011f9dd88d997753b02c683cb8bb36d7523dc1e8eeb7c0b55db2d012c8395e44", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
   {"h": "9fdaeab5eccadd78fe950ffec551b3477bf3444c66280874e60581ce6d5e9e18", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/FollowupAnd0714WalletBindingTest.kt"},
   {"h": "46368ce812a6e3d07690d3d9bcf6fd3287b91b3d788979b561086d06f4a9d867", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletLogicTest.kt"},
   {"h": "6ad3fbca1015384dbcd63f904231a967f2818f0ce193d9e28ff0dce851f12e70", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletStaleCacheStoreTest.kt"},
@@ -2097,7 +2097,7 @@
   {"h": "f38579585450512df4dee1e3efe70883d14f8ed52d224392399a39116b8a71b2", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AboutController.kt"},
   {"h": "074b8bb2dc5115677c593fce6852abdda92e31b8d7f904fcec5f023c25067f2d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AccountPorts.kt"},
   {"h": "48d8248b4a7163f27f098871e477963ba01480f6913445094509e759f0d0d286", "p": "feature/me/src/main/kotlin/com/couli/feature/me/AccountUi.kt"},
-  {"h": "f1008d65f59549295745e313256ef3aeb70cc2434ab280042ec18fc167bd0406", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Appeal.kt"},
+  {"h": "fc216db64b675c0234e86cf0c7dfa1b84a89c8b894546dd61e3f2f2623a3ad83", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Appeal.kt"},
   {"h": "30f3173b2cb1d4f50f27afbe46088fdb49f4d4e9c107216727aa2e2e20de66f9", "p": "feature/me/src/main/kotlin/com/couli/feature/me/CsSheets.kt"},
   {"h": "0c93bf7cebfa8855c666457aabe10d1a6938428530589f00949a4f7840541e34", "p": "feature/me/src/main/kotlin/com/couli/feature/me/DeleteAccountController.kt"},
   {"h": "15bb7b7309b5cbe2176283e6e193f2a8f93ceb9face2cdac2191468c825050dd", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MePageHolder.kt"},
@@ -2109,9 +2109,9 @@
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
   {"h": "7b3f058d58080599ce1ae19cf38cccbce8a9f1b3245f8d87a38691ef29f26c86", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
   {"h": "d88b8cbab9ce73f13d63af3f436bf8df732232ee956cf4e30737ed8c6ff2b93d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyAboutCsParts.kt"},
-  {"h": "1eb9ed4fe8c4d7e536ba878a14ba149562f4f392e448ba4c5f72ef8f26e892ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
-  {"h": "c5b3d3d8b1d0f23662fe810567a32fa08968a6e7de74e3b36e2636884a2344c5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskAppealParts.kt"},
-  {"h": "e40024c70b407759276ced7c4ed7d1c00f2a72e5b7c53d231a7b66abb7e209c5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
+  {"h": "d033ac2ddebf72a62bfca348a9523ac36db815f45965ba2f887ff346c438e78a", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
+  {"h": "47a68d5328e746d8608031d2ac8407f663e48920cd1357eb3c64ac6b214d3eca", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskAppealParts.kt"},
+  {"h": "45217a32afc36b1f222133e53abddb14510f084e7bf42fc4b19d2842fbd757b1", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
   {"h": "05a504079d329ea7706619fe51eafcb9322da943fd6bf2ebdd6f0f3e3e64e8f2", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Settings.kt"},
   {"h": "7a8c3227342e6ad1e0c2e650849c652bb74d9d5518c9dba466b9ece080607943", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsParts.kt"},
   {"h": "7d35ddb31a80dcac00ecba01449496e906b24204c682701ea886f6849390f2ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsSubPages.kt"},
@@ -2262,15 +2262,15 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "5e5795677b77af0c4697e0f1e003ba45e293dde094b90a9c89aac707a705e4b4"
+   "h": "65836354fc15df3590e92aab75fe24031e87199e9e672b21a2768dc71237acad"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "03323b0f1ef58311d918e51f910af4ab612e610dacfa3c8aa2e9c6ccde4361b4"
+   "h": "fa5b5ad76a76afe6ac53b5643e2940bc15b0a7c127820149fdc7461c09adf072"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "0bbe8ce48959d378a8201f44e9c7c29a4f93b7bd738cd8da27b4e168bc155e44"
+   "h": "d47de89a6c08938d3e08243df121544a2d7ca89524b185088a43313f2b515402"
   }
  ],
  "hostSheetCrops": [

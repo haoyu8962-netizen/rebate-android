@@ -427,7 +427,8 @@ fun FitSheetBody(
                 val header = headerMs.map { it.measure(loose) }
                 val footer = footerMs.map { it.measure(loose) }
                 val fixed = header.sumOf { it.height } + footer.sumOf { it.height } + 2 * gap - inset
-                val fits = budget == Constraints.Infinity || fixed + minBody.roundToPx() <= budget
+                // 判定把中段底部留白加回（F-AND-69 ①）：中段可用高 = 留白 + 最小高，阈值处中段内容不需滚动
+                val fits = budget == Constraints.Infinity || fixed + inset + minBody.roundToPx() <= budget
                 if (fits == fallback) {
                     // 放得下 ↔ 放不下切换：下一帧按新布局重排（不在本次测量里改滚动容器）
                     fallback = !fits

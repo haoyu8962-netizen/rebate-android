@@ -124,6 +124,7 @@ class PayoutVisualBoundTest {
             "INFO 次文字色图标",
             pixels.countNear(Rect(left - 30 * d, top, left - 4 * d, top + 22 * d), host.color("text.secondary").argb(), 40) > 12 * d,
         )
+        pixels.assertInfoIconInk(Rect(left - 30 * d, top, left - 4 * d, top + 22 * d), host, "W77 INFO 图标")
     }
 
     @Test fun w78ExhaustedChangeIsDisabledReadsReasonAndRealTouchWritesNothing() {

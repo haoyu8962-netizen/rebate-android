@@ -273,7 +273,12 @@ class TrustedWebPage(
         override fun releaseAfterRebuild() {
             // 协调器在锁内、与隔离互斥地调用：同步放下隔离位，界面回调转主线程；没有新文档（无可信入口 / 已关闭）的页不收起错误层
             isolated = false
-            if (controller != null) onMain { callbacks.onAuthRecovered() }
+            if (controller != null) {
+                onMain { callbacks.onAuthRecovered() }
+            } else {
+                // 入口已不在本页可信源里（如切号中远程配置撤下了它）：rebuild 没建新文档，显示既有加载失败层与【重试】，不留空白（F-AND-72 补）
+                onMain { if (!this@TrustedWebPage.destroyed && controller == null) callbacks.onLoadFailed() }
+            }
         }
     }
 }

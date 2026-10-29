@@ -1268,7 +1268,7 @@
   {"h": "d21a60f5a84c2757ddc8607db9e3fa376d16e476a7622fd5bfd0aea6aad88f7e", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/WithdrawalText.kt"},
   {"h": "4d70bec1e70b0587abcc7ab7ae4d73b1a65bc7b038f396d51ecf52994e39e268", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpController.kt"},
   {"h": "311c5c20c851912507c280896947a906df4a876704e9d7b84546c53cf12950f9", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpPorts.kt"},
-  {"h": "202e7f626182f53db679e1807f118c317150b8de941bbb8c2df8a3320d5e7d60", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
+  {"h": "011f9dd88d997753b02c683cb8bb36d7523dc1e8eeb7c0b55db2d012c8395e44", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
   {"h": "9fdaeab5eccadd78fe950ffec551b3477bf3444c66280874e60581ce6d5e9e18", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/FollowupAnd0714WalletBindingTest.kt"},
   {"h": "46368ce812a6e3d07690d3d9bcf6fd3287b91b3d788979b561086d06f4a9d867", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletLogicTest.kt"},
   {"h": "6ad3fbca1015384dbcd63f904231a967f2818f0ce193d9e28ff0dce851f12e70", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletStaleCacheStoreTest.kt"},
@@ -1285,7 +1285,7 @@
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
   {"h": "7b3f058d58080599ce1ae19cf38cccbce8a9f1b3245f8d87a38691ef29f26c86", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
   {"h": "d88b8cbab9ce73f13d63af3f436bf8df732232ee956cf4e30737ed8c6ff2b93d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyAboutCsParts.kt"},
-  {"h": "1eb9ed4fe8c4d7e536ba878a14ba149562f4f392e448ba4c5f72ef8f26e892ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
+  {"h": "d033ac2ddebf72a62bfca348a9523ac36db815f45965ba2f887ff346c438e78a", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
   {"h": "05a504079d329ea7706619fe51eafcb9322da943fd6bf2ebdd6f0f3e3e64e8f2", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Settings.kt"},
   {"h": "7a8c3227342e6ad1e0c2e650849c652bb74d9d5518c9dba466b9ece080607943", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsParts.kt"},
   {"h": "7d35ddb31a80dcac00ecba01449496e906b24204c682701ea886f6849390f2ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsSubPages.kt"},
@@ -1710,6 +1710,6 @@
   "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt",
   "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"
  ],
- "settingsGuardNormalized": "ea73ecc895c6931710248274797b4fd22d020ae4ad6ca3297fd33cd972a0a6fa",
+ "settingsGuardNormalized": "b3c668fc90a646944579b5f799b0debd9f09a5753274939a87185f98b006a4a4",
  "privacyGuardNormalized": "e59d6c373a1769b30ed86f796f70383be832d3dd7c8593033cd590a1125e9aec"
 }
