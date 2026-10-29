@@ -69,6 +69,9 @@ internal object LoginDraftTexts : LoginTexts {
             // ---- APP-05b：LoginBindPhoneGuide 按钮（标题、正文用契约 invite.bind_phone_guide.*）
             "invite.bind_phone_guide.skip" to "暂不",
             "invite.bind_phone_guide.go" to "去绑定",
+            // APP-13v G-D17：BindPhone-v2 副标题与并号提示条（契约 texts.default.json 缺键，TODO(N-06)；三端同键同字，契约补键后换字典）
+            "invite.bind_phone_guide.benefit" to "绑定手机号，方便提现和找回账号。",
+            "invite.bind_phone_guide.merge_hint" to "之前用手机号注册过？绑定同一号码，符合条件时可并入原账号。",
             // ---- APP-05b：BindPhone / BindPhoneMerge（并号正文用契约 error.30411.mergeable）
             "bind_phone.code.placeholder" to "6 位验证码",
             "bind_phone.countdown" to "{sec} 秒后重新获取",

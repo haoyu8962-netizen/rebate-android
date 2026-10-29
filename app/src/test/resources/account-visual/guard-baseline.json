@@ -26,7 +26,7 @@
   {"h": "49d22c61d8d25e2929f241b50dd63df8f195040c37fae43c8e08211943cfc041", "p": "app/src/main/kotlin/com/couli/app/login/AndroidInstalledAppProbe.kt"},
   {"h": "62fcf3a43c7a114562f74de789aad13656637a72677d9acf5fa21c9b03aa4176", "p": "app/src/main/kotlin/com/couli/app/login/AppLogin.kt"},
   {"h": "cc82c0a58e62e67ed3a247798ce4d24483e4b2b4d33f19a3a3522a696d9d8559", "p": "app/src/main/kotlin/com/couli/app/login/LastLoginMethodPreferences.kt"},
-  {"h": "559072a2babe2607e932d42ac65da7598e1e1aa88725127d757ee2de968bc1c0", "p": "app/src/main/kotlin/com/couli/app/login/LoginDraftTexts.kt"},
+  {"h": "6606aafa862cf453cd987fc0cfdea1e6872a97edf2f0dca1063dc90b8c3af131", "p": "app/src/main/kotlin/com/couli/app/login/LoginDraftTexts.kt"},
   {"h": "814798a5b694bcd9bc7c97c1b9d728b986168a6a1a273865885d31994b2277d6", "p": "app/src/main/kotlin/com/couli/app/login/LoginPages.kt"},
   {"h": "2e63b9c05c63cfb50c3cd73f814328d15901816f1bb3440fed4cd43b06d9ffb2", "p": "app/src/main/kotlin/com/couli/app/login/PendingInviteCleanup.kt"},
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
@@ -2055,7 +2055,7 @@
   {"h": "6ad3fbca1015384dbcd63f904231a967f2818f0ce193d9e28ff0dce851f12e70", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletStaleCacheStoreTest.kt"},
   {"h": "bcd87b6ed7a7df14c45e0bd81d18d88847aa48534bdcf97b373f1b6e8a2faa7a", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt"},
   {"h": "2974b50230fa965ec01b15116e110a761fb3e70fd440be99e7cb92cc0435869c", "p": "feature/login/src/main/kotlin/com/couli/feature/login/AgreementSentence.kt"},
-  {"h": "481f161e5ee8169485529a99478d54ebaba732b032606416aa4745b81b56b999", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
+  {"h": "b49cd26c4070fa5fc0c8a77488b82045ed0942d001f27a9c9357c784b93eed98", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
   {"h": "13a725dd266600bc89f36c5415ad4f33e5fa720d182b0658b487cc2b12cbbfc2", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneService.kt"},
   {"h": "c5530244314b903f1a6e9e1d13d1ed5476a3432b06f8b28677cb57e7e88273ed", "p": "feature/login/src/main/kotlin/com/couli/feature/login/InviteLinkDispatcher.kt"},
   {"h": "fc5e481a4866828380ab90f46b00ad2bdbfd7559c650ba24812a9e1f7aaa4f68", "p": "feature/login/src/main/kotlin/com/couli/feature/login/LastLoginMethod.kt"},
@@ -2107,7 +2107,7 @@
   {"h": "1da16aa59dec0cf7b30987851bc546f59ce27c1cd7326c2445d9e33e6b6a1791", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabParts.kt"},
   {"h": "af04c85911876a6c02df8817b2a28b41872cf09293226bd6f66470e58c616b7f", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeUi.kt"},
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
-  {"h": "6340722a2b00bd20b43a325a6868d2d8e161d6d679544b6a6e28d28e6c327b11", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
+  {"h": "7b3f058d58080599ce1ae19cf38cccbce8a9f1b3245f8d87a38691ef29f26c86", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
   {"h": "d88b8cbab9ce73f13d63af3f436bf8df732232ee956cf4e30737ed8c6ff2b93d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyAboutCsParts.kt"},
   {"h": "1eb9ed4fe8c4d7e536ba878a14ba149562f4f392e448ba4c5f72ef8f26e892ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
   {"h": "c5b3d3d8b1d0f23662fe810567a32fa08968a6e7de74e3b36e2636884a2344c5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskAppealParts.kt"},
@@ -2262,15 +2262,15 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "11fd1311be44a88ea7df906cdf619c53f0cd04d212eeebf9c4e768987ba757c7"
+   "h": "e077414a7f127d81f03c1cbbdfae4359cf6ae1da33d23f4b0eef3d7ce35a68bf"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "d2ae0d380d1302b567a2bdf1eb7a57e5f4e102008f1c5df3d1a104dbef8ab604"
+   "h": "d91d525633ea65ab855703723a2ce2848e2c17453e826a5412fe1c025229dcdb"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "0ec34df0ed8785c0ec12a88f1a158a0ebe5e3d3bc1a08297ec8a6d3935677b20"
+   "h": "c678808dfe5e91cbd374a2a244e8b04a86e79c62ec23e524459796ddcce52972"
   }
  ],
  "hostSheetCrops": [

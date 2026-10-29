@@ -3,7 +3,6 @@ package com.couli.feature.me
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -14,22 +13,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.couli.core.designsystem.CodeInput
 import com.couli.core.designsystem.CouliButton
-import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliDialog
+import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
-import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.couliCard
 import com.couli.core.me.account.PhoneChangeOutcome
@@ -91,7 +92,10 @@ internal fun PhoneChangePage(
         texts = texts,
         onBack = { controller.back(version) },
         overlay = {
-            MeToastHost(state.toast?.message(texts), state.toast?.id) { state.toast?.id?.let(controller::consumeToast) }
+            // APP-13v D34 / G-S06：成功类轻提示（已放弃、已处理完成）带对勾，其余不带
+            MeToastHost(state.toast?.message(texts), state.toast?.id, phoneToastIcon(state.toast?.key)) {
+                state.toast?.id?.let(controller::consumeToast)
+            }
         },
         bottom = {
             Column(modifier = Modifier.imePadding(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
@@ -116,6 +120,8 @@ internal fun PhoneChangePage(
                             loading = state.submitting,
                             modifier = Modifier.fillMaxWidth().testTag(AccountTags.PHONE_SUBMIT),
                         )
+                        // APP-13v D30：提交说明挪到【提交】下方，12 次文字居中
+                        BottomHint(texts.text("phone_change.submit_hint"))
                     }
 
                     PhoneChangeState.DONE -> {
@@ -161,38 +167,30 @@ internal fun PhoneChangePage(
             }
 
             PhoneChangeState.DONE -> {
-                Column(
-                    modifier = Modifier.fillMaxWidth().testTag(AccountTags.PHONE_DONE),
-                    verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-                ) {
-                    Text(
-                        text = texts.text("phone_change.done.title"),
-                        style = CouliTextStyles.bodySemibold,
-                        color = CouliColors.textPrimary,
-                        modifier = Modifier.semantics { heading() },
-                    )
-                    val masked = state.doneMasked
-                    Text(
-                        text =
-                            if (masked != null) {
-                                texts.format("phone_change.done.body", mapOf("phone" to masked))
-                            } else {
-                                texts.text("phone_change.done.body_plain")
-                            },
-                        style = CouliTypography.footnote,
-                        color = CouliColors.textSecondary,
-                    )
-                }
+                // APP-13v D33：完成图标块 96 + 17/600 标题 + 说明，居中；doneMasked 选句原样
+                val masked = state.doneMasked
+                DoneHeader(
+                    title = texts.text("phone_change.done.title"),
+                    body =
+                        if (masked != null) {
+                            texts.format("phone_change.done.body", mapOf("phone" to masked))
+                        } else {
+                            texts.text("phone_change.done.body_plain")
+                        },
+                    modifier = Modifier.testTag(AccountTags.PHONE_DONE),
+                )
             }
 
             else -> {
                 state.pending?.let { pending ->
-                    AccountPendingCard(
+                    // APP-13v D31 / G-D13：待确认卡换 a 段白卡写法；在途行只读 pending.inFlight，按钮可用性与回调原样
+                    PendingPanel(
                         texts = texts,
                         desc = pendingDesc(texts, pending.summary),
                         confirmLabel = texts.text("pending_confirm.phone_change.action"),
                         details = phoneSummary(texts, pending, deps.clock()),
                         busy = pending.inFlight || phoneBlocked,
+                        inFlight = pending.inFlight,
                         notice = state.pendingNotice?.message(texts),
                         hint = texts.text("phone_change.pending_hint"),
                         onAbandon = { controller.askAbandon(pending.key, version) },
@@ -206,7 +204,8 @@ internal fun PhoneChangePage(
     }
     state.abandonDialog?.let { dialog ->
         val pending = state.pending
-        AccountAbandonDialog(
+        // APP-13v D32 / G-D18：放弃确认框换 a 段同构包装（标题居中 + 遮罩令牌）；编号与回调原样
+        AbandonConfirmDialog(
             texts = texts,
             note = texts.text("pending_confirm.abandon.note.phone_change"),
             details = pending?.let { phoneSummary(texts, it, deps.clock()) }.orEmpty(),
@@ -215,7 +214,7 @@ internal fun PhoneChangePage(
         )
     }
     state.riskDialog?.let { dialog ->
-        // PhoneChangeNewBlocked（44001）：标题 risk_msg.<code> → error.44001；【知道了】【联系客服申诉】；点遮罩不关闭
+        // PhoneChangeNewBlocked（44001）：标题 risk_msg.<code> → error.44001；【知道了】【联系客服申诉】；点遮罩不关闭（APP-13v G-D18：标题居中、遮罩令牌）
         CouliDialog(
             title = texts.text(dialog.kind),
             message = texts.text("phone_change.risk_blocked.desc"),
@@ -227,12 +226,18 @@ internal fun PhoneChangePage(
             dismissOnClickOutside = false,
             confirmTag = AccountTags.PHONE_RISK_OK,
             dismissTag = AccountTags.PHONE_RISK_APPEAL,
+            titleAlign = TextAlign.Center,
+            scrim = CouliColors.overlayScrim,
         )
     }
     stepUpState?.let { panel ->
         StepUpSheet(controller.stepUp, panel, texts, smsBlocked = false, verifyBlocked = panelVerifyBlocked, restore = null)
     }
 }
+
+/** 轻提示图标（G-S06）：已放弃、已处理完成两类成功提示带对勾，其余不带。 */
+private fun phoneToastIcon(key: String?): ImageVector? =
+    if (key == "pending_confirm.abandoned" || key == "pending_confirm.already_done") CouliIcons.check else null
 
 /** 待确认说明：{phone} 为本机脱敏的新号；取不到用 fallbacks（G24）。 */
 internal fun pendingDesc(
@@ -260,7 +265,11 @@ internal fun phoneSummary(
     return rows
 }
 
-@Suppress("LongParameterList")
+/**
+ * 第 1 步（PhoneChange-v2 / PhoneChangeCode / PhoneChangeCodeError；结构不改，G-D04）：说明提示条 → 白卡（「将发送至 / 已发送至」句或取不到号码提示 →
+ * 6 格验证码 → 字段错误 → 格下一行【获取验证码 / {n} 秒后重新获取】）→「原手机号不能用了？联系客服 ›」链接；【下一步】在底部。输满 6 位不自动验证。
+ */
+@Suppress("LongParameterList", "LongMethod")
 @Composable
 private fun Step1(
     deps: AccountDeps,
@@ -271,6 +280,7 @@ private fun Step1(
     limited: Boolean,
 ) {
     val texts = deps.texts
+    NoticeStrip(text = texts.text("phone_change.intro"), tone = NoticeTone.MUTED)
     Column(
         modifier =
             Modifier
@@ -280,13 +290,6 @@ private fun Step1(
                 .testTag(AccountTags.PHONE_STEP1),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Text(
-            text = texts.text("phone_change.step1"),
-            style = CouliTextStyles.bodySemibold,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.semantics { heading() },
-        )
-        Text(text = texts.text("phone_change.intro"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
         if (!controller.phoneKnown) {
             // G02：本机取不到号码 →「暂时无法发送验证码」，两个按钮置灰，不发请求
             Text(
@@ -302,42 +305,47 @@ private fun Step1(
                 color = CouliColors.textSecondary,
             )
         }
-        AccountInput(
-            value = state.code1,
-            onChange = { controller.onCode1(it, version) },
-            tag = AccountTags.PHONE_STEP1_CODE,
-            spoken = texts.format("step_up.code_spoken", mapOf("n" to state.code1.length.toString())),
-            otp = true,
-            enabled = controller.phoneKnown && !state.verifying,
-            error = state.step1Notice?.message(texts),
-            trailing = {
-                CouliButton(
-                    text =
-                        if (resendLeft > 0) {
-                            texts.format("phone_change.resend_in", mapOf("n" to resendLeft.toString()))
-                        } else {
-                            texts.text("phone_change.get_code")
-                        },
-                    onClick = { controller.sendCode1(version) },
-                    enabled = controller.phoneKnown && resendLeft == 0L && !limited && !state.sending1,
-                    variant = CouliButtonVariant.TEXT,
-                    size = CouliButtonSize.COMPACT,
-                    modifier = Modifier.testTag(AccountTags.PHONE_STEP1_SEND),
-                )
-            },
-        )
-        state.step1Notice?.let { AccountFieldError(it.message(texts), it.id, AccountTags.PHONE_FIELD_ERROR) }
-        CouliButton(
-            text = texts.text("phone_change.cant_use_old"),
-            onClick = { controller.contactCs(version) },
-            variant = CouliButtonVariant.TEXT,
-            size = CouliButtonSize.COMPACT,
-            modifier = Modifier.testTag(AccountTags.PHONE_CANT_USE_OLD),
-        )
+        // 格子、错误、格下一行之间不加间距（格下一行的 48 命中区紧贴格子下沿、不与格子相交）
+        Column {
+            val codeError = state.step1Notice?.message(texts)
+            CodeInput(
+                value = state.code1,
+                onValueChange = { controller.onCode1(it, version) },
+                accessibilityLabel = texts.format("step_up.code_spoken", mapOf("n" to state.code1.length.toString())),
+                enabled = controller.phoneKnown,
+                submitting = state.verifying,
+                error = codeError != null,
+                inputModifier =
+                    Modifier.testTag(AccountTags.PHONE_STEP1_CODE).semantics {
+                        if (codeError != null) error(codeError)
+                    },
+            )
+            state.step1Notice?.let { FieldErrorLine { AccountFieldError(it.message(texts), it.id, AccountTags.PHONE_FIELD_ERROR) } }
+            CodeSendRow(
+                text =
+                    if (resendLeft > 0) {
+                        texts.format("phone_change.resend_in", mapOf("n" to resendLeft.toString()))
+                    } else {
+                        texts.text("phone_change.get_code")
+                    },
+                enabled = controller.phoneKnown && resendLeft == 0L && !limited && !state.sending1,
+                tag = AccountTags.PHONE_STEP1_SEND,
+                onClick = { controller.sendCode1(version) },
+            )
+        }
     }
+    ChevronLink(
+        text = texts.text("phone_change.cant_use_old"),
+        tag = AccountTags.PHONE_CANT_USE_OLD,
+        onClick = { controller.contactCs(version) },
+    )
 }
 
-@Suppress("LongParameterList")
+/**
+ * 第 2 步（PhoneChangeNew-v2 / PhoneChangeNewCode；结构不改，G-D04）：白卡（「新手机号」标签 → 手机号框 → 字段错误 →「验证码」小标签 → 6 格 →
+ * 字段错误 → 格下一行发码）→ new_hint 提示条；【提交】与提交说明在底部。待确认时整块置灰（另一组标记）。输满 6 位不自动提交。
+ */
+@Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod")
 @Composable
 private fun Step2(
     deps: AccountDeps,
@@ -362,62 +370,57 @@ private fun Step2(
                 .testTag(AccountTags.PHONE_STEP2 + suffix),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Text(
-            text = texts.text("phone_change.step2"),
-            style = CouliTextStyles.bodySemibold,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.semantics { heading() },
-        )
         Text(text = texts.text("phone_change.new_phone"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        AccountInput(
+        PhoneInputBox(
             value = state.newPhone,
-            onChange = { controller.onNewPhone(it, version, formGen) },
-            tag = AccountTags.PHONE_NEW + suffix,
+            onValueChange = { controller.onNewPhone(it, version, formGen) },
+            prefix = texts.text("phone_change.prefix"),
+            placeholder = texts.text("login.phone.placeholder"),
             spoken = texts.text("phone_change.new_phone"),
-            otp = false,
             enabled = editable,
             error = state.fieldError?.takeIf { state.fieldErrorRaw == PhoneChangeOutcome.FIELD_PHONE }?.message(texts),
-            prefix = texts.text("phone_change.prefix"),
+            tag = AccountTags.PHONE_NEW + suffix,
         )
         if (state.fieldErrorRaw == PhoneChangeOutcome.FIELD_PHONE && !locked) {
             state.fieldError?.let { AccountFieldError(it.message(texts), it.id, AccountTags.PHONE_FIELD_ERROR) }
         }
         // 验证码框上方的小标签（设计稿 PhoneChangeNew「验证码」）
         Text(text = texts.text("phone_change.code_label"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        AccountInput(
-            value = state.code2,
-            onChange = { controller.onCode2(it, version, formGen) },
-            tag = AccountTags.PHONE_STEP2_CODE + suffix,
-            spoken = texts.format("step_up.code_spoken", mapOf("n" to state.code2.length.toString())),
-            otp = true,
-            enabled = editable,
-            error = state.fieldError?.takeIf { state.fieldErrorRaw == PhoneChangeOutcome.FIELD_CODE }?.message(texts),
-            trailing = {
-                CouliButton(
-                    text =
-                        if (resendLeft > 0) {
-                            texts.format("phone_change.resend_in", mapOf("n" to resendLeft.toString()))
-                        } else {
-                            texts.text("phone_change.get_code")
-                        },
-                    onClick = { controller.sendCode2(version, formGen) },
-                    enabled = editable && state.newPhone.isNotBlank() && resendLeft == 0L && !state.sending2,
-                    variant = CouliButtonVariant.TEXT,
-                    size = CouliButtonSize.COMPACT,
-                    modifier = Modifier.testTag(AccountTags.PHONE_STEP2_SEND + suffix),
-                )
-            },
-        )
-        if (state.fieldErrorRaw == PhoneChangeOutcome.FIELD_CODE && !locked) {
-            state.fieldError?.let { AccountFieldError(it.message(texts), it.id, AccountTags.PHONE_FIELD_ERROR) }
+        Column {
+            val codeError = state.fieldError?.takeIf { state.fieldErrorRaw == PhoneChangeOutcome.FIELD_CODE }?.message(texts)
+            CodeInput(
+                value = state.code2,
+                onValueChange = { controller.onCode2(it, version, formGen) },
+                accessibilityLabel = texts.format("step_up.code_spoken", mapOf("n" to state.code2.length.toString())),
+                enabled = editable,
+                error = codeError != null,
+                inputModifier =
+                    Modifier.testTag(AccountTags.PHONE_STEP2_CODE + suffix).semantics {
+                        if (codeError != null) error(codeError)
+                    },
+            )
+            if (state.fieldErrorRaw == PhoneChangeOutcome.FIELD_CODE && !locked) {
+                state.fieldError?.let { FieldErrorLine { AccountFieldError(it.message(texts), it.id, AccountTags.PHONE_FIELD_ERROR) } }
+            }
+            CodeSendRow(
+                text =
+                    if (resendLeft > 0) {
+                        texts.format("phone_change.resend_in", mapOf("n" to resendLeft.toString()))
+                    } else {
+                        texts.text("phone_change.get_code")
+                    },
+                enabled = editable && state.newPhone.isNotBlank() && resendLeft == 0L && !state.sending2,
+                tag = AccountTags.PHONE_STEP2_SEND + suffix,
+                onClick = { controller.sendCode2(version, formGen) },
+            )
         }
-        Text(text = texts.text("phone_change.new_hint"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Text(text = texts.text("phone_change.submit_hint"), style = CouliTypography.caption, color = CouliColors.textSecondary)
     }
+    // APP-13v D30：new_hint 改 muted 提示条（卡外）
+    NoticeStrip(text = texts.text("phone_change.new_hint"), tone = NoticeTone.MUTED)
 }
 
 /**
- * 两步指示（设计稿 PhoneChange / PhoneChangeNew 页首「验证当前手机号 / 验证新手机号」）：当前步加粗、品牌色，状态不只靠颜色（读屏读「第 n 步，共 2 步」）。
+ * 两步指示（PhoneChange-v2 / PhoneChangeNew-v2 页首步骤条，APP-13v D22）：24 圆编号 / 完成圆勾 + 文字 + 连线；整行合并读「第 n 步，共 2 步」（状态不只靠颜色）。
  */
 @Composable
 private fun StepIndicator(
@@ -425,27 +428,21 @@ private fun StepIndicator(
     current: Int,
 ) {
     val spoken = texts.format("phone_change.step_spoken", mapOf("n" to current.toString()))
-    Row(
+    StepBar(
+        first = texts.text("phone_change.step1"),
+        second = texts.text("phone_change.step2"),
+        current = current,
         modifier =
             Modifier
                 .fillMaxWidth()
                 .semantics(
                     mergeDescendants = true,
-                ) { contentDescription = spoken }
-                .testTag(AccountTags.PHONE_STEPS),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        listOf("phone_change.step1", "phone_change.step2").forEachIndexed { index, key ->
-            val active = index + 1 == current
-            Text(
-                text = "${index + 1} " + texts.text(key),
-                style = if (active) CouliTextStyles.bodySemibold else CouliTypography.footnote,
-                color = if (active) CouliColors.brandEmphasis else CouliColors.textSecondary,
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
+                ) {
+                    contentDescription = spoken
+                    // 评审 r1 R1-05：步骤条作为读屏标题（原两步卡内的步骤名标题挪到这里）
+                    heading()
+                }.testTag(AccountTags.PHONE_STEPS),
+    )
 }
 
 private const val TICK_MS = 1_000L

@@ -3,13 +3,10 @@ package com.couli.feature.login
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -38,14 +35,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.error
-import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
@@ -900,6 +898,13 @@ private fun BindPhoneBody(
     texts: LoginTexts,
     modifier: Modifier,
 ) {
+    // APP-13v G-D17 / 编排 10-29 ①、评审 r1 R1-01 / R1-02 / R1-03：窄屏大字号时顶部区让位——手机号框、验证码、获取验证码与【绑定】须不滚动就在屏内。
+    // 档位只随窗口尺寸与字号重置；只在键盘收起、没有待确认卡、没有字段错误时，按格下一行（未滚动位置）下沿是否超出可视区逐档让位：
+    // 并号提示条挪到卡片下方 → 收起「验证码」小标签 → 副标题挪到卡片下方（挪走的仍在页面里、滚动可达，标题始终在上）。
+    val scroll = rememberScrollState()
+    val fold = rememberIntroFold()
+    val calm = !imeOpen() && state.pendingKey == null
+    val measurable = calm && state.codeError == null && state.phoneError == null
     Box(
         modifier =
             modifier
@@ -923,13 +928,17 @@ private fun BindPhoneBody(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .verticalScroll(rememberScrollState())
+                        .onGloballyPositioned(fold::onViewport)
+                        .verticalScroll(scroll)
                         .padding(horizontal = CouliSpacing.space4)
-                        .padding(top = CouliSpacing.space2, bottom = CouliSpacing.space4),
-                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+                        .padding(top = CouliSpacing.space4, bottom = CouliSpacing.space4),
+                verticalArrangement = Arrangement.spacedBy(CouliSpacing.space6),
             ) {
+                // APP-13v D35 / G-D17：标题移入内容区（22/600 读屏标题）+ 副标题 .benefit + 并号提示条 .merge_hint（两条草稿）；契约旧句 .body 本页不再渲染。
+                // 评审 r1 R1-04：标题在待确认卡之前（按标题跳读先到页面标题）
+                val level = fold.level
+                BindIntroAbove(texts, level)
                 if (state.pendingKey != null) BindPendingCard(model, state, binding)
-                InfoStrip(texts.text("invite.bind_phone_guide.body"))
                 Column(
                     modifier =
                         Modifier
@@ -939,8 +948,12 @@ private fun BindPhoneBody(
                     verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
                 ) {
                     BindPhoneField(model, state, binding, texts)
-                    BindCodeField(model, state, binding, texts)
+                    BindCodeField(model, state, binding, texts, showLabel = level < INTRO_NO_CODE_LABEL) { bottomInRoot ->
+                        fold.onCodeRow(bottomInRoot + scroll.value, level, measurable)
+                    }
                 }
+                // 让位挪下来的说明（仍可滚动到、读屏可达）
+                BindIntroBelow(texts, level)
             }
             CouliButton(
                 text = texts.text("bind_phone.submit"),
@@ -977,6 +990,30 @@ private fun BindPhoneBody(
     BindAbandonDialog(model, state, binding)
 }
 
+/** 顶部区在卡片之上的部分：标题始终在；副标题、并号提示条按让位档位决定是否还在上面。 */
+@Composable
+private fun BindIntroAbove(
+    texts: LoginTexts,
+    level: Int,
+) {
+    BindIntro(
+        title = texts.text("invite.bind_phone_guide.title"),
+        benefit = if (level < INTRO_TITLE_ONLY) texts.text("invite.bind_phone_guide.benefit") else null,
+    )
+    if (level == INTRO_FULL) BindInfoStrip(texts.text("invite.bind_phone_guide.merge_hint"))
+}
+
+/** 让位挪到卡片下方的说明（副标题在前、并号提示条在后）。 */
+@Composable
+private fun BindIntroBelow(
+    texts: LoginTexts,
+    level: Int,
+) {
+    if (level == INTRO_TITLE_ONLY) BindMovedBenefit(texts.text("invite.bind_phone_guide.benefit"))
+    if (level > INTRO_FULL) BindInfoStrip(texts.text("invite.bind_phone_guide.merge_hint"))
+}
+
+/** 顶栏（BindPhone-v2：返回 + 空标题栏；标题移到内容区，G-D17）。 */
 @Composable
 private fun BindTopBar(
     model: BindPhoneViewModel,
@@ -988,42 +1025,14 @@ private fun BindTopBar(
                 .fillMaxWidth()
                 .heightIn(min = CouliSizes.touchTarget)
                 .padding(horizontal = CouliSpacing.space1),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.CenterStart,
     ) {
         CouliIconButton(
             icon = CouliIcons.back,
             label = texts.text("login.back"),
             onClick = model::onBack,
-            modifier =
-                Modifier
-                    .align(Alignment.CenterStart)
-                    .testTag(BindPhoneTags.BACK),
+            modifier = Modifier.testTag(BindPhoneTags.BACK),
         )
-        Text(
-            text = texts.text("invite.bind_phone_guide.title"),
-            style = CouliTypography.title,
-            color = CouliColors.textPrimary,
-            textAlign = TextAlign.Center,
-            modifier =
-                Modifier
-                    .padding(horizontal = CouliSizes.touchTarget)
-                    .semantics { heading() },
-        )
-    }
-}
-
-@Composable
-private fun InfoStrip(text: String) {
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(CouliColors.backgroundMuted, RoundedCornerShape(CouliRadius.button))
-                .padding(CouliSpacing.space3),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
-        Icon(CouliIcons.info, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSizes.iconMedium))
-        Text(text = text, style = CouliTypography.footnote, color = CouliColors.textPrimary)
     }
 }
 
@@ -1039,21 +1048,21 @@ private fun BindPhoneField(
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary, modifier = Modifier.clearAndSetSemantics {})
         BindInputBox(error = state.phoneError != null) {
-            Text(text = prefix, style = CouliTypography.body, color = CouliColors.textPrimary, modifier = Modifier.clearAndSetSemantics {})
-            Box(
-                modifier =
-                    Modifier
-                        .padding(horizontal = CouliSpacing.space3)
-                        .size(width = CouliSizes.hairline, height = CouliSpacing.space6)
-                        .background(CouliColors.borderSubtle),
+            // APP-13v D36：+86 次文字色、去掉竖分隔线
+            Text(
+                text = prefix,
+                style = CouliTypography.body,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.semantics { hideFromAccessibility() },
             )
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            Box(modifier = Modifier.weight(1f).padding(start = CouliSpacing.space2), contentAlignment = Alignment.CenterStart) {
                 if (state.phone.isEmpty()) {
+                    // 占位只给视觉（读屏读输入框自己的名称），节点保留文字以便按字核对
                     Text(
                         text = texts.text("login.phone.placeholder"),
                         style = CouliTypography.body,
                         color = CouliColors.textSecondary,
-                        modifier = Modifier.clearAndSetSemantics {},
+                        modifier = Modifier.semantics { hideFromAccessibility() },
                     )
                 }
                 BasicTextField(
@@ -1090,97 +1099,54 @@ private fun BindPhoneField(
     }
 }
 
+/**
+ * 验证码（APP-13v D37，G-D04）：组件库 6 格 CodeInput（标记与错误语义经 inputModifier 挂在可输入节点上，读屏名称「验证码」）→ 字段错误 →
+ * 格下一行右侧【获取验证码 / {sec} 秒后重新获取】。结构不改、不接输满自动绑定：输入只交给 onCodeChange，【绑定】仍由用户点击。
+ */
 @Composable
 private fun BindCodeField(
     model: BindPhoneViewModel,
     state: BindPhoneUiState,
     binding: BindPhoneBinding,
     texts: LoginTexts,
+    showLabel: Boolean,
+    onRowPlaced: (Float) -> Unit,
 ) {
     val label = texts.text("login.code.label")
     val waiting = state.resendSec > 0
     val limited = state.sendLimitedSec > 0
-    Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary, modifier = Modifier.clearAndSetSemantics {})
-        // 200% 字号或窄屏放不下时，「获取验证码」换到输入框下方（按宽度换行，文字不截断）
-        FlowRow(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .defaultMinSize(minHeight = INPUT_MIN_HEIGHT.dp)
-                    .background(CouliColors.backgroundSurface, RoundedCornerShape(CouliRadius.button))
-                    .border(
-                        CouliSizes.hairline,
-                        if (state.codeError != null) CouliColors.statusErrorText else CouliColors.borderControl,
-                        RoundedCornerShape(CouliRadius.button),
-                    ).padding(start = CouliSpacing.space3, end = CouliSpacing.space1),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .widthIn(min = CODE_MIN_WIDTH.dp)
-                        .padding(vertical = CouliSpacing.space3),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                if (state.code.isEmpty()) {
-                    Text(
-                        text = texts.text("bind_phone.code.placeholder"),
-                        style = CouliTypography.body,
-                        color = CouliColors.textSecondary,
-                        modifier = Modifier.clearAndSetSemantics {},
-                    )
-                }
-                BasicTextField(
-                    value = state.code,
-                    onValueChange = { model.onCodeChange(it, binding) },
-                    singleLine = true,
-                    textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
-                    cursorBrush = SolidColor(CouliColors.textPrimary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .testTag(BindPhoneTags.CODE)
-                            .semantics {
-                                contentDescription = label
-                                state.codeError?.let { error(it) }
-                            },
-                )
-            }
-            val getCode =
-                if (waiting) {
-                    texts.format("bind_phone.countdown", mapOf("sec" to state.resendSec.toString()))
-                } else {
-                    texts.text("login.get_code")
-                }
-            val enabled = !waiting && !limited && !state.sending && PhoneNumber.normalize(state.phone).valid
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(width = CouliSizes.hairline, height = CouliSpacing.space6).background(CouliColors.borderSubtle))
-                Box(
-                    modifier =
-                        Modifier
-                            .defaultMinSize(minHeight = CouliSizes.touchTarget)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                enabled = enabled,
-                                role = Role.Button,
-                                onClick = { model.onGetCode(binding) },
-                            ).padding(horizontal = CouliSpacing.space3)
-                            .testTag(BindPhoneTags.GET_CODE),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = getCode,
-                        style = CouliTypography.footnote.copy(fontFeatureSettings = "tnum"),
-                        color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
-                    )
-                }
-            }
+    Column {
+        // 可见「验证码」小标签（评审 r1 R1-03，同手机号标签写法；读屏名称由输入节点给）；窄屏大字号让位时收起
+        if (showLabel) {
+            Text(
+                text = label,
+                style = CouliTypography.footnote,
+                color = CouliColors.textSecondary,
+                modifier = Modifier.padding(bottom = CouliSpacing.space2).clearAndSetSemantics {},
+            )
         }
-        FieldError(state.codeError, state.errorSeq, BindPhoneTags.CODE_ERROR)
+        com.couli.core.designsystem.CodeInput(
+            value = state.code,
+            onValueChange = { model.onCodeChange(it, binding) },
+            accessibilityLabel = label,
+            error = state.codeError != null,
+            inputModifier =
+                Modifier.testTag(BindPhoneTags.CODE).semantics {
+                    // 错误说明关联到输入框（共性第 6 条）
+                    state.codeError?.let { error(it) }
+                },
+        )
+        if (state.codeError != null) BindErrorLine { FieldError(state.codeError, state.errorSeq, BindPhoneTags.CODE_ERROR) }
+        val getCode =
+            if (waiting) {
+                texts.format("bind_phone.countdown", mapOf("sec" to state.resendSec.toString()))
+            } else {
+                texts.text("login.get_code")
+            }
+        val enabled = !waiting && !limited && !state.sending && PhoneNumber.normalize(state.phone).valid
+        Box(modifier = Modifier.onGloballyPositioned { onRowPlaced(it.positionInRoot().y + it.size.height) }) {
+            BindCodeSendRow(text = getCode, enabled = enabled, tag = BindPhoneTags.GET_CODE, onClick = { model.onGetCode(binding) })
+        }
     }
 }
 
@@ -1244,6 +1210,7 @@ private fun BindPhoneDialogs(
     texts: LoginTexts,
 ) {
     when (state.dialog) {
+        // APP-13v D38 / G-D18：标题居中、遮罩令牌；点遮罩关闭（= 取消，零请求）维持现状（编排 10-29 ②）
         BindPhoneDialog.MERGE -> {
             CouliDialog(
                 title = texts.text("bind_phone.merge.title"),
@@ -1251,6 +1218,8 @@ private fun BindPhoneDialogs(
                 onConfirm = model::onMergeConfirm,
                 onDismissRequest = model::onMergeCancel,
                 dismissText = texts.text("bind_phone.merge.cancel"),
+                titleAlign = TextAlign.Center,
+                scrim = CouliColors.overlayScrim,
                 // 正文 error.30411.mergeable + 信息块（DesignSystem 弹窗给了 body 就不再画 message，正文放进 body）
                 body = {
                     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4)) {
@@ -1274,6 +1243,8 @@ private fun BindPhoneDialogs(
                 onDismissRequest = model::onDismissDialog,
                 dismissText = texts.text("cs.appeal_entry"),
                 onDismiss = model::customerService,
+                titleAlign = TextAlign.Center,
+                scrim = CouliColors.overlayScrim,
             )
         }
 
@@ -1333,7 +1304,6 @@ fun BindPhoneGuideDialog(
 
 private const val TOAST_MILLIS = 2_000L
 private const val INPUT_MIN_HEIGHT = 52
-private const val CODE_MIN_WIDTH = 96
 private const val CONTENT_MAX_WIDTH = 480
 private const val ERROR_FOCUS_DELAY_MILLIS = 600L
 
@@ -1358,7 +1328,8 @@ private fun pendingGuideLabel(route: String): String =
     }
 
 /**
- * BindPhone 首次绑定的待确认卡（G07：版式照 PhoneChangePendingConfirm，文案共用 pending_confirm.phone_change.*，{phone} 为本机脱敏的提交号码）：alert 角色；
+ * BindPhone 首次绑定的待确认卡（G07；APP-13v D38 版式同注销 / 换号待确认：白卡 → 警告块（标题 + 说明，alert 一次）→ 灰底明细 → 两等宽按钮 →
+ * 在途状态行（只读既有 pendingBusy，G-D13）→ 提示警告块 → 补办入口 → 卡底注释）。文案共用 pending_confirm.phone_change.*，{phone} 为本机脱敏的提交号码；
  * 【放弃上一次提交】【确认上一次提交】在途或共享 phoneGate 限流时都置灰（R1-06）。回调捕获渲染时的键与表单实例。
  */
 @Composable
@@ -1376,39 +1347,23 @@ private fun BindPendingCard(
         } else {
             texts.text("pending_confirm.phone_change.desc")
         }
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    CouliColors.statusWarningBackground,
-                    androidx.compose.foundation.shape
-                        .RoundedCornerShape(com.couli.core.designsystem.CouliRadius.card),
-                ).padding(CouliSpacing.space4)
-                .testTag(BindPhonePendingTags.CARD),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Column(
-            modifier =
-                Modifier.semantics(mergeDescendants = true) {
-                    liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Assertive
-                },
-            verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-        ) {
-            Text(text = texts.text("pending_confirm.title"), style = CouliTypography.body, color = CouliColors.textPrimary)
-            Text(text = desc, style = CouliTypography.footnote, color = CouliColors.textPrimary)
-        }
+    BindPendingFrame(tag = BindPhonePendingTags.CARD) {
+        BindPendingWarning(title = texts.text("pending_confirm.title"), desc = desc)
         // 摘要（G24，与换号卡一致）：提交的新手机号（本机脱敏）+ 提交时间（记录创建时刻，BR-TEXT-11）
-        if (state.pendingMasked.isNotEmpty()) {
-            PendingSummaryRow(texts.text("pending_confirm.summary.new_phone"), state.pendingMasked)
-        }
-        if (state.pendingCreatedAt > 0L) {
-            PendingSummaryRow(
-                texts.text("pending_confirm.summary.submitted_at"),
-                com.couli.core.me.account.DeletionSummary
-                    .submittedAt(state.pendingCreatedAt, model.now()),
-                Modifier.testTag(BindPhonePendingTags.SUBMITTED_AT),
-            )
+        if (state.pendingMasked.isNotEmpty() || state.pendingCreatedAt > 0L) {
+            BindDetailBlock {
+                if (state.pendingMasked.isNotEmpty()) {
+                    BindDetailRow(texts.text("pending_confirm.summary.new_phone"), state.pendingMasked)
+                }
+                if (state.pendingCreatedAt > 0L) {
+                    BindDetailRow(
+                        texts.text("pending_confirm.summary.submitted_at"),
+                        com.couli.core.me.account.DeletionSummary
+                            .submittedAt(state.pendingCreatedAt, model.now()),
+                        Modifier.testTag(BindPhonePendingTags.SUBMITTED_AT),
+                    )
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
             CouliButton(
@@ -1416,23 +1371,22 @@ private fun BindPendingCard(
                 onClick = { model.onAskAbandon(key, binding) },
                 enabled = usable,
                 variant = com.couli.core.designsystem.CouliButtonVariant.SECONDARY,
+                size = com.couli.core.designsystem.CouliButtonSize.COMPACT,
+                textStyle = CouliTextStyles.bodySemibold,
                 modifier = Modifier.weight(1f).testTag(BindPhonePendingTags.ABANDON),
             )
             CouliButton(
                 text = texts.text("pending_confirm.phone_change.action"),
                 onClick = { model.onConfirmPending(key, binding) },
                 enabled = usable,
+                size = com.couli.core.designsystem.CouliButtonSize.COMPACT,
+                textStyle = CouliTextStyles.bodySemibold,
                 modifier = Modifier.weight(1f).testTag(BindPhonePendingTags.CONFIRM),
             )
         }
-        state.pendingNotice?.let {
-            Text(
-                text = it,
-                style = CouliTypography.footnote,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.testTag(BindPhonePendingTags.NOTICE),
-            )
-        }
+        // APP-13v G-D13：在途状态行只读既有 pendingBusy（确认 / 放弃发出后到结果落地前）
+        if (state.pendingBusy) BindBusyRow(texts.text("error.40901"))
+        state.pendingNotice?.let { BindPendingNotice(text = it, tag = BindPhonePendingTags.NOTICE) }
         // R2-07：原页面许可失效时保留的补办入口（绑定本表单实例；点击经 Router 打开，记录保持待确认）
         state.pendingGuide?.let { route ->
             CouliButton(
@@ -1446,20 +1400,7 @@ private fun BindPendingCard(
     }
 }
 
-/** 待确认摘要的一行：标签在左（次要色）、值在右侧剩余宽度（可换行，200% 字号不截断）。 */
-@Composable
-private fun PendingSummaryRow(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
-    }
-}
-
-/** 放弃上一次提交的二次确认（点遮罩不关闭，系统返回 = 【再想想】）。 */
+/** 放弃上一次提交的二次确认（点遮罩不关闭，系统返回 = 【再想想】；APP-13v G-D18：标题居中、遮罩令牌）。 */
 @Composable
 private fun BindAbandonDialog(
     model: BindPhoneViewModel,
@@ -1482,5 +1423,7 @@ private fun BindAbandonDialog(
         dismissOnClickOutside = false,
         confirmTag = BindPhonePendingTags.ABANDON_OK,
         dismissTag = BindPhonePendingTags.ABANDON_CANCEL,
+        titleAlign = TextAlign.Center,
+        scrim = CouliColors.overlayScrim,
     )
 }

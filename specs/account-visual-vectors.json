@@ -181,5 +181,164 @@
   "金额只由 CouliFormat.money 格式化 fen 原值，期望值由 AccountVisualFixtureTest 复算，不在本文件写死",
   "冷静期时刻只格式化 cooling_until / apply_at，不倒计时、不本地推算",
   "断网 / 5xxxx / 42901 由假接口给；本文件不含像令牌的串"
- ]
+ ],
+ "segmentB": {
+  "task": "APP-13v-b 换手机号 + 绑手机号（D21–D38，G-D01 第二段）；本组只追加，a 段各组逐字节不变；三端同一份",
+  "entries": {
+   "phoneChange": "设置页「手机号」行（phone_bound = true、本机有号码）→ 页内子页 PhoneChange（进入零请求）",
+   "bindPhone": "设置页「手机号」行（phone_bound = false）→ Router BindPhone（非登录入口）",
+   "pendingPhoneChange": "冷启动种入 bindPhone 在途记录（phone_bound = true）→ 换号子页待确认",
+   "pendingBindPhone": "冷启动种入 bindPhone 在途记录（phone_bound = false）→ 绑号页待确认卡"
+  },
+  "pendingBodies": {
+   "note": "原体只在测试宿主内存里拼（phone + code 两个字段），本文件不放原文；摘要用 pending.phone_change / pending.bind_phone 的脱敏号码",
+   "fields": [
+    "phone",
+    "code"
+   ]
+  },
+  "mergeable30411": {
+   "reason": "mergeable",
+   "merge_ticket": "ticket-visual-0246",
+   "maskedTarget": "139****0246"
+  },
+  "risk44001": {
+   "risk_msg_code": "test_unmapped"
+  },
+  "sms": {
+   "resendAfterSec": 60,
+   "expiresInSec": 300,
+   "retryAfterSec": 30
+  },
+  "cells": {
+   "count": 6,
+   "heightDp": 56,
+   "gapDp": 8,
+   "radius": "CouliRadius.button = 12（画板 10，W-33 / G-D24）",
+   "activeBorderDp": 2
+  },
+  "stepBar": {
+   "circleDp": 24,
+   "connectorMinDp": 16,
+   "states": {
+    "STEP1": [
+     "current",
+     "upcoming"
+    ],
+    "STEP2": [
+     "done",
+     "current"
+    ],
+    "DONE": []
+   },
+   "spokenText": "phone_change.step_spoken"
+  },
+  "doneBlock": {
+   "sizeDp": 96,
+   "radiusDp": 16,
+   "checkDp": 32,
+   "topDp": 48
+  },
+  "drafts": {
+   "invite.bind_phone_guide.benefit": "绑定手机号，方便提现和找回账号。",
+   "invite.bind_phone_guide.merge_hint": "之前用手机号注册过？绑定同一号码，符合条件时可并入原账号。"
+  },
+  "draftsKept": {
+   "phone_change.resend_in": "{n} 秒后重新获取",
+   "bind_phone.countdown": "{sec} 秒后重新获取",
+   "phone_change.get_code": "获取验证码",
+   "phone_change.cant_use_old": "原手机号不能用了？联系客服",
+   "phone_change.intro": "先验证当前手机号，再验证新手机号。更换后，用手机号登录时请使用新手机号",
+   "phone_change.new_hint": "新手机号不能是其他凑狸账号正在使用的号码",
+   "phone_change.submit_hint": "提交后，当前手机号会换成新手机号",
+   "phone_change.done.title": "手机号已更换",
+   "phone_change.done.body": "当前手机号 {phone}。以后用手机号登录时，请使用新手机号",
+   "phone_change.step_spoken": "第 {n} 步，共 2 步",
+   "phone_change.pending_hint": "结果确认前不能再次更换手机号",
+   "bind_phone.pending_hint": "结果确认前不能再次绑定手机号",
+   "login.phone.placeholder": "请输入手机号"
+  },
+  "forbiddenOnPage": [
+   "秒后可重新获取",
+   "收不到验证码",
+   "13800005678",
+   "138****5678"
+  ],
+  "notRenderedOnBindPage": [
+   "invite.bind_phone_guide.body"
+  ],
+  "toastIcons": {
+   "check": [
+    "pending_confirm.abandoned",
+    "pending_confirm.already_done"
+   ]
+  },
+  "boardElements": [
+   "步骤条三态（当前 brand.primary 实心白字 / 完成 status.success 圆勾 / 未到 border.control 描边；1px border.subtle 连线）",
+   "muted 提示条（info 20、14 主文字）：换号说明、新号说明、绑号并号提示",
+   "6 格验证码四态（空 / 输入中 / 当前格 2 border.active / 错误 status.error）",
+   "格下一行右侧倒计时 / 获取验证码（14；可点 text.link、倒计时次文字；命中 48 不压格子）",
+   "文字链接「原手机号不能用了？联系客服 ›」（14/500 text.link + chevron）",
+   "手机号框（min 52、圆角 12、border.control、+86 次文字前缀、无分隔线、占位次文字）",
+   "底部按钮下 12 次文字居中提示（提交后，当前手机号会换成新手机号）",
+   "完成图标块 96（status.success 底 + 圆勾 32、圆角 16）+ 17/600 标题 + 14 次文字说明，居中",
+   "待确认卡（白卡 → 警告块 → 灰底明细 → 两等宽按钮 → 在途行 → 提示块 → 卡底注释）",
+   "确认框（44001 / 并号 / 放弃：标题居中、遮罩 overlay.scrim）",
+   "绑号顶部区（空标题栏 + 22/600 标题 + 14 次文字副标题 + muted 并号提示条）"
+  ],
+  "snapshots": [
+   "PhoneChange-v2-no-current-number-GD05-light",
+   "PhoneChangeCode-single-page-GD04-light",
+   "PhoneChangeCodeError-cells-GD04-light",
+   "PhoneChangeNew-v2-light",
+   "PhoneChangeNewCode-single-page-GD04-light",
+   "PhoneChangeStepUp-page-only-GD06-light",
+   "PhoneChangeDisabled-inline-GD10-light",
+   "PhoneChangeNewBlocked-v2-light",
+   "PhoneChangeDone-light",
+   "PhoneChangePendingCompleted-light",
+   "PhoneChangePendingConfirm-v2-light",
+   "PhoneChangePendingBusy-v2-light",
+   "PhoneChangePendingStill-v2-light",
+   "PhoneChangePendingAbandonConfirm-v2-light",
+   "PhoneChangePendingAbandoned-v2-light",
+   "PhoneChangePendingStates-01-abandon-busy-light",
+   "PhoneChangePendingStates-02-confirm-20903-light",
+   "PhoneChangeCodeDark-cells-GD04-dark",
+   "BindPhone-v2-light",
+   "BindPhoneMerge-v2-dialog-only-GD20-light",
+   "BindPhoneDark-dark",
+   "phone-change-30411-light",
+   "phone-change-rate-limited-light",
+   "phone-change-step2-sent-dark",
+   "PhoneChangeDone-dark",
+   "PhoneChangePendingConfirm-v2-dark",
+   "PhoneChangeNewBlocked-v2-dark",
+   "bind-phone-typed-light",
+   "bind-phone-sent-light",
+   "bind-phone-code-error-light",
+   "bind-phone-44001-light",
+   "bind-phone-pending-light",
+   "bind-phone-pending-dark",
+   "bind-phone-abandon-confirm-light",
+   "PhoneChangeCode-font200-w390-light",
+   "PhoneChangeCodeError-font200-w320-light",
+   "PhoneChangeNewBlocked-v2-font200-w320-light",
+   "PhoneChangeDone-font200-w320-light",
+   "PhoneChangePendingConfirm-v2-font200-w320-light",
+   "BindPhone-v2-font200-w390-light",
+   "BindPhone-v2-font200-w320-light",
+   "PhoneChange-v2-w840-light",
+   "PhoneChangeNew-v2-w840-light",
+   "BindPhone-v2-w840-light"
+  ],
+  "notCompared": {
+   "PhoneChangeDisabled": "G-D10：30414 维持页内错误 + 联系客服（截图 PhoneChangeDisabled-inline-GD10）",
+   "PhoneChangeCode / PhoneChangeNewCode / PhoneChangeCodeDark 页结构": "G-D04：不拆独立验证码页、不接输满自动提交，只对格子 / 格下一行",
+   "PhoneChangeStepUp 半屏": "G-D06：半屏沿用 APP-09v-d（宿主图 stepup-v/WithdrawStepUp-v2-host-phone-change-light 重录）",
+   "BindPhoneMerge-v2 底稿": "G-D20：绑号验证码页画板未登记，只对确认框",
+   "phoneKnown = false": "真实入口不可达（设置页手机号行置灰，PhoneChangeIntegrationTest 冻结覆盖），无稿态不截图",
+   "scope_denied": "需受限会话进入换号，真实入口不给（游客 / 基本模式 / 强更无换号），不截图"
+  }
+ }
 }

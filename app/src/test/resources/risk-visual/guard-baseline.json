@@ -957,7 +957,7 @@
   {"h": "83d1f390a03831e5acfedd1f23daba97c8498f4b1ebfefc11dc19e434c608c61", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-font200-w390-light.png"},
   {"h": "dac7beffa2cc6b0b6f514015cbe19ad8ef03627ae6d24e1dc4a768d7b3e86624", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-host-deletion-light.png"},
   {"h": "589c837ea93df285e44999ba8e08c8246a1cefcd316eafe998677a2da5affecf", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-host-payout-light.png"},
-  {"h": "dde130b633c6003f90d403bd312f109ca1e86d55c647a1c28674aa07b099f43e", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-host-phone-change-light.png"},
+  {"h": "e4c33db0e3ae1b97d6ff40216d3aea6930b5dc5bb32f941b17fbeee647157dd1", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-host-phone-change-light.png"},
   {"h": "275ec00b338eb71f6ae502f283e7adf97a32389593c67864bca63da34819ca8d", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-light.png"},
   {"h": "9bb0fa4fed219da6294bc3433bd9bad0cec753e14f1a4a65025d2b98d9d7c564", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-resend-light.png"},
   {"h": "773282a5a4000680dd43c9f87daa3fdf82a23faf40d302f21f998963d0f8d262", "p": "app/src/test/snapshots/stepup-v/WithdrawStepUp-v2-verifying-light.png"},
@@ -1283,7 +1283,7 @@
   {"h": "190129c0b9adcd61bb30273850a0849d965a92531281c774ad92e9dac321afed", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabController.kt"},
   {"h": "1da16aa59dec0cf7b30987851bc546f59ce27c1cd7326c2445d9e33e6b6a1791", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabParts.kt"},
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
-  {"h": "6340722a2b00bd20b43a325a6868d2d8e161d6d679544b6a6e28d28e6c327b11", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
+  {"h": "7b3f058d58080599ce1ae19cf38cccbce8a9f1b3245f8d87a38691ef29f26c86", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangePage.kt"},
   {"h": "d88b8cbab9ce73f13d63af3f436bf8df732232ee956cf4e30737ed8c6ff2b93d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyAboutCsParts.kt"},
   {"h": "1eb9ed4fe8c4d7e536ba878a14ba149562f4f392e448ba4c5f72ef8f26e892ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
   {"h": "05a504079d329ea7706619fe51eafcb9322da943fd6bf2ebdd6f0f3e3e64e8f2", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Settings.kt"},
@@ -1710,6 +1710,6 @@
   "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt",
   "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"
  ],
- "settingsGuardNormalized": "8706f202669d6f5e18d336af9373fe55791dba25e81668d41b3447b000446420",
- "privacyGuardNormalized": "36b4f01e6557c931f73e5dd0844fae144d08528c98aa036854a131e944f76b58"
+ "settingsGuardNormalized": "1a3e12e5e6949a91818185db4bfdd149f81e2d590abdd51478ca5f9dc63e814a",
+ "privacyGuardNormalized": "50d8abc3c3403ab7cf028cc605de7ede1593e8bbf031b52bbb3cc27f2d8e678c"
 }
