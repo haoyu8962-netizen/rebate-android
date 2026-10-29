@@ -1134,7 +1134,7 @@
   {"h": "1eb9ed4fe8c4d7e536ba878a14ba149562f4f392e448ba4c5f72ef8f26e892ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
   {"h": "e40024c70b407759276ced7c4ed7d1c00f2a72e5b7c53d231a7b66abb7e209c5", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
   {"h": "c99c86383cb0ced2c09eef6aed5ccc2a1b81ae2f7219f86cec746b253d8e0481", "p": "feature/trade/build.gradle.kts"},
-  {"h": "b85a349569b0c7caf47f0e6736615112feebe98cc6d1122ce42a549ab5d0a520", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"},
+  {"h": "6b2446fec8f60d7f63ed7c1535f63e8b3c9dd2d9713ef363704bfec9919f9220", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"},
   {"h": "0927645e527569e6e9961695aec86ae8df687c66e07ec162278476ba4dce11e5", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
   {"h": "0ab070506b6d41be2857748658d6d63e1f93258cf90b0e4d41377fef840f7f84", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenTradeLogic.kt"},
   {"h": "e3c1a9f17f41f303bedd777a876338f440027c1825ca194a778c0e75355cdadf", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/PurchaseVisualParts.kt"},

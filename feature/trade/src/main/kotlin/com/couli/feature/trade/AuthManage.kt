@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,13 +43,13 @@ import com.couli.core.designsystem.CouliButtonVariant
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIconButton
 import com.couli.core.designsystem.CouliIcons
-import com.couli.core.designsystem.CouliRadius
 import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorAnnouncement
+import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
@@ -511,7 +510,7 @@ fun AuthManageScreen(config: AuthManageConfig) {
                 )
             }
             Column(
-                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(CouliSpacing.space4),
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(AuthManageContentPadding),
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
                 when (state.phase) {
@@ -526,26 +525,29 @@ fun AuthManageScreen(config: AuthManageConfig) {
                     else -> {
                         Column(
                             modifier =
-                                Modifier.fillMaxWidth().background(
-                                    CouliColors.backgroundSurface,
-                                    RoundedCornerShape(CouliRadius.panel),
-                                ),
+                                Modifier
+                                    .fillMaxWidth()
+                                    .couliCard()
+                                    .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space1),
                         ) {
                             state.rows.forEachIndexed { index, row ->
                                 if (index > 0) {
                                     Box(
                                         Modifier
                                             .fillMaxWidth()
-                                            .padding(
-                                                horizontal = CouliSpacing.space4,
-                                            ).heightIn(min = CouliSizes.hairline)
+                                            .heightIn(min = CouliSizes.hairline)
                                             .background(CouliColors.borderSubtle),
                                     )
                                 }
                                 RowItem(row, state.busyPlatform == row.platform, state.rateLimited, controller, config, texts)
                             }
                         }
-                        Text(text = texts.text(AuthManageKeys.REBIND), style = CouliTypography.caption, color = CouliColors.textSecondary)
+                        Text(
+                            text = texts.text(AuthManageKeys.REBIND),
+                            style = CouliTypography.caption,
+                            color = CouliColors.textSecondary,
+                            modifier = Modifier.padding(horizontal = CouliSpacing.space1),
+                        )
                     }
                 }
             }
@@ -559,9 +561,10 @@ fun AuthManageScreen(config: AuthManageConfig) {
         Box(modifier = Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
             CouliToast(
                 message = ResultSignals.withTrace6(texts.text(toast.key), toast.traceId),
-                modifier = Modifier.padding(top = CouliSpacing.space12),
-                icon = null,
+                modifier = Modifier.padding(top = CouliSpacing.space12, start = CouliSpacing.space4, end = CouliSpacing.space4),
+                icon = authManageToastIcon(toast.key),
                 announcementId = toast.id,
+                iconTint = CouliColors.statusWarningText,
             )
         }
     }
@@ -580,52 +583,41 @@ private fun RowItem(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(
-                    horizontal = CouliSpacing.space4,
-                    vertical = CouliSpacing.space3,
-                ).testTag(AuthManageTags.ROW_PREFIX + row.platform),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                .padding(vertical = CouliSpacing.space3)
+                .testTag(AuthManageTags.ROW_PREFIX + row.platform),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().heightIn(min = CouliSizes.touchTarget),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            Text(
-                text = texts.text(TradeKeys.platform(row.platform)),
-                style = CouliTextStyles.bodySemibold,
-                color = CouliColors.textPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = texts.text(if (row.authorized) AuthManageKeys.AUTHORIZED else AuthManageKeys.UNAUTHORIZED),
-                style = CouliTypography.footnote,
-                color = CouliColors.textSecondary,
-            )
-            if (row.canAuthorize) {
-                CouliButton(
-                    text = texts.text(AuthManageKeys.AUTHORIZE),
-                    onClick = { controller.authorize(row.platform) },
-                    variant = CouliButtonVariant.SECONDARY,
-                    size = CouliButtonSize.COMPACT,
-                    loading = busy,
-                    enabled = !rateLimited,
-                    modifier = Modifier.testTag(AuthManageTags.AUTHORIZE_PREFIX + row.platform),
-                )
-            }
-        }
+        AuthRowLayout(
+            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+            leading = {
+                AuthManagePlatformName(platformCode = row.platform, name = texts.text(TradeKeys.platform(row.platform)))
+            },
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+                    AuthManageStatus(
+                        authorized = row.authorized,
+                        text = texts.text(if (row.authorized) AuthManageKeys.AUTHORIZED else AuthManageKeys.UNAUTHORIZED),
+                    )
+                    if (row.canAuthorize) {
+                        CouliButton(
+                            text = texts.text(AuthManageKeys.AUTHORIZE),
+                            onClick = { controller.authorize(row.platform) },
+                            variant = CouliButtonVariant.PRIMARY,
+                            size = CouliButtonSize.COMPACT,
+                            loading = busy,
+                            enabled = !rateLimited,
+                            modifier = Modifier.testTag(AuthManageTags.AUTHORIZE_PREFIX + row.platform),
+                        )
+                    }
+                }
+            },
+        )
         if (row.blocked) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-                Text(
-                    text = texts.text(AuthManageKeys.BLOCKED),
-                    style = CouliTypography.footnote,
-                    color = CouliColors.statusErrorText,
-                    modifier = Modifier.weight(1f),
-                )
+            AuthManageBlockedNotice(message = texts.text(AuthManageKeys.BLOCKED)) {
                 CouliButton(
                     text = texts.text(AuthManageKeys.CONTACT),
                     onClick = config.onContact,
-                    variant = CouliButtonVariant.TEXT,
+                    variant = CouliButtonVariant.SECONDARY,
                     size = CouliButtonSize.COMPACT,
                     modifier = Modifier.testTag(AuthManageTags.CONTACT),
                 )

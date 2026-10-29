@@ -2262,15 +2262,15 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "e077414a7f127d81f03c1cbbdfae4359cf6ae1da33d23f4b0eef3d7ce35a68bf"
+   "h": "5e5795677b77af0c4697e0f1e003ba45e293dde094b90a9c89aac707a705e4b4"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "d91d525633ea65ab855703723a2ce2848e2c17453e826a5412fe1c025229dcdb"
+   "h": "03323b0f1ef58311d918e51f910af4ab612e610dacfa3c8aa2e9c6ccde4361b4"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "c678808dfe5e91cbd374a2a244e8b04a86e79c62ec23e524459796ddcce52972"
+   "h": "0bbe8ce48959d378a8201f44e9c7c29a4f93b7bd738cd8da27b4e168bc155e44"
   }
  ],
  "hostSheetCrops": [

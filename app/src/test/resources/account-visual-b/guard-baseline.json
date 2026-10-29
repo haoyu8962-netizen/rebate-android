@@ -2701,7 +2701,7 @@
   {"h": "5877e69e09f1bdf3a44d725ef33b74f0e8067906c6f4604305b73d4c73e45918", "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchScreenReviewR1Test.kt"},
   {"h": "55433823c9022ca629d5180113e112eb9a48ad47a30d4cf3a1ed94a8306b5393", "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchScreenReviewR2Test.kt"},
   {"h": "c99c86383cb0ced2c09eef6aed5ccc2a1b81ae2f7219f86cec746b253d8e0481", "p": "feature/trade/build.gradle.kts"},
-  {"h": "b85a349569b0c7caf47f0e6736615112feebe98cc6d1122ce42a549ab5d0a520", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"},
+  {"h": "6b2446fec8f60d7f63ed7c1535f63e8b3c9dd2d9713ef363704bfec9919f9220", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"},
   {"h": "0927645e527569e6e9961695aec86ae8df687c66e07ec162278476ba4dce11e5", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
   {"h": "0ab070506b6d41be2857748658d6d63e1f93258cf90b0e4d41377fef840f7f84", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenTradeLogic.kt"},
   {"h": "e3c1a9f17f41f303bedd777a876338f440027c1825ca194a778c0e75355cdadf", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/PurchaseVisualParts.kt"},
@@ -3609,15 +3609,15 @@
  "mergedB": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "8aa4fbb2c37bb52d2df80888bc53693b89b1ebf57c9cefff525c3753b8b247a6"
+   "h": "6542cabf1190abffb7345550cd188c344b253d39df16cab0ddf50e5c3de6f9ec"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "e92db1365acccf6f32e3a0bc9b6c035904f07d61a2e5ddf96e403993de2713ca"
+   "h": "63de84fd691429e120f00e16b274eb310ab57cffc4615db7392d759a4673de14"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "0d480087f9da0a15d2ba840db8f529ed32deffe70d353e877800e72be96852c9"
+   "h": "0233775e6c916c423d983056f6fa0ac01543e5380c75bf6d10641c5dc4efd276"
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
