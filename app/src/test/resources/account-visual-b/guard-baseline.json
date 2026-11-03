@@ -278,7 +278,7 @@
   {"h": "6b6de1e43c528c9689e4ca956d4c36860ed2d91019b082f7c2fc247489282f31", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualAssertions.kt"},
   {"h": "c99e2e5df574cc773e47831124e387362c1c290b7069152b340c414ce5b6c86a", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualBehaviorTest.kt"},
   {"h": "06a6b8df87f2e377f32bc514d1463008c74698cd5a01a780b9924cf759309762", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualEnv.kt"},
-  {"h": "7d9c1d1f0dd77af33ac7b34fa1969d41e5b985557eb7b1b7782e8b69cbbc1f3e", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtureTest.kt"},
+  {"h": "cf3f6ed9cfaa1b7bdb2fa19a90bf6cf735b2616cf241f36c413bd0c60fd21130", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtureTest.kt"},
   {"h": "0d12f7479f1be2037aaa2255f6984077d11f4c7703516194d265330af13a0eb2", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtures.kt"},
   {"h": "d335b2080be0cc5ef3ccda0e5a72e0a33e2aded416ab8955153c92fd27dff301", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualGuideTest.kt"},
   {"h": "71a031f74de40c50eded4fc70d0324e17c52be11f767d8722f2cff0eb8903bbc", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualHitTest.kt"},
@@ -327,7 +327,7 @@
   {"h": "53377e36b6816d6d96f9929e5fb3f988bd5ae287dfde4279a58c5770273e6dd0", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualBehaviorTest.kt"},
   {"h": "22cee794cf454baad3c01ff14394498539195baeccb769fc7abee89c1a1b6888", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualClipboardTest.kt"},
   {"h": "ce9904cfd20ab1793b78ef1cfd8204a8369ce16015b0f53d1ce7434e75b45a16", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualEnv.kt"},
-  {"h": "76e1a2e3c55f736bad2fcfc104ee6b57d5653eb0bdb60df821f5c4ae0bb503a8", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualFixtureTest.kt"},
+  {"h": "224a4275e9d4db8479926768e02d5df0e8575c1f92d511f3eeafdd23184bda72", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualFixtureTest.kt"},
   {"h": "696e110f097c8fa6e0b852f24b7cc4105dcca2e5391ba027fe8908fc7ec5acc0", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualFixtures.kt"},
   {"h": "02bf979330c30379bcb40282b53d6fd1e4b7f366f3eba28fe60b119ba92d6b95", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualGuardTest.kt"},
   {"h": "6ce1040a0c72e24a3acfa586ed7f29f7cfd4b44b82dfe9bd6c01eaee0eb5525a", "p": "app/src/test/kotlin/com/couli/app/me/SettingsVisualNicknameTest.kt"},
@@ -2309,7 +2309,7 @@
   {"h": "c5ee05148af9cbb2492fc540591e0ac75b9c3f8f1d0d2e8c2a993a51b8058eee", "p": "core/me/src/main/kotlin/com/couli/core/me/MeDraftTexts.kt"},
   {"h": "65eb62b5571856f11d06c82cb3c7da3a957ad9ec69eb0c8f71ae5a560d910e9c", "p": "core/me/src/main/kotlin/com/couli/core/me/MeJson.kt"},
   {"h": "aea7d62c0f1ea10bd462927d1446e8052a297674a8f4438719a7455bf2c56f66", "p": "core/me/src/main/kotlin/com/couli/core/me/MeLocalStore.kt"},
-  {"h": "3ccbbf6dc92512e379583d8ffb8419543ccad33e43283df480aa21b15eafa0a7", "p": "core/me/src/main/kotlin/com/couli/core/me/MePresentation.kt"},
+  {"h": "9da8db187987dab2ddddd0ff131cd37d0867249e0e778cdb8cf67f47457e5940", "p": "core/me/src/main/kotlin/com/couli/core/me/MePresentation.kt"},
   {"h": "b23540f8943411a820ed397ccaa9a449f8770afa178b3d4992465f76804899e8", "p": "core/me/src/main/kotlin/com/couli/core/me/PushReportPolicy.kt"},
   {"h": "c23b6b91f8b91b09819940e0d09ee658c804aeb303b1c014cd7ccd3c3a63d6ce", "p": "core/me/src/main/kotlin/com/couli/core/me/account/AccountDraftTexts.kt"},
   {"h": "730be575f0d157b3db1a62ed543bfa167146cd66d71f1880ab87ea7197912966", "p": "core/me/src/main/kotlin/com/couli/core/me/account/AccountEntries.kt"},
@@ -2809,11 +2809,11 @@
   {"h": "7fd1fb394ef4014c92915f21902309921dd8ca32fde14fe1b266ca9b6d8518f0", "p": "specs/bridge-vectors.json"},
   {"h": "8c2cd0681d428711889a8e69d042b84a19c74a359a5247605121525a3b0e2020", "p": "specs/client-core-vectors.json"},
   {"h": "056a6365845ce0302552d2f92889265135b3fb396bcd4ee14cc4ee73eea11cb0", "p": "specs/clipboard-candidates-vectors.json"},
-  {"h": "ac5ff4dff01069d7f314d2b280dc5c42875c860d2bba8ee497e3275213e2f266", "p": "specs/clipboard-vectors.json"},
+  {"h": "32f179b8695805025bf6b260c6d9efe10aa3cb5461094e667231a98ad74e72a2", "p": "specs/clipboard-vectors.json"},
   {"h": "614f73c850dfaeff3f279491a71c0cee413d4c685a0ab7109da530a3ccddeab5", "p": "specs/format-vectors.json"},
   {"h": "70cab00a88a26ce45bcd078bd10178a3f383fa3f07ef6cc14bced87a1d9f100e", "p": "specs/home-sdui-vectors.json"},
   {"h": "15bd9929cf6aebc7302fc0dd9a5ea6085f1e9833ee536934475fc9b5472e9446", "p": "specs/login-vectors.json"},
-  {"h": "a9fd1839b17c1e10ae9616b7038921b62557d4b446a91a487492fe3fd82342ca", "p": "specs/me-vectors.json"},
+  {"h": "c40b21e1e9da5a12c0ba5b2401f593c3fb258d4e8a46d028b4c8485b64dff05d", "p": "specs/me-vectors.json"},
   {"h": "38bbb293d2e6c126194ab34f229c89b838d51f88a5c67841d4f0a0d700527cab", "p": "specs/network-vectors.json"},
   {"h": "3602baf27256824114d8daf9e326419ec3fb450eb88c604096c8dbb7bf21edc1", "p": "specs/oauth-login-vectors.json"},
   {"h": "1bfabc3b2467d1e05992de5dcdf03f33c84aa6031d636b17b895f990737cee82", "p": "specs/open-trade-vectors.json"},
@@ -3609,19 +3609,19 @@
  "mergedB": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "4250a3e1315c4ce1dff08cccd179c7154a99b632d90218d09c5072cf431a0473"
+   "h": "3f047ebe0adf7fa12104c7ce23234709a081e085a16da4ea15f069a2965b0c43"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "1cac87578e1a982db8f6152f215c15e719e5c1874d0393f2de268bf5f55bfe12"
+   "h": "4259ff7a1ffd9afacecaeabebed92cd5f0148ab38d1f8a71e1fc335c896276d3"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "69443b468ec39867bd495a1e1e39eb2cdced5ad421aa67f4165ed101f718b661"
+   "h": "45352980db3b6b8f8173ae321f7ee56c47d23b3c1c3b87ea0e53e3d5ce6916c5"
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "9ec26e9abea89814671af4f2b215dfeaad451e9ae7903c8f9804be6994595b39"
+   "h": "5a3e5403bf4cf533288133c01e44b339140c3de4a7c63e14eca2db249a30f9e1"
   }
  ],
  "hostSheetCrops": [

@@ -259,6 +259,7 @@ object SettingsItems {
             choices = listOf("agreement", "privacy").map { AGREEMENT to obj("type" to JsonPrimitive(it)) },
         )
 
+    @Suppress("UnusedParameter") // 剪贴板行三端都显示（me-vectors settingsItems）；platformRaw 保留签名供向量接线与调用方
     fun model(
         levelRaw: String,
         platformRaw: String,
@@ -267,7 +268,6 @@ object SettingsItems {
         serviceSwitchAvailable: Boolean,
         deleteAccountAvailable: Boolean,
     ): SettingsModel {
-        val android = platformRaw == MePlatform.ANDROID
         if (levelRaw == MeLevel.BASIC) {
             // 基本模式只有五项（四行 +【开启完整功能】），不显示剪贴板开关（BR-ID-02、BR-ID-16）
             val rows =
@@ -276,7 +276,7 @@ object SettingsItems {
         }
         if (levelRaw != MeLevel.MEMBER) {
             val rows = mutableListOf(SettingsRow(ID_PRIVACY, "PrivacyCenter"), agreement, SettingsRow(ID_ABOUT, "About"))
-            if (android) rows += SettingsRow(ID_CLIPBOARD, null)
+            rows += SettingsRow(ID_CLIPBOARD, null)
             rows += SettingsRow(ID_CLEAR_CACHE, null)
             rows += SettingsRow(ID_HELP, "Help")
             return SettingsModel(listOf(SettingsGroup("", rows)), FOOTER_LOGIN)
@@ -291,7 +291,7 @@ object SettingsItems {
         if (deleteAccountAvailable) account += SettingsRow(ID_DELETE, "DeleteAccount")
         val general =
             mutableListOf(SettingsRow(ID_NOTIFY, null, serviceSwitchAvailable = serviceSwitchAvailable), SettingsRow(ID_RESET_TIP, null))
-        if (android) general += SettingsRow(ID_CLIPBOARD, null)
+        general += SettingsRow(ID_CLIPBOARD, null)
         general += SettingsRow(ID_CLEAR_CACHE, null)
         general += SettingsRow(ID_HELP, "Help")
         general += SettingsRow(ID_ABOUT, "About")

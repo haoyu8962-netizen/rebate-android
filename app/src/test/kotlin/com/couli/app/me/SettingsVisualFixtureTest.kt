@@ -94,6 +94,6 @@ class SettingsVisualFixtureTest {
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private companion object {
-        const val PREFIX_SHA = "147416ec978ce1aadc5e42d27524b54553672805880b3ac6cdd6d742ffd84def"
+        const val PREFIX_SHA = "26e66903b619c47f75aab726f933e3f40429d48a1cf61a88a6b3b52f6186a2e8"
     }
 }
