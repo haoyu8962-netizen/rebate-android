@@ -8,7 +8,7 @@
   {"h": "b51e5e24f6d8d2dcfafc54dc9045a2ea0ec683df11004b2ad3a73165417dc25a", "p": "app/src/main/kotlin/com/couli/app/shell/AppShell.kt"},
   {"h": "3466fbf35851cb171fb167255fb348b5a242bab50b40f36303c5c0e4f3b2d26f", "p": "app/src/main/kotlin/com/couli/app/wallet/AppWallet.kt"},
   {"h": "f3b70592acd800425da6caef4378abde0485bd365679ba2d6394e91732780674", "p": "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"},
-  {"h": "022679ebc19b55649a00c1110223bb2d32104995f388277fba11d490babb877c", "p": "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt"},
+  {"h": "0965e34ee9a90a25826c9dee7c9e4311c81cbdb7ef3187aa3bf00fec5a173ba8", "p": "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt"},
   {"h": "0cce39b7a8c726c30824b2e635e985630efd014b86936182f3ee8bf8ed5c1aaf", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualA11yTest.kt"},
   {"h": "33c6408ae335203972d62b1fc59f6c8b85fa9aa361780d2b191476869958aa01", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualAboutTest.kt"},
   {"h": "252272405f06e242f9b1374f6011fa3e76f6b0870766bdcd7fd0979ec85066e0", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualAdaptationTest.kt"},
@@ -1338,7 +1338,7 @@
   {"h": "c40b21e1e9da5a12c0ba5b2401f593c3fb258d4e8a46d028b4c8485b64dff05d", "p": "specs/me-vectors.json"},
   {"h": "9306dfda11365c910dce4829dd7fb7b7e7bb8ee10779093048f7a63826936605", "p": "specs/privacy-visual-vectors.json"}
  ],
- "riskHead": "9309caae015027066ad923c85fb2e7001304c4e9fe0ea0ca7a6b1469a8b4752d",
+ "riskHead": "05b0fdb99f44455145fb5bc3a7a422cb6620a19766cb58b71c74007c25b591c6",
  "riskScreenHead": "5898274bfaace8a30a57aec2b1227c90c7e589af5dc3c33089c558bb0ed44b2b",
  "riskDialog": "d44a8f89ce40159fc287b4477920290a46aa3bdc867864ec58bc50b682da8c95",
  "riskPrimary": "valversion=state.versionvalprimaryKey=when(model.primaryRaw){RiskNoticeView.VIEW_PROGRESS->\"risk.view_progress\"RiskNoticeView.BACK_HOME->\"risk.normal.back_home\"else->\"risk.submit\"}CouliButton(text=texts.text(primaryKey),onClick={controller.primary(version)},modifier=Modifier.fillMaxWidth().testTag(MeTags.RISK_PRIMARY),",

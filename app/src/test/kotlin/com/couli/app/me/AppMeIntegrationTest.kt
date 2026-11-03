@@ -1119,7 +1119,9 @@ class AppMeIntegrationTest {
         assertEquals("封禁无返回", 0, spoken(t("me.back")))
         assertTrue(has(MeTags.RISK_CS) && has(MeTags.RISK_LOGOUT))
         idleUntil { has(MeTags.RISK_WITHDRAWALS) }
-        assertEquals("进行中的提现 ¥10 · 审核中", 1, text("¥10"))
+        // FU-AND-RISK-WDR T4（#24）：副文案「¥10 已冻结」也含子串「¥10」，计数对象改为整值「¥10 · 审核中」（判据本意：显示这一笔）
+        assertEquals("进行中的提现 ¥10 · 审核中", 1, text("¥10 · 审核中"))
+        assertEquals("同源副文案「¥10 已冻结」", 1, text("¥10 已冻结"))
         // 再来一个 10006：栈顶已是 RiskNotice，不重复打开
         composeRule.runOnUiThread { me.on10006(routing.navTickets.ticket()) { true } }
         settle()

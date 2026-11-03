@@ -21,6 +21,8 @@ import com.couli.core.designsystem.CouliDialog
 import com.couli.core.designsystem.CouliFormat
 import com.couli.core.designsystem.CouliIcons
 import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTextStyles
+import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.StateAction
@@ -36,17 +38,19 @@ import com.couli.core.network.CallOwnership
 import com.couli.core.wallet.WalletDraftTexts
 import com.couli.core.wallet.WalletError
 import com.couli.core.wallet.WalletJson
+import com.couli.core.wallet.WithdrawalDisplay
 import com.couli.core.wallet.WithdrawalText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
-/** 进行中的一笔提现（G16）：金额与 BR-TEXT-06 状态标题的文案键。 */
+/** 进行中的一笔提现（G16）：金额与提现记录页同一份显示结论（WithdrawalText.of：BR-TEXT-06 状态标题 + 副文案；共性第 36 条）。 */
 data class PendingWithdrawalRow(
     val amountFen: Long,
-    val titleKey: String,
+    val display: WithdrawalDisplay,
 )
 
 /** 封禁 / 冻结说明的页面状态。 */
@@ -216,10 +220,19 @@ class RiskNoticeController(
                 update { it.copy(withdrawals = emptyList(), withdrawalsError = notice, version = it.version + 1) }
                 return@launch
             }
+            val sla =
+                (
+                    deps.env
+                        .configData()
+                        ?.get("texts") as? kotlinx.serialization.json.JsonObject
+                )?.get("withdraw.sla_text")
+                    ?.let { it as? JsonPrimitive }
+                    ?.takeIf { it.isString }
+                    ?.content
             val rows =
                 list.items
                     .filter { it.status in PendingWithdrawals.STATUSES }
-                    .map { PendingWithdrawalRow(it.amountFen, WithdrawalText.of(it, null).titleKey) }
+                    .map { PendingWithdrawalRow(it.amountFen, WithdrawalText.of(it, sla)) }
             update { it.copy(withdrawals = rows, withdrawalsError = null, version = it.version + 1) }
         }
     }
@@ -551,15 +564,15 @@ private fun RiskBlocks(
         }
     }
     state.withdrawals.forEach { row ->
-        rows += {
-            RiskInfoRow(
-                texts.text("risk.withdrawals"),
-                texts.format(
-                    "risk.withdrawal_row",
-                    mapOf("amount" to CouliFormat.money(row.amountFen), "status" to WalletDraftTexts.text(row.titleKey)),
-                ),
-                MeTags.RISK_WITHDRAWALS,
+        val value =
+            texts.format(
+                "risk.withdrawal_row",
+                mapOf("amount" to CouliFormat.money(row.amountFen), "status" to WalletDraftTexts.text(row.display.titleKey)),
             )
+        // 共性第 36 条：值 + 与提现记录页同源的副文案（WithdrawalText.render，同一份 WalletDraftTexts）；整行仍一个合并节点、不可点
+        val sublines = WithdrawalText.render(row.display, WalletDraftTexts)
+        rows += {
+            RiskInfoRow(texts.text("risk.withdrawals"), value, MeTags.RISK_WITHDRAWALS) { WithdrawalValue(value, sublines) }
         }
     }
     if (rows.isNotEmpty()) RiskInfoCard(rows)
@@ -580,6 +593,39 @@ private fun RiskBlocks(
         }
     }
     noteKey?.let { NoteStrip(text = texts.text(it)) }
+}
+
+/**
+ * 在途提现的值列（画板：column / flex-end / gap 2）：值 14/500 主文字等宽数字，其下每行副文案 12 次文字色；
+ * 各行占满值列宽再右对齐（与 RiskInfoRow 的值文字同一写法：字形右缘 = 卡内 16，折行时每行右对齐）。
+ */
+@Composable
+private fun WithdrawalValue(
+    value: String,
+    sublines: List<String>,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2),
+    ) {
+        Text(
+            text = value,
+            style = CouliTextStyles.footnoteMedium.tabular(),
+            color = CouliColors.textPrimary,
+            textAlign = TextAlign.End,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        sublines.forEach { line ->
+            Text(
+                text = line,
+                style = CouliTypography.caption,
+                color = CouliColors.textSecondary,
+                textAlign = TextAlign.End,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
 }
 
 /** 一节的读取失败（R1-07）：统一错误文案（含 trace6）+ 只重取这一节的【重试】（禁用期内置灰，执行层另拦）。 */

@@ -8,6 +8,9 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.core.designsystem.CouliFormat
+import com.couli.core.wallet.WalletDraftTexts
+import com.couli.core.wallet.WalletJson
+import com.couli.core.wallet.WithdrawalText
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
 import org.junit.After
@@ -86,9 +89,18 @@ class RiskVisualRiskNoticeTest {
         assertDp("卡内上 4", 4f, reason.top - card.top, d)
         val last = host.node(MeTags.RISK_WITHDRAWALS).box()
         assertDp("卡内下 4", 4f, card.bottom - last.bottom, d)
+        listOf(MeTags.RISK_REASON, MeTags.RISK_LIMIT).forEach { tag ->
+            assertDp("$tag 行高 48（min 44 视觉 + 48dp 命中区）", 48f, host.node(tag).box().height, d)
+        }
+        // FU-AND-RISK-WDR T2（#24）：提现行多了副文案，不再要求 = 48；改为 ≥ 48、上下内边距 8 ± 0.5、标签纵向居中
+        val withdrawals = host.node(MeTags.RISK_WITHDRAWALS).box()
+        assertAtLeastDp("提现行高 ≥ 48（命中区）", 48f, withdrawals.height, d)
+        val inRow = rule.textsUnder(MeTags.RISK_WITHDRAWALS)
+        assertDp("提现行上内边距 8（值首行顶 − 行顶）", 8f, inRow.minOf { it.top } - withdrawals.top, d, 0.5f)
+        assertDp("提现行下内边距 8（行底 − 末行副文案底）", 8f, withdrawals.bottom - inRow.maxOf { it.bottom }, d, 0.5f)
+        val withdrawalLabel = rule.textUnder(MeTags.RISK_WITHDRAWALS, labelOf(MeTags.RISK_WITHDRAWALS)).textBox()
+        assertDp("提现行标签纵向居中", withdrawals.center.y / d, withdrawalLabel.center.y / d, 1f)
         listOf(MeTags.RISK_REASON, MeTags.RISK_LIMIT, MeTags.RISK_WITHDRAWALS).forEach { tag ->
-            val row = host.node(tag).box()
-            assertDp("$tag 行高 48（min 44 视觉 + 48dp 命中区）", 48f, row.height, d)
             val label = rule.textUnder(tag, labelOf(tag))
             assertFont("$tag 标签 14", 14f, label)
             assertColor("$tag 标签次文字色", host.palette.secondary, label.color())
@@ -134,15 +146,21 @@ class RiskVisualRiskNoticeTest {
 
     // ---------------------------------------------------------------- R5 在途提现（G-R08）
 
-    @Test fun r5WithdrawalRowShowsOnlyNonTerminalTitleWithoutSubline() {
+    // FU-AND-RISK-WDR T3（#24）：G-R08 原「不加副文案」改为接上与提现记录页同源的副文案（共性第 36 条）
+    @Test fun r5WithdrawalRowShowsTitleAndTheRecordsPageSublines() {
         host.launchRisk()
         assertEquals("只一笔非终态（PAID_API 不显示）", 1, rule.onAllNodesWithTagCount(MeTags.RISK_WITHDRAWALS))
+        val item = RiskVisualFixtures.withdrawalItems("withdrawals_pending").first()
         val amount = CouliFormat.money(RiskVisualFixtures.expectFen("pendingWithdrawalAmount"))
         val terminal = CouliFormat.money(RiskVisualFixtures.expectFen("terminalWithdrawalAmount"))
         assertEquals("终态金额不显示", 0, host.count(terminal))
-        val value = rule.textNode(amount, substring = true)
+        val title = WithdrawalText.of(WalletJson.withdrawal(item)!!, null).titleKey
+        val valueText = t("risk.withdrawal_row").replace("{amount}", amount).replace("{status}", WalletDraftTexts.text(title))
+        val value = rule.textUnder(MeTags.RISK_WITHDRAWALS, valueText)
         assertFont("值 14", 14f, value)
         assertEquals("值 500", FontWeight.Medium, value.weight())
+        val sublines = WithdrawalText.render(WithdrawalText.of(WalletJson.withdrawal(item)!!, null), WalletDraftTexts)
+        assertEquals("同源副文案两行（SLA 原文 + 已冻结）", 2, sublines.size)
         val texts =
             rule
                 .onAllNodes(
@@ -154,7 +172,18 @@ class RiskVisualRiskNoticeTest {
                     true,
                 ).fetchSemanticsNodes()
                 .count { it.config.contains(SemanticsProperties.Text) }
-        assertEquals("副文案本任务不加（G-R08，FU-AND-RISK-WDR）：行内只有标签与值", 2, texts)
+        assertEquals("行内文字节点：标签、值、SLA、已冻结", 4, texts)
+        var above = value
+        sublines.forEach { line ->
+            val sub = rule.textUnder(MeTags.RISK_WITHDRAWALS, line)
+            assertFont("副文案 12", 12f, sub)
+            assertColor("副文案次文字色", host.palette.secondary, sub.color())
+            assertDp("副文案右缘齐值右缘", value.glyphBox().right / d, sub.glyphBox().right / d, 1f, 1.5f)
+            assertTrue("自上而下：值 → SLA → 已冻结", above.textBox().bottom <= sub.textBox().top + 0.5f)
+            above = sub
+        }
+        val first = rule.textUnder(MeTags.RISK_WITHDRAWALS, sublines.first())
+        assertDp("值与首行副文案间距 2", 2f, first.textBox().top - value.textBox().bottom, d)
     }
 
     // ---------------------------------------------------------------- R6 提示条
@@ -442,3 +471,17 @@ private fun androidx.compose.ui.test.junit4.ComposeContentTestRule.onAllNodesWit
             .hasTestTag(tag),
         useUnmergedTree = true,
     ).fetchSemanticsNodes().size
+
+/** 某标记之下全部文字节点的排版盒（FU-AND-RISK-WDR T2）。 */
+private fun androidx.compose.ui.test.junit4.ComposeContentTestRule.textsUnder(tag: String): List<Rect> {
+    val matcher =
+        androidx.compose.ui.test
+            .hasAnyAncestor(
+                androidx.compose.ui.test
+                    .hasTestTag(tag),
+            ) and
+            androidx.compose.ui.test.SemanticsMatcher
+                .keyIsDefined(SemanticsProperties.Text)
+    val count = onAllNodes(matcher, useUnmergedTree = true).fetchSemanticsNodes().size
+    return (0 until count).map { onAllNodes(matcher, useUnmergedTree = true)[it].textBox() }
+}

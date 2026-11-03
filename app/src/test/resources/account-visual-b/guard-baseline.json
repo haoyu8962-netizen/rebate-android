@@ -269,7 +269,7 @@
   {"h": "becc35a4b26ce7e6d5d0eb0c495c079737999f1587d141f9b6b040c2cad6e61c", "p": "app/src/test/kotlin/com/couli/app/login/LoginWithdrawal17aTest.kt"},
   {"h": "c851f54181e154fcad7fb76d6f34cc5a508b4a5e7151e3e28ba25798744ec123", "p": "app/src/test/kotlin/com/couli/app/login/PendingInviteCleanup17cTest.kt"},
   {"h": "26e8e58b312f7d3d948272310789a008b55dcfd16b6d0b8890001ce7ef50594a", "p": "app/src/test/kotlin/com/couli/app/me/AndroidMeSystemTest.kt"},
-  {"h": "022679ebc19b55649a00c1110223bb2d32104995f388277fba11d490babb877c", "p": "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt"},
+  {"h": "0965e34ee9a90a25826c9dee7c9e4311c81cbdb7ef3187aa3bf00fec5a173ba8", "p": "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt"},
   {"h": "cde17d2ae1e5688c19fa8751d44442c681d8ca8d369c0eef2b2f816c5a68563d", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualAccessibilityRegion.kt"},
   {"h": "934c941597fb624044d60bbc18c7e9e025fb8a8c21173684b82808e9ccb27792", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualAccessibilityTreeTest.kt"},
   {"h": "7271bddf5a649c364aa7b13daa15d59ef07f22b4104ee45d995c5a2894154576", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualAdaptationTest.kt"},
@@ -317,8 +317,8 @@
   {"h": "3c110321f26e895a9d0dc6d9042061b5045a4f59540f04e404eb0b25362c194c", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualGuardTest.kt"},
   {"h": "87c7f27c33eadfd4db143898b77fe10ece357ba1d51e9bb557586a57509c5a64", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualMappingTest.kt"},
   {"h": "fb4c337cb33b0818a458c2802b3c4835ea0eb1995abe53be9919a922289a2db1", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualProbe.kt"},
-  {"h": "2e19b5de10635c34c4598c911ac086716979db98dc03c794499f0db333c3fa36", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualRedLineTest.kt"},
-  {"h": "af5dba795f4155b3bb7b25faee48c58fa7ddd362f23f9ef45f02b7db67399917", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualRiskNoticeTest.kt"},
+  {"h": "0e8b6bbd6eeae6129a6a84e471acddc1b9b03eef7228d4447b168a3354b7bae9", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualRedLineTest.kt"},
+  {"h": "677161fafac20f592691fd3da207145696b37f9fe391084dd095d3f76b060e39", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualRiskNoticeTest.kt"},
   {"h": "8affe0db85fa763b7ca6f10a07d73917f15fb73dae7e83d3e189c52657aefd34", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualSnapshotTest.kt"},
   {"h": "3db547649185ecae6c01fda8d77054ab6eb72bed2d743df82b8ed9dad67e8e0e", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualSourceContractTest.kt"},
   {"h": "309871be4b28cafd40e9bac1af7cbba7645d84c16982cb1d9e5166ed5ab74746", "p": "app/src/test/kotlin/com/couli/app/me/RiskVisualTestHost.kt"},
@@ -1761,14 +1761,14 @@
   {"h": "9e70902cd5eb3784caeba881ad2e9c98023cfa9aa5834698a7ce87633fd16de4", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-light.png"},
   {"h": "90f6ea2e1acf144bf8208cddf17659f27dfd7f191d252bc498b022bed2af0a07", "p": "app/src/test/snapshots/risk-v/AppealResultUpheld-v2-w840-light.png"},
   {"h": "09649e588b6b38f129584f075111ec32e599c25e43d005e945367c18ba6c1c6e", "p": "app/src/test/snapshots/risk-v/AppealResultUpheldFrozen-v2-light.png"},
-  {"h": "c8ff8259e8f40ea144027317a739a127d5a3a104eb4e4ddbf0697a3266f37bfe", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-dark.png"},
-  {"h": "fe73b58f475ee00b0ebba6787987ca13dd6d2eba82d913b6fda127790af98433", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w320-light.png"},
-  {"h": "dbceead8c704bb94aecb75594807bdb3e15a784451093736bcb7b19d4a56e723", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-dark.png"},
-  {"h": "f21318d4a57475a71a693a1ad5476a8344152a4dc3a5cc42b44b99b1dddbd9b5", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-light.png"},
-  {"h": "a379c220c83cecb636fdf061ee008373de4d2119643aa0fecb30d16a92c336fd", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-no-subline-GR08-light.png"},
-  {"h": "f412733a82e22bfb3a1875c1b0e3d535ae25c9592812fb0bff887aef9404172f", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-w840-light.png"},
-  {"h": "06fe433d77afbd736d0f6cbdd7334bb54cc0416646f66757147bc3e4c22fcf29", "p": "app/src/test/snapshots/risk-v/RiskNoticeBannedAppealing-v2-choice-not-compared-GR01-light.png"},
-  {"h": "1978f6677b7ff03eba4c7353a277f395657cc65868c53fa9497de3dae2256f20", "p": "app/src/test/snapshots/risk-v/RiskNoticeBannedUpheld-v2-light.png"},
+  {"h": "95815e971769f0a32bcb9807c8c77db966b936c30349aa44739924cde1c3a985", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-dark.png"},
+  {"h": "e0f20aa25b470be9b94bab06f16cb9dc1392047d17d66bde6a30c64d8136437b", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w320-light.png"},
+  {"h": "c0e80736caada8f7f0a23061136d64106952c1ee5f43aee5eeddb358ce445f1c", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-dark.png"},
+  {"h": "31e7de8a088e089b2a2c443cc841558d6a1734b4eaffe7a6fb02b9b1a5de996c", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-font200-w390-light.png"},
+  {"h": "32060ead94b8ddf7f37c9f26e9d2f82edfef212e658cd9cd36bb6b14732adde2", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-no-subline-GR08-light.png"},
+  {"h": "9dbb7718df58399be3567c0fd7112d1a533a0f5d068a4dbf58518f730e476dae", "p": "app/src/test/snapshots/risk-v/RiskNoticeBanned-v2-w840-light.png"},
+  {"h": "bf9b5e5e7271eaad1ad4f476826881b1f6fab8d7a608df95e373fbdadaee3286", "p": "app/src/test/snapshots/risk-v/RiskNoticeBannedAppealing-v2-choice-not-compared-GR01-light.png"},
+  {"h": "84e9f13fc60c7966f785160d38db806aa3f7daea1780a4fa2ab8a5cfac32e673", "p": "app/src/test/snapshots/risk-v/RiskNoticeBannedUpheld-v2-light.png"},
   {"h": "d38e23415436b3c105e74b48facd1116cb0487b0ae808156a41c0e4bbb837ab4", "p": "app/src/test/snapshots/risk-v/RiskNoticeDark-dark.png"},
   {"h": "491989c43e1e783e88c851cdec1bf8552fdf58fa9d689384efc79b84a85cb5f8", "p": "app/src/test/snapshots/risk-v/RiskNoticeFrozen-font200-w320-light.png"},
   {"h": "9d4d9165a9a132c5153e2407108bbfb2c02e5cd9a9c4091a41fc502b6e645a82", "p": "app/src/test/snapshots/risk-v/RiskNoticeFrozen-light.png"},
@@ -1784,13 +1784,13 @@
   {"h": "d0d1908c8615d17e2cde9dfd2e5bd5abae807f64e74f2bb3678ea52c1aba5448", "p": "app/src/test/snapshots/risk-v/appeal-submit-typed-light.png"},
   {"h": "3aff52cf629f8001205163a490ad215ae7456b471701f91b1eb104e59d332078", "p": "app/src/test/snapshots/risk-v/appeal-submitting-light.png"},
   {"h": "d2c8b2eb7f0acdbde43b2ed34acd34d930728736e12977f95df7634a7ce95edf", "p": "app/src/test/snapshots/risk-v/appeal-upheld-internal-build-light.png"},
-  {"h": "45d4b891c985e2d74a69a4ae29125a08e0c4c405d80a188991b3af149f6dbe92", "p": "app/src/test/snapshots/risk-v/risk-banned-internal-build-light.png"},
+  {"h": "ee60035d33cd642c7f9822fc42560ccb88a2e44f7737b118c821e24784df8a75", "p": "app/src/test/snapshots/risk-v/risk-banned-internal-build-light.png"},
   {"h": "707665642ffa509a4280703f36dc00ceb0f575d1f81f266ba0f1c39e0e29d128", "p": "app/src/test/snapshots/risk-v/risk-frozen-upheld-light.png"},
   {"h": "900eee56703a4eb1d2142bdbb0677fc3d096e1afd8ed1f12202ac34072491a77", "p": "app/src/test/snapshots/risk-v/risk-load-error-dark.png"},
   {"h": "6e8a71613a02a0b93427c3dd64d80addc81e108ac356464df78332e70c4cf281", "p": "app/src/test/snapshots/risk-v/risk-load-error-light.png"},
-  {"h": "db6c296ce6fbcf1ba91955f80be28f8b32d591bf4ea527f2c20e68ff2ffcbef2", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-dark.png"},
-  {"h": "fc2b79cafb8480529df44d041c6a22ba5d89b588f610f37af155a76704a6742f", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-font200-w320-light.png"},
-  {"h": "8e84813459edbea0abceac093d1011943d0ec3689d6fc64ca939c83c0c3e3385", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-light.png"},
+  {"h": "1f82ebafcd30db929e52b65a61e19aacaf6ce8b0ebfc908545dd2f8abe2e1198", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-dark.png"},
+  {"h": "79e611dfd48d9f3ab635d33b7d65862738160c0835c8620fc7ab5e23eca8140f", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-font200-w320-light.png"},
+  {"h": "8e5fb70ce507504b4a38f02ee7f342d2c92512305faddda8cf4e40312b9887b8", "p": "app/src/test/snapshots/risk-v/risk-logout-dialog-light.png"},
   {"h": "52eb5978150d207a49025da46c0a0fe59587b04d580013192a4eb7d07d1d4276", "p": "app/src/test/snapshots/risk-v/risk-normal-dark.png"},
   {"h": "f02190b0ca2281e8acfa65a93d186373f1ef1c8458a84cb59122b66ca7155a82", "p": "app/src/test/snapshots/risk-v/risk-normal-light.png"},
   {"h": "711cb599347202f23af0b1fedfa2391b2d25aa9a20e53e86213e3c4a8b0d9cd9", "p": "app/src/test/snapshots/risk-v/risk-sections-error-light.png"},
@@ -2651,7 +2651,7 @@
   {"h": "d88b8cbab9ce73f13d63af3f436bf8df732232ee956cf4e30737ed8c6ff2b93d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyAboutCsParts.kt"},
   {"h": "d033ac2ddebf72a62bfca348a9523ac36db815f45965ba2f887ff346c438e78a", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PrivacyCenter.kt"},
   {"h": "47a68d5328e746d8608031d2ac8407f663e48920cd1357eb3c64ac6b214d3eca", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskAppealParts.kt"},
-  {"h": "45217a32afc36b1f222133e53abddb14510f084e7bf42fc4b19d2842fbd757b1", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
+  {"h": "14480cacb70eefcebcabc01609c0c6a5324688f06ae1b2e8c5aa74f7ae6cc406", "p": "feature/me/src/main/kotlin/com/couli/feature/me/RiskNotice.kt"},
   {"h": "b5eb610d9efb0386e1db673e2907c06a492d4a2b2a9ccbab7040deb5d12362c1", "p": "feature/me/src/main/kotlin/com/couli/feature/me/Settings.kt"},
   {"h": "5bdcc1030e1ced6474aa46239dcc51cf4f06fbbbf562c1e06c6004ccd3c885bd", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsParts.kt"},
   {"h": "7d35ddb31a80dcac00ecba01449496e906b24204c682701ea886f6849390f2ff", "p": "feature/me/src/main/kotlin/com/couli/feature/me/SettingsSubPages.kt"},
@@ -3609,19 +3609,19 @@
  "mergedB": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "1692c0ed92cecd55d3c51a05841792892705fac070d790481e973b2988795835"
+   "h": "ab4375752832c68c49e18659c9f28e64f57a65bc93f6bf5f8a3da6c65508593e"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "4259ff7a1ffd9afacecaeabebed92cd5f0148ab38d1f8a71e1fc335c896276d3"
+   "h": "b0b316f9ff84c14201f6b2588176f43bed4fe8e7d165dbe5a86a9728106aa933"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "45352980db3b6b8f8173ae321f7ee56c47d23b3c1c3b87ea0e53e3d5ce6916c5"
+   "h": "32fdea1fc0b2dedb0465e98a006ffbc183095ee5fcaf3ac082200cc0dc632c3f"
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "078c271847b59de4d5e5c79f2131d45dab5957bc32d6650bb89386410454f073"
+   "h": "5336ba29beb7e40914bee5b72019be06b1f4a7927f05d6771fbccada75b3eeee"
   }
  ],
  "hostSheetCrops": [

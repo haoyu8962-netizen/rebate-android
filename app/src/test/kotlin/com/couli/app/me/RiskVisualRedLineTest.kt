@@ -2,18 +2,24 @@ package com.couli.app.me
 
 import android.app.Application
 import android.view.MotionEvent
+import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText as textIs
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.core.me.account.AccountRaw
+import com.couli.core.network.ApiResult
+import com.couli.core.wallet.WalletDraftTexts
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -354,16 +360,34 @@ class RiskVisualRedLineTest {
             ?.text
             .orEmpty()
 
-    /** 页面所有文字（未合并树，含时间线、提示条、按钮）里不出现任何处理时限 / 截止字样（BR-TEXT-23 细则）。 */
-    private fun assertNoDeadline() {
-        val texts =
-            rule
-                .onAllNodes(hasTextOrEditable(), useUnmergedTree = true)
-                .fetchSemanticsNodes()
-                .flatMap { it.spokenParts() }
-        assertTrue("先正：页面有文字", texts.isNotEmpty())
+    /**
+     * 页面所有文字（未合并树，含时间线、提示条、按钮）里不出现任何处理时限 / 截止字样（BR-TEXT-23 细则）。
+     * FU-AND-RISK-WDR T1（#24；notices 02:09 ①、D10-594 J2）：只排除「进行中的提现」行里整句恰等于 BR-TEXT-07 原文的文字节点（[scanDeadline]），
+     * 至多 [slaAllowance] 处（= 本页报文里在途审核中且非自动审核的笔数，每笔至多一处；申诉页不取提现 = 0）；其余全部节点照旧逐字样判 0 处。
+     */
+    private fun assertNoDeadline(slaAllowance: Int = reviewingWithdrawalsServed()) {
+        assertEquals("BR-TEXT-07 原文常量与草稿表同源", WITHDRAWAL_SLA, WalletDraftTexts.text("withdraw.sla_default"))
+        val nodes = rule.onAllNodes(hasTextOrEditable(), useUnmergedTree = true).fetchSemanticsNodes()
+        assertTrue("先正：页面有文字", nodes.flatMap { it.spokenParts() }.isNotEmpty())
+        val scan = scanDeadline(nodes)
+        assertTrue(
+            "提现行 BR-TEXT-07 原文整句 ${scan.slaLines} 处，超过本页在途审核中笔数 $slaAllowance（每笔至多一处）",
+            scan.slaLines <= slaAllowance,
+        )
+        val texts = scan.texts
         RiskVisualFixtures.forbidden.forEach { word ->
             assertTrue("不显示处理时限 / 截止：「$word」出现在 ${texts.filter { it.contains(word) }}", texts.none { it.contains(word) })
+        }
+    }
+
+    /** 本页实际取到的提现报文里在途审核中（PENDING_REVIEW / APPROVED）且 review_mode 不是 auto 的笔数；没取提现（申诉页）为 0。只作上限，不推产品规则。 */
+    private fun reviewingWithdrawalsServed(): Int {
+        val sent = host.api.count(RiskVisualApi.LIST_WITHDRAWALS) > 0
+        val data = (host.api.answers[RiskVisualApi.LIST_WITHDRAWALS] as? ApiResult.Success)?.data as? JsonObject
+        val items = (data?.get("items") as? JsonArray).orEmpty().takeIf { sent }.orEmpty()
+        return items.count { element ->
+            val item = element.jsonObject
+            (item["status"] as? JsonPrimitive)?.content in REVIEWING && (item["review_mode"] as? JsonPrimitive)?.contentOrNull != AUTO
         }
     }
 
@@ -398,9 +422,44 @@ class RiskVisualRedLineTest {
     }
 
     private companion object {
+        val REVIEWING = setOf("PENDING_REVIEW", "APPROVED")
+        const val AUTO = "auto"
         val DELETE = AppMeTexts.text("settings.delete_account")
         const val SCRIM_EVENT_MS = 16L
         const val SCRIM_X = 4f
         const val SCRIM_Y = 4f
     }
+}
+
+/** BR-TEXT-07 原文（字面，不从草稿表取：表值被改时排除范围不跟着变；FU-AND-RISK-WDR T1）。 */
+internal const val WITHDRAWAL_SLA = "人工审核，工作日 24 小时内处理，节假日顺延"
+
+/** 红线 ③ 的扫描结果：[slaLines] 被排除的提现行原文节点数；[texts] 其余全部节点的读屏片段（逐字样判 0 处）。 */
+internal class DeadlineScan(
+    val slaLines: Int,
+    val texts: List<String>,
+)
+
+/**
+ * 红线 ③ 判据的排除规则（FU-AND-RISK-WDR T1，#24）：三条同时满足才排除——① 节点 Text 拼起来**整句恰等于** [WITHDRAWAL_SLA]（==，不 trim、不 contains、
+ * 不规范化）；② 有祖先 testTag == [MeTags.RISK_WITHDRAWALS]；③ 节点没有 ContentDescription / StateDescription。其余节点一律照旧参与判定。
+ */
+internal fun scanDeadline(nodes: List<SemanticsNode>): DeadlineScan {
+    val (sla, rest) = nodes.partition { it.isWithdrawalSlaLine() }
+    return DeadlineScan(sla.size, rest.flatMap { it.spokenParts() })
+}
+
+/** 判据违规清单（供判据自测；与 assertNoDeadline 同一扫描）。 */
+internal fun DeadlineScan.violations(
+    slaAllowance: Int,
+    forbidden: List<String>,
+): List<String> =
+    listOfNotNull("原文整句 $slaLines 处 > 上限 $slaAllowance".takeIf { slaLines > slaAllowance }) +
+        forbidden.mapNotNull { word -> texts.filter { it.contains(word) }.takeIf { it.isNotEmpty() }?.let { "「$word」出现在 $it" } }
+
+private fun SemanticsNode.isWithdrawalSlaLine(): Boolean {
+    val whole = config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text } == WITHDRAWAL_SLA
+    val described = config.contains(SemanticsProperties.ContentDescription) || config.contains(SemanticsProperties.StateDescription)
+    val inRow = generateSequence(parent) { it.parent }.any { it.config.getOrNull(SemanticsProperties.TestTag) == MeTags.RISK_WITHDRAWALS }
+    return whole && !described && inRow
 }
