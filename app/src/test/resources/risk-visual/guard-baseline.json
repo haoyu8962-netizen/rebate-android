@@ -1191,7 +1191,7 @@
   {"h": "2da459b309d1372b94de7792d406cf19c8a898819af2d49feee8addf488245fe", "p": "core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt"},
   {"h": "6a3898eee9e917c50f3da0dd892873679b8543e775e35f6d2edaf080e60e2a49", "p": "core/network/build.gradle.kts"},
   {"h": "4cd0890a63dabc133db39c1e2ce73318e247805783346238b8ba06b6434aad1c", "p": "core/network/src/main/kotlin/com/couli/core/network/AndroidDeviceIdReader.kt"},
-  {"h": "f80aadc2eab98350b9de374c49f58599a4962eae4e2a8008285d2592e1353be6", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
+  {"h": "760476ba85df8542a05f5667ed0803cd2202ee0ba6bb80c5a68682de6d7f6f73", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
   {"h": "36f85d43b961945145892a918d1fb5934d13993af2a5adaecc59a097ca690f20", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiConfigFetcher.kt"},
   {"h": "2b7aab93b15f65622ad81c52befba59bdc8eaa7b620a4f4d43897eeb75b59a20", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiModels.kt"},
   {"h": "a4e39b11c86e33c7ef6fe8665c6ed1ab03876ea3661f6dad680663dcd902fcee", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiStream.kt"},

@@ -24,7 +24,8 @@
 #   7. python3 tools/codegen/test_gen.py（生成器命名规则；含用 Gradle 缓存里的 Kotlin 编译器真编译探针生成物，
 #      所以放在构建之后，COULI_GEN_REQUIRE_KOTLINC=1：找不到编译器即失败，不跳过）
 #   8. tools/ci/release-scan.sh <release apk>、--self-test（debug / staging 命中、release 不命中；含组件目录页标记）
-#      与 --self-test-tools（非 ZIP、注入返回 127 的假 unzip / strings / aapt2 / python3 / grep 时必须以 2 退出）
+#      与 --self-test-tools（非 ZIP、注入返回 127 的假 unzip / strings / aapt2 / python3 / grep 时必须以 2 退出）；
+#      tools/ci/tests/test_release_scan_staging_hosts.py（五个 staging 主机的扫描规则，R5 合成制品必须真跑，FU-X-STAGING-HOSTS）
 # 兼容 macOS 自带 bash 3.2；路径加引号（仓库路径含中文）。
 set -uo pipefail
 
@@ -267,5 +268,18 @@ step "Release 制品扫描" tools/ci/release-scan.sh "$RELEASE_APK"
 step "Release 制品扫描自检（debug / staging 命中、release 不命中）" \
   tools/ci/release-scan.sh --self-test "$DEBUG_APK" "$RELEASE_APK" "$STAGING_APK"
 step "Release 制品扫描工具失败自检（工具失败必须退出 2）" tools/ci/release-scan.sh --self-test-tools "$RELEASE_APK"
+# FU-X-STAGING-HOSTS（编排定）：release-scan 对五个 staging 主机的规则测试；R5 以 release 制品为底合成带 staging 主机的制品，
+# 必须真跑（release 制品已在第 5 步构建）——任何用例跳过都算失败
+release_scan_staging_hosts() {
+  local out status=0
+  out="$(python3 tools/ci/tests/test_release_scan_staging_hosts.py -v 2>&1)" || status=$?
+  printf '%s\n' "$out"
+  [ "$status" -eq 0 ] || return "$status"
+  if printf '%s\n' "$out" | grep -q 'skipped'; then
+    echo "有用例被跳过（R5 需要 release 制品与 aapt2），按失败处理" >&2
+    return 1
+  fi
+}
+step "Release 制品扫描 staging 主机规则测试（test_release_scan_staging_hosts.py，含 R5 合成制品）" release_scan_staging_hosts
 
 finish

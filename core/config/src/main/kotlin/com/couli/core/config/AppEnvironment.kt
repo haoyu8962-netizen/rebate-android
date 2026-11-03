@@ -18,11 +18,15 @@ enum class AppEnvironment(
     }
 }
 
-/** 一个环境的服务地址。 */
+/**
+ * 一个环境的服务地址。[streamBaseUrl] 是流式（Agent SSE）入口；null 表示没有单独入口、缺省等于 [apiBaseUrl]
+ * （agent-transport-vectors G15）。只有 debugFeatures 里的环境表会给它赋值（FU-X-STAGING-HOSTS）。
+ */
 data class EnvironmentEndpoints(
     val environment: AppEnvironment,
     val apiBaseUrl: String,
     val h5BaseUrl: String,
+    val streamBaseUrl: String? = null,
 )
 
 /**

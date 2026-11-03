@@ -21,6 +21,14 @@ internal fun currentApiBaseUrl(
     cleaners: EnvironmentSwitchCleanerRegistry,
 ): String = EnvironmentSwitcher(context, buildDefaultEnvironment(), cleaners).endpoints.apiBaseUrl
 
+/**
+ * 当前环境的流式（Agent）入口基址（FU-X-STAGING-HOSTS）：STAGING 为 stream 入口，其余环境没有单独入口为 null（ApiClient 按 api 基址发）。
+ */
+internal fun currentStreamBaseUrl(
+    context: Context,
+    cleaners: EnvironmentSwitchCleanerRegistry,
+): String? = EnvironmentSwitcher(context, buildDefaultEnvironment(), cleaners).endpoints.streamBaseUrl
+
 /** 把环境闸门接到 Debug 替身的统一闸门（F-X-02：启动对账未成功、运行中切换时一律不交假数据）。Release 为空实现。 */
 internal fun variantBindEnvironmentGate(ready: () -> Boolean) {
     DebugMockGate.environmentReady = ready

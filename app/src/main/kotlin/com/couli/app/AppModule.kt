@@ -273,7 +273,7 @@ object AppModule {
      */
     @Provides
     @Singleton
-    @Suppress("LongParameterList") // 环境、隐私、强更、令牌、加密逐项注入
+    @Suppress("LongParameterList", "LongMethod") // 环境、隐私、强更、令牌、加密逐项注入；构造参数逐项写在一处（FU-X-STAGING-HOSTS 加流式入口后到 60 行）
     fun apiClient(
         @ApplicationContext context: Context,
         environmentGate: EnvironmentGate,
@@ -301,6 +301,8 @@ object AppModule {
                     channel = InstallChannel.OFFICIAL.raw,
                 ),
             baseUrl = { if (environmentGate.isSettled) currentApiBaseUrl(context, cleaners) else null },
+            // Agent 接口的流式入口（FU-X-STAGING-HOSTS，D10-598 ①）：与 baseUrl 同一环境闸门；prod 为 null，全部走 api
+            streamBaseUrl = { if (environmentGate.isSettled) currentStreamBaseUrl(context, cleaners) else null },
             context = {
                 NetworkContext(
                     privacy =

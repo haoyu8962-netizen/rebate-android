@@ -19,7 +19,7 @@ class EnvironmentSwitcherTest {
         val switcher = EnvironmentSwitcher(context, AppEnvironment.STAGING, EnvironmentSwitchCleanerRegistry())
 
         assertEquals(AppEnvironment.STAGING, switcher.current)
-        assertEquals("https://api.staging.couli.invalid", switcher.endpoints.apiBaseUrl)
+        assertEquals("https://api-stg.couliapp.cn", switcher.endpoints.apiBaseUrl)
     }
 
     @Test

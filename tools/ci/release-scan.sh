@@ -5,6 +5,8 @@
 #   tools/ci/release-scan.sh <release.apk>
 #       解包后用 strings 扫 dex 与资源，命中任一即失败：
 #         - 非 prod 环境的 .invalid 地址（local / test / staging）
+#         - 真实 staging 主机 api-stg / stream-stg / h5-stg / l-stg / s-stg.couliapp.cn（FU-X-STAGING-HOSTS：五个主机各一条模式，
+#           标签 staging_host；不带 https:// 前缀，深链主机在 dex 里是裸主机名）
 #         - 调试面板标记 COULI_DEBUG_PANEL
 #         - DebugRoutes 的唯一长标记（DebugRoutes.MARKER，取自生成物 DebugRoutes.kt）
 #         - 快照 routes.json 里 debug_only 路由的名字
@@ -34,8 +36,8 @@
 #           --self-test 要求 debug 命中、staging 与 release 都不命中）
 #       另用 aapt2 检查不可调试（badging 没有 application-debuggable，清单没有 android:debuggable=true）。
 #   tools/ci/release-scan.sh --self-test [debug.apk] [release.apk] [staging.apk]
-#       证明扫描有牙齿：debug、staging 制品必须命中（含 DebugRoutes 标记；debug 还必须命中 debuggable），
-#       release 制品必须不命中。不给路径时用 app/build/outputs/apk 下的默认产物。
+#       证明扫描有牙齿：debug、staging 制品必须命中（含 DebugRoutes 标记、staging_host；debug 还必须命中 debuggable），
+#       release 制品必须不命中；以 release 为底合成的制品（加测试探针、fixture、五个 staging 主机）必须命中。不给路径时用 app/build/outputs/apk 下的默认产物。
 #   tools/ci/release-scan.sh --self-test-tools [release.apk]
 #       证明工具失败会阻断：对非 ZIP 文件、PATH 里注入返回 127 的假 unzip / strings / aapt2 / python3 / grep
 #       时，本脚本必须以 2 退出；不注入时对同一 release 制品必须以 0 退出。
@@ -171,9 +173,10 @@ scan_apk() {
 
   : > "$out/hits"
   local pattern label
-  for pattern in 'COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B' 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'COULI_FAKE_HOME_SERVER_APP11' 'COULI_FAKE_AGENT_SERVER_APP10' 'COULI_FAKE_ACCOUNT_SERVER_APP13A' 'COULI_ROUTE_OVERRIDE_APP13A' 'COULI_HOME_PREVIEW_APP11' 'debug-web-code'; do
+  for pattern in 'COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B' 'local\.couli\.invalid' 'test\.couli\.invalid' 'staging\.couli\.invalid' 'api-stg\.couliapp\.cn' 'stream-stg\.couliapp\.cn' 'h5-stg\.couliapp\.cn' 'l-stg\.couliapp\.cn' 's-stg\.couliapp\.cn' 'COULI_DEBUG_PANEL' "$marker" "$catalog_marker" "$update_marker" "$conformance_marker" "$LOOPBACK_PATTERN" 'conformance-harness' 'couli\.conformance' 'example\.test' 'COULI_FAKE_LOGIN_SERVER_APP05A' 'COULI_FAKE_SEARCH_SERVER_APP06A' 'COULI_FAKE_WECHAT_ADAPTER_APP05B' 'COULI_FAKE_TRADE_SERVER_APP06B' 'COULI_FAKE_ORDERS_SERVER_APP08' 'COULI_FAKE_WALLET_SERVER_APP09' 'COULI_FAKE_ME_SERVER_APP12' 'COULI_FAKE_HOME_SERVER_APP11' 'COULI_FAKE_AGENT_SERVER_APP10' 'COULI_FAKE_ACCOUNT_SERVER_APP13A' 'COULI_ROUTE_OVERRIDE_APP13A' 'COULI_HOME_PREVIEW_APP11' 'debug-web-code'; do
     case "$pattern" in
       COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B) label="agent_test_probe" ;;
+      'api-stg\.couliapp\.cn' | 'stream-stg\.couliapp\.cn' | 'h5-stg\.couliapp\.cn' | 'l-stg\.couliapp\.cn' | 's-stg\.couliapp\.cn') label="staging_host" ;;
       "$conformance_marker") label="bridge_conformance" ;;
       "$LOOPBACK_PATTERN") label="loopback_origin" ;;
       conformance-harness) label="test_login" ;;
@@ -309,6 +312,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "debug" "fake_trade_ports"
   require_label "debug" "agent_fixtures"
   require_label "debug" "debuggable"
+  require_label "debug" "staging_host"
   forbid_label "debug" "agent_test_probe"
   echo "  debug 共命中 $SCAN_HITS 项"
 
@@ -336,6 +340,7 @@ if [ "${1:-}" = "--self-test" ]; then
   require_label "staging" "home_preview"
   require_label "staging" "fake_trade_ports"
   require_label "staging" "agent_fixtures"
+  require_label "staging" "staging_host"
   forbid_label "staging" "agent_test_probe"
   forbid_label "staging" "loopback_origin"
   forbid_label "staging" "debuggable"
@@ -354,13 +359,16 @@ if [ "${1:-}" = "--self-test" ]; then
   mkdir -p "$synth_dir/add/assets/agent-streams" || fail "mkdir 失败"
   printf 'COULI_AGENT_VECTOR_PROBE_TESTONLY_APP10B\n' > "$synth_dir/add/assets/agent-probe.txt" || fail "写合成标记失败"
   printf '{"event":"meta"}\n' > "$synth_dir/add/assets/agent-streams/normal.ndjson" || fail "写合成 fixture 失败"
+  # FU-X-STAGING-HOSTS：五个 staging 主机（裸主机名）一旦进了 Release 制品必须被拦
+  printf '%s\n' api-stg.couliapp.cn stream-stg.couliapp.cn h5-stg.couliapp.cn l-stg.couliapp.cn s-stg.couliapp.cn > "$synth_dir/add/assets/staging-hosts.txt" || fail "写合成 staging 主机失败"
   status=0
   (cd "$synth_dir/add" && zip -q -r "$synth_dir/synthetic.apk" assets) || status=$?
   [ "$status" -eq 0 ] || fail "zip 合成制品失败（退出码 ${status}）"
-  echo "release-scan --self-test：合成制品（release + 测试探针标记 + fixture）必须命中"
+  echo "release-scan --self-test：合成制品（release + 测试探针标记 + fixture + staging 主机）必须命中"
   run_scan "$synth_dir/synthetic.apk"
   require_label "synthetic" "agent_test_probe"
   require_label "synthetic" "agent_fixtures"
+  require_label "synthetic" "staging_host"
   rm -rf "$synth_dir"
   echo "release-scan --self-test：通过"
   exit 0
@@ -412,7 +420,7 @@ fi
 echo "release-scan：扫描 $1"
 run_scan "$1"
 if [ "$SCAN_HITS" -ne 0 ]; then
-  echo "release-scan：失败，命中 $SCAN_HITS 项（Release 制品里不得有测试环境地址、调试面板、debug_only 路由、版本检查假数据，且不可调试）" >&2
+  echo "release-scan：失败，命中 $SCAN_HITS 项（Release 制品里不得有测试 / staging 环境地址、调试面板、debug_only 路由、版本检查假数据，且不可调试）" >&2
   exit 1
 fi
 echo "release-scan：通过"

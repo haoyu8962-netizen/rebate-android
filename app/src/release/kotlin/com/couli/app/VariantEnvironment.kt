@@ -19,6 +19,13 @@ internal fun currentApiBaseUrl(
     cleaners: EnvironmentSwitchCleanerRegistry,
 ): String = ProdEndpoints.endpoints.apiBaseUrl
 
+/** 流式（Agent）入口基址：prod 不设单独入口（null），ApiClient 全部按 api 基址发，与原行为一致（FU-X-STAGING-HOSTS）。 */
+@Suppress("UnusedParameter") // 与 debug / staging 源码集同一签名
+internal fun currentStreamBaseUrl(
+    context: Context,
+    cleaners: EnvironmentSwitchCleanerRegistry,
+): String? = ProdEndpoints.endpoints.streamBaseUrl
+
 /** Release 没有 Debug 替身，不需要接环境闸门。 */
 @Suppress("UnusedParameter")
 internal fun variantBindEnvironmentGate(ready: () -> Boolean) = Unit

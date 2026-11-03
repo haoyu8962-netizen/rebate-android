@@ -1,7 +1,7 @@
 {
  "base": "a9fc8ae19d32fe37643145ef2e2ac5d8bf37208f",
  "files": [
-  {"h": "49d0430622cb9c143d2fd7228a87d08ad52a36cf4756af9a4787e79f18ecd162", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "daea3b4dcc87b71b75908678a351c74c212fd1e5e2d45279b961a0ba5f7ae7df", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
   {"h": "6895ab2d6e94fbf34a4a046bf6eced60452d337e7a4670c371af8c6fef63f6a0", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},
@@ -1718,7 +1718,7 @@
   {"h": "d6b7c70854d78b91726440cc0608f34aaa8930ad916d66b7e82ae8dd4ddd6629", "p": "core/clipboard/src/test/kotlin/com/couli/core/clipboard/ImportTiming0724Test.kt"},
   {"h": "0aa77118b9867b6b7ba482fc5c182f16c861e8da31058d5e8c87b2944be229ee", "p": "core/config/build.gradle.kts"},
   {"h": "06cf3a3748a9d86e4e5db5c1fda972caadf991ec4d05586dd37d2e07c9963625", "p": "core/config/src/debugFeatures/kotlin/com/couli/core/config/DebugCapabilities.kt"},
-  {"h": "a2facf33eef30e8bac9a60c516796341911660dd3c61a5a0d941006849835891", "p": "core/config/src/debugFeatures/kotlin/com/couli/core/config/EnvironmentEndpointsCatalog.kt"},
+  {"h": "a2df2becca90173c63aa5b77a7524c2eac8fe84ca63f750dad28d55f8be1d3aa", "p": "core/config/src/debugFeatures/kotlin/com/couli/core/config/EnvironmentEndpointsCatalog.kt"},
   {"h": "2c6e8095d614fe37438f001e0daab3d7be984a75204603c7dc64222da52a472e", "p": "core/config/src/debugFeatures/kotlin/com/couli/core/config/EnvironmentSwitcher.kt"},
   {"h": "6b703e246cdf1c40227d6ec7511f33e254c23d99c560b1532d1174c208cd2bc8", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/AmountMaskStore.kt"},
   {"h": "a43c6ded932d149f4af093db0f2d939eedd49316e079046402742d603d407e57", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/AtomicTextFile.kt"},
@@ -1727,7 +1727,7 @@
   {"h": "56f725fae710b77c45e44abc541feb606756a6370a0600683306131c384d9384", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/DeviceIdPolicy.kt"},
   {"h": "bb8778d16e8a540c14e852f1b722c9e3f384912e4e3f402167077357ff612f77", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/PermissionRequester.kt"},
   {"h": "5128aac8a25488289617d5ba43b786c5dc43bbf8eb9852df494c031c7d274bce", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/TrackerQueue.kt"},
-  {"h": "f63f3b20542a21984c5842d4e7244113a721b2dd983fa0cec1b09f2cfa4ae1e7", "p": "core/config/src/main/kotlin/com/couli/core/config/AppEnvironment.kt"},
+  {"h": "5407a56748fc08da4a292a35fe0f695af6c2f2d7569bbc26786e4c4aefd342e8", "p": "core/config/src/main/kotlin/com/couli/core/config/AppEnvironment.kt"},
   {"h": "4a32c7fd6a9263244e197f78c2f7243df054db3f1300b124714a4004a41ad929", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentGate.kt"},
   {"h": "1a2c47bcfa4cfee755e8249e4d568f0ce5ee638b979152620f333fb709d5ce45", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentStartupReconciler.kt"},
   {"h": "70cf15b7b856ac5dd9e429fcb8ac82c2ba56a1215f6989aaf4effe4dc59e07ce", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentSwitchCleaner.kt"},
@@ -1751,7 +1751,7 @@
   {"h": "f72515befc73148aef15cc04fb9f3f9a54bd01cb5c6b6cbb635423595ede9adb", "p": "core/config/src/test/kotlin/com/couli/core/update/UpdateGateColdStartUpgradeTest.kt"},
   {"h": "ea90d76408108c7316f8cb1ebd0343e2b7a3f35da4476051b049fa4f1f58dc64", "p": "core/config/src/test/kotlin/com/couli/core/update/UpdateGateVectorTest.kt"},
   {"h": "8a3ec6a85852164bcd2d105d87abce4f527f83e05dc8ec56f1e4184f5e849e39", "p": "core/config/src/testDebug/kotlin/com/couli/core/config/DebugCapabilitiesTest.kt"},
-  {"h": "87c3adfa5bbabd620a17a0a536287f2aac60db20288bfc1efefa5fa36c474eed", "p": "core/config/src/testDebug/kotlin/com/couli/core/config/EnvironmentSwitcherTest.kt"},
+  {"h": "27e2194aac5351f2bfbe67aa799e9516d10aefc840de823bc8535808939c5b86", "p": "core/config/src/testDebug/kotlin/com/couli/core/config/EnvironmentSwitcherTest.kt"},
   {"h": "d0e6659fdd5497f3e0aa79a996413155ee1ca59207616dea430a301cf6fa9571", "p": "core/designsystem/build.gradle.kts"},
   {"h": "5117887c6e8cfb7ab18c37af923c03d377a535b8e48f9c509db1101e2f4a0faa", "p": "core/designsystem/src/main/assets/platform/README.md"},
   {"h": "99fe6bd2d354bba2b1846e6f9734de1214ee16c8af3c4d7ed8cc2a0c6e3ba81d", "p": "core/designsystem/src/main/assets/platform/didi.png"},
@@ -1915,7 +1915,7 @@
   {"h": "2da459b309d1372b94de7792d406cf19c8a898819af2d49feee8addf488245fe", "p": "core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt"},
   {"h": "6a3898eee9e917c50f3da0dd892873679b8543e775e35f6d2edaf080e60e2a49", "p": "core/network/build.gradle.kts"},
   {"h": "4cd0890a63dabc133db39c1e2ce73318e247805783346238b8ba06b6434aad1c", "p": "core/network/src/main/kotlin/com/couli/core/network/AndroidDeviceIdReader.kt"},
-  {"h": "f80aadc2eab98350b9de374c49f58599a4962eae4e2a8008285d2592e1353be6", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
+  {"h": "760476ba85df8542a05f5667ed0803cd2202ee0ba6bb80c5a68682de6d7f6f73", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
   {"h": "36f85d43b961945145892a918d1fb5934d13993af2a5adaecc59a097ca690f20", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiConfigFetcher.kt"},
   {"h": "2b7aab93b15f65622ad81c52befba59bdc8eaa7b620a4f4d43897eeb75b59a20", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiModels.kt"},
   {"h": "a4e39b11c86e33c7ef6fe8665c6ed1ab03876ea3661f6dad680663dcd902fcee", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiStream.kt"},
@@ -2270,7 +2270,7 @@
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "0f20952072b0444f34cdb41daa9f170c54c3609c346d20f4b63cf03108fbeeda"
+   "h": "be3ba2a22f33d641b12b7329f4cfe2c43114fa2844bea4379916f0208a396f1f"
   }
  ],
  "hostSheetCrops": [

@@ -74,6 +74,11 @@ class ApiClient(
     private val readBarrier: CredentialReadBarrier = CredentialReadBarrier(),
     /** Debug / Staging 的本机替身（实际传输入口、写出前核对之后才问它，APP-10b §2 第 13 条）；Release 为 null。 */
     local: LocalExchange? = null,
+    /**
+     * 流式入口基址（FU-X-STAGING-HOSTS，D10-598 ①）：非空时 [ApiEntryRouting.usesStreamEntry] 的 operation 发往它，其余仍走 [baseUrl]；
+     * null（缺省，PROD）时全部走 [baseUrl]，与原行为一致。环境未定（[baseUrl] 为 null）时一律本地拒绝，不看它。
+     */
+    private val streamBaseUrl: () -> String? = { null },
 ) {
     private val transport = HttpTransport(http, inFlight, local)
 
@@ -1376,7 +1381,7 @@ class ApiClient(
         prepared: Prepared.Ready,
         state: NetworkContext,
     ): String? {
-        if (baseUrl() != prepared.base) return LocalRejectReason.ENVIRONMENT_UNSETTLED
+        if (entryBase(prepared.streamEntry) != prepared.base) return LocalRejectReason.ENVIRONMENT_UNSETTLED
         val read = rawRead(state)
         unreadableReject(operation, read)?.let { return it }
         val decision = decide(call, operation, state, live(read))
@@ -1390,13 +1395,17 @@ class ApiClient(
             val reason: String,
         ) : Prepared
 
-        /** [base] 组 URL 时的环境基址；[carriesCredentials] 带了令牌、设备标识或签名。 */
+        /**
+         * [base] 组 URL 时的环境基址（[streamEntry] 为真时是按流式入口口径取的，见 [entryBase]）；[carriesCredentials] 带了令牌、
+         * 设备标识或签名。
+         */
         class Ready(
             val request: PreparedRequest,
             val idempotencyKey: String?,
             val accessToken: String?,
             val base: String,
             val carriesCredentials: Boolean,
+            val streamEntry: Boolean = false,
         ) : Prepared
     }
 
@@ -1437,7 +1446,8 @@ class ApiClient(
         val decision = decide(call, operation, state, session)
         if (!decision.send) return Prepared.Rejected(decision.localRejectReason ?: LocalRejectReason.ENVIRONMENT_UNSETTLED)
         val deviceId = if (decision.includeDeviceId) device.deviceId else null
-        val base = baseUrl() ?: return Prepared.Rejected(LocalRejectReason.ENVIRONMENT_UNSETTLED)
+        val streamEntry = ApiEntryRouting.usesStreamEntry(operation.pathTemplate)
+        val base = entryBase(streamEntry) ?: return Prepared.Rejected(LocalRejectReason.ENVIRONMENT_UNSETTLED)
         val url =
             HttpTransport.buildUrl(base, operation.pathTemplate, call.pathParams, call.query)
                 ?: return Prepared.Rejected(LocalRejectReason.ENVIRONMENT_UNSETTLED)
@@ -1477,7 +1487,17 @@ class ApiClient(
         }
         val sentToken = accessToken.takeIf { decision.includeAuthorization }
         val credentials = HeaderNames.AUTHORIZATION in headers || HeaderNames.DEVICE_ID in headers || HeaderNames.SIGN in headers
-        return Prepared.Ready(PreparedRequest(operation.method, url, headers, body), key, sentToken, base, credentials)
+        return Prepared.Ready(PreparedRequest(operation.method, url, headers, body), key, sentToken, base, credentials, streamEntry)
+    }
+
+    /**
+     * 这次请求此刻应发往的基址（FU-X-STAGING-HOSTS）：先取 api 基址，null 即环境未定；[streamEntry] 且流式入口非空时用流式入口。
+     * 组 URL（[prepare]）与写出前 / 刷新 / 处理响应时的基址核对（[admission]、单飞刷新、[stillOwned]）都用它，否则流式入口上的请求
+     * 会因与 api 基址不等被当成环境未定。
+     */
+    private fun entryBase(streamEntry: Boolean): String? {
+        val api = baseUrl() ?: return null
+        return if (streamEntry) streamBaseUrl() ?: api else api
     }
 
     private fun readable(state: NetworkContext): Boolean = state.privacy == PrivacyRaw.FULL && state.credentialsReadable
@@ -2094,7 +2114,7 @@ class ApiClient(
         if (inFlight.epochs() != epochs) return RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
         val now = context()
         // 撤回清理中、环境变了：刷新结果作废（被拒处理只清 start 那一代，已清除的会话不动）
-        if (!readable(now) || !now.environmentSettled || baseUrl() != prepared.base) return RefreshAttempt.Rejected
+        if (!readable(now) || !now.environmentSettled || entryBase(prepared.streamEntry) != prepared.base) return RefreshAttempt.Rejected
         synchronized(refreshLock) {
             val saved =
                 try {
@@ -2151,7 +2171,7 @@ class ApiClient(
                     LocalRejectReason.CALL_CANCELLED
                 }
 
-                !readable(now) || !now.environmentSettled || baseUrl() != prepared.base -> {
+                !readable(now) || !now.environmentSettled || entryBase(prepared.streamEntry) != prepared.base -> {
                     LocalRejectReason.CALL_CANCELLED
                 }
 
@@ -2213,7 +2233,7 @@ class ApiClient(
         if (operation.operationId == REFRESH) {
             // 页面直接调刷新接口（单飞刷新走 refreshTokens）：只在原世代时写入，迟到的丢弃
             val pair = tokenPair(root) ?: return null
-            if (!stillOwned(owner.epochs, prepared.base)) return null
+            if (!stillOwned(owner.epochs, prepared)) return null
             val start = owner.session ?: return null
             synchronized(refreshLock) {
                 if (!tokens.replaceIf(start.generation, pair.access, pair.refresh, pair.scope)) return null
@@ -2225,7 +2245,7 @@ class ApiClient(
         }
         // 登录：令牌保存成功才算登录成功（lessons 40）；作废、换代后到达的不保存，也不算登录成功
         val pair = tokenPair(root?.get("tokens") as? JsonObject) ?: return LocalRejectReason.INVALID_SESSION_TOKENS
-        if (!stillOwned(owner.epochs, prepared.base)) return LocalRejectReason.CALL_CANCELLED
+        if (!stillOwned(owner.epochs, prepared)) return LocalRejectReason.CALL_CANCELLED
         val generation = owner.generation ?: return LocalRejectReason.SESSION_CHANGED
         // 调用方自带归属的（短信登录的一次尝试，APP-05a 共性第 1 条）：在它的同步区里先核对归属、再保存——尝试已作废（换号、取消、
         // 登录页出栈）的迟到响应不保存会话
@@ -2285,11 +2305,11 @@ class ApiClient(
     /** 处理响应这一刻：世代未变、凭据可读、环境已就绪且基址未变（迟到的令牌响应据此丢弃）。 */
     private fun stillOwned(
         epochs: CallEpochs,
-        base: String,
+        prepared: Prepared.Ready,
     ): Boolean {
         if (inFlight.epochs() != epochs) return false
         val now = context()
-        return readable(now) && now.environmentSettled && baseUrl() == base
+        return readable(now) && now.environmentSettled && entryBase(prepared.streamEntry) == prepared.base
     }
 
     /**
