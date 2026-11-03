@@ -14,7 +14,7 @@
   {"h": "e93e1cf6819df835d4fcccd65b165ebcc593cd106b80ab2c513eb46cef96b5bf", "p": "app/src/main/kotlin/com/couli/app/clientcore/AppConfig.kt"},
   {"h": "f44648867fbe913883f95016ff596821cea5e48aadcd5f78ef967c07c2dc3700", "p": "app/src/main/kotlin/com/couli/app/clientcore/AppTracker.kt"},
   {"h": "93dbec0eed47fc27fd48662bc668f4b9f65ec55a05d30758e734271f50bb2378", "p": "app/src/main/kotlin/com/couli/app/clientcore/PermissionHost.kt"},
-  {"h": "1101ff3518fff4e2cb6d278c0e49cf2158164ef0221e6019bcd2143a2043ade3", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
+  {"h": "3e464632d57b90b823c96fe32e502e877dd91bc7a35c203795e123464abd4e0f", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
   {"h": "19b399539764f510996e5bc3eaf6bfd8710c21dd4927cf305f901685dbde0915", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardDraftTexts.kt"},
   {"h": "504158c01d17016e5f20c2ca9af7c2245f818af130f0e534294166558c01bd8a", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardScreens.kt"},
   {"h": "42fc21fcb6e8233399f1e9222d1eb6cdaf89e7c65c9732e7f73b76c62adfda3b", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardStores.kt"},
@@ -2143,7 +2143,7 @@
   {"h": "7fd1fb394ef4014c92915f21902309921dd8ca32fde14fe1b266ca9b6d8518f0", "p": "specs/bridge-vectors.json"},
   {"h": "8c2cd0681d428711889a8e69d042b84a19c74a359a5247605121525a3b0e2020", "p": "specs/client-core-vectors.json"},
   {"h": "056a6365845ce0302552d2f92889265135b3fb396bcd4ee14cc4ee73eea11cb0", "p": "specs/clipboard-candidates-vectors.json"},
-  {"h": "32f179b8695805025bf6b260c6d9efe10aa3cb5461094e667231a98ad74e72a2", "p": "specs/clipboard-vectors.json"},
+  {"h": "d00672512ac31936445f5b22a1b71cb175b4ef4c2bb851bf68201977c79da901", "p": "specs/clipboard-vectors.json"},
   {"h": "614f73c850dfaeff3f279491a71c0cee413d4c685a0ab7109da530a3ccddeab5", "p": "specs/format-vectors.json"},
   {"h": "70cab00a88a26ce45bcd078bd10178a3f383fa3f07ef6cc14bced87a1d9f100e", "p": "specs/home-sdui-vectors.json"},
   {"h": "15bd9929cf6aebc7302fc0dd9a5ea6085f1e9833ee536934475fc9b5472e9446", "p": "specs/login-vectors.json"},
@@ -2262,7 +2262,7 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "63a3f214a539f4158ed3818f88888019f31173e78362cedc360167f51ec62548"
+   "h": "306ee9bbb9f904e2ac68a5e4385f44165bcb377eef0ecab3f3541d20f699455c"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",

@@ -1277,12 +1277,12 @@ class AppClipboardIntegrationTest {
         assertTrue("旧关闭回调不清掉内容相同的新结果", clipboard.result.value === second)
         assertFalse("旧【用商品名搜索】不执行", SEARCH in routes())
 
-        // 邀请确认：同一邀请内容连续粘贴两次，旧确认回调不预填，新的才预填
+        // 邀请确认：同一个码的两段邀请文案连续粘贴，旧确认回调不预填，新的才预填（同一原文 24 小时内第二次手动粘贴按 BR-INV-04 静默，FU-X-INVITE-MANUAL-DEDUP）
         val invite = "邀请码 K7M2QX https://share.example.test/i/K7M2QX"
         copy(invite)
         pasteHome()
         val oldConfirm = clipboard.result.value as ClipboardResult.InviteConfirm
-        copy(invite)
+        copy("https://share.example.test/i/K7M2QX 邀请码 K7M2QX")
         pasteHome()
         val newConfirm = clipboard.result.value as ClipboardResult.InviteConfirm
         assertTrue(oldConfirm.id != newConfirm.id)

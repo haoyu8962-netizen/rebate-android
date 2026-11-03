@@ -1,7 +1,7 @@
 {
  "base": "5a795b516389b3d1947bcdea680ed2a587192bd0",
  "files": [
-  {"h": "1101ff3518fff4e2cb6d278c0e49cf2158164ef0221e6019bcd2143a2043ade3", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
+  {"h": "3e464632d57b90b823c96fe32e502e877dd91bc7a35c203795e123464abd4e0f", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
   {"h": "259029cb6d425f61bd767c6a52c9bd31a31f2790e4fe03d575d7e0724b394f25", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},

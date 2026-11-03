@@ -179,7 +179,7 @@ class ClipboardResults0724Test {
         }
 
     @Test
-    fun r25_inviteDedupIsIndependentAndAppliesToAutomaticOnly() =
+    fun r25_inviteDedupIsIndependentAndAppliesToAutomaticAndManual() =
         runTest {
             Clipboard0724Fixture(this).use { f ->
                 val invite = "邀请码 K7M2QX"
@@ -197,9 +197,10 @@ class ClipboardResults0724Test {
                 f.clipboard.paste(ManualPasteAction.ENTRY_HOME)
                 f.settle()
                 assertNull(f.clipboard.prompt.value)
-                val manual = f.clipboard.result.value
-                assertTrue("手动粘贴不受自动邀请去重记录阻挡", manual is ClipboardResult.InviteConfirm)
-                assertEquals("K7M2QX", (manual as ClipboardResult.InviteConfirm).code)
+                // FU-X-INVITE-MANUAL-DEDUP（BR-INV-04 ④、D10-593 J4）：自动出过条的同一原文，24 小时内手动粘贴也静默结束
+                assertEquals("手动粘贴确实读了剪贴板", 2, f.system.reads)
+                assertNull("手动粘贴同样受邀请去重记录阻挡：不出确认条", f.clipboard.result.value)
+                assertEquals("被挡下不上传", 0, f.requests.size)
                 f.now += DAY - 1
                 f.nextRound(invite)
                 assertNull(f.clipboard.prompt.value)

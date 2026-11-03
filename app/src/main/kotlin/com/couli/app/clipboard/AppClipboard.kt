@@ -38,6 +38,7 @@ import com.couli.core.clipboard.ImportReadResult
 import com.couli.core.clipboard.ImportTask
 import com.couli.core.clipboard.InviteCodeExtractor
 import com.couli.core.clipboard.InviteConfirmAction
+import com.couli.core.clipboard.InviteDedupPolicy
 import com.couli.core.clipboard.ManualPasteAction
 import com.couli.core.clipboard.ParseAction
 import com.couli.core.clipboard.ParseInputService
@@ -1158,7 +1159,7 @@ class AppClipboard(
             } else {
                 null
             }
-        // App 自写的内容（最近 10 次）：自动任务不识别（商品与邀请都不，R22）；手动照常（G14）
+        // App 自写的内容（最近 10 次）：自动任务不识别（商品与邀请都不，R22）；手动照常（G14），手动的邀请条仍受 24 小时邀请去重（BR-INV-04 ④）
         if (view != null && view.fingerprint.hash(text) in view.selfWritten) return ImportCandidateResult(ImportCandidateResult.KIND_DEDUP)
         val product = CandidateExtractor.extract(text, rules, domains)
         if (product.kindRaw != ClipboardClassifier.KIND_PRODUCT || product.candidates.isEmpty()) {
@@ -1190,10 +1191,14 @@ class AppClipboard(
     /**
      * 邀请分支（R25、BR-INV-04）：抽到码、满足触发前提（落地页或「邀请码」字样）、游客（G23：已登录不出）→ 自动在首页根页出邀请提示条，
      * 手动在发起页出确认条；确认才保存待绑定码。邀请码不送 parse。
-     * 同一内容 24 小时去重只对自动任务（BR-ID-16、G14「TTL 与自写排除只对自动任务」）：自动任务查并记 fp.prompted，盐不可用时不提示；
-     * 手动粘贴每次都出新的确认条，既不查也不记 fp.prompted、不依赖盐。
+     * 同一内容 24 小时只提示一次是 BR-INV-04 的独立去重（正文 ④、细则「手动粘贴的邀请提示去重」；BR-ID-16 细则「本地过滤与去重默认值」），
+     * 自动读取与手动粘贴都适用、共用 fp.prompted（与商品摘要 fp.products 分开存），判定都走 [InviteDedupPolicy]：
+     * - 自动：盐不可用不提示；先写记录，写成功才出提示条；
+     * - 手动：不读自写台账（D10-593 J1）；出确认条的同时写记录（写失败不影响这次出条）；盐不可用照常出条、不写（J3，不回退到不加盐 hash）；
+     *   被挡下静默结束（J4：不出条、不上传、不落 30132、不预填），调用方照旧回 KIND_NO_CANDIDATES。
+     * 退出登录 / 换号不清 fp.prompted（J2，见 [syncProductSession]）。
      */
-    @Suppress("ReturnCount") // 抽码、触发、会话、去重逐项短路
+    @Suppress("ReturnCount") // 抽码、触发、会话、首页、去重逐项短路
     private fun inviteBranch(
         task: ImportTask,
         text: String,
@@ -1202,18 +1207,31 @@ class AppClipboard(
     ) {
         val code = InviteCodeExtractor.extract(text) ?: return
         if (!ClipboardClassifier.inviteTriggered(text, domains, rules) || !guest()) return
-        if (task.kind != ImportTask.KIND_AUTO) {
+        val auto = task.kind == ImportTask.KIND_AUTO
+        if (auto && !homeRoot()) return
+        val view = records.view()
+        val decision =
+            InviteDedupPolicy.decide(
+                if (auto) ImportTask.KIND_AUTO else ImportTask.KIND_MANUAL,
+                if (auto) null else inviteEntry(task),
+                text,
+                view?.selfWritten.orEmpty(),
+                view?.prompted.orEmpty(),
+                view != null,
+                clock(),
+            ) { checkNotNull(view).fingerprint.hash(it) }
+        if (!decision.show) return
+        val recorded = decision.record && view != null && records.recordPromptedHash(view.fingerprint, view.fingerprint.hash(text))
+        if (!auto) {
             publishResult(ClipboardResult.InviteConfirm(task.pageInstanceId, code, nextResultId()))
             return
         }
-        if (!homeRoot()) return
-        val view = records.view() ?: return
-        val hash = view.fingerprint.hash(text)
-        val now = clock()
-        if (view.prompted.any { it.hash == hash && now - it.atMs in 0 until ClipboardClassifier.PROMPT_WINDOW_MS }) return
-        if (!records.recordPromptedHash(view.fingerprint, hash)) return
-        showInvitePrompt(code)
+        if (recorded) showInvitePrompt(code)
     }
+
+    /** 手动任务的入口（[InviteDedupPolicy] 用）：进得了邀请分支的只有 product_lookup（首页与 SearchTyping 同一目的，G25，去重不分入口）。 */
+    private fun inviteEntry(task: ImportTask): String =
+        if (task.purpose == ImportTask.PURPOSE_FILL_INPUT) ManualPasteAction.ENTRY_LOGIN_INVITE else ManualPasteAction.ENTRY_HOME
 
     private fun showInvitePrompt(code: String) {
         if (!homeRoot() || privacy() != PrivacyState.CONSENTED) return
