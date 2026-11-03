@@ -220,6 +220,7 @@ internal fun NavRow(
     valueGap: Dp = CouliSpacing.space2,
     showChevron: Boolean = onClick != null,
     wrapValue: Boolean = false,
+    minHeight: Dp = CouliSizes.touchTarget,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val split = wrapValue || titleGap != valueGap
@@ -227,7 +228,7 @@ internal fun NavRow(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = CouliSizes.touchTarget)
+                .heightIn(min = minHeight)
                 .then(
                     if (onClick != null) {
                         Modifier

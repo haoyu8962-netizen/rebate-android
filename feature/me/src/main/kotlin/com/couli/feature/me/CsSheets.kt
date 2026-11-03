@@ -67,7 +67,12 @@ fun CsSheetHost(
                         Text(
                             text = texts.text(t.key),
                             style = CouliTypography.footnote,
-                            color = CouliColors.statusSuccessText,
+                            color =
+                                if (t.key == CustomerServiceEntry.COPY_FAILED) {
+                                    CouliColors.statusErrorText
+                                } else {
+                                    CouliColors.statusSuccessText
+                                },
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(MeTags.TOAST),
                         )
                         LaunchedEffect(t.serial) {

@@ -732,6 +732,7 @@ private fun SettingsRowView(
         value = value,
         onClick = if (clickable) ({ controller.onRow(row, version) }) else null,
         chevron = clickable && row.id != SettingsItems.ID_RESET_TIP,
+        minHeight = SETTINGS_ROW_MIN_HEIGHT,
     )
 }
 

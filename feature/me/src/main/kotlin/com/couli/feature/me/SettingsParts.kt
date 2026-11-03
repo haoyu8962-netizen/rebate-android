@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliColors
 import com.couli.core.designsystem.CouliIcons
@@ -50,6 +51,12 @@ private val SUCCESS_TOASTS =
 internal fun toastIcon(notice: MeNotice?): ImageVector? = if (notice?.key in SUCCESS_TOASTS) CouliIcons.check else null
 
 /**
+ * 设置主页导航行 / 动作行的最小行高 52 = 画板 min-height 44 + 上下 4（content-box，节距 53；编排 11-02 14:45、11-03 13:39）。
+ * 只有设置主页传；隐私中心清单、协议半屏等其他行仍是 [SettingsNavRow] / NavRow 默认的 48 命中区。
+ */
+internal val SETTINGS_ROW_MIN_HEIGHT: Dp = CouliSizes.visualTarget + CouliSpacing.space2
+
+/**
  * 一个分组：分组名（12 次文字、左缩进 4、读屏标题）→ 白卡（卡内上下 4）。名到卡 8；组与组之间由页面列间距 12 + 分组名上边距 8 = 20；
  * 第一组分组名不加上边距（内容上 8，S1 / S2 / S3）。[label] 为 null 时只有卡（游客无名分组、撤回 AI 行）。
  */
@@ -72,8 +79,8 @@ internal fun SettingsGroup(
 }
 
 /**
- * 设置一族的导航行（S4 / S5 / S26）：上下 4（行高仍按 48 命中区）、chevron 20、值与箭头 4、标题与右侧 12；[chevron] 为 false 时不画箭头（动作行），
- * 仍可点、读屏仍是按钮；长值折行、标题不被挤成一字一行。
+ * 设置一族的导航行（S4 / S5 / S26）：上下 4、chevron 20、值与箭头 4、标题与右侧 12；[chevron] 为 false 时不画箭头（动作行），
+ * 仍可点、读屏仍是按钮；长值折行、标题不被挤成一字一行。[minHeight] 默认 48 命中区（隐私中心清单），设置主页传 [SETTINGS_ROW_MIN_HEIGHT]。
  */
 @Composable
 internal fun SettingsNavRow(
@@ -82,6 +89,7 @@ internal fun SettingsNavRow(
     value: String?,
     onClick: (() -> Unit)?,
     chevron: Boolean,
+    minHeight: Dp = CouliSizes.touchTarget,
 ) {
     NavRow(
         title = title,
@@ -94,6 +102,7 @@ internal fun SettingsNavRow(
         valueGap = CouliSpacing.space1,
         showChevron = chevron,
         wrapValue = true,
+        minHeight = minHeight,
     )
 }
 

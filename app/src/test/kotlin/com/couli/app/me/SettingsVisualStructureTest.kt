@@ -25,7 +25,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * APP-12w-a S1–S7、S9–S11（brief-android §2）：设置主页的分组、卡片、行、底部，全部在真实页面上量（文字盒 / 像素 / 布局子树），先正后反。
- * 画板 Settings-v2：内容上 8、左右 16；分组名 12 次文字左缩进 4、名到卡 8、组间 20；卡内上下 4；行 48（Android 命中区）、chevron 20、值与箭头 4、
+ * 画板 Settings-v2：内容上 8、左右 16；分组名 12 次文字左缩进 4、名到卡 8、组间 20；卡内上下 4；行 52（节距 53）、chevron 20、值与箭头 4、
  * 标题与右侧 12；动作行无 ›；【退出登录】距上卡 20、高 48、通栏次按钮。
  */
 @RunWith(AndroidJUnit4::class)
@@ -79,14 +79,14 @@ class SettingsVisualStructureTest {
         }
     }
 
-    @Test fun s4NavRowsAre48WithChevron20Value4AndTitle12() {
+    @Test fun s4NavRowsAre52WithChevron20Value4AndTitle12() {
         host.launch()
         val nickname = host.row(SettingsRows.NICKNAME)
         val d = nickname.density()
         val px = rule.pixels()
         (SettingsRows.account + SettingsRows.privacy + SettingsRows.general - SettingsRows.CLIPBOARD).forEach { key ->
             val row = host.row(key).box()
-            assertDp("S4 单行导航行高 = 48（视觉 44 + 命中区规则；内边距 12 会撑到 49.5）：$key", 48f, row.height, d, 0.5f)
+            assertDp("S4 单行导航行高 = 52（画板 min-height 44 + 上下 4，节距 53；11-02 14:45）：$key", 52f, row.height, d, 0.5f)
         }
         val row = nickname.box()
         val icons = nickname.iconBoxes()
