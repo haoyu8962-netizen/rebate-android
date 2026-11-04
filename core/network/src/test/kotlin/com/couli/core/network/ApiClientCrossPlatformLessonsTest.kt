@@ -596,8 +596,11 @@ class ApiClientCrossPlatformLessonsTest {
                 .map { it.code }
                 .filter { map(it).kind == ErrorEffectKind.TOAST }
                 .toSet()
-        val unexpected = toasts - PROMPT_ONLY_CODES
+        val unexpected = toasts - PROMPT_ONLY_CODES - PENDING_PAGE_EXCEPTIONS
         assertTrue("codes with a concrete action fell back to toast: $unexpected", unexpected.isEmpty())
+        // 暂列例外必须精确：多列（例外里有不降成 Toast 的码）、少列（降成 Toast 的有动作码没登记）都红；
+        // 产品给出映射后该码不再是 Toast，这里也红，提醒把它移出例外
+        assertEquals("pending-page exceptions", PENDING_PAGE_EXCEPTIONS, toasts - PROMPT_ONLY_CODES)
         assertNotEquals(ErrorEffectKind.TOAST, map(30132).kind)
         assertNotEquals(ErrorEffectKind.TOAST, map(30408).kind)
     }
@@ -638,6 +641,7 @@ class ApiClientCrossPlatformLessonsTest {
                 30412,
                 30414,
                 30415,
+                30418,
                 30503,
                 30601,
                 30603,
@@ -645,7 +649,15 @@ class ApiClientCrossPlatformLessonsTest {
                 30801,
                 30805,
                 30806,
+                30901,
                 44002,
             )
+
+        /**
+         * 暂列例外（锁 00deded0ef6f，#24，编排 D10-613 认可）：error-codes 的 action 有具体动作、安卓无对应页面，
+         * 待编排定 / 另立单（随 Reverify 页与支付结果页）；现行为降为 Toast。
+         * 10010「按 data.method 打开 Reverify」、20005「留在 Reverify，提示剩余次数」、30902「打开该支付单的结果页」。
+         */
+        val PENDING_PAGE_EXCEPTIONS = setOf(10010, 20005, 30902)
     }
 }

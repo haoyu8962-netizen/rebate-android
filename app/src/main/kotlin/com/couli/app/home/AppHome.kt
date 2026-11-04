@@ -82,8 +82,10 @@ class AppHome(
     private val tokens: SessionTokens,
     private val routing: AppRouting,
     private val privacy: AppPrivacy,
-    /** 待定 operation（G02、G03）：debug / staging 本机假服务（环境允许 MOCK_DATA 才接管）；Release 为 null。 */
+    /** 首页契约接口（getPage、listPageSectionItems）：生产经 ApiClient；debug / staging 只在假服务闸门打开时换成本机假服务。 */
     val port: HomeContractPort?,
+    /** HomePreview 实例的草稿数据源（D10-607 D7：预览不动，仍是本机假服务）；缺省同 [port]。 */
+    val previewPort: HomeContractPort? = port,
     private val lkg: HomeLkgStore?,
     private val prefs: HomePrefsStore?,
     private val images: ProductImageLoader?,
@@ -380,7 +382,7 @@ class AppHome(
         HomeDeps(
             host = host,
             signals = signals,
-            port = port,
+            port = if (preview) previewPort else port,
             api = api,
             lkg = lkg.takeIf { !preview },
             prefs = prefs.takeIf { !preview },

@@ -112,6 +112,11 @@ data class GuardState(
      * Release 恒为空（由 App 的 variant 源码集给值，release-scan 不得命中开关）。
      */
     val availabilityOverrides: Set<String> = emptySet(),
+    /**
+     * 契约已登记、本端还没有页面的原生路由（D10 11:24「P1 取 B」、D10-613 D4）：一律按不可用处理（升级提示），不进开发占位页；
+     * 优先于 [availabilityOverrides] 与 since。缺省空。
+     */
+    val unhostedRoutes: Set<String> = emptySet(),
 ) {
     constructor(
         privacy: PrivacyState,
@@ -125,6 +130,7 @@ data class GuardState(
         externalHosts: List<String> = emptyList(),
         bridgeOrigins: List<String> = emptyList(),
         availabilityOverrides: Set<String> = emptySet(),
+        unhostedRoutes: Set<String> = emptySet(),
     ) : this(
         privacy.raw,
         update.raw,
@@ -137,6 +143,7 @@ data class GuardState(
         externalHosts,
         bridgeOrigins,
         availabilityOverrides,
+        unhostedRoutes,
     )
 
     val privacyState: PrivacyState get() = PrivacyState.fromRaw(privacy)

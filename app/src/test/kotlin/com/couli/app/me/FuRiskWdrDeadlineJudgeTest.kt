@@ -60,7 +60,9 @@ class FuRiskWdrDeadlineJudgeTest {
 
     @Test fun originalWithTrailingSpaceIsNotTrimmedAndFails() = assertRed(judge(row = listOf("$WITHDRAWAL_SLA "), allowance = 1))
 
-    @Test fun configuredOrBundledVariantIsNotExcludedByTheRedLine() = assertRed(judge(row = listOf(FuRiskWdr.bundledSla), allowance = 1))
+    // 锁 00deded0ef6f 起包内 withdraw.sla_text 改为 BR-TEXT-07 原文本身，不再是变体；这里固定用旧包内变体字面量（a7c9f1f 的
+    // default_config.json:27），判据不动（#24）
+    @Test fun configuredOrBundledVariantIsNotExcludedByTheRedLine() = assertRed(judge(row = listOf(OLD_BUNDLED_VARIANT), allowance = 1))
 
     @Test fun originalCarryingADescriptionFails() = assertRed(judge(row = emptyList(), described = WITHDRAWAL_SLA, allowance = 1))
 
@@ -83,6 +85,7 @@ class FuRiskWdrDeadlineJudgeTest {
 
     private companion object {
         const val FROZEN = "¥10 已冻结"
+        const val OLD_BUNDLED_VARIANT = "工作日 24 小时内处理"
     }
 }
 

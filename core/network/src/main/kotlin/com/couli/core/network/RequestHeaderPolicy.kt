@@ -151,11 +151,12 @@ data class HeaderDecision(
  */
 object RequestHeaderPolicy {
     /**
-     * 基本模式匿名白名单（BR-ID-11）：配置、搜索、商品详情、帮助与规则文章列表。
-     * TODO(N-19): 首页内容（/v1/pages/home）与 GET /v1/dict 在锁定 openapi 里没有 operationId；基本模式文章详情
-     * （getArticle，需区分协议 / 帮助类别）未定，暂不放行（rule-gaps 第 2 条）。
+     * 基本模式匿名白名单（BR-ID-11）：配置、搜索、商品详情、帮助与规则文章列表、首页（getPage、listPageSectionItems，D10-607；
+     * 不带 X-Device-Id 时服务端给全量发布版本）。
+     * TODO(N-19): GET /v1/dict 在锁定 openapi 里没有 operationId；基本模式文章详情（getArticle，需区分协议 / 帮助类别）未定，暂不放行（rule-gaps 第 2 条）。
      */
-    val BASIC_MODE_ALLOWED: Set<String> = setOf("getConfig", "searchProducts", "getProduct", "listArticles")
+    val BASIC_MODE_ALLOWED: Set<String> =
+        setOf("getConfig", "searchProducts", "getProduct", "listArticles", "getPage", "listPageSectionItems")
 
     /**
      * 隐私尚未决定时（首启弹窗前后）只允许配置与协议文本（BR-ID-11「同意前禁止除配置和协议文本外的网络请求」）。

@@ -30,7 +30,8 @@ class CtLock02AgreementRouteParamsTest {
     fun generatedSpecCarriesIntegerVersionWithMinimum() {
         val type = agreement.params.single { it.name == "type" }
         assertEquals(RouteParamType.STRING, type.type)
-        assertEquals(listOf("agreement", "privacy", "sdk_list", "labor_agreement"), type.enumValues)
+        // FU-X-HOME-PAGE-API test-change（#24）：锁 00deded0ef6f 的 routes.json Agreement.type 追加 collect_list
+        assertEquals(listOf("agreement", "privacy", "sdk_list", "labor_agreement", "collect_list"), type.enumValues)
         assertNull(type.minimum)
         val version = agreement.params.single { it.name == "version" }
         assertEquals(RouteParamType.INTEGER, version.type)

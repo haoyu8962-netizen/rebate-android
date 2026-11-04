@@ -133,9 +133,18 @@ class HomeController(
     /** 公告 api 来源的失败（卡隐藏、不提示，G10；只留实际错误码，R2-04）。 */
     private val noticeErrors = mutableMapOf<String, HomeFailure>()
 
-    /** 冷启动或替换页面后被 42901 拦下、到期要自动重做的首屏加载（R2-03）：商品池 / 信息流的 section id 与公告的 section id。 */
-    private val resumeProducts = mutableSetOf<String>()
+    /**
+     * 冷启动或替换页面后被 42901 拦下、到期要自动重做的首屏加载（R2-03）：商品池 / 信息流的 section id 与公告的 section id。
+     * 商品池 / 信息流记的是「尚未取得商品的加载链」被拦下的那一次请求：原游标与已用掉的空页续取次数（D10-607 D4，r1 S1），到期原样续上。
+     */
+    private val resumeProducts = mutableMapOf<String, PendingLoad>()
     private val resumeNotices = mutableSetOf<String>()
+
+    /** 尚未取得商品的加载链被 42901 拦下的那次请求：[cursor] 原游标（首取为 null），[emptyRefetches] 这次请求已占用的空页续取次数。 */
+    private class PendingLoad(
+        val cursor: String?,
+        val emptyRefetches: Int,
+    )
 
     /** 共享禁用期（R2-03）：[HomeDeps.gate] 的 blocked 订阅结果；[wake] 每次到期 +1。 */
     private var rateLimited = false
@@ -625,18 +634,19 @@ class HomeController(
     private fun loadProducts(
         sectionId: String,
         cursor: String?,
+        emptyRefetches: Int = 0,
     ) {
         val port = deps.port
         val previous = products[sectionId]
         if (port == null) {
-            // Release：待定 operation 不发，卡隐藏（G03）
+            // 没有端口（HomePreview 等调用方未给）：不发，卡隐藏（G03）
             products[sectionId] = ProductState(loaded = true)
             return
         }
         val seq = (cardSeq[sectionId] ?: 0L) + 1
         cardSeq[sectionId] = seq
         val gen = renderGen
-        resumeProducts -= sectionId
+        resumeProducts.remove(sectionId)
         products[sectionId] =
             ProductState(previous?.items.orEmpty(), previous?.cursor, loading = true, loaded = previous?.loaded == true)
         val probe = deps.gate.probe()
@@ -647,11 +657,12 @@ class HomeController(
             // 先处理 42901（共性第 4 条），再决定隐藏
             val disable = ResultSignals.disableMillis(result)
             if (disable > 0) deps.gate.start(disable)
-            // 10405（R1-04，共性第 26 条）：待定端口不经 ApiClient 的统一错误分流，归属复核之后自己进强更（正式首页与预览同一入口）
+            // 10405（R1-04，共性第 26 条）：归属复核之后进强更（正式首页与预览同一入口）
             if ((result as? ApiResult.Failure)?.code == FORCE_UPDATE_CODE) deps.host.forceUpdate()
             val data = (result as? ApiResult.Success)?.data as? JsonObject
             val items = data?.get(ITEMS) as? JsonArray
-            val firstPage = cursor == null && previous?.items.isNullOrEmpty()
+            // 尚未取得商品的加载链（r1 S1）：首取，或 D4 空页续取（emptyRefetches > 0，带游标但卡上仍没有商品）
+            val chain = previous?.items.isNullOrEmpty() && (cursor == null || emptyRefetches > 0)
             val gated = probe.gated(result)
             products[sectionId] =
                 when {
@@ -665,20 +676,31 @@ class HomeController(
                                 )
                             }
                         val next = (data[NEXT_CURSOR] as? JsonPrimitive)?.takeIf { it.isString }?.content
-                        ProductState(previous?.items.orEmpty() + mapped, next, loaded = true)
+                        val all = previous?.items.orEmpty() + mapped
+                        // D10-607 D4：这张卡还没有任何商品、这页空但带游标 → 不等触底接着取，最多 EMPTY_PAGE_REFETCH_MAX 次（之后按空卡隐藏）；
+                        // 已有商品时照常等触底。商品池卡同样适用，取到一页商品后不翻页（D6）。
+                        if (all.isEmpty() && next != null && emptyRefetches < EMPTY_PAGE_REFETCH_MAX) {
+                            loadProducts(sectionId, next, emptyRefetches + 1)
+                            return@launch
+                        }
+                        ProductState(all, next, loaded = true)
                     }
 
                     gated -> {
                         // 被本地限流拦下（没有发出，R2-03）：不算失败、不显示错误；首屏到期由控制器重做，翻页保留游标，到期由仍在组合中的触底项再试
-                        if (firstPage) resumeProducts += sectionId
+                        if (chain) resumeProducts[sectionId] = PendingLoad(cursor, emptyRefetches)
                         ProductState(previous?.items.orEmpty(), previous?.cursor, loaded = previous?.loaded == true)
                     }
 
                     else -> {
                         // 实际失败：保留错误码与 trace_id（R2-04）。商品池首屏被服务端 42901 拦下也在到期后重做（卡片没有别的入口）
+                        // 空页续取中途被服务端 42901 拦下（r1 S1）：两种数据源都按原游标与已用次数到期续上；信息流这时不当失败显示（卡仍隐藏、没有触底入口）
                         val failure = HomeErrors.failure(result)
-                        if (firstPage && failure.rateLimited && !isFeed(sectionId)) resumeProducts += sectionId
-                        ProductState(previous?.items.orEmpty(), cursor, error = failure, loaded = true)
+                        val refetch = chain && failure.rateLimited && emptyRefetches > 0
+                        val resume = refetch || (chain && failure.rateLimited && !isFeed(sectionId))
+                        if (resume) resumeProducts[sectionId] = PendingLoad(cursor, emptyRefetches)
+                        val shown = failure.takeUnless { refetch && isFeed(sectionId) }
+                        ProductState(previous?.items.orEmpty(), cursor, error = shown, loaded = true)
                     }
                 }
             publish()
@@ -696,9 +718,9 @@ class HomeController(
     private fun resumeGated() {
         if (!alive || deps.gate.active) return
         wake += 1
-        resumeProducts.toList().forEach { id ->
-            resumeProducts -= id
-            if (products[id]?.loading != true) loadProducts(id, null)
+        resumeProducts.toList().forEach { (id, pending) ->
+            resumeProducts.remove(id)
+            if (products[id]?.loading != true) loadProducts(id, pending.cursor, pending.emptyRefetches)
         }
         resumeNotices.toList().forEach { id ->
             resumeNotices -= id
@@ -1060,6 +1082,7 @@ class HomeController(
             allowed = { probe.allowed() && alive },
             stillOwned = { alive },
             loginEpoch = identity.partition,
+            epochs = identity.epochs,
         )
 
     // ---------------------------------------------------------------- 作废
@@ -1092,6 +1115,9 @@ class HomeController(
     companion object {
         private val NEXT = AtomicLong(0L)
         const val PAGE_KEY = "home"
+
+        /** D10-607 D4：空页带游标时自己接着取的上限（首取 1 次 + 至多 3 次）。 */
+        const val EMPTY_PAGE_REFETCH_MAX = 3
         const val COLD_WAIT_MS = 1_500L
         const val POPUP_RECHECK_MS = 1_000L
         const val HOME_NOT_VISIBLE = "home_not_visible"

@@ -128,7 +128,7 @@ class AppRouting
         var availabilityOverrides: () -> Set<String> = variantRouteOverrides(context)
 
         /** 本端可用的路由（since 满足或被 Debug 覆盖）：设置、封禁、申诉、强更页的注销入口与 10007 落点的唯一判定（G01）。 */
-        fun availableRoutes(): Set<String> = RouteAvailability.all(BuildConfig.VERSION_NAME, availabilityOverrides())
+        fun availableRoutes(): Set<String> = RouteAvailability.all(BuildConfig.VERSION_NAME, availabilityOverrides()) - UNHOSTED_ROUTES
 
         /**
          * 10007 cooling 想打开 DeleteAccount、而它在本端不可用（since=null 且没有覆盖，G01 ③）：不进升级提示、不导航，只提示 error.10007；值为提示的编号
@@ -268,6 +268,7 @@ class AppRouting
                 externalHosts = webTargets().externalHosts,
                 bridgeOrigins = webTargets().bridgeOrigins,
                 availabilityOverrides = availabilityOverrides(),
+                unhostedRoutes = UNHOSTED_ROUTES,
             )
 
         /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */
@@ -406,5 +407,11 @@ class AppRouting
 
         private companion object {
             const val DELETE_ACCOUNT = "DeleteAccount"
+
+            /**
+             * 契约已登记（since.android 有值）、本端还没有页面的原生路由（00deded0ef6f 新登记；D10 11:24「P1 取 B」，D10-613 D4 本单只钉这两条）：
+             * 守卫按不可用给升级提示、可用路由集合里去掉，与升锁前（不在路由表）一致；两页另立单实现（同鸿蒙 FU-HM-INVITE-PAGES）；Release 占位页统一收口见 FU-X-NO-PLACEHOLDER-RELEASE。
+             */
+            val UNHOSTED_ROUTES: Set<String> = setOf("InviteBackfill", "InviteLink")
         }
     }

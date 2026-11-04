@@ -18,7 +18,8 @@ import org.junit.Test
  * - 10008 / 10009（只出现在 /admin/v1，进了错误码表、用户侧字典没有文案键）与表外 1xxxx 同一回落（服务端 msg），不写专门分流；
  * - 30102 / 30111 带新 reason sharer_auth_invalid：Mapper 读生成表的 retry_kind_by_reason（never）→ 只提示（Toast，文案回落 error.<code>）、
  *   不弹授权、不登记待办、不重放（契约数据驱动，与鸿蒙同口径；R1-01）；不带 reason、表里没有的 reason 仍走原授权动作；
- * - 生成的操作登记表不含 /admin/ 后台接口，/v1/agent 的 7 个 operation 已登记、planned=true（只登记不接线）。
+ * - 生成的操作登记表不含 /admin/ 后台接口，/v1/agent 的 7 个 operation 已登记；planned 照锁定契约
+ *   （锁 00deded0ef6f 起 4 个 planned=false、listAgentSessionMessages / setAgentMessageFeedback / reportAgentMessage 仍 planned=true；#24）。
  */
 class CtLock01ContractUpgradeTest {
     private fun map(
@@ -133,21 +134,23 @@ class CtLock01ContractUpgradeTest {
         val admin = ApiOperations.all.values.filter { it.pathTemplate.startsWith("/admin/") }
         assertTrue("admin operations generated for the App: ${admin.map { it.operationId }}", admin.isEmpty())
         assertTrue(ApiOperations.all.values.all { it.pathTemplate.startsWith("/v1/") || it.pathTemplate == "/healthz" })
+        // planned 照锁 00deded0ef6f 的 openapi.yaml x-implementation（#24）：4 个已实现（planned=false），
+        // listAgentSessionMessages / setAgentMessageFeedback / reportAgentMessage 仍标 planned（openapi.yaml:28020、28322、28389）
         val agent =
             mapOf(
-                "createAgentSession" to ("POST" to "/v1/agent/sessions"),
-                "getCurrentAgentSession" to ("GET" to "/v1/agent/sessions/current"),
-                "listAgentSessionMessages" to ("GET" to "/v1/agent/sessions/{id}/messages"),
-                "sendAgentMessage" to ("POST" to "/v1/agent/sessions/{id}/messages"),
-                "cancelAgentRun" to ("POST" to "/v1/agent/runs/{run_id}/cancel"),
-                "setAgentMessageFeedback" to ("POST" to "/v1/agent/messages/{message_id}/feedback"),
-                "reportAgentMessage" to ("POST" to "/v1/agent/messages/{message_id}/report"),
+                "createAgentSession" to Triple("POST", "/v1/agent/sessions", false),
+                "getCurrentAgentSession" to Triple("GET", "/v1/agent/sessions/current", false),
+                "listAgentSessionMessages" to Triple("GET", "/v1/agent/sessions/{id}/messages", true),
+                "sendAgentMessage" to Triple("POST", "/v1/agent/sessions/{id}/messages", false),
+                "cancelAgentRun" to Triple("POST", "/v1/agent/runs/{run_id}/cancel", false),
+                "setAgentMessageFeedback" to Triple("POST", "/v1/agent/messages/{message_id}/feedback", true),
+                "reportAgentMessage" to Triple("POST", "/v1/agent/messages/{message_id}/report", true),
             )
         agent.forEach { (id, route) ->
             val operation = checkNotNull(ApiOperations.byId(id)) { "missing $id" }
             assertEquals("$id method", route.first, operation.method)
             assertEquals("$id path", route.second, operation.pathTemplate)
-            assertTrue("$id planned (registered, not wired)", operation.planned)
+            assertEquals("$id planned", route.third, operation.planned)
         }
         assertEquals(
             "agent operations",

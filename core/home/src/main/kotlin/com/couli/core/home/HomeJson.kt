@@ -351,11 +351,12 @@ object HomeJson {
         val source = dataSource(json)
         if (text(source, "kind") != HomeSourceKind.UNION_MATERIAL) fail(HomeDropReason.BAD_VALUE)
         val platforms =
-            requiredArray(source, "platforms").map {
-                val value = (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: fail(HomeDropReason.BAD_TYPE)
-                if (value !in FEED_PLATFORMS) fail(HomeDropReason.BAD_VALUE)
-                value
-            }
+            feedPlatforms(source)
+                .map {
+                    val value = (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: fail(HomeDropReason.BAD_TYPE)
+                    if (value !in FEED_PLATFORMS) fail(HomeDropReason.BAD_VALUE)
+                    value
+                }.distinct()
         if (platforms.isEmpty()) fail(HomeDropReason.BAD_VALUE)
         optionalText(source, "mix")
         return HomeCard.FeedInfinite(id, version, label, platforms, ProductSource(HomeSourceKind.UNION_MATERIAL))
@@ -487,6 +488,22 @@ object HomeJson {
             is JsonObject -> value
             else -> fail(HomeDropReason.BAD_TYPE)
         }
+
+    /**
+     * 信息流的平台（D10-607 D2，两种形状都认）：契约 `channels: [{platform, channel_id}]` 取各频道的 platform（缺 platform 整张丢、不猜平台）；
+     * 没有 channels 时读旧形状 `platforms`（三端向量、包内默认）。
+     */
+    private fun feedPlatforms(source: JsonObject): List<JsonElement> {
+        val channels = source["channels"]
+        if (channels == null || channels is JsonNull) return requiredArray(source, "platforms")
+        return requiredArray(source, "channels").map { channel ->
+            val item = channel as? JsonObject ?: fail(HomeDropReason.BAD_TYPE)
+            when (val platform = item["platform"]) {
+                null, JsonNull -> fail(HomeDropReason.MISSING_FIELD)
+                else -> platform
+            }
+        }
+    }
 
     private fun dataSource(json: JsonObject): JsonObject =
         when (val value = json["data_source"]) {

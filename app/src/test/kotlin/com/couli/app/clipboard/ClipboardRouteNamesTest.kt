@@ -2,7 +2,6 @@ package com.couli.app.clipboard
 
 import com.couli.core.clipboard.ImportGates
 import com.couli.generated.Routes
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,6 +17,8 @@ class ClipboardRouteNamesTest {
         }
         assertTrue("InviteBackfill 即使未登记路由也必须敏感", "InviteBackfill" in ImportGates.sensitiveRoutes)
         (ImportGates.sensitiveRoutes - "InviteBackfill").forEach { name -> assertTrue("敏感清单 $name 不在 routes.json", name in Routes.all) }
-        assertFalse("InviteBackfill 没有登记，不能打开", "InviteBackfill" in Routes.all)
+        // FU-X-HOME-PAGE-API test-change（#24）：锁 00deded0ef6f 的 routes.json:848 已登记 InviteBackfill；
+        // 本端没有页面，按 P1 取 B 回落升级提示（HomePageApiP1RouteTest）
+        assertTrue("InviteBackfill 已在新锁 routes.json 登记", "InviteBackfill" in Routes.all)
     }
 }

@@ -110,13 +110,18 @@ class CtLock02ContractUpgradeTest {
 
     @Test
     fun onlyTheNewAdminOnlyCodesJoinTheFallback() {
-        // 不带 reason 时整张表里落到「服务端 msg 回落」的码：升版前是 10008 / 10009，升版后只多 3 个新码
+        // 不带 reason 时整张表里落到「服务端 msg 回落」的码：升版前是 10008 / 10009，升版后只多 3 个新码；
+        // 锁 00deded0ef6f（FU-X-HOME-PAGE-API，#24）再多 3 个同类后台专用码 30155 / 30156 / 30419（同一判据：表内、无用户文案）
+        for (code in NEW_ADMIN_ONLY_00DEDED) {
+            assertNotNull("ErrorCodes[$code]", ErrorCodes.info(code))
+            assertNull("user dictionary has no error.$code", DefaultTexts.text("error.$code"))
+        }
         val fallback =
             ErrorCodes.all.keys
                 .filter { ErrorCodes.info(it)?.isDeprecated == false }
                 .filter { map(it).kind == ErrorEffectKind.FALLBACK_MESSAGE }
                 .toSet()
-        assertEquals(setOf(10008, 10009) + NEW_ADMIN_ONLY, fallback)
+        assertEquals(setOf(10008, 10009) + NEW_ADMIN_ONLY + NEW_ADMIN_ONLY_00DEDED, fallback)
     }
 
     @Test
@@ -156,13 +161,41 @@ class CtLock02ContractUpgradeTest {
             assertEquals("$id stepUp", stepUp.takeUnless { it == "-" }, operation.stepUp)
             assertEquals("$id gate", gate, operation.minVersionGate.name)
         }
-        assertEquals(OPERATIONS_BEFORE.size + NEW_OPERATIONS.size, ApiOperations.all.size)
-        assertEquals(NEW_OPERATIONS, ApiOperations.all.keys - OPERATIONS_BEFORE.map { it.substringBefore('|') }.toSet())
+        // 锁 00deded0ef6f（FU-X-HOME-PAGE-API，#24）：客户端 operation 86 → 101，只新增 NEW_OPERATIONS_00DEDED 的 15 个，没有删除
+        assertEquals(101, ApiOperations.all.size)
+        assertEquals(OPERATIONS_BEFORE.size + NEW_OPERATIONS.size + NEW_OPERATIONS_00DEDED.size, ApiOperations.all.size)
+        assertEquals(
+            NEW_OPERATIONS + NEW_OPERATIONS_00DEDED,
+            ApiOperations.all.keys - OPERATIONS_BEFORE.map { it.substringBefore('|') }.toSet(),
+        )
         assertTrue(ApiOperations.all.values.none { it.pathTemplate.startsWith("/admin/") })
     }
 
     private companion object {
         val NEW_ADMIN_ONLY = setOf(30154, 30417, 44004)
+
+        /** 锁 00deded0ef6f 新增、只出现在 /admin/v1 的码（error-codes.yaml 30155 / 30156 / 30419，action 均为「后台：…」）。 */
+        val NEW_ADMIN_ONLY_00DEDED = setOf(30155, 30156, 30419)
+
+        /** 锁 00deded0ef6f 新增的客户端 operation（openapi.yaml 中非 /admin/ 的 operationId，a7c9f1f 没有）。 */
+        val NEW_OPERATIONS_00DEDED =
+            setOf(
+                "getAgreementVersion",
+                "listPageSectionItems",
+                "createPayOrder",
+                "getPayOrder",
+                "payOrderReturned",
+                "cancelPayOrder",
+                "getReverify",
+                "reverifyByIdNumber",
+                "reverifyByOauth",
+                "bindOauthIdentity",
+                "listMyDataCopies",
+                "getMyDataCopyDownload",
+                "getHotRank",
+                "getSearchHotWords",
+                "createShare",
+            )
 
         val NEW_OPERATIONS =
             setOf(

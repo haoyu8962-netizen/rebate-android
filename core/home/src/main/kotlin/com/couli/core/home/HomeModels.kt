@@ -114,7 +114,7 @@ data class NoticeItem(
     val endMs: Long?,
 )
 
-/** 商品类数据源（G03、G13）：product_pool / union_material 只在 debug / staging 的假服务有数据；Release 一律按「没有数据」隐藏。 */
+/** 商品类数据源（G03、G13）：product_pool / union_material，卡片经 listPageSectionItems 自取数（03 §6.2）。 */
 data class ProductSource(
     val kind: String,
 )

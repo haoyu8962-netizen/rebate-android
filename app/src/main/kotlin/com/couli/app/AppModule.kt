@@ -27,6 +27,7 @@ import com.couli.app.home.homeLkgStore
 import com.couli.app.home.homePrefsStore
 import com.couli.app.home.variantEnvironmentKey
 import com.couli.app.home.variantHomePort
+import com.couli.app.home.variantPreviewPort
 import com.couli.app.login.AndroidInstalledAppProbe
 import com.couli.app.login.AppLogin
 import com.couli.app.login.LastLoginMethodPreferences
@@ -77,6 +78,7 @@ import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.config.EnvironmentSwitchListener
 import com.couli.core.config.SharedPreferencesNamespaceCleaner
+import com.couli.core.home.ApiClientHomeContractPort
 import com.couli.core.me.MeLocalStore
 import com.couli.core.network.AndroidDeviceIdReader
 import com.couli.core.network.AndroidKeystoreCipher
@@ -953,7 +955,8 @@ object AppModule {
             tokens = tokens,
             routing = routing,
             privacy = privacy,
-            port = variantHomePort(context),
+            port = variantHomePort(context, ApiClientHomeContractPort(ApiClientPageApi(client))),
+            previewPort = variantPreviewPort(context),
             // 会员作用域按持久化登录世代再分区（F-AND-25，FU-AND-0714 R1-07）
             lkg = homeLkgStore(context, tokens),
             prefs = homePrefsStore(context),

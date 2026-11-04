@@ -21,7 +21,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Debug 专用的本机假首页服务（APP-11；src/debugFeatures，Release 不编译，release-scan 查 [FAKE_HOME_SERVER_MARKER]）：
- * - 待定 operation（G02 getPage、G03 listSectionItems）的唯一实现（[HomeContractPort]）；
+ * - getPage、listSectionItems 的本机替身（[HomeContractPort]）：只在统一闸门打开（测试参数）时由 variantHomePort 选中，默认走真实接口；HomePreview 的草稿数据源；
  * - 契约已有的 previewPage、listArticles(category=notice) 由假登录服务的拦截器转到 [answer]（真实 ApiClient → 拦截器 → 这里）。
  * **环境闸门**（F-X-02，共性第 10、16 条）：只有「假服务开关文件在」且「当前环境允许 MOCK_DATA」（prod 下一律关闭）才回答；否则待定 operation 按断网、
  * 契约接口交给真实网络（不注入假数据）。全部在本机回答，不连任何地址。

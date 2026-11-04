@@ -63,7 +63,7 @@ class AccountVisualCoolingTest : AccountVisualDeletionHarness() {
         val deadline = node(AccountTags.DELETE_COOLING_DEADLINE)
         assertEquals(
             "截止句只格式化 cooling_until（原样）",
-            t("deletion.cooling.deadline", mapOf("time" to CouliFormat.timeListFuture(until, now))),
+            t("deletion.cooling.deadline", mapOf("cancel_deadline" to CouliFormat.timeListFuture(until, now))),
             textOf(AccountTags.DELETE_COOLING_DEADLINE),
         )
         assertFont("截止句 17", 17f, deadline)

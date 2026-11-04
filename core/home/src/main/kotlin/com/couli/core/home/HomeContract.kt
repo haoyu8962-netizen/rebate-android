@@ -1,8 +1,12 @@
 package com.couli.core.home
 
+import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallEpochs
+import com.couli.core.network.CallOwnership
+import com.couli.core.network.PageApi
 import com.couli.core.network.ResultSignals
+import com.couli.core.network.percentEncode
 import com.couli.core.wallet.SensitiveOutcome
 import com.couli.generated.DefaultTexts
 
@@ -26,7 +30,8 @@ data class HomeIdentity(
 }
 
 /**
- * 待定 operation 的一次调用（G02、G03）：[anonymous] = 基本模式（不带 Authorization、X-Device-Id、签名，BR-ID-11）；[expectedAccount] 是发起时固定的账号；
+ * 首页 operation（getPage、listPageSectionItems）的一次调用。
+ * [anonymous] = 基本模式（不带 Authorization、X-Device-Id、签名，BR-ID-11）；[expectedAccount] 是发起时固定的账号；
  * [allowed] 是执行层的发送前闸门（42901 禁用期、归属），实现方在每次实际「发送」前调用，为 false 返回本地拒绝 call_cancelled；[stillOwned] 是归属。
  */
 class HomeCall(
@@ -36,12 +41,13 @@ class HomeCall(
     val stillOwned: () -> Boolean,
     /** 本次请求所属首页固定身份的持久化登录世代（与写入票据同源）；未知为 null。只读观察。 */
     val loginEpoch: String? = null,
+    /** 发起时固定的隐私 / 环境世代（控制器固定身份）：生产端口用它绑定调用归属；为 null 时取执行层当前世代。 */
+    val epochs: CallEpochs? = null,
 )
 
 /**
- * 首页的待定 operation（G02 `GET /v1/pages/{page_key}`、G03 `GET /v1/pages/{page_key}/sections/{section_id}/items`）：锁定契约里没有，不进生成的 ApiOperations；
- * **只由 debug / staging 的本机假服务实现**（且要求当前环境允许 MOCK_DATA，F-X-02），Release 为 null——首页只显示 LKG / 包内默认，商品池与物料卡隐藏。
- * TODO(N-35) 契约补上后改为真实接口，三级兜底的代码路径不变。
+ * 首页的两个 operation（契约 getPage `GET /v1/pages/{page_key}`、listPageSectionItems `GET /v1/pages/{page_key}/sections/{section_id}/items`）。
+ * 生产实现是 [ApiClientHomeContractPort]（经 ApiClient 发）；debug / staging 只在假服务开关打开（测试参数）时换成本机假服务（F-X-02）。
  */
 interface HomeContractPort {
     /** data：`{page_key, version, ttl_sec?, sections}`。 */
@@ -60,6 +66,57 @@ interface HomeContractPort {
         cursor: String?,
         call: HomeCall,
     ): ApiResult
+}
+
+/**
+ * 首页契约接口的生产端口（FU-X-HOME-PAGE-API）：两次调用只翻成经 [PageApi]（生产 ApiClientPageApi(ApiClient)）的 [ApiCall]，按生成的操作表发，
+ * 不写死路径；listPageSectionItems 只带 `cursor`（RFC 3986 编码，首屏不带），不带 kind / pool_id / limit / 频道 / 排序（AC-S1-90 ③）。
+ * [HomeCall.allowed] 是发送前闸门、[HomeCall.stillOwned] 是归属；是否带凭据由 ApiClient 按隐私结论决定（基本模式匿名，RequestHeaderPolicy）。
+ * 结果原样交回（30701、20001、42901、10405、传输失败都不在这里改写、不重试）。
+ */
+class ApiClientHomeContractPort(
+    private val api: PageApi,
+) : HomeContractPort {
+    override suspend fun getPage(
+        pageKey: String,
+        call: HomeCall,
+    ): ApiResult = api.send(apiCall(OP_GET_PAGE, mapOf(PAGE_KEY to pageKey), null, call))
+
+    override suspend fun listSectionItems(
+        pageKey: String,
+        sectionId: String,
+        cursor: String?,
+        call: HomeCall,
+    ): ApiResult =
+        api.send(
+            apiCall(
+                OP_LIST_SECTION_ITEMS,
+                mapOf(PAGE_KEY to pageKey, SECTION_ID to sectionId),
+                cursor?.let { "$CURSOR=" + percentEncode(it) },
+                call,
+            ),
+        )
+
+    private fun apiCall(
+        operationId: String,
+        pathParams: Map<String, String>,
+        query: String?,
+        call: HomeCall,
+    ) = ApiCall(
+        operationId,
+        pathParams,
+        query = query,
+        ownership = CallOwnership(call.epochs ?: api.epochs(), sendAllowed = call.allowed, stillOwned = call.stillOwned),
+        expectedAccount = call.expectedAccount,
+    )
+
+    private companion object {
+        const val OP_GET_PAGE = "getPage"
+        const val OP_LIST_SECTION_ITEMS = "listPageSectionItems"
+        const val PAGE_KEY = "page_key"
+        const val SECTION_ID = "section_id"
+        const val CURSOR = "cursor"
+    }
 }
 
 /** 首页文案（BR-TEXT-12：契约字典 → 草稿表）。 */

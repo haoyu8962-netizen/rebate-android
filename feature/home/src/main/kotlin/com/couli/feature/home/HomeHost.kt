@@ -75,7 +75,7 @@ fun interface HomeTimers {
 class HomeDeps(
     val host: HomeHost,
     val signals: HomeSignals,
-    /** 待定 operation（G02、G03）：只有 debug / staging 的本机假服务实现；Release 为 null。 */
+    /** 首页契约接口（getPage、listPageSectionItems）：生产经 ApiClient（[com.couli.core.home.ApiClientHomeContractPort]）；为 null 时不发、卡隐藏。 */
     val port: HomeContractPort?,
     /** listArticles（公告 api 来源）经 ApiClient（当前环境）。 */
     val api: PageApi,

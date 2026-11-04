@@ -6,11 +6,16 @@ import com.couli.app.routing.RoutingTrace
 import com.couli.core.config.AppEnvironment
 import com.couli.core.home.HomeContractPort
 
-/**
- * Release：首页的待定 operation（G02 getPage、G03 listSectionItems）契约还没有，不发请求——首页只显示 LKG / 包内默认，商品池与物料卡隐藏。TODO(N-35)
- */
+/** Release：首页走真实接口（契约 getPage / listPageSectionItems 经 ApiClient，FU-X-HOME-PAGE-API）；没有本机假服务。 */
+@Suppress("UnusedParameter") // 与 debug / staging 源码集同一签名
+internal fun variantHomePort(
+    context: Context,
+    real: HomeContractPort,
+): HomeContractPort = real
+
+/** Release 没有 HomePreview（debug_only 路由）：没有草稿数据源。 */
 @Suppress("UnusedParameter", "FunctionOnlyReturningConstant") // 与 debug / staging 源码集同一签名
-internal fun variantHomePort(context: Context): HomeContractPort? = null
+internal fun variantPreviewPort(context: Context): HomeContractPort? = null
 
 /** Release 只有 prod。 */
 @Suppress("UnusedParameter")
