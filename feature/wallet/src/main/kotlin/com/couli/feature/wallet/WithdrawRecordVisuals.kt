@@ -188,12 +188,12 @@ internal class RecordRowView(
     /** 渲染时的快照版本：回调只捕获它（共性第 63 条）。 */
     val version: Long = ctx.state.version
 
-    /** 客服行说明键：认识的通道且审核中 / 已审核 / 打款中 / 打款未成功才有（与改版前同条件）；其余 null。 */
+    /** 客服行说明键：认识的通道且审核中 / 已审核 / 打款中 / 打款未成功 / 未通过才有（未通过见 F-AND-82，与 iOS / 画板同）；其余 null。 */
     val serviceHintKey: String? =
         when {
             !display.knownChannel -> null
             WithdrawalText.isReviewing(item.status) -> "withdraw.irrevocable"
-            item.status == "PAYING" || item.status == "FAILED" -> "withdraw_detail.doubt"
+            item.status == "PAYING" || item.status == "FAILED" || item.status == "REJECTED" -> "withdraw_detail.doubt"
             else -> null
         }
 }

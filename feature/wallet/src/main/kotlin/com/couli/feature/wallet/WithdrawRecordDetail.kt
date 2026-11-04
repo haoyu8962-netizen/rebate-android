@@ -199,7 +199,7 @@ private fun detailRowValues(
     ) = Triple(texts.text(label), CouliFormat.money(fen), CouliFormat.moneySpoken(fen))
     return buildList {
         add(money("withdraw_detail.amount", item.amountFen))
-        if (netKey != null) add(money("withdraw_detail.fee", item.feeFen))
+        if (netKey != null) item.feeFen.takeIf { it != 0L }?.let { add(money("withdraw_detail.fee", it)) }
         if (item.taxFen > 0) add(money("withdraw_detail.tax", item.taxFen))
         if (netKey != null) {
             val label =
