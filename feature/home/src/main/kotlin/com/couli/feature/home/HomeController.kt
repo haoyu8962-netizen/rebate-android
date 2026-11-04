@@ -286,9 +286,8 @@ class HomeController(
                 )
             }
         if (seq != pageSeq) {
-            // 被更新的拉取（下拉刷新）取代：只写 LKG，不替换当前屏；服务端判定的 10405 照样进强更（R1-04）
+            // 被更新的拉取（下拉刷新）取代：只写 LKG，不替换当前屏。迟到的 10405 也不在这里结算（D10-618：10405 只由网络层 Update.on10405 一处结算）
             if (parsed?.renderable == true && seq > writtenSeq) writeLkg(parsed, seq)
-            if ((result as? ApiResult.Failure)?.code == FORCE_UPDATE_CODE) deps.host.forceUpdate()
             return
         }
         if (pull) mutable.value = mutable.value.copy(refreshing = false)
@@ -363,9 +362,7 @@ class HomeController(
                     publish(showing = HomeShowing.LOAD_FAILED)
                 }
 
-                action == HomeSourcePolicy.FORCE_UPDATE -> {
-                    deps.host.forceUpdate()
-                }
+                // HomeSourcePolicy.FORCE_UPDATE（10405）：页面不再自己进强更，只认网络层 Update.on10405 的结论（D10-618，03 §4.2 一处结算）
 
                 action.startsWith(HomeSourcePolicy.TOAST_ERROR) -> {
                     toast(result)
@@ -657,8 +654,7 @@ class HomeController(
             // 先处理 42901（共性第 4 条），再决定隐藏
             val disable = ResultSignals.disableMillis(result)
             if (disable > 0) deps.gate.start(disable)
-            // 10405（R1-04，共性第 26 条）：归属复核之后进强更（正式首页与预览同一入口）
-            if ((result as? ApiResult.Failure)?.code == FORCE_UPDATE_CODE) deps.host.forceUpdate()
+            // 10405：不在页面结算，强更与否只认网络层 Update.on10405 的结论（D10-618）；这里照常按失败隐藏卡片、记 sectionErrors
             val data = (result as? ApiResult.Success)?.data as? JsonObject
             val items = data?.get(ITEMS) as? JsonArray
             // 尚未取得商品的加载链（r1 S1）：首取，或 D4 空页续取（emptyRefetches > 0，带游标但卡上仍没有商品）

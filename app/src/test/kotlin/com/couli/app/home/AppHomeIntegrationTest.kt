@@ -1240,7 +1240,14 @@ class AppHomeIntegrationTest {
         port.page = { ok(golden("product_grid")) }
         port.items = { _, _ -> failure(10405) }
         launch()
-        idleUntil { forced >= 1 }
+        idleUntil {
+            home.controller.value
+                ?.state
+                ?.value
+                ?.sectionErrors
+                ?.containsKey("grid") == true
+        }
+        assertEquals(0, forced)
         assertFalse(has(HomeTags.CARD_PREFIX + "grid"))
     }
 
@@ -1252,7 +1259,9 @@ class AppHomeIntegrationTest {
         launch()
         composeRule.runOnUiThread { routing.onLaunchIntent("couli-dev://r/HomePreview?page_key=home&token=tok-10405", coldStart = false) }
         idleUntil { has(HomePreviewTags.BAR) && has(HomeTags.tap("draft_icons", 1)) }
-        idleUntil { forced >= 1 }
+        idleUntil { port.itemCalls.any { it.startsWith("draft_grid|") } }
+        settle()
+        assertEquals(0, forced)
     }
 
     /**

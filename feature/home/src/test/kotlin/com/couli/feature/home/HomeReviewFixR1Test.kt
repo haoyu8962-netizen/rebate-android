@@ -362,7 +362,7 @@ class HomeReviewFixR1Test {
         val controller = HomeController(FakeHost.IDENTITY, testDeps(host = host, port = port))
         controller.start()
         idle()
-        assertEquals(1, host.forced)
+        assertEquals(0, host.forced)
         // 已作废的实例迟到的 10405 不进强更（先复核归属）
         val late = CompletableDeferred<ApiResult>()
         val heldPort =

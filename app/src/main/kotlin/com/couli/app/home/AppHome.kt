@@ -462,7 +462,7 @@ class AppHome(
         identityListeners.toList().forEach { it() }
     }
 
-    /** 10405 的强更分流（正式首页与 HomePreview 实例共用，R1-04）。 */
+    /** 强更分流（[HomeHost.forceUpdate] 的实现）。首页控制器收到 10405 已不再调用（D10-618：只由网络层 Update.on10405 结算）。 */
     fun forceUpdate() = serverForced()
 
     /** 配置变化：置灰开关即时应用或移除（G27）。 */

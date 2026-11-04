@@ -2,7 +2,7 @@
  "base": "e9fdd94ce114ab8e670cea731accb3e6d4e2170c",
  "files": [
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
-  {"h": "259029cb6d425f61bd767c6a52c9bd31a31f2790e4fe03d575d7e0724b394f25", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
+  {"h": "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},
   {"h": "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2", "p": "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt"},
   {"h": "b51e5e24f6d8d2dcfafc54dc9045a2ea0ec683df11004b2ad3a73165417dc25a", "p": "app/src/main/kotlin/com/couli/app/shell/AppShell.kt"},
@@ -1710,6 +1710,6 @@
   "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt",
   "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"
  ],
- "settingsGuardNormalized": "72ec22a1de8622eb59b159d9ca14596da86c68c3a9a0944bcdf1829d003bf5ef",
- "privacyGuardNormalized": "ad7710d524c1df0625688e8a711ee30910e677201a41b6ec0833b947c1600244"
+ "settingsGuardNormalized": "c3258675fac310066a3294dab4b10f2d1f8bf29e220e6134a7e6f299b5a468eb",
+ "privacyGuardNormalized": "c8d864a7dc40b8218586aa61ce7c3468a000d998b6448c83aeee1beb419b1c50"
 }

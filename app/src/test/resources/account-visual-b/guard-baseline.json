@@ -66,7 +66,7 @@
   {"h": "504158c01d17016e5f20c2ca9af7c2245f818af130f0e534294166558c01bd8a", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardScreens.kt"},
   {"h": "42fc21fcb6e8233399f1e9222d1eb6cdaf89e7c65c9732e7f73b76c62adfda3b", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardStores.kt"},
   {"h": "30ca291bcf9c532b3c0ecd5ccfd9ad3c3c5eb21ed459a48591dbd759f259f293", "p": "app/src/main/kotlin/com/couli/app/clipboard/ShareReceiverActivity.kt"},
-  {"h": "ba38f8550873fe81b62a054296360566d1789cccdb85129af59412f0478f9b21", "p": "app/src/main/kotlin/com/couli/app/home/AppHome.kt"},
+  {"h": "1dea2443b85a9af05fd40e1dd9d72e19444c241881cbb1c9087b5e15ab14c03c", "p": "app/src/main/kotlin/com/couli/app/home/AppHome.kt"},
   {"h": "e775227a354f1c8da686f4efac3d0c7541701e71b45996fa42ad34a27b3e863c", "p": "app/src/main/kotlin/com/couli/app/home/HomeNativeHeader.kt"},
   {"h": "7f1796557d6740b9f34ed74823baaf0232058a9e6d37de6a7305b8552512669c", "p": "app/src/main/kotlin/com/couli/app/home/HomeRoute.kt"},
   {"h": "913fd8ce4e183ee71d75855d82c008f8e9c488c49f1b625e399bf85efb361446", "p": "app/src/main/kotlin/com/couli/app/home/HomeSystem.kt"},
@@ -76,7 +76,7 @@
   {"h": "814798a5b694bcd9bc7c97c1b9d728b986168a6a1a273865885d31994b2277d6", "p": "app/src/main/kotlin/com/couli/app/login/LoginPages.kt"},
   {"h": "2e63b9c05c63cfb50c3cd73f814328d15901816f1bb3440fed4cd43b06d9ffb2", "p": "app/src/main/kotlin/com/couli/app/login/PendingInviteCleanup.kt"},
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
-  {"h": "259029cb6d425f61bd767c6a52c9bd31a31f2790e4fe03d575d7e0724b394f25", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
+  {"h": "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},
   {"h": "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2", "p": "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt"},
   {"h": "8fa6a5040f862e82ab1f092b0a2fff11912ddfc1c663de720de3598d13fa0de8", "p": "app/src/main/kotlin/com/couli/app/orders/AppOrders.kt"},
@@ -246,7 +246,7 @@
   {"h": "7faa1dd208b0964c22610582ec7c4d9a22263fbcebb8ede22fb5c08139c9fdb5", "p": "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0720WithdrawTest.kt"},
   {"h": "3f216ab17ef14e96d84a2b0248ed35063839accc7a0936f429a35faaff75227a", "p": "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0721InvariantTest.kt"},
   {"h": "739fb4a194112197855b5797d6c9b88766d07c564d4be2a47fe29833416f3ca7", "p": "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0721WithdrawTest.kt"},
-  {"h": "09abc8ee67eead0e7c6c52ba4b2d640e870746167ca55342874fc82b39b9265c", "p": "app/src/test/kotlin/com/couli/app/home/AppHomeIntegrationTest.kt"},
+  {"h": "ae151ddb2bf52691f0864d9a116c2745cc45fe87b4a43b6a66c7368f3ffa113d", "p": "app/src/test/kotlin/com/couli/app/home/AppHomeIntegrationTest.kt"},
   {"h": "3f6253703e046a6112d9dcfc72f54d7545e2bf37dde305db2fb6ca3996bc6bf4", "p": "app/src/test/kotlin/com/couli/app/home/ClipboardHomeTestFixture.kt"},
   {"h": "8173cd080d57a5d0dc1defa3d054103dada4f14c2a77b3fd0ef16a8f7455f2f1", "p": "app/src/test/kotlin/com/couli/app/home/HomeLkgTicketAnd0718Test.kt"},
   {"h": "f02551c222e1d2094023c809b3fef3ef9a808a4560121fc793e4ec880d6e4f21", "p": "app/src/test/kotlin/com/couli/app/home/HomePopupBoundaryVisualTest.kt"},
@@ -278,7 +278,7 @@
   {"h": "6b6de1e43c528c9689e4ca956d4c36860ed2d91019b082f7c2fc247489282f31", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualAssertions.kt"},
   {"h": "c99e2e5df574cc773e47831124e387362c1c290b7069152b340c414ce5b6c86a", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualBehaviorTest.kt"},
   {"h": "06a6b8df87f2e377f32bc514d1463008c74698cd5a01a780b9924cf759309762", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualEnv.kt"},
-  {"h": "6f2b574c4b4b2649c2e5a408c708ed43ce79a7896bdde1320c098d59945dbf80", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtureTest.kt"},
+  {"h": "92d2d08e3e2f668e3a59dc8b6a8e8c77c8617ed5b0bd6c978eabacaf30147f4c", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtureTest.kt"},
   {"h": "0d12f7479f1be2037aaa2255f6984077d11f4c7703516194d265330af13a0eb2", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualFixtures.kt"},
   {"h": "d335b2080be0cc5ef3ccda0e5a72e0a33e2aded416ab8955153c92fd27dff301", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualGuideTest.kt"},
   {"h": "71a031f74de40c50eded4fc70d0324e17c52be11f767d8722f2cff0eb8903bbc", "p": "app/src/test/kotlin/com/couli/app/me/MeVisualHitTest.kt"},
@@ -2539,14 +2539,14 @@
   {"h": "e07c867c59bbe99b77ccc9032ef44c516ed97e5ebca65e6a2a63205f748d1ff0", "p": "feature/auth/src/main/kotlin/com/couli/feature/auth/AuthFeature.kt"},
   {"h": "f126366e4b7768d7d11bab27588b821373ebb634e1158663c87211f42c67d38b", "p": "feature/home/build.gradle.kts"},
   {"h": "0444b5e82eafb1218fc5e81e2fdcdd89fd0538bb7163b7760d642c3589b426f3", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeCards.kt"},
-  {"h": "92e5c2e0dc10e02982570a31cb972c6e5eb4b6866f1b5ae3fd127971cbc55cb5", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeController.kt"},
-  {"h": "bbfa00ea22f801f5a4e35342b3b6a538889870ebdb752fce34c85cec85f92487", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeHost.kt"},
+  {"h": "3c8426f860035e3879718614f196cd2798d5a0b0c79202a524eac3e16ea2f374", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeController.kt"},
+  {"h": "472e525d294d73e7eb7d200e2ecf923ed3754f82d73ab002e6e1cf88c67d4803", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeHost.kt"},
   {"h": "41ad460f03c89536af7ab1b1d234427eb32f3cc34f5ab2e000fccb9f385e4a1c", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeScreen.kt"},
   {"h": "c871a53adafb9b8e328595bffdbd07fbdf3188d22456b6010f8af33351105ad9", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeTiles.kt"},
   {"h": "436f32998b952081fcaa7222f9de68a8cf0248f94fca267cec51418181a61085", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeControllerTest.kt"},
   {"h": "b2224a8ed9f72a7fb9d8e112a73a31140a9dc0e0d16a8ad01a23d07f97dc6921", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeGoldenSnapshotTest.kt"},
   {"h": "ca18798cdf26fea0dab24ffd328fba795b95b27a0ef5197983f5912498244f44", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewCompactRebateTest.kt"},
-  {"h": "2320ca13984ae40d41415071f8311306c9bfdd283021d350aacb4fa2450a3c04", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewFixR1Test.kt"},
+  {"h": "6671a184e8950ad7748e45f280e5342aec9266579af121dbfc101cc2471af77f", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewFixR1Test.kt"},
   {"h": "94bc72e9a8fe78461b9f581b960a36112a7e2a61b5e572fec805100ddb415e39", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewFixR2Test.kt"},
   {"h": "1db23b6c3901d19688dd7bba183035cd45747fd1a9f1901264ec683ecff51516", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewFixtures.kt"},
   {"h": "ca69ae823538f9098ccbfa8f0b38e021dfeb35413cb333fe49d56deab4199016", "p": "feature/home/src/test/kotlin/com/couli/feature/home/HomeReviewPlatformTest.kt"},
@@ -3609,19 +3609,19 @@
  "mergedB": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "95b004f1c00af21598355d0bdc9238a07539fd7b6ab078442ace87117eb2cefa"
+   "h": "bb56a87b651e34413671dfa5e2aa5ea0c526322d3a2dd10ce075df9ea0b62123"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "f3fdb3f22785b86905ca3af82b862d2a4a5ea543a809ab1119808ff8e17b5960"
+   "h": "4dea0f702b592096b6817f48f86fcceef46c695ad47f433c454a9f726ecb3dc7"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "d2b3f94c0cf73ee8105c959d8a39ceec5883c0305d122c5770456be958afa30d"
+   "h": "6d070f82d46928f5a87e0cc43ffabfa20c80859d9609879d1d4a267811e80677"
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "a2dda0922effb9e9669fa27af3d35d63071b8e78af63d9d8ad3f068c13bcbd5c"
+   "h": "25d2641107d86b9cc5f05904c705639fe0b69e23f7b5e48f221501f8e494fe0f"
   }
  ],
  "hostSheetCrops": [

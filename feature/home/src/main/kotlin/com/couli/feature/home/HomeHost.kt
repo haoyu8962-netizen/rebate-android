@@ -32,7 +32,10 @@ interface HomeHost {
         spm: String,
     )
 
-    /** 10405：进入已有的强更分流（服务端已判定，待定 operation 走不到网络层的强更钩子）。 */
+    /**
+     * 强更分流入口。首页控制器收到 10405 时**不再**调用它（D10-618）：10405 只由网络层 Update.on10405 一处结算，
+     * 页面只显示网络层给出的结论。成员保留给既有宿主实现，收口随 FU-X-10405-PAGES。
+     */
     fun forceUpdate()
 
     /** sdui_card_error（G20、G21）：经生成的事件构造函数，四个字段；基本模式与 HomePreview 不调。 */

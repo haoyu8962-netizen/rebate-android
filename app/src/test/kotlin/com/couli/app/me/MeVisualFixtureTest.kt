@@ -45,7 +45,7 @@ class MeVisualFixtureTest {
                 // 钉值随主干合法变更更新：APP-08v-b AmountGrid valueSizes（7db97ce）
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
                     "ba9c7019e59c17a107e73e7f67349ec2bafe22bf81f8445422b7f4253433d611",
-                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "259029cb6d425f61bd767c6a52c9bd31a31f2790e4fe03d575d7e0724b394f25",
+                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0",
                 "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt" to "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2",
                 "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt" to
                     "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d",

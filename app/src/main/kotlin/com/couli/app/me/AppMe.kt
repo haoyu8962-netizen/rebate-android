@@ -554,7 +554,9 @@ class AppMe(
 
         override fun copy(text: String): Boolean = writer(text)
 
-        override fun forceUpdate() = serverForced()
+        // 「我的」各页收到 10405 时不再自己进强更（D10-618）：10405 只由网络层 Update.on10405 一处结算，页面照常显示错误。
+        // [serverForced] 仍只接推送上报（PushReportState.onForceUpdate，归 FU-X-10405-PAGES），这里不动它。
+        override fun forceUpdate() = Unit
 
         override fun configData(): JsonObject? = store?.snapshots?.value?.data
 

@@ -19,7 +19,7 @@
   {"h": "504158c01d17016e5f20c2ca9af7c2245f818af130f0e534294166558c01bd8a", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardScreens.kt"},
   {"h": "42fc21fcb6e8233399f1e9222d1eb6cdaf89e7c65c9732e7f73b76c62adfda3b", "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardStores.kt"},
   {"h": "30ca291bcf9c532b3c0ecd5ccfd9ad3c3c5eb21ed459a48591dbd759f259f293", "p": "app/src/main/kotlin/com/couli/app/clipboard/ShareReceiverActivity.kt"},
-  {"h": "ba38f8550873fe81b62a054296360566d1789cccdb85129af59412f0478f9b21", "p": "app/src/main/kotlin/com/couli/app/home/AppHome.kt"},
+  {"h": "1dea2443b85a9af05fd40e1dd9d72e19444c241881cbb1c9087b5e15ab14c03c", "p": "app/src/main/kotlin/com/couli/app/home/AppHome.kt"},
   {"h": "e775227a354f1c8da686f4efac3d0c7541701e71b45996fa42ad34a27b3e863c", "p": "app/src/main/kotlin/com/couli/app/home/HomeNativeHeader.kt"},
   {"h": "7f1796557d6740b9f34ed74823baaf0232058a9e6d37de6a7305b8552512669c", "p": "app/src/main/kotlin/com/couli/app/home/HomeRoute.kt"},
   {"h": "913fd8ce4e183ee71d75855d82c008f8e9c488c49f1b625e399bf85efb361446", "p": "app/src/main/kotlin/com/couli/app/home/HomeSystem.kt"},
@@ -30,7 +30,7 @@
   {"h": "814798a5b694bcd9bc7c97c1b9d728b986168a6a1a273865885d31994b2277d6", "p": "app/src/main/kotlin/com/couli/app/login/LoginPages.kt"},
   {"h": "2e63b9c05c63cfb50c3cd73f814328d15901816f1bb3440fed4cd43b06d9ffb2", "p": "app/src/main/kotlin/com/couli/app/login/PendingInviteCleanup.kt"},
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
-  {"h": "259029cb6d425f61bd767c6a52c9bd31a31f2790e4fe03d575d7e0724b394f25", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
+  {"h": "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},
   {"h": "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2", "p": "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt"},
   {"h": "8fa6a5040f862e82ab1f092b0a2fff11912ddfc1c663de720de3598d13fa0de8", "p": "app/src/main/kotlin/com/couli/app/orders/AppOrders.kt"},
@@ -2262,15 +2262,15 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "ef4c75f383885fd75bb9464628ae0c678247e8edc6f723b449eb7c739067e7a8"
+   "h": "ed856521e4190673e9648f3c6d5b8ba69e985ddf3bc8d63e72271e94d999d7ee"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "4de59bf1ac82c080c342c9a7c84a5acfa7160d73f57f9a3fab6edea48020de3e"
+   "h": "541e07bfad78d714115729bb9e76723238222d2177ecb416bc6750a95fb728f2"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "69e8fcf3a0e8783a3c5d370ea85c33f57dda6c1b949a814f2999fdadf5184fc2"
+   "h": "31d41f00ea4993d0c397f9a857bac40585b15a90812f808da4b1d36ec382fc5d"
   }
  ],
  "hostSheetCrops": [
