@@ -169,6 +169,7 @@ enum class OauthAttemptPurpose(
     LOGIN("login"),
     STEP_UP("step_up"),
     PAYOUT_BIND("payout_bind"),
+    REVERIFY("reverify"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -179,6 +180,7 @@ enum class OauthAttemptPurpose(
                 LOGIN,
                 STEP_UP,
                 PAYOUT_BIND,
+                REVERIFY,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, OauthAttemptPurpose> = known.associateBy { it.raw }
@@ -198,6 +200,53 @@ object OauthAttemptPurposeSerializer : KSerializer<OauthAttemptPurpose> {
     override fun serialize(
         encoder: Encoder,
         value: OauthAttemptPurpose,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `reverify_method`（contracts/enums/identity.yaml）。
+ * 旧号加验（核实身份）的方式，按优先级只给一种（BR-WDR-01 细则「旧手机号被二次放号时的提现加验」）
+ *
+ * 未知取值解码为 [ReverifyMethod.UNKNOWN]，不抛错。
+ */
+@Serializable(with = ReverifyMethodSerializer::class)
+enum class ReverifyMethod(
+    val raw: kotlin.String,
+) {
+    ID_NUMBER("id_number"),
+    OAUTH("oauth"),
+    MANUAL("manual"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<ReverifyMethod> =
+            listOf(
+                ID_NUMBER,
+                OAUTH,
+                MANUAL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, ReverifyMethod> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): ReverifyMethod = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [ReverifyMethod] 的序列化器：未知字符串得 [ReverifyMethod.UNKNOWN]；序列化写 raw。 */
+object ReverifyMethodSerializer : KSerializer<ReverifyMethod> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.ReverifyMethod", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): ReverifyMethod = ReverifyMethod.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: ReverifyMethod,
     ) {
         encoder.encodeString(value.raw)
     }
@@ -1107,6 +1156,551 @@ object BlockedRequestTypeSerializer : KSerializer<BlockedRequestType> {
     override fun serialize(
         encoder: Encoder,
         value: BlockedRequestType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `appeal_source`（contracts/enums/identity.yaml）。
+ * 申诉的来源，后台申诉详情（GET /admin/v1/appeals/{appeal_id}）的 source；编码由契约线定（代理补全的默认），列名由 db / risk 任务定
+ *
+ * 未知取值解码为 [AppealSource.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AppealSourceSerializer::class)
+enum class AppealSource(
+    val raw: kotlin.String,
+) {
+    APP("app"),
+    ADMIN("admin"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AppealSource> =
+            listOf(
+                APP,
+                ADMIN,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AppealSource> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AppealSource = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AppealSource] 的序列化器：未知字符串得 [AppealSource.UNKNOWN]；序列化写 raw。 */
+object AppealSourceSerializer : KSerializer<AppealSource> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AppealSource", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AppealSource = AppealSource.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AppealSource,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `blocked_request_cause`（contracts/enums/identity.yaml）。
+ * 被拦请求的拦截原因类别，后台被拦请求查找与申诉详情的 cause；决定撤销时是移出名单条目（另需 risk.blocklist 与动态码）还是一次性放行（只需 risk.appeal）；编码由契约线定（代理补全的默认）
+ *
+ * 未知取值解码为 [BlockedRequestCause.UNKNOWN]，不抛错。
+ */
+@Serializable(with = BlockedRequestCauseSerializer::class)
+enum class BlockedRequestCause(
+    val raw: kotlin.String,
+) {
+    BLOCKLIST("blocklist"),
+    RULE("rule"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<BlockedRequestCause> =
+            listOf(
+                BLOCKLIST,
+                RULE,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, BlockedRequestCause> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): BlockedRequestCause = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [BlockedRequestCause] 的序列化器：未知字符串得 [BlockedRequestCause.UNKNOWN]；序列化写 raw。 */
+object BlockedRequestCauseSerializer : KSerializer<BlockedRequestCause> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.BlockedRequestCause", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): BlockedRequestCause = BlockedRequestCause.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: BlockedRequestCause,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `blocklist_dimension`（contracts/enums/identity.yaml）。
+ * blocklist.dimension，取值与 blocklist 表的 CHECK 约束一致；后台被拦请求查找与申诉详情用它显示「黑名单 · 维度」；order_no_suffix、channel 是订单侧维度，不会造成 44001 拦截
+ *
+ * 未知取值解码为 [BlocklistDimension.UNKNOWN]，不抛错。
+ */
+@Serializable(with = BlocklistDimensionSerializer::class)
+enum class BlocklistDimension(
+    val raw: kotlin.String,
+) {
+    PHONE("phone"),
+    ID_NO("id_no"),
+    ALIPAY("alipay"),
+    BANK_CARD("bank_card"),
+    WECHAT_OPENID("wechat_openid"),
+    DEVICE("device"),
+    RELATION_ID("relation_id"),
+    ORDER_NO_SUFFIX("order_no_suffix"),
+    CHANNEL("channel"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<BlocklistDimension> =
+            listOf(
+                PHONE,
+                ID_NO,
+                ALIPAY,
+                BANK_CARD,
+                WECHAT_OPENID,
+                DEVICE,
+                RELATION_ID,
+                ORDER_NO_SUFFIX,
+                CHANNEL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, BlocklistDimension> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): BlocklistDimension = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [BlocklistDimension] 的序列化器：未知字符串得 [BlocklistDimension.UNKNOWN]；序列化写 raw。 */
+object BlocklistDimensionSerializer : KSerializer<BlocklistDimension> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.BlocklistDimension", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): BlocklistDimension = BlocklistDimension.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: BlocklistDimension,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `risk_hit_ref_type`（contracts/enums/identity.yaml）。
+ * risk_hits.ref_type，命中记录关联对象的类型；取值与 risk_hits 表的 CHECK 约束一致；后台申诉详情的命中记录 ref_type
+ *
+ * 未知取值解码为 [RiskHitRefType.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RiskHitRefTypeSerializer::class)
+enum class RiskHitRefType(
+    val raw: kotlin.String,
+) {
+    ORDER("order"),
+    WITHDRAWAL("withdrawal"),
+    BLOCKED_REQUEST("blocked_request"),
+    INVITE_RELATION("invite_relation"),
+    INVITE_REWARD("invite_reward"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RiskHitRefType> =
+            listOf(
+                ORDER,
+                WITHDRAWAL,
+                BLOCKED_REQUEST,
+                INVITE_RELATION,
+                INVITE_REWARD,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RiskHitRefType> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RiskHitRefType = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RiskHitRefType] 的序列化器：未知字符串得 [RiskHitRefType.UNKNOWN]；序列化写 raw。 */
+object RiskHitRefTypeSerializer : KSerializer<RiskHitRefType> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RiskHitRefType", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RiskHitRefType = RiskHitRefType.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RiskHitRefType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `invite_reward_status`（contracts/enums/identity.yaml）。
+ * invite_rewards.status，邀请奖励活动资格与发放记录的状态；编码由契约线定，含义只在 BR-INV-24；不发与作废的原因只在后台可查，用户端不展示；budget_exhausted 2026-10-20 取消（无路径，BR-INV-24 有效期）
+ *
+ * 未知取值解码为 [InviteRewardStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = InviteRewardStatusSerializer::class)
+enum class InviteRewardStatus(
+    val raw: kotlin.String,
+) {
+    QUALIFIED("qualified"),
+    DEFERRED("deferred"),
+    PROCESSED("processed"),
+    VOIDED("voided"),
+    EXPIRED("expired"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<InviteRewardStatus> =
+            listOf(
+                QUALIFIED,
+                DEFERRED,
+                PROCESSED,
+                VOIDED,
+                EXPIRED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, InviteRewardStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): InviteRewardStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [InviteRewardStatus] 的序列化器：未知字符串得 [InviteRewardStatus.UNKNOWN]；序列化写 raw。 */
+object InviteRewardStatusSerializer : KSerializer<InviteRewardStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.InviteRewardStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): InviteRewardStatus = InviteRewardStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: InviteRewardStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `invite_reward_party_result`（contracts/enums/identity.yaml）。
+ * invite_rewards.inviter_result、invitee_result，一方的发放结果；处理前为空
+ *
+ * 未知取值解码为 [InviteRewardPartyResult.UNKNOWN]，不抛错。
+ */
+@Serializable(with = InviteRewardPartyResultSerializer::class)
+enum class InviteRewardPartyResult(
+    val raw: kotlin.String,
+) {
+    GRANTED("granted"),
+    SKIPPED("skipped"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<InviteRewardPartyResult> =
+            listOf(
+                GRANTED,
+                SKIPPED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, InviteRewardPartyResult> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): InviteRewardPartyResult = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [InviteRewardPartyResult] 的序列化器：未知字符串得 [InviteRewardPartyResult.UNKNOWN]；序列化写 raw。 */
+object InviteRewardPartyResultSerializer : KSerializer<InviteRewardPartyResult> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.InviteRewardPartyResult", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): InviteRewardPartyResult = InviteRewardPartyResult.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: InviteRewardPartyResult,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `invite_reward_skip_reason`（contracts/enums/identity.yaml）。
+ * invite_rewards 两方各一的不发原因（可空）；前三个双方都不发，后四个只命中的一方不发、另一方照发；编码由契约线定，含义只在 BR-INV-24
+ *
+ * 未知取值解码为 [InviteRewardSkipReason.UNKNOWN]，不抛错。
+ */
+@Serializable(with = InviteRewardSkipReasonSerializer::class)
+enum class InviteRewardSkipReason(
+    val raw: kotlin.String,
+) {
+    SAME_DEVICE("same_device"),
+    SAME_IP("same_ip"),
+    DELETED_PHONE_RETAINED("deleted_phone_retained"),
+    MULTI_ACCOUNT("multi_account"),
+    RISK_RESTRICTED("risk_restricted"),
+    DELETING("deleting"),
+    MINOR("minor"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<InviteRewardSkipReason> =
+            listOf(
+                SAME_DEVICE,
+                SAME_IP,
+                DELETED_PHONE_RETAINED,
+                MULTI_ACCOUNT,
+                RISK_RESTRICTED,
+                DELETING,
+                MINOR,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, InviteRewardSkipReason> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): InviteRewardSkipReason = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [InviteRewardSkipReason] 的序列化器：未知字符串得 [InviteRewardSkipReason.UNKNOWN]；序列化写 raw。 */
+object InviteRewardSkipReasonSerializer : KSerializer<InviteRewardSkipReason> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.InviteRewardSkipReason", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): InviteRewardSkipReason = InviteRewardSkipReason.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: InviteRewardSkipReason,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `invite_reward_void_reason`（contracts/enums/identity.yaml）。
+ * invite_rewards.void_reason，资格作废的原因（可空，仅 status=voided）；编码由契约线定，含义只在 BR-INV-24
+ *
+ * 未知取值解码为 [InviteRewardVoidReason.UNKNOWN]，不抛错。
+ */
+@Serializable(with = InviteRewardVoidReasonSerializer::class)
+enum class InviteRewardVoidReason(
+    val raw: kotlin.String,
+) {
+    RELATION_CHANGED("relation_changed"),
+    ORDER_CLAWED_BACK("order_clawed_back"),
+    ORDER_RIGHTS("order_rights"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<InviteRewardVoidReason> =
+            listOf(
+                RELATION_CHANGED,
+                ORDER_CLAWED_BACK,
+                ORDER_RIGHTS,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, InviteRewardVoidReason> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): InviteRewardVoidReason = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [InviteRewardVoidReason] 的序列化器：未知字符串得 [InviteRewardVoidReason.UNKNOWN]；序列化写 raw。 */
+object InviteRewardVoidReasonSerializer : KSerializer<InviteRewardVoidReason> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.InviteRewardVoidReason", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): InviteRewardVoidReason = InviteRewardVoidReason.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: InviteRewardVoidReason,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `invite_reward_bind_source`（contracts/enums/identity.yaml）。
+ * invite_rewards.bind_source，取得资格时的绑定渠道；后台改上级（admin）不取得资格，不在此列
+ *
+ * 未知取值解码为 [InviteRewardBindSource.UNKNOWN]，不抛错。
+ */
+@Serializable(with = InviteRewardBindSourceSerializer::class)
+enum class InviteRewardBindSource(
+    val raw: kotlin.String,
+) {
+    LANDING("landing"),
+    REGISTER("register"),
+    BACKFILL("backfill"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<InviteRewardBindSource> =
+            listOf(
+                LANDING,
+                REGISTER,
+                BACKFILL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, InviteRewardBindSource> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): InviteRewardBindSource = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [InviteRewardBindSource] 的序列化器：未知字符串得 [InviteRewardBindSource.UNKNOWN]；序列化写 raw。 */
+object InviteRewardBindSourceSerializer : KSerializer<InviteRewardBindSource> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.InviteRewardBindSource", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): InviteRewardBindSource = InviteRewardBindSource.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: InviteRewardBindSource,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `personal_data_copy_delivery`（contracts/enums/identity.yaml）。
+ * personal_data_copies.delivery，个人信息副本的交付方式；登记时由两项通道情况判定（app_login_ok 与 phone_sms_ok 都为真 → in_app_sms，都为假 → wecom_session，只有一项为真时待法务确认、不受理）
+ *
+ * 未知取值解码为 [PersonalDataCopyDelivery.UNKNOWN]，不抛错。
+ */
+@Serializable(with = PersonalDataCopyDeliverySerializer::class)
+enum class PersonalDataCopyDelivery(
+    val raw: kotlin.String,
+) {
+    IN_APP_SMS("in_app_sms"),
+    WECOM_SESSION("wecom_session"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<PersonalDataCopyDelivery> =
+            listOf(
+                IN_APP_SMS,
+                WECOM_SESSION,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, PersonalDataCopyDelivery> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): PersonalDataCopyDelivery = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [PersonalDataCopyDelivery] 的序列化器：未知字符串得 [PersonalDataCopyDelivery.UNKNOWN]；序列化写 raw。 */
+object PersonalDataCopyDeliverySerializer : KSerializer<PersonalDataCopyDelivery> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.PersonalDataCopyDelivery", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): PersonalDataCopyDelivery = PersonalDataCopyDelivery.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: PersonalDataCopyDelivery,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `personal_data_copy_status`（contracts/enums/identity.yaml）。
+ * personal_data_copies.status；未结束的是 pending、running、ready（同一用户同时最多 1 条）；迁移 pending→running→ready（文件已生成）→delivered（in_app_sms 发出提取码短信时，wecom_session 登记人第一次下载时）；生成失败或登记人失去下载权限（后台账号停用，或重新登记时发现已不同时持 user.data_export 与 pii.reveal_phone）且未交付→failed；文件生成后 24 小时→expired；账号进入注销 processing 时未结束的→cancelled
+ *
+ * 未知取值解码为 [PersonalDataCopyStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = PersonalDataCopyStatusSerializer::class)
+enum class PersonalDataCopyStatus(
+    val raw: kotlin.String,
+) {
+    PENDING("pending"),
+    RUNNING("running"),
+    READY("ready"),
+    DELIVERED("delivered"),
+    FAILED("failed"),
+    EXPIRED("expired"),
+    CANCELLED("cancelled"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<PersonalDataCopyStatus> =
+            listOf(
+                PENDING,
+                RUNNING,
+                READY,
+                DELIVERED,
+                FAILED,
+                EXPIRED,
+                CANCELLED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, PersonalDataCopyStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): PersonalDataCopyStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [PersonalDataCopyStatus] 的序列化器：未知字符串得 [PersonalDataCopyStatus.UNKNOWN]；序列化写 raw。 */
+object PersonalDataCopyStatusSerializer : KSerializer<PersonalDataCopyStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.PersonalDataCopyStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): PersonalDataCopyStatus = PersonalDataCopyStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: PersonalDataCopyStatus,
     ) {
         encoder.encodeString(value.raw)
     }

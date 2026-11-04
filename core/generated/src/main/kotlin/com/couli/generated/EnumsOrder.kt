@@ -752,3 +752,289 @@ object ClaimRejectReasonSerializer : KSerializer<ClaimRejectReason> {
         encoder.encodeString(value.raw)
     }
 }
+
+/**
+ * 契约枚举 `order_sync_mode`（contracts/enums/order.yaml）。
+ * 后台手动同步的方式（order_sync_requests.mode）；POST /admin/v1/order-syncs 的请求体二选一
+ *
+ * 未知取值解码为 [OrderSyncMode.UNKNOWN]，不抛错。
+ */
+@Serializable(with = OrderSyncModeSerializer::class)
+enum class OrderSyncMode(
+    val raw: kotlin.String,
+) {
+    WINDOW("window"),
+    ORDER_NOS("order_nos"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<OrderSyncMode> =
+            listOf(
+                WINDOW,
+                ORDER_NOS,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, OrderSyncMode> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): OrderSyncMode = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [OrderSyncMode] 的序列化器：未知字符串得 [OrderSyncMode.UNKNOWN]；序列化写 raw。 */
+object OrderSyncModeSerializer : KSerializer<OrderSyncMode> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.OrderSyncMode", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): OrderSyncMode = OrderSyncMode.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: OrderSyncMode,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `order_sync_status`（contracts/enums/order.yaml）。
+ * 后台手动同步请求的状态（order_sync_requests.status）；同一筛选条件在 queued 或 running 期间再提交返回原请求
+ *
+ * 未知取值解码为 [OrderSyncStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = OrderSyncStatusSerializer::class)
+enum class OrderSyncStatus(
+    val raw: kotlin.String,
+) {
+    QUEUED("queued"),
+    RUNNING("running"),
+    DONE("done"),
+    FAILED("failed"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<OrderSyncStatus> =
+            listOf(
+                QUEUED,
+                RUNNING,
+                DONE,
+                FAILED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, OrderSyncStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): OrderSyncStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [OrderSyncStatus] 的序列化器：未知字符串得 [OrderSyncStatus.UNKNOWN]；序列化写 raw。 */
+object OrderSyncStatusSerializer : KSerializer<OrderSyncStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.OrderSyncStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): OrderSyncStatus = OrderSyncStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: OrderSyncStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `rights_import_kind`（contracts/enums/order.yaml）。
+ * 后台 Excel 导入的类型（rights_imports.kind）；channel 另需 risk.blocklist 与动态码（BR-ATTR-26 细则「渠道单导入」）
+ *
+ * 未知取值解码为 [RightsImportKind.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RightsImportKindSerializer::class)
+enum class RightsImportKind(
+    val raw: kotlin.String,
+) {
+    RIGHTS("rights"),
+    PUNISH("punish"),
+    CHANNEL("channel"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RightsImportKind> =
+            listOf(
+                RIGHTS,
+                PUNISH,
+                CHANNEL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RightsImportKind> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RightsImportKind = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RightsImportKind] 的序列化器：未知字符串得 [RightsImportKind.UNKNOWN]；序列化写 raw。 */
+object RightsImportKindSerializer : KSerializer<RightsImportKind> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RightsImportKind", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RightsImportKind = RightsImportKind.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RightsImportKind,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `rights_import_time_basis`（contracts/enums/order.yaml）。
+ * 维权 / 违规单导入按哪个时间筛选行（rights_imports.time_basis）；渠道单恒为空
+ *
+ * 未知取值解码为 [RightsImportTimeBasis.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RightsImportTimeBasisSerializer::class)
+enum class RightsImportTimeBasis(
+    val raw: kotlin.String,
+) {
+    PAID("paid"),
+    RECEIVED("received"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RightsImportTimeBasis> =
+            listOf(
+                PAID,
+                RECEIVED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RightsImportTimeBasis> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RightsImportTimeBasis = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RightsImportTimeBasis] 的序列化器：未知字符串得 [RightsImportTimeBasis.UNKNOWN]；序列化写 raw。 */
+object RightsImportTimeBasisSerializer : KSerializer<RightsImportTimeBasis> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RightsImportTimeBasis", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RightsImportTimeBasis = RightsImportTimeBasis.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RightsImportTimeBasis,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `rights_import_status`（contracts/enums/order.yaml）。
+ * 后台 Excel 导入任务的状态（rights_imports.status）
+ *
+ * 未知取值解码为 [RightsImportStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RightsImportStatusSerializer::class)
+enum class RightsImportStatus(
+    val raw: kotlin.String,
+) {
+    QUEUED("queued"),
+    RUNNING("running"),
+    DONE("done"),
+    FAILED("failed"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RightsImportStatus> =
+            listOf(
+                QUEUED,
+                RUNNING,
+                DONE,
+                FAILED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RightsImportStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RightsImportStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RightsImportStatus] 的序列化器：未知字符串得 [RightsImportStatus.UNKNOWN]；序列化写 raw。 */
+object RightsImportStatusSerializer : KSerializer<RightsImportStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RightsImportStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RightsImportStatus = RightsImportStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RightsImportStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `rights_import_failure_reason`（contracts/enums/order.yaml）。
+ * 导入逐行失败的原因（rights_import_failures.reason），是行原因枚举，不是错误码
+ *
+ * 未知取值解码为 [RightsImportFailureReason.UNKNOWN]，不抛错。
+ */
+@Serializable(with = RightsImportFailureReasonSerializer::class)
+enum class RightsImportFailureReason(
+    val raw: kotlin.String,
+) {
+    INVALID_ROW("invalid_row"),
+    ORDER_NOT_FOUND("order_not_found"),
+    SUB_ORDER_NO_MISSING("sub_order_no_missing"),
+    RECEIVED_AT_MISSING("received_at_missing"),
+    PLATFORM_MISMATCH("platform_mismatch"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<RightsImportFailureReason> =
+            listOf(
+                INVALID_ROW,
+                ORDER_NOT_FOUND,
+                SUB_ORDER_NO_MISSING,
+                RECEIVED_AT_MISSING,
+                PLATFORM_MISMATCH,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, RightsImportFailureReason> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): RightsImportFailureReason = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [RightsImportFailureReason] 的序列化器：未知字符串得 [RightsImportFailureReason.UNKNOWN]；序列化写 raw。 */
+object RightsImportFailureReasonSerializer : KSerializer<RightsImportFailureReason> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.RightsImportFailureReason", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): RightsImportFailureReason = RightsImportFailureReason.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: RightsImportFailureReason,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}

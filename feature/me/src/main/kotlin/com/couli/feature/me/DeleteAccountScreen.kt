@@ -243,7 +243,7 @@ private fun CoolingSection(
                 }
             },
             title = texts.text("deletion.cooling.title"),
-            deadline = texts.format("deletion.cooling.deadline", mapOf("time" to view.coolingUntilText.orEmpty())),
+            deadline = texts.format("deletion.cooling.deadline", mapOf("cancel_deadline" to view.coolingUntilText.orEmpty())),
             deadlineTag = AccountTags.DELETE_COOLING_DEADLINE,
             desc = texts.text("deletion.cooling.restore"),
         )

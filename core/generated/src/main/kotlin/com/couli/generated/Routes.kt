@@ -144,6 +144,30 @@ object Routes {
                             ),
                         ),
                 ),
+            "HotRankList" to
+                RouteSpec(
+                    name = "HotRankList",
+                    kind = RouteKind.NATIVE,
+                    auth = "none",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH, RouteEntry.DEEPLINK),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
+                ),
             "ProductDetail" to
                 RouteSpec(
                     name = "ProductDetail",
@@ -185,6 +209,74 @@ object Routes {
                                 pattern = null,
                             ),
                         ),
+                ),
+            "ProductShare" to
+                RouteSpec(
+                    name = "ProductShare",
+                    kind = RouteKind.NATIVE,
+                    auth = "phone",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "platform",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = listOf("taobao", "jd", "pdd", "meituan", "vip", "douyin", "eleme", "kuaishou", "suning"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "product_key",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 3,
+                                maxLength = 128,
+                                pattern = null,
+                            ),
+                            RouteParamSpec(
+                                name = "link_id",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
+                ),
+            "ShareHub" to
+                RouteSpec(
+                    name = "ShareHub",
+                    kind = RouteKind.NATIVE,
+                    auth = "phone",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
+                ),
+            "Favorites" to
+                RouteSpec(
+                    name = "Favorites",
+                    kind = RouteKind.NATIVE,
+                    auth = "login",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
                 ),
             "AuthSheet" to
                 RouteSpec(
@@ -421,6 +513,19 @@ object Routes {
                     agentGuideAccount = "fund",
                     params = emptyList(),
                 ),
+            "Reverify" to
+                RouteSpec(
+                    name = "Reverify",
+                    kind = RouteKind.NATIVE,
+                    auth = "login",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
+                ),
             "PayoutAccount" to
                 RouteSpec(
                     name = "PayoutAccount",
@@ -512,6 +617,19 @@ object Routes {
                     agentGuideAccount = null,
                     params = emptyList(),
                 ),
+            "DataCopy" to
+                RouteSpec(
+                    name = "DataCopy",
+                    kind = RouteKind.NATIVE,
+                    auth = "login",
+                    sinceAndroid = null,
+                    entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params = emptyList(),
+                ),
             "ForceUpdate" to
                 RouteSpec(
                     name = "ForceUpdate",
@@ -563,6 +681,54 @@ object Routes {
                     agentGuide = true,
                     agentGuideAccount = null,
                     params = emptyList(),
+                ),
+            "InviteBackfill" to
+                RouteSpec(
+                    name = "InviteBackfill",
+                    kind = RouteKind.NATIVE,
+                    auth = "phone",
+                    sinceAndroid = "1.0.0",
+                    entries = listOf(RouteEntry.IN_APP),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "source",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = listOf("me", "login"),
+                                minLength = null,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
+                ),
+            "InviteLink" to
+                RouteSpec(
+                    name = "InviteLink",
+                    kind = RouteKind.NATIVE,
+                    auth = "none",
+                    sinceAndroid = "1.0.0",
+                    entries = listOf(RouteEntry.DEEPLINK),
+                    h5Path = null,
+                    debugOnly = false,
+                    agentGuide = false,
+                    agentGuideAccount = null,
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "code",
+                                type = RouteParamType.STRING,
+                                required = true,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = 16,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "Rules" to
                 RouteSpec(
@@ -642,7 +808,7 @@ object Routes {
                                 name = "type",
                                 type = RouteParamType.STRING,
                                 required = false,
-                                enumValues = listOf("agreement", "privacy", "sdk_list", "labor_agreement"),
+                                enumValues = listOf("agreement", "privacy", "sdk_list", "labor_agreement", "collect_list"),
                                 minLength = null,
                                 maxLength = null,
                                 pattern = null,

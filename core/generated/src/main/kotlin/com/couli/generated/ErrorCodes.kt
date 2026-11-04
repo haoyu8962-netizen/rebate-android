@@ -109,6 +109,15 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            10010 to
+                ErrorCodeInfo(
+                    code = 10010,
+                    http = 403,
+                    retryKind = RetryKind.AFTER_ACTION,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             10401 to
                 ErrorCodeInfo(
                     code = 10401,
@@ -186,6 +195,15 @@ object ErrorCodes {
                     code = 20004,
                     http = 400,
                     retryKind = RetryKind.AFTER_ACTION,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            20005 to
+                ErrorCodeInfo(
+                    code = 20005,
+                    http = 400,
+                    retryKind = RetryKind.NEVER,
                     retryKindByReason = emptyMap(),
                     isDeprecated = false,
                     isP1 = false,
@@ -357,6 +375,24 @@ object ErrorCodes {
                     code = 30154,
                     http = 422,
                     retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            30155 to
+                ErrorCodeInfo(
+                    code = 30155,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            30156 to
+                ErrorCodeInfo(
+                    code = 30156,
+                    http = 422,
+                    retryKind = RetryKind.AFTER_ACTION,
                     retryKindByReason = emptyMap(),
                     isDeprecated = false,
                     isP1 = false,
@@ -649,6 +685,24 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            30418 to
+                ErrorCodeInfo(
+                    code = 30418,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            30419 to
+                ErrorCodeInfo(
+                    code = 30419,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             30501 to
                 ErrorCodeInfo(
                     code = 30501,
@@ -802,6 +856,24 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = true,
                 ),
+            30901 to
+                ErrorCodeInfo(
+                    code = 30901,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            30902 to
+                ErrorCodeInfo(
+                    code = 30902,
+                    http = 409,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             40901 to
                 ErrorCodeInfo(
                     code = 40901,
@@ -897,13 +969,22 @@ object ErrorCodes {
                     code = 50304,
                     http = 503,
                     retryKind = RetryKind.LATER,
-                    retryKindByReason = mapOf("search_disabled" to RetryKind.NEVER),
+                    retryKindByReason = mapOf("search_disabled" to RetryKind.NEVER, "rank_unavailable" to RetryKind.NEVER),
                     isDeprecated = false,
                     isP1 = false,
                 ),
             50305 to
                 ErrorCodeInfo(
                     code = 50305,
+                    http = 503,
+                    retryKind = RetryKind.LATER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            50306 to
+                ErrorCodeInfo(
+                    code = 50306,
                     http = 503,
                     retryKind = RetryKind.LATER,
                     retryKindByReason = emptyMap(),

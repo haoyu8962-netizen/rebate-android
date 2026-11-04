@@ -218,6 +218,7 @@ object SettleAdjustSubTypeSerializer : KSerializer<SettleAdjustSubType> {
 
 /**
  * 契约枚举 `reward_sub_type`（contracts/enums/fund.yaml）。
+ * REWARD 的 sub_type；invite 随邀请奖励活动启用，邀请人与被邀请人都用 invite，两方由 invite_rewards 区分；newbie、checkin 仍 P1
  *
  * 未知取值解码为 [RewardSubType.UNKNOWN]，不抛错。
  */
@@ -308,6 +309,204 @@ object AdminAdjustSubTypeSerializer : KSerializer<AdminAdjustSubType> {
     override fun serialize(
         encoder: Encoder,
         value: AdminAdjustSubType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_adjustment_status`（contracts/enums/fund.yaml）。
+ * admin_adjustments.status；人工单一步生效为 APPROVED，PENDING 只剩系统预填单；已红冲是标记不是状态
+ *
+ * 未知取值解码为 [AdminAdjustmentStatus.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAdjustmentStatusSerializer::class)
+enum class AdminAdjustmentStatus(
+    val raw: kotlin.String,
+) {
+    PENDING("PENDING"),
+    APPROVED("APPROVED"),
+    REJECTED("REJECTED"),
+    CANCELLED("CANCELLED"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAdjustmentStatus> =
+            listOf(
+                PENDING,
+                APPROVED,
+                REJECTED,
+                CANCELLED,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAdjustmentStatus> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAdjustmentStatus = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAdjustmentStatus] 的序列化器：未知字符串得 [AdminAdjustmentStatus.UNKNOWN]；序列化写 raw。 */
+object AdminAdjustmentStatusSerializer : KSerializer<AdminAdjustmentStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAdjustmentStatus", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAdjustmentStatus = AdminAdjustmentStatus.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAdjustmentStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_adjustment_direction`（contracts/enums/fund.yaml）。
+ * admin_adjustments.direction，对 available 的方向
+ *
+ * 未知取值解码为 [AdminAdjustmentDirection.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAdjustmentDirectionSerializer::class)
+enum class AdminAdjustmentDirection(
+    val raw: kotlin.String,
+) {
+    INCREASE("increase"),
+    DECREASE("decrease"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAdjustmentDirection> =
+            listOf(
+                INCREASE,
+                DECREASE,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAdjustmentDirection> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAdjustmentDirection = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAdjustmentDirection] 的序列化器：未知字符串得 [AdminAdjustmentDirection.UNKNOWN]；序列化写 raw。 */
+object AdminAdjustmentDirectionSerializer : KSerializer<AdminAdjustmentDirection> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAdjustmentDirection", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAdjustmentDirection = AdminAdjustmentDirection.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAdjustmentDirection,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_adjustment_ref_type`（contracts/enums/fund.yaml）。
+ * 调账单关联单据类型；order 的 ref_id 是子订单 order_key
+ *
+ * 未知取值解码为 [AdminAdjustmentRefType.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAdjustmentRefTypeSerializer::class)
+enum class AdminAdjustmentRefType(
+    val raw: kotlin.String,
+) {
+    RECON_DIFF("recon_diff"),
+    WITHDRAWAL("withdrawal"),
+    ORDER("order"),
+    ACCOUNT_DELETION("account_deletion"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAdjustmentRefType> =
+            listOf(
+                RECON_DIFF,
+                WITHDRAWAL,
+                ORDER,
+                ACCOUNT_DELETION,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAdjustmentRefType> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAdjustmentRefType = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAdjustmentRefType] 的序列化器：未知字符串得 [AdminAdjustmentRefType.UNKNOWN]；序列化写 raw。 */
+object AdminAdjustmentRefTypeSerializer : KSerializer<AdminAdjustmentRefType> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAdjustmentRefType", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAdjustmentRefType = AdminAdjustmentRefType.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAdjustmentRefType,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_adjustment_contra_subject`（contracts/enums/fund.yaml）。
+ * 调账对方科目；RECON_FIX、OTHER 由发起人从前四个选，PAYOUT_RECOVERY 按提现通道取现金科目，ACCOUNT_CLOSED 固定 COMMISSION_REVENUE
+ *
+ * 未知取值解码为 [AdminAdjustmentContraSubject.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminAdjustmentContraSubjectSerializer::class)
+enum class AdminAdjustmentContraSubject(
+    val raw: kotlin.String,
+) {
+    COMMISSION_REVENUE("COMMISSION_REVENUE"),
+    UNION_RECEIVABLE("UNION_RECEIVABLE"),
+    BAD_DEBT("BAD_DEBT"),
+    MKT_EXPENSE("MKT_EXPENSE"),
+    CASH_ALIPAY("CASH_ALIPAY"),
+    CASH_WECHAT("CASH_WECHAT"),
+    CASH_BANK("CASH_BANK"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminAdjustmentContraSubject> =
+            listOf(
+                COMMISSION_REVENUE,
+                UNION_RECEIVABLE,
+                BAD_DEBT,
+                MKT_EXPENSE,
+                CASH_ALIPAY,
+                CASH_WECHAT,
+                CASH_BANK,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminAdjustmentContraSubject> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminAdjustmentContraSubject = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminAdjustmentContraSubject] 的序列化器：未知字符串得 [AdminAdjustmentContraSubject.UNKNOWN]；序列化写 raw。 */
+object AdminAdjustmentContraSubjectSerializer : KSerializer<AdminAdjustmentContraSubject> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminAdjustmentContraSubject", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminAdjustmentContraSubject = AdminAdjustmentContraSubject.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminAdjustmentContraSubject,
     ) {
         encoder.encodeString(value.raw)
     }
@@ -938,6 +1137,81 @@ object WithdrawalChannelStateSerializer : KSerializer<WithdrawalChannelState> {
 }
 
 /**
+ * 契约枚举 `withdrawal_sub_text_branch`（contracts/enums/fund.yaml）。
+ * 提现单副文案分支 key，由服务端按 BR-WDR-25 分支表自上而下取第一条匹配的行算出，取该行 sub_text_branch 列的值；本枚举与该列的取值逐一对应，分支条件与措辞只在 BR-WDR-25 与 /v1/dict 维护，这里只列 key、不按行号引用；客户端遇未知值按 processing 显示
+ *
+ * 未知取值解码为 [WithdrawalSubTextBranch.UNKNOWN]，不抛错。
+ */
+@Serializable(with = WithdrawalSubTextBranchSerializer::class)
+enum class WithdrawalSubTextBranch(
+    val raw: kotlin.String,
+) {
+    PROCESSING("processing"),
+    WECHAT_WAIT_CONFIRM("wechat_wait_confirm"),
+    WECHAT_CONFIRM_EXPIRED("wechat_confirm_expired"),
+    WECHAT_CANCELING("wechat_canceling"),
+    WECHAT_PROCESSING("wechat_processing"),
+    AUTO_EXPECTED_SOON("auto_expected_soon"),
+    MANUAL_REVIEW_PENDING("manual_review_pending"),
+    MANUAL_REVIEW_OVERDUE("manual_review_overdue"),
+    CHANNEL_PROCESSING("channel_processing"),
+    PAYING_DELAYED("paying_delayed"),
+    PAID_API("paid_api"),
+    PAID_MANUAL("paid_manual"),
+    REJECTED_OFFSET("rejected_offset"),
+    REJECTED("rejected"),
+    FAILED_ACCOUNT("failed_account"),
+    FAILED_OTHER("failed_other"),
+    FAILED_MANUAL("failed_manual"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<WithdrawalSubTextBranch> =
+            listOf(
+                PROCESSING,
+                WECHAT_WAIT_CONFIRM,
+                WECHAT_CONFIRM_EXPIRED,
+                WECHAT_CANCELING,
+                WECHAT_PROCESSING,
+                AUTO_EXPECTED_SOON,
+                MANUAL_REVIEW_PENDING,
+                MANUAL_REVIEW_OVERDUE,
+                CHANNEL_PROCESSING,
+                PAYING_DELAYED,
+                PAID_API,
+                PAID_MANUAL,
+                REJECTED_OFFSET,
+                REJECTED,
+                FAILED_ACCOUNT,
+                FAILED_OTHER,
+                FAILED_MANUAL,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, WithdrawalSubTextBranch> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): WithdrawalSubTextBranch = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [WithdrawalSubTextBranch] 的序列化器：未知字符串得 [WithdrawalSubTextBranch.UNKNOWN]；序列化写 raw。 */
+object WithdrawalSubTextBranchSerializer : KSerializer<WithdrawalSubTextBranch> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.WithdrawalSubTextBranch", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): WithdrawalSubTextBranch = WithdrawalSubTextBranch.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: WithdrawalSubTextBranch,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
  * 契约枚举 `payout_attempt_kind`（contracts/enums/fund.yaml）。
  * payout_attempts.kind；cancel 只用于微信零钱单的撤销
  *
@@ -1494,6 +1768,8 @@ enum class ReconDiffType(
     SETTLE_MISSING("settle_missing"),
     APPEAL_RESTORE("appeal_restore"),
     ESTIMATE_CHANGED_AFTER_CREDIT("estimate_changed_after_credit"),
+    PAY_MISMATCH("pay_mismatch"),
+    PAY_ANOMALY("pay_anomaly"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -1510,6 +1786,8 @@ enum class ReconDiffType(
                 SETTLE_MISSING,
                 APPEAL_RESTORE,
                 ESTIMATE_CHANGED_AFTER_CREDIT,
+                PAY_MISMATCH,
+                PAY_ANOMALY,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, ReconDiffType> = known.associateBy { it.raw }
@@ -1628,6 +1906,141 @@ object ReconDiffStatusSerializer : KSerializer<ReconDiffStatus> {
     override fun serialize(
         encoder: Encoder,
         value: ReconDiffStatus,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `union_receipt_method`（contracts/enums/fund.yaml）。
+ * 联盟回款记录的登记方式；同一笔回款只登记一条
+ *
+ * 未知取值解码为 [UnionReceiptMethod.UNKNOWN]，不抛错。
+ */
+@Serializable(with = UnionReceiptMethodSerializer::class)
+enum class UnionReceiptMethod(
+    val raw: kotlin.String,
+) {
+    ADMIN_ENTRY("ADMIN_ENTRY"),
+    R1_RECON("R1_RECON"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<UnionReceiptMethod> =
+            listOf(
+                ADMIN_ENTRY,
+                R1_RECON,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, UnionReceiptMethod> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): UnionReceiptMethod = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [UnionReceiptMethod] 的序列化器：未知字符串得 [UnionReceiptMethod.UNKNOWN]；序列化写 raw。 */
+object UnionReceiptMethodSerializer : KSerializer<UnionReceiptMethod> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.UnionReceiptMethod", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): UnionReceiptMethod = UnionReceiptMethod.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: UnionReceiptMethod,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `union_receipt_cash_account`（contracts/enums/fund.yaml）。
+ * 联盟回款借记的现金科目；银行卡通道未开通时不接受 CASH_BANK
+ *
+ * 未知取值解码为 [UnionReceiptCashAccount.UNKNOWN]，不抛错。
+ */
+@Serializable(with = UnionReceiptCashAccountSerializer::class)
+enum class UnionReceiptCashAccount(
+    val raw: kotlin.String,
+) {
+    CASH_ALIPAY("CASH_ALIPAY"),
+    CASH_BANK("CASH_BANK"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<UnionReceiptCashAccount> =
+            listOf(
+                CASH_ALIPAY,
+                CASH_BANK,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, UnionReceiptCashAccount> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): UnionReceiptCashAccount = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [UnionReceiptCashAccount] 的序列化器：未知字符串得 [UnionReceiptCashAccount.UNKNOWN]；序列化写 raw。 */
+object UnionReceiptCashAccountSerializer : KSerializer<UnionReceiptCashAccount> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.UnionReceiptCashAccount", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): UnionReceiptCashAccount = UnionReceiptCashAccount.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: UnionReceiptCashAccount,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
+ * 契约枚举 `admin_fund_water_level`（contracts/enums/fund.yaml）。
+ * 资金台账概览的水位结论；W 或 P 没有、或 W 已过期时不下结论（字段为 null），未回款超告警线不在此枚举
+ *
+ * 未知取值解码为 [AdminFundWaterLevel.UNKNOWN]，不抛错。
+ */
+@Serializable(with = AdminFundWaterLevelSerializer::class)
+enum class AdminFundWaterLevel(
+    val raw: kotlin.String,
+) {
+    NORMAL("normal"),
+    LOW("low"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<AdminFundWaterLevel> =
+            listOf(
+                NORMAL,
+                LOW,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, AdminFundWaterLevel> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): AdminFundWaterLevel = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [AdminFundWaterLevel] 的序列化器：未知字符串得 [AdminFundWaterLevel.UNKNOWN]；序列化写 raw。 */
+object AdminFundWaterLevelSerializer : KSerializer<AdminFundWaterLevel> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.AdminFundWaterLevel", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): AdminFundWaterLevel = AdminFundWaterLevel.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: AdminFundWaterLevel,
     ) {
         encoder.encodeString(value.raw)
     }

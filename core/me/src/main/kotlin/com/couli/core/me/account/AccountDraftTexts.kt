@@ -79,7 +79,7 @@ object AccountDraftTexts : WalletTexts, MeTexts {
             // ---- 冷静期（DeleteAccountCooling；G15 can_cancel=false 待补稿）
             "deletion.cooling.badge" to "冷静期中",
             "deletion.cooling.title" to "注销申请已提交",
-            "deletion.cooling.deadline" to "{time} 前可以撤回注销",
+            "deletion.cooling.deadline" to "{cancel_deadline} 前可以撤回注销",
             "deletion.cooling.restore" to "撤回后账号恢复正常使用",
             "deletion.cooling.timeline.apply" to "提交注销申请",
             "deletion.cooling.timeline.cooling" to "冷静期 7 天",

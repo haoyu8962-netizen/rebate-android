@@ -35,6 +35,8 @@ enum class NotifyTemplateCode(
     SMS_CODE("SMS_CODE"),
     UNION_AUTH_EXPIRING("UNION_AUTH_EXPIRING"),
     UNION_AUTH_EXPIRED("UNION_AUTH_EXPIRED"),
+    DATA_COPY_READY("DATA_COPY_READY"),
+    DATA_COPY_CODE("DATA_COPY_CODE"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -58,6 +60,8 @@ enum class NotifyTemplateCode(
                 SMS_CODE,
                 UNION_AUTH_EXPIRING,
                 UNION_AUTH_EXPIRED,
+                DATA_COPY_READY,
+                DATA_COPY_CODE,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, NotifyTemplateCode> = known.associateBy { it.raw }
