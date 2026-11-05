@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -30,7 +29,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -60,6 +58,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -71,6 +70,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -96,15 +96,16 @@ import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.DisclaimerFooter
 import com.couli.core.designsystem.DisclaimerKeys
 import com.couli.core.designsystem.DisclaimerLine
-import com.couli.core.designsystem.DisclaimerNoteDialog
 import com.couli.core.designsystem.EmptyState
 import com.couli.core.designsystem.ErrorAnnouncement
+import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.MappedProductCard
 import com.couli.core.designsystem.ProductCardKeys
 import com.couli.core.designsystem.ProductCardList
 import com.couli.core.designsystem.ProductCardMapper
 import com.couli.core.designsystem.RestoreLanding
 import com.couli.core.designsystem.SkeletonProductCard
+import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.awaitLanding
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.network.ResultSignals
@@ -181,6 +182,12 @@ internal object SearchKeys {
     const val END = "search.end"
     const val STALE = "search.stale_notice"
     const val UNAVAILABLE = "search.unavailable"
+
+    /** 三家都关的说明（契约字典；{platform_name} 空时回落「该平台」，Q10）。 */
+    const val SEARCH_DISABLED = "error.50304.search_disabled"
+
+    /** 半屏右上关闭的读屏名（契约字典 external_page.close「关闭」）。 */
+    const val CLOSE = "external_page.close"
     const val RETRY = "external_page.retry"
     const val GENERIC_ERROR = "error.50001"
     const val PLATFORM_NAME = "platform_name"
@@ -213,6 +220,8 @@ internal fun SearchScreen(
     val texts = config.texts
     // 每张卡 i 的焦点目标（口径说明弹层关闭后把焦点还给它）；不是界面状态，不触发重组
     val infoFocus = remember { HashMap<String, FocusRequester>() }
+    // 【价格区间】胶囊的焦点目标（价格半屏关闭后把焦点还给它，SearchFilterPrice-v2）
+    val priceFocus = remember { FocusRequester() }
     BackHandler { config.actions.onBack() }
     Column(
         modifier =
@@ -226,10 +235,15 @@ internal fun SearchScreen(
     ) {
         Column(modifier = Modifier.widthIn(max = CONTENT_MAX_WIDTH.dp).fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxWidth().background(CouliColors.backgroundSurface)) {
-                SearchBar(model, input, state, texts, autoFocus = config.query.isNullOrEmpty())
-                if (state.tabs.isNotEmpty()) PlatformTabs(state, texts, model.controller::selectTab)
-                SortRow(state, texts, model.controller::selectSort)
-                FilterRow(state, texts, onCoupon = model::onCouponToggle, onPrice = model::openPriceFilter)
+                // Q10（SearchDisabled）：三家都关时头部只留返回；Q09（SearchTyping-v2）：输入态不画平台 Tab / 排序 / 筛选，进结果态即出现
+                val backOnly = state.phase == SearchPhase.UNAVAILABLE
+                SearchBar(model, input, state, texts, autoFocus = config.query.isNullOrEmpty(), backOnly = backOnly)
+                if (state.phase != SearchPhase.IDLE && !backOnly) {
+                    if (state.tabs.isNotEmpty()) PlatformTabs(state, texts, model.controller::selectTab)
+                    SortRow(state, texts, model.controller::selectSort)
+                    FilterRow(state, texts, priceFocus, onCoupon = model::onCouponToggle, onPrice = model::openPriceFilter)
+                }
+                SearchDivider()
             }
             // 粘贴结果（APP-07，30132）：不依赖搜索阶段，粘贴后用户已开始关键词搜索也照样显示（A-R2-02）
             config.pasteResult?.let { slot ->
@@ -247,16 +261,27 @@ internal fun SearchScreen(
     }
     val current = overlay
     if (current is SearchOverlay.Disclaimer) {
-        DisclaimerNoteDialog(
+        // SearchDisclaimerNote-v2（Q13）：半屏 + 右上关闭 + 通栏描边【知道了】；遮罩、返回、关闭、【知道了】同一个关闭动作，关闭后焦点回该卡 i
+        val dismiss = model::dismissOverlay
+        CouliSheet(
             title = texts.text(ProductCardKeys.DISCLAIMER_TITLE),
-            lines = current.lines,
-            closeText = texts.text(ProductCardKeys.DISCLAIMER_CLOSE),
-            onDismiss = model::dismissOverlay,
+            onDismissRequest = dismiss,
             restoreFocusTo = infoFocus[current.cardKey],
-        )
+            closeLabel = texts.text(SearchKeys.CLOSE),
+            actions = {
+                CouliButton(
+                    text = texts.text(ProductCardKeys.DISCLAIMER_CLOSE),
+                    onClick = dismiss,
+                    variant = CouliButtonVariant.SECONDARY,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+        ) {
+            SearchDisclaimerLines(current.lines)
+        }
     }
     if (current == SearchOverlay.PriceFilter) {
-        PriceFilterSheet(model, texts)
+        PriceFilterSheet(model, texts, priceFocus)
     }
 }
 
@@ -267,6 +292,7 @@ private fun SearchBar(
     state: SearchSnapshot,
     texts: SearchTexts,
     autoFocus: Boolean,
+    backOnly: Boolean,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = remember { FocusRequester() }
@@ -281,174 +307,191 @@ private fun SearchBar(
         if (model.onSubmit()) keyboard?.hide()
     }
     val shape = RoundedCornerShape(CouliRadius.button)
+    // SearchTyping-v2 / Search-v2 头部：左 4、右 16、上下 4（命中 48 比画板 44 高 4，整行仍 56 高）；返回 → 4 → 搜索框 → 8 →【搜索】
     Row(
-        modifier = Modifier.fillMaxWidth().padding(end = CouliSpacing.space4, top = CouliSpacing.space2, bottom = CouliSpacing.space2),
+        modifier =
+            Modifier.fillMaxWidth().padding(
+                start = CouliSpacing.space1,
+                end = CouliSpacing.space4,
+                top = CouliSpacing.space1,
+                bottom = CouliSpacing.space1,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CouliIconButton(icon = CouliIcons.back, label = texts.text(SearchKeys.BACK), onClick = model.config.actions.onBack)
-        Row(
-            modifier =
-                Modifier
-                    .weight(1f)
-                    .heightIn(min = CouliSizes.touchTarget)
-                    .border(CouliSizes.hairline, CouliColors.borderControl, shape)
-                    .background(CouliColors.backgroundSurface, shape)
-                    .padding(start = CouliSpacing.space3),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        ) {
-            Icon(
-                CouliIcons.search,
-                contentDescription = null,
-                tint = CouliColors.textSecondary,
-                modifier = Modifier.size(CouliSizes.iconMedium),
-            )
-            Box(modifier = Modifier.weight(1f).padding(vertical = CouliSpacing.space2)) {
-                if (input.isEmpty()) {
-                    Text(text = texts.text(SearchKeys.PLACEHOLDER), style = CouliTypography.body, color = CouliColors.textSecondary)
-                }
-                BasicTextField(
-                    value = input,
-                    onValueChange = model::onInput,
-                    singleLine = true,
-                    textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
-                    cursorBrush = SolidColor(CouliColors.textPrimary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { submit() }),
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focus)
-                            .testTag(SearchTags.INPUT)
-                            .semantics { contentDescription = texts.text(SearchKeys.PLACEHOLDER) },
-                )
-            }
-            if (input.isNotEmpty()) {
-                CouliIconButton(
-                    icon = CouliIcons.close,
-                    label = texts.text(SearchKeys.CLEAR),
-                    onClick = model::onClear,
+        if (!backOnly) {
+            Spacer(Modifier.size(CouliSpacing.space1))
+            Row(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .heightIn(min = CouliSizes.touchTarget)
+                        .border(CouliSizes.hairline, CouliColors.borderControl, shape)
+                        .background(CouliColors.backgroundSurface, shape)
+                        .padding(start = CouliSpacing.space3),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+            ) {
+                Icon(
+                    CouliIcons.search,
+                    contentDescription = null,
                     tint = CouliColors.textSecondary,
-                    iconSize = CouliSizes.iconSmall,
-                    modifier = Modifier.testTag(SearchTags.CLEAR),
+                    modifier = Modifier.size(CouliSizes.iconMedium),
                 )
+                Box(modifier = Modifier.weight(1f).padding(vertical = CouliSpacing.space2)) {
+                    if (input.isEmpty()) {
+                        // 占位一行、末尾省略（窄屏 / 200% 不把头部撑高；读屏名仍是完整占位，见输入框 contentDescription）
+                        Text(
+                            text = texts.text(SearchKeys.PLACEHOLDER),
+                            style = CouliTypography.body,
+                            color = CouliColors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    BasicTextField(
+                        value = input,
+                        onValueChange = model::onInput,
+                        singleLine = true,
+                        textStyle = CouliTypography.body.copy(color = CouliColors.textPrimary),
+                        cursorBrush = SolidColor(CouliColors.textPrimary),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { submit() }),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focus)
+                                .testTag(SearchTags.INPUT)
+                                .semantics { contentDescription = texts.text(SearchKeys.PLACEHOLDER) },
+                    )
+                }
+                if (input.isNotEmpty()) {
+                    CouliIconButton(
+                        icon = CouliIcons.close,
+                        label = texts.text(SearchKeys.CLEAR),
+                        onClick = model::onClear,
+                        tint = CouliColors.textSecondary,
+                        iconSize = CouliSizes.iconSmall,
+                        modifier = Modifier.testTag(SearchTags.CLEAR),
+                    )
+                }
             }
+            Spacer(Modifier.size(CouliSpacing.space2))
+            // 【搜索】实心：组件库紧凑档（左右 16、min 48）+ 画板 17/600 字
+            CouliButton(
+                text = texts.text(SearchKeys.SUBMIT),
+                onClick = submit,
+                size = CouliButtonSize.COMPACT,
+                enabled = !state.blocked,
+                textStyle = CouliTextStyles.bodySemibold,
+                modifier = Modifier.testTag(SearchTags.SUBMIT),
+            )
         }
-        Spacer(Modifier.size(CouliSpacing.space2))
-        CouliButton(
-            text = texts.text(SearchKeys.SUBMIT),
-            onClick = submit,
-            size = CouliButtonSize.COMPACT,
-            enabled = !state.blocked,
-            modifier = Modifier.testTag(SearchTags.SUBMIT),
-        )
     }
 }
 
-/** 平台 Tab（只有 search_status=on 的平台，BR-PROD-10）：选中项品牌色 + 下划线，读屏为标签与选中态。 */
+/**
+ * 平台 Tab（只有 search_status=on 的平台，BR-PROD-10；Search-v2）：左右 16、项间 24；每项 20 官方平台图标（装饰）+ 6 + 名称 17，选中强调色 600 +
+ * 与本项同宽的 2 下划线；读屏为标签与选中态。行下 1px 分隔。
+ */
 @Composable
 private fun PlatformTabs(
     state: SearchSnapshot,
     texts: SearchTexts,
     onSelect: (String) -> Unit,
 ) {
+    // S2-3：选中 Tab 随选中值 / 字号 / 视口宽变化滚入视口（纯视图滚动，不切 Tab、不发请求）
+    var viewport by remember { mutableIntStateOf(0) }
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
+                .onSizeChanged { viewport = it.width }
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = CouliSpacing.space2)
+                .padding(horizontal = CouliSpacing.space4)
                 .selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space6),
     ) {
         state.tabs.forEach { platform ->
-            val selected = platform == state.platform
-            Column(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .selectable(selected = selected, enabled = !state.blocked, role = Role.Tab) { onSelect(platform) }
-                        .padding(horizontal = CouliSpacing.space3)
-                        .testTag(SearchTags.TAB_PREFIX + platform),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    text = texts.text(ProductCardKeys.platform(platform)),
-                    style = if (selected) CouliTextStyles.bodySemibold else CouliTypography.body,
-                    color = if (selected) CouliColors.brandEmphasis else CouliColors.textSecondary,
-                    modifier = Modifier.padding(vertical = CouliSpacing.space2),
-                )
-                Box(
-                    Modifier
-                        .size(width = CouliSpacing.space8, height = UNDERLINE.dp)
-                        .background(if (selected) CouliColors.brandPrimary else CouliColors.backgroundSurface),
-                )
-            }
+            SearchPlatformTab(
+                platform = platform,
+                name = texts.text(ProductCardKeys.platform(platform)),
+                selected = platform == state.platform,
+                enabled = !state.blocked,
+                onClick = { onSelect(platform) },
+                modifier = Modifier.testTag(SearchTags.TAB_PREFIX + platform),
+                revealKey = viewport,
+            )
         }
     }
-    Box(Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
+    SearchDivider()
 }
 
-/** 四个排序（契约 SortCode；名称照 BR-PRICE-18）：窄屏横滑。 */
+/** 四个排序（契约 SortCode；名称照 BR-PRICE-18；Search-v2 14/21、左右 16、项间 20）：窄屏横滑，选中项随选中值 / 尺寸变化滚入视口。 */
 @Composable
 private fun SortRow(
     state: SearchSnapshot,
     texts: SearchTexts,
     onSelect: (String) -> Unit,
 ) {
+    var viewport by remember { mutableIntStateOf(0) }
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .onSizeChanged { viewport = it.width }
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = CouliSpacing.space4)
+                .selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(SORT_GAP.dp),
+    ) {
+        Sort.known.forEach { sort ->
+            SearchSortItem(
+                label = texts.text(SearchKeys.sort(sort.raw)),
+                selected = sort.raw == state.sort,
+                enabled = !state.blocked,
+                onClick = { onSelect(sort.raw) },
+                modifier = Modifier.testTag(SearchTags.SORT_PREFIX + sort.raw),
+                revealKey = viewport,
+            )
+        }
+    }
+}
+
+/**
+ * 筛选行（Search-v2：左右 16、下 8、间距 8；画板 / brief §4.5「筛选行横滑」）：【只看有券】与【价格区间】两个胶囊不换行，超宽（长价格区间、200%）时横滑；
+ * 价格胶囊挂 [priceFocus]（价格半屏关闭后回到这里）。
+ */
+@Composable
+private fun FilterRow(
+    state: SearchSnapshot,
+    texts: SearchTexts,
+    priceFocus: FocusRequester,
+    onCoupon: () -> Unit,
+    onPrice: () -> Unit,
+) {
     Row(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = CouliSpacing.space2)
-                .selectableGroup(),
-    ) {
-        Sort.known.forEach { sort ->
-            val selected = sort.raw == state.sort
-            Box(
-                modifier =
-                    Modifier
-                        .heightIn(min = CouliSizes.touchTarget)
-                        .selectable(selected = selected, enabled = !state.blocked, role = Role.RadioButton) { onSelect(sort.raw) }
-                        .padding(horizontal = CouliSpacing.space3)
-                        .testTag(SearchTags.SORT_PREFIX + sort.raw),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = texts.text(SearchKeys.sort(sort.raw)),
-                    style = if (selected) CouliTextStyles.bodySemibold else CouliTypography.body,
-                    color = if (selected) CouliColors.textPrimary else CouliColors.textSecondary,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FilterRow(
-    state: SearchSnapshot,
-    texts: SearchTexts,
-    onCoupon: () -> Unit,
-    onPrice: () -> Unit,
-) {
-    FlowRow(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space1),
+                .padding(start = CouliSpacing.space4, end = CouliSpacing.space4, bottom = CouliSpacing.space1),
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilterChip(
+        SearchFilterCapsule(
             label = texts.text(SearchKeys.COUPON),
             selected = state.hasCoupon,
             enabled = !state.blocked,
             onClick = onCoupon,
-            tag = SearchTags.COUPON,
+            modifier = Modifier.testTag(SearchTags.COUPON),
         )
-        FilterChip(
+        SearchFilterCapsule(
             label = priceChipLabel(state, texts),
             selected = state.priceMinFen != null || state.priceMaxFen != null,
             enabled = !state.blocked,
             onClick = onPrice,
-            tag = SearchTags.PRICE,
+            modifier = Modifier.couliFocusTarget(priceFocus).testTag(SearchTags.PRICE),
             trailing = true,
         )
     }
@@ -468,52 +511,7 @@ private fun priceChipLabel(
     }
 }
 
-/** 筛选胶囊：视觉 36 高，外层命中区 48（A11yHitSearch）；选中态品牌浅底 + 强调字，读屏报选中。 */
-@Composable
-private fun FilterChip(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    tag: String,
-    trailing: Boolean = false,
-) {
-    val shape = RoundedCornerShape(CouliRadius.pill)
-    Box(
-        modifier =
-            Modifier
-                .heightIn(min = CouliSizes.touchTarget)
-                .selectable(selected = selected, enabled = enabled, role = Role.Checkbox, onClick = onClick)
-                .testTag(tag),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            modifier =
-                Modifier
-                    .heightIn(min = CHIP_HEIGHT.dp)
-                    .background(if (selected) CouliColors.brandSubtle else CouliColors.backgroundSurface, shape)
-                    .border(CouliSizes.hairline, if (selected) CouliColors.brandPrimary else CouliColors.borderControl, shape)
-                    .padding(horizontal = CouliSpacing.space3),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-        ) {
-            Text(
-                text = label,
-                style = CouliTypography.caption,
-                color = if (selected) CouliColors.brandEmphasis else CouliColors.textPrimary,
-            )
-            if (trailing) {
-                Icon(
-                    CouliIcons.chevronDown,
-                    contentDescription = null,
-                    tint = CouliColors.textSecondary,
-                    modifier = Modifier.size(CouliSizes.iconTiny),
-                )
-            }
-        }
-    }
-}
-
+/** 筛选胶囊、历史胶囊、Tab、排序项、提示条外观在 SearchVisualParts.kt（只收显示值与 lambda）。下面是按阶段的页面主体。 */
 @Composable
 private fun SearchBody(
     model: SearchViewModel,
@@ -548,23 +546,35 @@ private fun SearchBody(
             Column(modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space4)) {
                 Notices(state, texts)
                 DisabledPasteSlot(model, state)
-                ErrorBlock(
-                    message = errorText(state.error, state.platform, texts),
-                    retryLabel = texts.text(SearchKeys.RETRY),
-                    enabled = !state.blocked,
-                    onRetry = { model.controller.retry() },
-                    tag = SearchTags.ERROR,
+                // SearchError（Q12）：组件库错误态（96 占位 → 17/600 一句 → 实心【重试】min 160×48）；trace6、立即播报一次后焦点到【重试】、
+                // 42901 期间置灰均原样（ErrorState 内同一个 ErrorAnnouncement）
+                ErrorState(
+                    title = errorText(state.error, state.platform, texts),
+                    retry =
+                        StateAction(
+                            label = texts.text(SearchKeys.RETRY),
+                            enabled = !state.blocked,
+                            primary = true,
+                            onClick = { model.controller.retry() },
+                        ),
+                    modifier = Modifier.padding(top = PAGE_STATE_TOP.dp).testTag(SearchTags.ERROR),
+                    actionModifier = Modifier.widthIn(min = RETRY_MIN_WIDTH.dp).testTag(SearchTags.RETRY),
                 )
             }
         }
 
         SearchPhase.UNAVAILABLE -> {
+            // SearchDisabled（Q10）：头部只有返回；居中 96 占位 + error.50304.search_disabled（三家都关，平台名回落「该平台」）+ 粘贴入口；无【重试】
             Column(modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space4)) {
                 Notices(state, texts)
-                EmptyState(title = texts.text(SearchKeys.UNAVAILABLE), modifier = Modifier.testTag(SearchTags.UNAVAILABLE))
+                EmptyState(
+                    title = texts.text(SearchKeys.SEARCH_DISABLED),
+                    icon = CouliIcons.info,
+                    modifier = Modifier.padding(top = PAGE_STATE_TOP.dp).testTag(SearchTags.UNAVAILABLE),
+                )
             }
-            // 没有可搜索的平台：「可以粘贴商品链接查返利」（APP-07）
-            PasteSlot(model, top = false)
+            // 没有可搜索的平台：「可以粘贴商品链接查返利」（APP-07），在说明下居中（SearchDisabled）
+            PasteSlot(model, top = false, centered = true)
         }
 
         else -> {
@@ -575,13 +585,14 @@ private fun SearchBody(
 
 /**
  * App 给的「粘贴查返利」入口（APP-07）；[top] 时上边距 16（输入态的第一块），否则与上一块之间只留下边距；[inset] 为 false 时不加左右边距
- * （所在容器已有）。
+ * （所在容器已有）；[centered] 时入口水平居中（三家都关，SearchDisabled）。
  */
 @Composable
 private fun PasteSlot(
     model: SearchViewModel,
     top: Boolean,
     inset: Boolean = true,
+    centered: Boolean = false,
 ) {
     val entry = model.config.pasteEntry ?: return
     val side = if (inset) CouliSpacing.space4 else CouliSpacing.space0
@@ -591,6 +602,7 @@ private fun PasteSlot(
                 .fillMaxWidth()
                 .padding(start = side, end = side, top = if (top) CouliSpacing.space4 else CouliSpacing.space0)
                 .testTag(SearchTags.PASTE_ENTRY),
+        horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
     ) {
         entry()
     }
@@ -609,6 +621,7 @@ private fun DisabledPasteSlot(
     Column(modifier = Modifier.padding(bottom = CouliSpacing.space2)) { PasteSlot(model, top = false, inset = false) }
 }
 
+/** 搜索历史（SearchTyping-v2）：上 16 左右 16；「搜索历史」14/600 + 右侧【清空】14 链接色；历史词 32 高胶囊（按钮角色，点一下 = 提交这个词）。 */
 @Composable
 private fun HistoryPanel(
     history: List<String>,
@@ -619,12 +632,12 @@ private fun HistoryPanel(
     if (history.isEmpty()) return
     Column(
         modifier = Modifier.fillMaxWidth().padding(CouliSpacing.space4),
-        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+        verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = texts.text(SearchKeys.HISTORY_TITLE),
-                style = CouliTextStyles.bodySemibold,
+                style = CouliTextStyles.footnoteSemibold,
                 color = CouliColors.textPrimary,
                 modifier = Modifier.weight(1f).semantics { heading() },
             )
@@ -633,18 +646,16 @@ private fun HistoryPanel(
                 onClick = onClear,
                 variant = CouliButtonVariant.TEXT,
                 size = CouliButtonSize.COMPACT,
+                textStyle = CouliTypography.footnote,
                 modifier = Modifier.testTag(SearchTags.HISTORY_CLEAR),
             )
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
             history.forEach { word ->
-                FilterChip(
-                    label = word,
-                    selected = false,
-                    enabled = true,
+                SearchHistoryCapsule(
+                    word = word,
                     onClick = { onWord(word) },
-                    tag =
-                        SearchTags.HISTORY_PREFIX + word,
+                    modifier = Modifier.testTag(SearchTags.HISTORY_PREFIX + word),
                 )
             }
         }
@@ -665,31 +676,20 @@ private fun Notices(
     }
 }
 
+/** 提示条（GUIDE §3：圆角 12、内边距 12、14 字、20 图标）：结果顶部，polite 播报；条下 8 与下一块隔开，没有提示时不占高度。 */
 @Composable
 private fun NoticeBar(
     text: String,
     tag: String,
 ) {
-    Row(
+    SearchNoticeFace(
+        text = text,
         modifier =
             Modifier
-                .fillMaxWidth()
                 .padding(bottom = CouliSpacing.space2)
-                .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.small))
-                .padding(CouliSpacing.space3)
                 .semantics { liveRegion = LiveRegionMode.Polite }
                 .testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Icon(
-            CouliIcons.info,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconSmall),
-        )
-        Text(text = text, style = CouliTypography.caption, color = CouliColors.statusWarningText)
-    }
+    )
 }
 
 /**
@@ -1176,7 +1176,7 @@ private fun FallbackHeader(
     Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
         Text(
             text = texts.format(SearchKeys.FALLBACK_TITLE, mapOf(SearchKeys.PLATFORM_NAME to name)),
-            style = CouliTextStyles.bodySemibold,
+            style = CouliTextStyles.footnoteSemibold,
             color = CouliColors.textPrimary,
             modifier = Modifier.semantics { heading() },
         )
@@ -1294,12 +1294,8 @@ private fun ListFooter(
             }
 
             state.loadingMore -> {
-                Text(
-                    text = texts.text(SearchKeys.LOADING),
-                    style = CouliTypography.caption,
-                    color = CouliColors.textSecondary,
-                    modifier = Modifier.padding(CouliSpacing.space3).testTag(SearchTags.LOAD_MORE),
-                )
+                // SearchLoading（Q14）：翻页中在列表底部多一张卡片骨架，画在原 footer 项里（不新增列表项）；读屏仍为「加载中」
+                SkeletonProductCard(description = texts.text(SearchKeys.LOADING), modifier = Modifier.testTag(SearchTags.LOAD_MORE))
             }
 
             !state.endReached -> {
@@ -1375,11 +1371,15 @@ private fun AutoLoadMore(
 private fun PriceFilterSheet(
     model: SearchViewModel,
     texts: SearchTexts,
+    priceFocus: FocusRequester,
 ) {
     val draft by model.priceDraft.collectAsStateWithLifecycle()
+    // SearchFilterPrice-v2：标题 + 右上关闭；「最低价」「最高价」12 标签在框上方；关闭（按钮、遮罩、返回）后焦点回【价格区间】胶囊
     CouliSheet(
         title = texts.text(SearchKeys.PRICE),
         onDismissRequest = model::dismissOverlay,
+        restoreFocusTo = priceFocus,
+        closeLabel = texts.text(SearchKeys.CLOSE),
         actions = {
             Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
                 CouliButton(
@@ -1396,10 +1396,12 @@ private fun PriceFilterSheet(
             }
         },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            PriceField(draft.min, texts.text(SearchKeys.SHEET_MIN), SearchTags.PRICE_MIN, Modifier.weight(1f), model::onPriceMin)
-            Text(text = "–", style = CouliTypography.body, color = CouliColors.textSecondary)
-            PriceField(draft.max, texts.text(SearchKeys.SHEET_MAX), SearchTags.PRICE_MAX, Modifier.weight(1f), model::onPriceMax)
+        // 两栏按输入框外框中线对齐，横杠按自身中线对齐同一条线（S2-5：不再用固定偏移，200% 下仍居中）
+        Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            val frame = Modifier.weight(1f).alignBy(SearchPriceFrameCenter)
+            SearchPriceField(draft.min, texts.text(SearchKeys.SHEET_MIN), SearchTags.PRICE_MIN, model::onPriceMin, frame)
+            SearchPriceDash("–")
+            SearchPriceField(draft.max, texts.text(SearchKeys.SHEET_MAX), SearchTags.PRICE_MAX, model::onPriceMax, frame)
         }
         Text(text = texts.text(SearchKeys.SHEET_NOTE), style = CouliTypography.caption, color = CouliColors.textSecondary)
         if (draft.invalid) {
@@ -1413,44 +1415,19 @@ private fun PriceFilterSheet(
     }
 }
 
-@Composable
-private fun PriceField(
-    value: String,
-    label: String,
-    tag: String,
-    modifier: Modifier,
-    onChange: (String) -> Unit,
-) {
-    val shape = RoundedCornerShape(CouliRadius.button)
-    Box(
-        modifier =
-            modifier
-                .heightIn(min = CouliSizes.touchTarget)
-                .border(CouliSizes.hairline, CouliColors.borderControl, shape)
-                .padding(horizontal = CouliSpacing.space3, vertical = CouliSpacing.space2),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        if (value.isEmpty()) Text(text = label, style = CouliTypography.body, color = CouliColors.textSecondary)
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            singleLine = true,
-            textStyle = CouliTextStyles.amountBody.copy(color = CouliColors.textPrimary),
-            cursorBrush = SolidColor(CouliColors.textPrimary),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.fillMaxWidth().testTag(tag).semantics { contentDescription = label },
-        )
-    }
-}
-
 /** 卡片的稳定键：product_key，金额未知卡用 link_id。 */
 internal fun cardKey(raw: JsonObject): String = raw.string("product_key") ?: raw.string("link_id") ?: raw.hashCode().toString()
 
 /** 大屏（最小宽度 ≥ 600dp）内容限宽并居中（03 §10.4）。 */
 private const val CONTENT_MAX_WIDTH = 600
-private const val UNDERLINE = 2
-private const val CHIP_HEIGHT = 36
+private const val SORT_GAP = 20
 private const val SKELETONS = 3
+
+/** 页面级错误 / 三家都关的状态块离头部的距离（SearchError、SearchDisabled 上 96：外层 16 + 状态块自身 24 + 这里 56）。 */
+private const val PAGE_STATE_TOP = 56
+
+/** 页面级【重试】最小宽（SearchError：min 160 × 48）。 */
+private const val RETRY_MIN_WIDTH = 160
 private const val DISCLAIMER_MAX_HEIGHT = 160
 
 /** 卡片映射：带上此刻的平台购买状态（features.platform_status，APP-06a 共性第 27、31 条）。 */

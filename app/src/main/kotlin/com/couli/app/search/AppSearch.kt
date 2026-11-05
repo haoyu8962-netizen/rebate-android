@@ -253,7 +253,7 @@ class AppSearch(
         return SearchPageConfig(
             api = api,
             config = configPort,
-            texts = SearchDraftTexts,
+            texts = searchTexts(privacy()),
             history = history,
             query = params.text("q"),
             platform = params.text("platform"),

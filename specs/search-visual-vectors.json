@@ -1,0 +1,402 @@
+{
+  "version": 1,
+  "base": "63934c8",
+  "scope": "APP-06x-a-android",
+  "clock": {
+    "now": "2026-11-04T10:00:00+08:00",
+    "nowMillis": 1793757600000,
+    "timezone": "Asia/Shanghai"
+  },
+  "notes": [
+    "全部商品标题、店名、标识为虚构样例；staging 只借长度、区间与拼单口径组合，不复制商品或凭据。",
+    "图片省略，使用组件库本地占位；无网络。",
+    "金额隐藏仅由既有 ProductCardData.withAmountHidden(true) 组件探针覆盖；搜索页无该配置入口，不伪造服务端字段。",
+    "不含 b 段 not_launched / login_required / 首页向量。"
+  ],
+  "history": [
+    "纯牛奶",
+    "抽纸",
+    "洗衣凝珠",
+    "保温杯"
+  ],
+  "queries": {
+    "normal": "纯牛奶",
+    "category": "食品生鲜",
+    "link": "https://item.example.test/sample-search"
+  },
+  "cards": {
+    "tb_range": {
+      "card_id": "sample-tb_range",
+      "product_key": "taobao:sample-tb_range",
+      "item_ref": "sample-ref-tb_range",
+      "platform": "taobao",
+      "title": "样例全脂乳品 250ml × 24 盒 整箱装 早餐饮品 学生饮品 送礼盒装 新鲜批次",
+      "shop_name": "样例商品店",
+      "price_fen": 2345,
+      "coupon_fen": 1000,
+      "final_price_fen": 1345,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 112,
+      "est_net_price_fen": 1289,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "tb_single": {
+      "card_id": "sample-tb_single",
+      "product_key": "taobao:sample-tb_single",
+      "item_ref": "sample-ref-tb_single",
+      "platform": "taobao",
+      "title": "样例乳品 200ml × 12 盒 多规格可选",
+      "shop_name": "样例商品店",
+      "price_fen": 1234,
+      "coupon_fen": 0,
+      "final_price_fen": 1234,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 56,
+      "est_net_price_fen": 1178,
+      "rebate_basis": "normal",
+      "disclaimer_keys": [
+        "price_basis.general",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy"
+      }
+    },
+    "tb_presale": {
+      "card_id": "sample-tb_presale",
+      "product_key": "taobao:sample-tb_presale",
+      "item_ref": "sample-ref-tb_presale",
+      "platform": "taobao",
+      "title": "样例有机乳品 250ml × 24 盒 预售 下月发货",
+      "shop_name": "样例商品店",
+      "price_fen": 9999,
+      "coupon_fen": 0,
+      "final_price_fen": 9999,
+      "rebate_min_fen": 250,
+      "rebate_max_fen": 500,
+      "est_net_price_fen": 9749,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis.general",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy"
+      },
+      "is_presale": true
+    },
+    "fallback_tissue": {
+      "card_id": "sample-fallback_tissue",
+      "product_key": "taobao:sample-fallback_tissue",
+      "item_ref": "sample-ref-fallback_tissue",
+      "platform": "taobao",
+      "title": "样例抽纸 3 层 120 抽 × 24 包 家用整箱装",
+      "shop_name": "样例商品店",
+      "price_fen": 1734,
+      "coupon_fen": 500,
+      "final_price_fen": 1234,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 56,
+      "est_net_price_fen": 1178,
+      "rebate_basis": "normal",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "fallback_rice": {
+      "card_id": "sample-fallback_rice",
+      "product_key": "taobao:sample-fallback_rice",
+      "item_ref": "sample-ref-fallback_rice",
+      "platform": "taobao",
+      "title": "样例长粒香大米 10kg 新米 预售款",
+      "shop_name": "样例商品店",
+      "price_fen": 8800,
+      "coupon_fen": 0,
+      "final_price_fen": 8800,
+      "rebate_min_fen": 321,
+      "rebate_max_fen": 321,
+      "est_net_price_fen": 8479,
+      "rebate_basis": "normal",
+      "disclaimer_keys": [
+        "price_basis.general",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy"
+      },
+      "is_presale": true
+    },
+    "pdd_coupon": {
+      "card_id": "sample-pdd_coupon",
+      "product_key": "pdd:sample-pdd_coupon",
+      "item_ref": "sample-ref-pdd_coupon",
+      "platform": "pdd",
+      "title": "样例拼单乳品 250ml × 24 盒 早餐整箱装",
+      "shop_name": "样例商品店",
+      "price_fen": 1534,
+      "coupon_fen": 300,
+      "final_price_fen": 1234,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 56,
+      "est_net_price_fen": 1178,
+      "rebate_basis": "normal",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "pdd_plain": {
+      "card_id": "sample-pdd_plain",
+      "product_key": "pdd:sample-pdd_plain",
+      "item_ref": "sample-ref-pdd_plain",
+      "platform": "pdd",
+      "title": "样例拼单乳品 200ml × 12 盒 日常装",
+      "shop_name": "样例商品店",
+      "price_fen": 1234,
+      "coupon_fen": 0,
+      "final_price_fen": 1234,
+      "rebate_min_fen": 34,
+      "rebate_max_fen": 68,
+      "est_net_price_fen": 1200,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis.general",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy"
+      }
+    },
+    "off_shelf": {
+      "card_id": "sample-off_shelf",
+      "product_key": "taobao:sample-off_shelf",
+      "item_ref": "sample-ref-off_shelf",
+      "platform": "taobao",
+      "title": "样例已下架商品",
+      "shop_name": "样例商品店",
+      "price_fen": 2345,
+      "coupon_fen": 1000,
+      "final_price_fen": 1345,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 112,
+      "est_net_price_fen": 1289,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_compare"
+      ],
+      "availability": "off_shelf",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "compare": {
+      "card_id": "sample-compare",
+      "product_key": "taobao:sample-compare",
+      "item_ref": "sample-ref-compare",
+      "platform": "taobao",
+      "title": "样例比价商品",
+      "shop_name": "样例商品店",
+      "price_fen": 2345,
+      "coupon_fen": 1000,
+      "final_price_fen": 1345,
+      "rebate_min_fen": 0,
+      "rebate_max_fen": 0,
+      "est_net_price_fen": null,
+      "rebate_basis": "no_rebate",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.no_rebate"
+      },
+      "no_rebate_cause": "price_compare"
+    },
+    "price_unavailable": {
+      "card_id": "sample-price_unavailable",
+      "product_key": "taobao:sample-price_unavailable",
+      "item_ref": "sample-ref-price_unavailable",
+      "platform": "taobao",
+      "title": "样例暂时无法取价商品",
+      "shop_name": "样例商品店",
+      "price_fen": null,
+      "coupon_fen": 1000,
+      "final_price_fen": null,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 112,
+      "est_net_price_fen": null,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "long_title": {
+      "card_id": "sample-long_title",
+      "product_key": "taobao:sample-long_title",
+      "item_ref": "sample-ref-long_title",
+      "platform": "taobao",
+      "title": "样例超长标题家用收纳整理用品组合套装多规格多颜色适用于厨房卧室客厅日常整理便携环保耐用补充装共二十四件",
+      "shop_name": "样例商品店",
+      "price_fen": 2345,
+      "coupon_fen": 1000,
+      "final_price_fen": 1345,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 112,
+      "est_net_price_fen": 1289,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "long_price": {
+      "card_id": "sample-long_price",
+      "product_key": "taobao:sample-long_price",
+      "item_ref": "sample-ref-long_price",
+      "platform": "taobao",
+      "title": "样例大额商品组合套装",
+      "shop_name": "样例商品店",
+      "price_fen": 10000999,
+      "coupon_fen": 1000,
+      "final_price_fen": 9999999,
+      "rebate_min_fen": 9999999,
+      "rebate_max_fen": 9999999,
+      "est_net_price_fen": 0,
+      "rebate_basis": "normal",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_estimate"
+      ],
+      "availability": "ok",
+      "age_sec": 0,
+      "stale": false,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    },
+    "stale": {
+      "card_id": "sample-stale",
+      "product_key": "taobao:sample-stale",
+      "item_ref": "sample-ref-stale",
+      "platform": "taobao",
+      "title": "样例缓存报价商品",
+      "shop_name": "样例商品店",
+      "price_fen": 2345,
+      "coupon_fen": 1000,
+      "final_price_fen": 1345,
+      "rebate_min_fen": 56,
+      "rebate_max_fen": 112,
+      "est_net_price_fen": 1289,
+      "rebate_basis": "price_compare_risk",
+      "disclaimer_keys": [
+        "price_basis",
+        "rebate_compare"
+      ],
+      "availability": "ok",
+      "age_sec": 301,
+      "stale": true,
+      "quoted_at": "2026-11-04T10:00:00+08:00",
+      "cta": {
+        "text_key": "btn.buy.coupon"
+      }
+    }
+  },
+  "pages": {
+    "normal": [
+      "tb_range",
+      "tb_single",
+      "tb_presale"
+    ],
+    "pdd": [
+      "pdd_coupon",
+      "pdd_plain"
+    ],
+    "fallback": [
+      "fallback_tissue",
+      "fallback_rice"
+    ]
+  },
+  "errors": {
+    "unavailable": {
+      "code": 50304,
+      "trace_id": "sample-search-000123"
+    },
+    "limited": {
+      "code": 42901,
+      "retry_after_seconds": 5,
+      "trace_id": "sample-search-000429"
+    },
+    "disabled": {
+      "code": 50304,
+      "reason": "search_disabled",
+      "platform": "taobao",
+      "trace_id": "sample-search-000503"
+    }
+  }
+}
