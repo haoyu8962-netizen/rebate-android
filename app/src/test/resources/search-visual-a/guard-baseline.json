@@ -31,7 +31,7 @@
     },
     {
       "p": "contract.lock",
-      "h": "ee878ac376054c0ad652bcde9442038b29c20ead7266afd9495446cf1213cd03"
+      "h": "b48188f3da176340fe2af7417d0c2cf137193f29eaf8bd79c9216b3e4d8a314e"
     },
     {
       "p": "contracts/snapshot/contracts/agent-stream.schema.json",
@@ -155,7 +155,7 @@
     },
     {
       "p": "contracts/snapshot/design/design-tokens.json",
-      "h": "cae7499e21496fbeaddc190c7d6170dbf03161436e0e85062d8d4373670f42f1"
+      "h": "97d2bf83ada062959987f348bc695c63fabc4adb3647f03e5c0895e2548e491c"
     },
     {
       "p": "contracts/snapshot/specs/app-stores.json",
@@ -247,7 +247,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliColors.kt",
-      "h": "be078e2ca9dfb81ab716c7c7049b072df4d2dad515236c908783f9da1c808675"
+      "h": "4162efb510e20ecb0d0fac0256b0941ab27b67c1c6bb974f82ee705a163c4366"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliDimens.kt",
@@ -259,7 +259,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliFoundation.kt",
-      "h": "a5e7d9b577b3e768fed2e2f3b7779621cb5dae17d13536723a5c97959e14416e"
+      "h": "512385883a03396839dccc88abb265180c3a0e5e2a7c29b8e0aabc92a40c4380"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliIcons.kt",
@@ -295,7 +295,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliThemeTokens.kt",
-      "h": "ba1e2f1a76d63dd4bf0001089fccc5f40ea4315d3b0e4c9b0133275d1237f4c7"
+      "h": "fa5b9dcf37e672027bb96c279d4a43583a41b4f765bd888b866a144935a35b95"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliTypography.kt",
@@ -319,7 +319,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PlatformIcons.kt",
-      "h": "4d96ebb7f8aa94f71e50ceb80f8adecbed8923ffa86bf0704797eb3e17cee203"
+      "h": "2956a1fff20908b4fc56d9384ed9474d86ce9835c280f1a8c953ed71016ad649"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PriceComponents.kt",

@@ -62,9 +62,9 @@ fun platformIconAssetPath(platformCode: String): String? = PLATFORM_ICON_FILES[p
 enum class PlatformIconSize(
     val dp: Dp,
 ) {
-    BADGE(14.dp),
-    FILTER(16.dp),
-    SELECT(20.dp),
+    BADGE(CouliComponentTokens.iconSmall),
+    FILTER(CouliComponentTokens.iconInline),
+    SELECT(CouliComponentTokens.iconMedium),
 
     /** 授权半屏标题前（ProductAuthSheet-v2，G-D14）：同一张内置原图缩放，不新增素材。 */
     SHEET(32.dp),

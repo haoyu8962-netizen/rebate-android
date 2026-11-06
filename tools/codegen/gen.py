@@ -866,24 +866,139 @@ object DefaultTexts {
 # ---------------------------------------------------------------- 令牌
 
 
-def token_leaves(node: dict, prefix: str = ""):
+def token_nodes(node: dict, prefix: str = ""):
+    """令牌叶子（含 value 的对象）：(点分路径, 叶子对象)。"""
     result = []
     for name, child in node.items():
         path = f"{prefix}.{name}" if prefix else name
         if not isinstance(child, dict):
             raise GenError(f"令牌 {path} 不是对象")
         if "value" in child:
-            result.append((path, child["value"]))
+            result.append((path, child))
         else:
-            result.extend(token_leaves(child, path))
+            result.extend(token_nodes(child, path))
     return result
+
+
+def token_node_parts(node: dict, prefix: tuple = ()):
+    """令牌叶子：(路径段元组, 叶子对象)。消费核对用元组，避免字面点号键与嵌套路径撞成同一字符串；
+    含点号的键在任何层级都拒绝，报错带完整路径（父路径 + 键原文）。"""
+    result = []
+    for name, child in node.items():
+        parts = prefix + (name,)
+        path = ".".join(parts)
+        if "." in name:
+            raise GenError(f"令牌 {path} 的键 {name!r} 含点号（与嵌套路径无法区分，不允许）")
+        if not isinstance(child, dict):
+            raise GenError(f"令牌 {path} 不是对象")
+        if "value" in child:
+            result.append((parts, child))
+        else:
+            result.extend(token_node_parts(child, parts))
+    return result
+
+
+def token_leaves(node: dict, prefix: str = ""):
+    return [(path, leaf["value"]) for path, leaf in token_nodes(node, prefix)]
+
+
+def is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def int_leaves(node: dict, where: str):
     out = []
     for path, value in token_leaves(node):
-        if not isinstance(value, int) or isinstance(value, bool):
+        if not is_int(value):
             raise GenError(f"令牌 {where}.{path} 不是整数：{value!r}")
+        out.append((path, value))
+    return out
+
+
+# 颜色只认 #RRGGBB 与 #RRGGBBAA（末两位为透明度，与令牌源 overlay.scrim 的写法一致）；不收 #RGB / #AARRGGBB 等别的写法。
+_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?")
+
+
+def check_color(where: str, value) -> str:
+    if not isinstance(value, str) or not _COLOR_RE.fullmatch(value):
+        raise GenError(f"颜色令牌 {where} 不是 #RRGGBB / #RRGGBBAA：{value!r}")
+    return value
+
+
+def color_leaves(node: dict):
+    """color.* → (浅色, 深色)。每个颜色都必须有 dark，缺了报错，不静默回落浅色。"""
+    light, dark = [], []
+    for path, leaf in token_nodes(node):
+        light.append((path, check_color(f"color.{path}", leaf["value"])))
+        if "dark" not in leaf:
+            raise GenError(f"颜色令牌 color.{path} 缺 dark")
+        dark.append((path, check_color(f"color.{path}.dark", leaf["dark"])))
+    return light, dark
+
+
+_SHADOW_FIELDS = ("x", "y", "blur", "spread", "color", "opacity")
+
+
+def shadow_layers(where: str, layers) -> list:
+    if not isinstance(layers, list):
+        raise GenError(f"阴影令牌 {where} 不是数组")
+    out = []
+    for index, layer in enumerate(layers):
+        at = f"{where}[{index}]"
+        if not isinstance(layer, dict) or set(layer) != set(_SHADOW_FIELDS):
+            raise GenError(f"阴影令牌 {at} 须且只能有 {'/'.join(_SHADOW_FIELDS)}")
+        for field in ("x", "y", "blur", "spread"):
+            if not is_int(layer[field]):
+                raise GenError(f"阴影令牌 {at}.{field} 不是整数：{layer[field]!r}")
+        if not is_number(layer["opacity"]):
+            raise GenError(f"阴影令牌 {at}.opacity 不是数值：{layer['opacity']!r}")
+        check_color(f"{at}.color", layer["color"])
+        out.append(layer)
+    return out
+
+
+def shadow_leaves(node: dict):
+    """shadow.* → (浅色层列表, 深色层列表)。非空阴影必须有 dark；空阴影（shadow.none）无 dark 时深色同为空。"""
+    light, dark = [], []
+    for path, leaf in token_nodes(node):
+        layers = shadow_layers(f"shadow.{path}", leaf["value"])
+        light.append((path, layers))
+        if "dark" in leaf:
+            dark.append((path, shadow_layers(f"shadow.{path}.dark", leaf["dark"])))
+        elif layers:
+            raise GenError(f"阴影令牌 shadow.{path} 缺 dark")
+        else:
+            dark.append((path, []))
+    return light, dark
+
+
+def component_leaves(node: dict):
+    """component.* 按源的 type 分段：dimension → 整数尺寸；number → 数值（1.5 不截断，整数 3 也走数值段）。"""
+    dimensions, numbers = [], []
+    for path, leaf in token_nodes(node):
+        kind, value = leaf.get("type"), leaf["value"]
+        if kind == "dimension":
+            if not is_int(value):
+                raise GenError(f"令牌 component.{path} 是 dimension 但不是整数：{value!r}")
+            dimensions.append((path, value))
+        elif kind == "number":
+            if not is_number(value):
+                raise GenError(f"令牌 component.{path} 是 number 但不是数值：{value!r}")
+            numbers.append((path, float(value)))
+        else:
+            raise GenError(f"令牌 component.{path} 的 type 不是 dimension / number：{kind!r}")
+    return dimensions, numbers
+
+
+def font_family_leaves(node: dict):
+    out = []
+    for path, value in token_leaves(node):
+        if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+            raise GenError(f"令牌 font.family.{path} 不是非空字符串数组")
         out.append((path, value))
     return out
 
@@ -896,41 +1011,129 @@ def kmap_lines(name: str, kdoc: str, value_type: str, pairs, render) -> list:
     return lines
 
 
+def render_shadow(layers: list) -> str:
+    if not layers:
+        return "kotlin.collections.emptyList()"
+    items = ", ".join(
+        f"ShadowLayer(x = {layer['x']}, y = {layer['y']}, blur = {layer['blur']}, spread = {layer['spread']}, "
+        f"color = {kstr(layer['color'])}, opacity = {float(layer['opacity'])!r})"
+        for layer in layers
+    )
+    return f"kotlin.collections.listOf({items})"
+
+
+def render_string_list(values: list) -> str:
+    return "kotlin.collections.listOf(" + ", ".join(kstr(value) for value in values) + ")"
+
+
+# 生成器认识的令牌段 → 该段允许的叶子 type。源里每个叶子都必须落在某一段内且 type 相符，
+# 否则带完整点分路径报 GenError（不静默丢弃：源里有、生成物里没有的令牌不能悄悄放过）。
+TOKEN_SECTION_TYPES = {
+    "color": {"color"},
+    "shadow": {"shadow"},
+    "font.family": {"fontFamily"},
+    "font.size": {"fontSize"},
+    "font.weight": {"fontWeight"},
+    "font.line-height": {"lineHeight"},
+    "space": {"dimension"},
+    "radius": {"dimension"},
+    "focus": {"dimension"},
+    "interaction.target": {"dimension"},
+    "component": {"dimension", "number"},
+}
+
+
+class TokenConsumer:
+    """按段取令牌子树，逐叶核 type 并记下消费过的路径；最后与源的全部叶子做集合核对。"""
+
+    def __init__(self, tokens: dict):
+        self.tokens = tokens
+        self.consumed = set()
+        # 先整树走一遍：含点号的键在任何层级一律拒绝（与嵌套路径无法区分）。
+        self.leaves = token_node_parts(tokens)
+
+    def __call__(self, section: str) -> dict:
+        allowed = TOKEN_SECTION_TYPES[section]
+        node = self.tokens
+        for part in section.split("."):
+            node = node.get(part) or {}
+            if not isinstance(node, dict):
+                raise GenError(f"令牌 {section} 不是对象")
+        if "value" in node:
+            raise GenError(f"令牌 {section} 应是分组，却直接是叶子")
+        for parts, leaf in token_node_parts(node, tuple(section.split("."))):
+            path = ".".join(parts)
+            kind = leaf.get("type")
+            if not isinstance(kind, str):
+                raise GenError(f"令牌 {path} 的 type {kind!r} 不是字符串（{section} 段只收 {' / '.join(sorted(allowed))}）")
+            if kind not in allowed:
+                raise GenError(f"令牌 {path} 的 type {kind!r} 不属于 {section} 段（只收 {' / '.join(sorted(allowed))}）")
+            self.consumed.add(parts)
+        return node
+
+    def check_all_consumed(self) -> None:
+        missed = sorted(".".join(parts) for parts, _ in self.leaves if parts not in self.consumed)
+        if missed:
+            raise GenError("令牌源有生成器不认识的路径（未生成，请先在 gen.py 支持该段）：" + "、".join(missed))
+
+
 def gen_tokens(out_root: str):
     data = load("design/design-tokens.json")
     version = (data.get("metadata") or {}).get("version")
     if not isinstance(version, str):
         raise GenError("design-tokens.json 缺 metadata.version")
     tokens = data.get("tokens") or {}
-    colors = []
-    for path, value in token_leaves(tokens.get("color") or {}):
-        if not isinstance(value, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
-            raise GenError(f"颜色令牌 color.{path} 不是 #RRGGBB：{value!r}")
-        colors.append((path, value))
-    font = tokens.get("font") or {}
-    spacing = int_leaves(tokens.get("space") or {}, "space")
-    radius = int_leaves(tokens.get("radius") or {}, "radius")
-    font_size = int_leaves(font.get("size") or {}, "font.size")
-    font_weight = int_leaves(font.get("weight") or {}, "font.weight")
+    if not isinstance(tokens, dict):
+        raise GenError("design-tokens.json 的 tokens 不是对象")
+    take = TokenConsumer(tokens)
+    colors, colors_dark = color_leaves(take("color"))
+    font_family = font_family_leaves(take("font.family"))
+    spacing = int_leaves(take("space"), "space")
+    radius = int_leaves(take("radius"), "radius")
+    font_size = int_leaves(take("font.size"), "font.size")
+    font_weight = int_leaves(take("font.weight"), "font.weight")
     line_height = []
-    for path, value in token_leaves(font.get("line-height") or {}):
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+    for path, value in token_leaves(take("font.line-height")):
+        if not is_number(value):
             raise GenError(f"令牌 font.line-height.{path} 不是数值")
         line_height.append((path, float(value)))
-    target = int_leaves((tokens.get("interaction") or {}).get("target") or {}, "interaction.target")
-    focus = int_leaves(tokens.get("focus") or {}, "focus")
+    target = int_leaves(take("interaction.target"), "interaction.target")
+    focus = int_leaves(take("focus"), "focus")
+    shadows, shadows_dark = shadow_leaves(take("shadow"))
+    component, component_number = component_leaves(take("component"))
+    take.check_all_consumed()
     lines = [
         "/** 设计令牌原始常量（design/tokens/design-tokens.json）。语义映射在 core:designsystem。 */",
         "object DesignTokens {",
         "    /** metadata.version */",
         f"    const val version: kotlin.String = {kstr(version)}",
         "",
+        "    /** 阴影的一层（shadow.* 的数组元素）：偏移 / 模糊 / 扩展为逻辑像素，color 为 #RRGGBB(AA)，opacity 0–1。 */",
+        "    data class ShadowLayer(",
+        "        val x: kotlin.Int,",
+        "        val y: kotlin.Int,",
+        "        val blur: kotlin.Int,",
+        "        val spread: kotlin.Int,",
+        "        val color: kotlin.String,",
+        "        val opacity: kotlin.Double,",
+        "    )",
+        "",
     ]
-    lines += kmap_lines("colors", "color.* 点分路径（去掉 color. 前缀）→ #RRGGBB", "kotlin.String", colors, kstr)
+    lines += kmap_lines("colors", "color.* 点分路径（去掉 color. 前缀）→ 浅色 #RRGGBB / #RRGGBBAA（末两位透明度）", "kotlin.String", colors, kstr)
+    lines.append("")
+    lines += kmap_lines("colorsDark", "color.*.dark → 深色 #RRGGBB / #RRGGBBAA（键与 colors 相同）", "kotlin.String", colors_dark, kstr)
     lines.append("")
     lines += kmap_lines("spacing", "space.* → 逻辑像素（dp）", "kotlin.Int", spacing, str)
     lines.append("")
     lines += kmap_lines("radius", "radius.* → 逻辑像素（dp）", "kotlin.Int", radius, str)
+    lines.append("")
+    lines += kmap_lines(
+        "fontFamily",
+        "font.family.* → 字体回退列表（只导出数据；原生仍用平台系统字体）",
+        "kotlin.collections.List<kotlin.String>",
+        font_family,
+        render_string_list,
+    )
     lines.append("")
     lines += kmap_lines("fontSize", "font.size.* → 基础字号（sp，随系统字号缩放）", "kotlin.Int", font_size, str)
     lines.append("")
@@ -941,6 +1144,16 @@ def gen_tokens(out_root: str):
     lines += kmap_lines("interactionTarget", "interaction.target.* → 最小命中区（逻辑像素）", "kotlin.Int", target, str)
     lines.append("")
     lines += kmap_lines("focus", "focus.* → 焦点环线宽与外距（逻辑像素）", "kotlin.Int", focus, str)
+    lines.append("")
+    lines += kmap_lines("shadows", "shadow.* → 浅色阴影层（有序；空列表 = 无阴影）", "kotlin.collections.List<ShadowLayer>", shadows, render_shadow)
+    lines.append("")
+    lines += kmap_lines(
+        "shadowsDark", "shadow.*.dark → 深色阴影层（键与 shadows 相同）", "kotlin.collections.List<ShadowLayer>", shadows_dark, render_shadow
+    )
+    lines.append("")
+    lines += kmap_lines("component", "component.*（type=dimension）→ 逻辑像素（dp）", "kotlin.Int", component, str)
+    lines.append("")
+    lines += kmap_lines("componentNumber", "component.*（type=number）→ 无单位数值（如勾选框放大上限倍数）", "kotlin.Double", component_number, repr)
     lines.append("}")
     return [write(out_root, f"{MAIN_KOTLIN}/DesignTokens.kt", kotlin_file("\n".join(lines) + "\n"))]
 

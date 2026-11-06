@@ -54,21 +54,24 @@ object CouliSizes {
     /** 设计稿视觉高度 44（interaction.target.minimum）；Android 命中区仍扩到 [touchTarget]。 */
     val visualTarget: Dp = DesignTokens.interactionTarget.getValue("minimum").dp
 
-    /** 图标：24 = space6，20 = space5，16 = space4；14 是 GUIDE §3 标签内的小图标（令牌没有）。 */
-    val iconLarge: Dp = CouliSpacing.space6
-    val iconMedium: Dp = CouliSpacing.space5
-    val iconSmall: Dp = CouliSpacing.space4
-    val iconTiny: Dp = ICON_TINY.dp
+    /**
+     * 图标：24 = component.icon.default，20 = icon.medium，16 = icon.inline，14 = icon.small。
+     * 注意本对象的 iconSmall 是 16（源 icon.inline），iconTiny 才是源 icon.small 14；名字沿用旧 API。
+     */
+    val iconLarge: Dp = componentDp("icon.default")
+    val iconMedium: Dp = CouliComponentTokens.iconMedium
+    val iconSmall: Dp = CouliComponentTokens.iconInline
+    val iconTiny: Dp = CouliComponentTokens.iconSmall
 
-    /** 列表卡左图 96 = space16 + space8。 */
-    val listThumbnail: Dp = CouliSpacing.space16 + CouliSpacing.space8
+    /** 列表卡左图（component.image.list）。 */
+    val listThumbnail: Dp = CouliComponentTokens.imageList
 
-    /** 宫格格高 ≥ 72 = space16 + space2（GUIDE §7.2）。 */
-    val gridCellMinHeight: Dp = CouliSpacing.space16 + CouliSpacing.space2
+    /** 宫格格高下限（component.grid-cell.min-height，GUIDE §7.2）。 */
+    val gridCellMinHeight: Dp = CouliComponentTokens.gridCellMinHeight
 
-    /** 标签（胶囊）高 22、来源标签高 20（GUIDE §3 / §7.2.1）。 */
-    val tagHeight: Dp = TAG_HEIGHT.dp
-    val badgeHeight: Dp = CouliSpacing.space5
+    /** 标签（胶囊）高（component.tag.min-height）、来源标签高（component.platform-badge.min-height）（GUIDE §3 / §7.2.1）。 */
+    val tagHeight: Dp = CouliComponentTokens.tagMinHeight
+    val badgeHeight: Dp = CouliComponentTokens.platformBadgeMinHeight
 
     /** 空态占位块 96。 */
     val emptyIllustration: Dp = listThumbnail
@@ -77,26 +80,26 @@ object CouliSizes {
     val sheetHandleWidth: Dp = CouliSpacing.space8 + CouliSpacing.space1
     val sheetHandleHeight: Dp = CouliSpacing.space1
 
-    /** 卡片阴影（GUIDE §2：0 2 8 rgba(40,37,31,0.06)），Compose 用 elevation 近似。 */
-    val cardElevation: Dp = CouliSpacing.space1 / 2
+    /** 卡片阴影（shadow.card：首层 y 偏移），Compose 用 elevation 近似。 */
+    val cardElevation: Dp = cardShadowLayer().y.dp
 
-    /** 分隔线、描边 1。 */
-    val hairline: Dp = 1.dp
+    /** 分隔线、描边（component.control.border-width）。 */
+    val hairline: Dp = componentDp("control.border-width")
 
     /** 宫格最小单元宽（4 列宫格在 200% 字号下改 2 列的判断阈值，GUIDE 未给，取 72 与格高一致）。 */
     val gridCellMinWidth: Dp = gridCellMinHeight
-
-    private const val ICON_TINY = 14
-    private const val TAG_HEIGHT = 22
 }
 
 /** 透明度与字体特性常量。 */
 internal object CouliAlpha {
-    /** 遮罩 rgba(40, 37, 31, 0.4)。 */
-    const val SCRIM = 0.4f
+    /** 遮罩透明度：浅色 overlay.scrim（#RRGGBBAA）的 alpha。 */
+    val SCRIM: Float = parseHexColor(DesignTokens.colors.getValue("overlay.scrim")).alpha
 
-    /** 卡片阴影颜色透明度 0.06（GUIDE §2）。 */
-    const val CARD_SHADOW = 0.06f
+    /**
+     * 卡片阴影颜色透明度：shadow.card 浅色首层 opacity。深色 shadow.card.dark（#000000 / 0.3）尚未接入 [couliCard]
+     * （接入会改深色快照像素，待编排定范围），深色仍沿用浅色透明度 + 当前主题 text.primary。
+     */
+    val CARD_SHADOW: Float = cardShadowLayer().opacity.toFloat()
 
     /** 200% 字号：两列数字格、宫格一律纵排（adaptation-a11y-spec §2）。 */
     const val LARGE_FONT_SCALE = 2f
@@ -136,6 +139,9 @@ object CouliTextStyles {
     /** 28/700 等宽（订单详情返利主数字，APP-08v O22）。 */
     val amountHeading: TextStyle = CouliTypography.heading.copy(fontWeight = FontWeight.Bold).tabular()
 }
+
+/** shadow.card 浅色首层（[CouliSizes.cardElevation] 与 [CouliAlpha.CARD_SHADOW] 的来源）。 */
+private fun cardShadowLayer(): DesignTokens.ShadowLayer = DesignTokens.shadows.getValue("card").first()
 
 private const val SHEET_TITLE_SIZE = 20
 private const val SHEET_TITLE_LINE = 26

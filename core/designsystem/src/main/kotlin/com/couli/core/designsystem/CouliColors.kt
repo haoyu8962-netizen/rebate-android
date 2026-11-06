@@ -128,7 +128,7 @@ object CouliColors {
         @Composable @ReadOnlyComposable
         get() = token("button.primary.disabled.text")
 
-    // —— 组件清单 §7 新增颜色（T1–T5），只在组件库常量里，令牌源补齐后改读生成物 ——
+    // —— 组件清单 §7 新增颜色（T1–T5），令牌源 v0.4.0 已收录，与上面一样读当前主题的生成表 ——
     val buttonInverseBackground: Color
         @Composable @ReadOnlyComposable
         get() = token(CouliThemeTokens.BUTTON_INVERSE_BACKGROUND)
@@ -148,7 +148,7 @@ object CouliColors {
         @Composable @ReadOnlyComposable
         get() = token(CouliThemeTokens.CONTROL_CHECKED)
 
-    /** 令牌源的浅色值（令牌路径 → 颜色，便于核对生成物映射完整；不含新增键、不随主题变化）。 */
+    /** 令牌源的浅色值（令牌路径 → 颜色，便于核对生成物映射完整；不含 Fixed 派生键、不随主题变化）。 */
     val all: Map<String, Color> = DesignTokens.colors.mapValues { (_, hex) -> parseHexColor(hex) }
 
     @Composable
@@ -156,12 +156,22 @@ object CouliColors {
     private fun token(path: String): Color = LocalCouliColorTokens.current.getValue(path)
 }
 
-/** `#RRGGBB` → 不透明 [Color]。 */
+/**
+ * 令牌色值 → [Color]：`#RRGGBB` 为不透明；`#RRGGBBAA`（令牌源写法，末两位为透明度）把 alpha 字节移到 Compose 的
+ * 0xAARRGGBB 高位，不截掉、也不当成 #AARRGGBB 读。其他写法一律拒绝。
+ */
 fun parseHexColor(hex: String): Color {
-    require(hex.length == HEX_LENGTH && hex[0] == '#') { "颜色令牌须为 #RRGGBB：$hex" }
-    val rgb = hex.substring(1).toLong(radix = 16)
-    return Color(OPAQUE_ALPHA or rgb)
+    require(hex.startsWith('#') && (hex.length == RGB_LENGTH || hex.length == RGBA_LENGTH)) {
+        "颜色令牌须为 #RRGGBB / #RRGGBBAA：$hex"
+    }
+    val bits = hex.substring(1).toLong(radix = 16)
+    val argb = if (hex.length == RGBA_LENGTH) (bits ushr BYTE_BITS) or ((bits and BYTE_MASK) shl ALPHA_SHIFT) else OPAQUE_ALPHA or bits
+    return Color(argb)
 }
 
-private const val HEX_LENGTH = 7
+private const val RGB_LENGTH = 7
+private const val RGBA_LENGTH = 9
+private const val BYTE_BITS = 8
+private const val ALPHA_SHIFT = 24
+private const val BYTE_MASK = 0xFFL
 private const val OPAQUE_ALPHA = 0xFF000000L
