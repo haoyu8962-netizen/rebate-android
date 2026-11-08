@@ -59,6 +59,13 @@ data class BenefitTag(
     val withInfoIcon: Boolean = false,
 )
 
+/** 已填同卡单一返利金额的购买动词：[text] 与映射给出的 [ProductCardData.buyBase] 同一句，[spoken] 是它的读屏读法（金额读作「2.69 元」）。 */
+@Immutable
+data class BuyVerbAmount(
+    val text: String,
+    val spoken: String,
+)
+
 /**
  * 商品卡的数据（全部是已格式化的文字或模型结果；文案由调用方从字典取）。
  * [imageLabel]：图片占位里的字（商品图未接入前）。
@@ -104,9 +111,19 @@ data class ProductCardData(
     val platformCode: String? = null,
     /** 推广标识（契约 ad_label，BR-TEXT-17）：非 null 时原样显示为角标（详情头图左上，APP-06v G-D04）；不 trim、不换字。 */
     val adLabel: String? = null,
+    /**
+     * 映射已把同卡单一返利金额填进购买动词（btn.buy.rebate「购买预估返 ¥2.69」，FU-X-CTA-KEY-DRIFT R1）时由 [ProductCardMapper] 给出，
+     * 其余为 null。按钮据此不再拼「 · 预估返」后缀、读屏不再追加金额（显式带出，不从文字推断，iOS 评审 S2-2）。
+     */
+    val buyVerbAmount: BuyVerbAmount? = null,
 ) {
     /** 价格不可用：不显示任何金额（[priceUnavailableText]）。 */
     val priceUnavailable: Boolean get() = priceUnavailableText != null
+
+    /**
+     * 按钮动词 [base] 已含同卡返利金额时的读屏句（给 [BuyButton] 的 amountVerbSpoken）；[base] 不是映射填好的那句（购买流程换了文字等）为 null。
+     */
+    fun amountVerbSpoken(base: String = buyBase): String? = buyVerbAmount?.takeIf { it.text == base }?.spoken
 
     val amountHidden: Boolean get() = amountMask?.hidden == true
 
@@ -222,6 +239,7 @@ fun ProductCardList(
                         amountHidden = shown.amountHidden,
                         retryLaterText = retryLaterText,
                         retryLaterOutlined = retryLaterOutlined,
+                        amountVerbSpoken = shown.amountVerbSpoken(),
                     )
                 },
             )

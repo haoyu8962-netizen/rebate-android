@@ -474,6 +474,8 @@ private fun BottomBar(
                 amountHidden = override?.text != null,
                 retryLaterText = retryLater,
                 size = CouliButtonSize.STANDARD,
+                // 动词已含同卡返利金额（btn.buy.rebate）：不再拼后缀、读屏不再追加；购买流程换了文字时不算
+                amountVerbSpoken = card.data.amountVerbSpoken(base),
             )
         }
     }

@@ -1,6 +1,9 @@
 package com.couli.core.designsystem
 
+import android.util.Log
+import com.couli.generated.DefaultTexts
 import java.time.OffsetDateTime
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -37,6 +40,27 @@ object ProductCardKeys {
 
     /** 价格不可用时按钮的「稍后再试」（BR-TEXT-14 表 C）。 */
     const val RETRY_LATER = "card.retry_later"
+
+    /** cta.text_key 渲染不出完整文案时改用的动词键（FU-X-CTA-KEY-DRIFT R2，D10-861）：先经调用方 texts，再用包内契约字典。 */
+    const val BUY_FALLBACK = "btn.buy"
+}
+
+/**
+ * cta 文案键的默认诊断（FU-X-CTA-KEY-DRIFT R3）：经系统日志写一条，只带 text_key 原值，不带商品、用户、链接、店铺、价格。
+ * Release 照写（与 AppWeb「invalid config key」同一写法，不是调试入口）；同一进程同一个键只写一次（卡片重组、详情重画不刷屏）。
+ * 去重缓存最多记 [MAX_KEYS] 个键：满了以后没记过的键照写、只是不再进缓存（新键第一次诊断不丢，R3；Codex 评审 r1 S1）。
+ * 纯 JVM 单测里 android.util.Log 不可用，静默跳过、不抛错。
+ */
+object CtaKeyLog {
+    private const val TAG = "CouliCta"
+    private const val MAX_KEYS = 64
+    private val logged: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    fun fallback(textKey: String) {
+        val fresh = if (logged.size < MAX_KEYS) logged.add(textKey) else textKey !in logged
+        if (!fresh) return
+        runCatching { Log.w(TAG, "cta text_key not renderable, using ${ProductCardKeys.BUY_FALLBACK}: $textKey") }
+    }
 }
 
 /** 一张接口商品卡的映射结果：DesignSystem 卡片数据 + 按钮状态与判定。 */
@@ -54,27 +78,40 @@ data class MappedProductCard(
  * 接口的 ProductCard（openapi 9cd1e6f，searchProducts / getProduct 的 JSON 对象）→ [ProductCardData]（APP-06a）。
  * 只做格式化，不做计算（BR-PRICE-17）：价格、返利、预估返后都用服务端字段经 [PriceTagModel] / [RebateTagModel] / [EstNetModel]。
  * - 价格三字段原样保留「未知」（null），不补 0（BR-PRICE-01，共性第 1 条）：价格不可用时卡上不显示任何金额，显示提示，按钮「稍后再试」禁用；
- * - 购买按钮动词：服务端 cta.text_key（BR-TEXT-12、TRADE-21）；三个已登记的键取 [PriceTerms]（N-11 补键前），其余经 texts；
+ * - 购买按钮动词：服务端 cta.text_key（BR-TEXT-12、TRADE-21）经 texts 取字典原文；原文带 {amount} 时填同卡返利标签的单一金额，
+ *   渲染不出完整文案的改用 btn.buy 并记诊断，没有 cta / 空键禁用（FU-X-CTA-KEY-DRIFT R1–R4，见 [ctaVerb]）；
  * - 优惠标签：服务端 benefit_tags 原样，预售卡缺「预售」时补上；预售说明在价格副行（PriceTagContent.subLines）；
  * - 口径说明：disclaimer_keys 按数组顺序取文字（BR-PRICE-17）；
  * - 取价时间（详情大卡）：「取价 今天 HH:mm」（BR-TEXT-11 列表过去时间），stale 时另给价格变化提示（BR-PRICE-11，共性第 3 条）；
  * - 图片：契约 image（https）经 [LocalProductImageLoader] 加载，没有或失败时占位（APP-06a 共性第 22 条）；
  * - 平台购买状态（features.platform_status）：not_launched 隐藏返利金额与预估返后、按钮「X返利即将开放」禁用，maintenance 按钮「稍后再试」禁用。
  */
+@Suppress("TooManyFunctions") // 逐字段映射 + cta 文案渲染（R1–R4）的私有小函数
 object ProductCardMapper {
     /** BR-PRICE-11：age_sec 超过 300 秒（或 stale=true）时提示价格可能已变化；正好 300 秒不提示。 */
     private const val STALE_AGE_SEC = 300L
     private const val AMOUNT_UNKNOWN = "amount_unknown"
     private const val PRICE_UNAVAILABLE = "price_unavailable"
     private const val OFF_SHELF = "off_shelf"
+    private const val AMOUNT_NAME = "amount"
+    private const val AMOUNT_VAR = "{$AMOUNT_NAME}"
+    private val PLACEHOLDER = Regex("\\{[a-z0-9_]+\\}")
 
-    @Suppress("CyclomaticComplexMethod", "ComplexCondition") // 逐字段映射，缺失即未知
+    /** 包内契约字典（锁内 texts.default.json）：调用方 texts 给不出 btn.buy 时用。 */
+    private val BUNDLED = ProductCardTexts { DefaultTexts.text(it).orEmpty() }
+
+    /**
+     * [onCtaFallback]：cta.text_key 渲染不出、改用 btn.buy 时调一次，只给 text_key 原值（R3）；没有 cta / 空键与渲染得出的键都不调。
+     * 缺省为 [CtaKeyLog.fallback]。
+     */
+    @Suppress("CyclomaticComplexMethod", "ComplexCondition", "LongMethod", "LongParameterList") // 逐字段映射，缺失即未知
     fun map(
         card: JsonObject,
         texts: ProductCardTexts,
         nowMillis: Long = System.currentTimeMillis(),
         buyEnabled: Boolean = true,
         purchaseStatus: String? = null,
+        onCtaFallback: (String) -> Unit = CtaKeyLog::fallback,
     ): MappedProductCard {
         val platform = card.text("platform").orEmpty()
         // 平台明确 not_launched（features.platform_status）：隐藏返利金额、预估返后及读屏金额，只留商品价格与禁用按钮（ProductCardDegrade ①，
@@ -98,8 +135,23 @@ object ProductCardMapper {
                 else -> PriceTagModel.neutral(finalFen, presale)
             }
         val min = card.fen("rebate_min_fen")
+        val earned =
+            if (provisionalRebate(card)) {
+                // 返利已确认、口径还没补上：按服务端区间临时展示（A-R2-01），不当「暂无返利」
+                RebateTagModel.provisional(min, card.fen("rebate_max_fen"))
+            } else {
+                RebateTagModel.make(basis, min, card.fen("rebate_max_fen"), loginRequired = false)
+            }
+        val rebate = if (notLaunched) RebateTagModel.notice(notLaunchedText) else earned
         val ctaKey = (card["cta"] as? JsonObject)?.text("text_key").orEmpty()
-        val buyBase = buyText(ctaKey, texts)
+        // {amount} 与返利标签同一格式化结果（单一金额时 min = max）
+        val amount = earned.singleAmount?.let { shown -> min?.let { CtaAmount(shown, CouliFormat.moneySpoken(it)) } }
+        val verb =
+            ctaVerb(ctaKey, amount, texts, onCtaFallback).let {
+                // 未开放隐藏返利金额：动词也不带金额（金额与返利标签同源；按钮显示「X返利即将开放」，D10-921 ④）
+                if (notLaunched && it.amountSpoken != null) fallbackVerb(amount, texts) else it
+            }
+        val buyBase = verb.text
         val stale = stale(card)
         val keys = disclaimerKeys(card)
         val quoted = card.text("quoted_at")?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
@@ -108,15 +160,7 @@ object ProductCardMapper {
                 platformName = texts.text(ProductCardKeys.platform(platform)),
                 title = card.text("title").orEmpty(),
                 price = price,
-                rebate =
-                    when {
-                        notLaunched -> RebateTagModel.notice(notLaunchedText)
-
-                        // 返利已确认、口径还没补上：按服务端区间临时展示（A-R2-01），不当「暂无返利」
-                        provisionalRebate(card) -> RebateTagModel.provisional(min, card.fen("rebate_max_fen"))
-
-                        else -> RebateTagModel.make(basis, min, card.fen("rebate_max_fen"), loginRequired = false)
-                    },
+                rebate = rebate,
                 buyBase = buyBase,
                 imageLabel = texts.text(ProductCardKeys.IMAGE_LABEL),
                 estNet = if (unavailable || notLaunched) null else EstNetModel.make(basis, min, card.fen("est_net_price_fen")),
@@ -132,6 +176,7 @@ object ProductCardMapper {
                 platformCode = platform,
                 // 推广标识原样（BR-TEXT-17）；空串没有可显示的字，按没有
                 adLabel = card.text("ad_label")?.takeIf(String::isNotEmpty),
+                buyVerbAmount = verb.amountSpoken?.let { BuyVerbAmount(text = buyBase, spoken = it) },
             )
         val buyState =
             when {
@@ -198,18 +243,68 @@ object ProductCardMapper {
         return tags.map { BenefitTag(it) }
     }
 
-    /** 购买按钮动词（cta.text_key → 字）。 */
-    fun buyText(
+    /** 同卡返利标签的单一金额：[shown] 是标签上的「¥2.69」，[spoken] 是读屏读法「2.69 元」。 */
+    private class CtaAmount(
+        val shown: String,
+        val spoken: String,
+    )
+
+    /** 购买按钮动词；[amountSpoken] 不为 null 表示动词里已填同卡单一返利金额，是这句动词的读屏读法。 */
+    private class CtaVerb(
+        val text: String,
+        val amountSpoken: String? = null,
+    )
+
+    /**
+     * 购买按钮动词（cta.text_key → 字，FU-X-CTA-KEY-DRIFT 向量 R1–R4）：
+     * - 没有 cta / 空键：空动词（按钮禁用），不兜底、不记诊断（R4）；
+     * - 渲染得出（[render]）：字典原文，{amount} 已填（R1）；
+     * - 渲染不出：记一次诊断（只给 text_key），改用 btn.buy（[fallbackVerb]，R2 / R3）；按钮状态照常由价格、下架、平台状态判。
+     */
+    private fun ctaVerb(
         key: String,
+        amount: CtaAmount?,
         texts: ProductCardTexts,
-    ): String =
-        when (key) {
-            "btn.buy.coupon" -> PriceTerms.BUY_COUPON
-            "btn.buy" -> PriceTerms.BUY
-            "btn.buy.no_rebate" -> PriceTerms.BUY_NO_REBATE
-            "" -> ""
-            else -> texts.text(key)
-        }
+        onFallback: (String) -> Unit,
+    ): CtaVerb {
+        if (key.isEmpty()) return CtaVerb("")
+        return render(key, amount, texts) ?: fallbackVerb(amount, texts).also { onFallback(key) }
+    }
+
+    /** btn.buy：先经调用方 texts（草稿 / 下发文案可覆盖），给不出可用文字时用包内契约字典。 */
+    private fun fallbackVerb(
+        amount: CtaAmount?,
+        texts: ProductCardTexts,
+    ): CtaVerb =
+        render(ProductCardKeys.BUY_FALLBACK, amount, texts)
+            ?: render(ProductCardKeys.BUY_FALLBACK, amount, BUNDLED)
+            ?: CtaVerb("")
+
+    /**
+     * 渲染一个文案键；渲染不出（R2）返回 null：texts 给空串、给回键名本身、结果带花括号，或契约原文里有填不上的变量
+     * （{amount} 只在同卡是单一金额时填得上，其余变量客户端不认识）。变量按包内契约字典的原文判：调用方 texts 可能把没给值的 {变量}
+     * 删掉（SearchDraftTexts.text），只看结果认不出来。
+     */
+    @Suppress("ReturnCount") // 缺变量、渲染不出、渲染得出三个出口
+    private fun render(
+        key: String,
+        amount: CtaAmount?,
+        texts: ProductCardTexts,
+    ): CtaVerb? {
+        val template = DefaultTexts.text(key).orEmpty()
+        val needsAmount = template.contains(AMOUNT_VAR)
+        if (PLACEHOLDER.containsMatchIn(template.replace(AMOUNT_VAR, "")) || (needsAmount && amount == null)) return null
+        if (amount == null || !needsAmount) return texts.text(key).takeIf { usable(it, key) }?.let { CtaVerb(it) }
+        val text = texts.format(key, mapOf(AMOUNT_NAME to amount.shown)).takeIf { usable(it, key) } ?: return null
+        // 金额的两种写法填出来不同，才说明动词里确实填进了这笔金额（调用方文案可能不带 {amount}）
+        val spoken = texts.format(key, mapOf(AMOUNT_NAME to amount.spoken)).takeIf { it != text && usable(it, key) }
+        return CtaVerb(text, amountSpoken = spoken)
+    }
+
+    private fun usable(
+        text: String,
+        key: String,
+    ): Boolean = text.isNotEmpty() && text != key && !text.contains('{') && !text.contains('}')
 
     fun disclaimerKeys(card: JsonObject): List<String> =
         (card["disclaimer_keys"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }.orEmpty()

@@ -1,5 +1,6 @@
 package com.couli.core.designsystem
 
+import com.couli.generated.DefaultTexts
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -31,9 +32,11 @@ class ProductCardMapperTest {
 
     @Test
     fun normalCardMapsPriceRebateCtaAndDisclaimers() {
-        val m = ProductCardMapper.map(card(""), texts, nowMillis = 0L)
+        // FU-X-CTA-KEY-DRIFT（#24，D10-327）：锁内键显示契约字典原文（向量 R1、known.coupon），按钮字从字典来、不再写死 PriceTerms，
+        // 所以这条用会给出字典原文的 texts（原来的「[key]」texts 下 btn.buy.coupon 经 texts 取字会是「[btn.buy.coupon]」）
+        val m = ProductCardMapper.map(card(""), ProductCardTexts { key -> DefaultTexts.text(key) ?: "[$key]" }, nowMillis = 0L)
         assertNotNull(m.data.price)
-        assertEquals(PriceTerms.BUY_COUPON, m.data.buyBase)
+        assertEquals("领券购买", m.data.buyBase)
         assertEquals(BuyButtonState.NORMAL, m.buyState)
         assertEquals(listOf(PriceTerms.PRICE_BASIS, PriceTerms.REBATE_ESTIMATE), m.data.disclaimer)
         assertNull(m.data.priceUnavailableText)
@@ -84,9 +87,32 @@ class ProductCardMapperTest {
         assertNull("正好 300 秒不提示", ProductCardMapper.map(with("age_sec" to "300"), texts).data.staleNote)
     }
 
+    /**
+     * FU-X-CTA-KEY-DRIFT（#24，D10-327；原名 unknownCtaKeyGoesThroughTextsAndMissingCtaDisablesBuying）：未知键先经 texts，texts 给得出字照常显示；
+     * texts 给不出（空串 / 回键名）回落 btn.buy「购买」、照常可点、记一条只带键的诊断（向量 R2 / R3：unknown.contract、unknown.echo、unknown.none）；
+     * 没有 cta / 空键仍禁用、不兜底、不记诊断（R4：missing.cta、missing.empty_key）。
+     */
     @Test
-    fun unknownCtaKeyGoesThroughTextsAndMissingCtaDisablesBuying() {
-        assertEquals("[btn.other]", ProductCardMapper.map(with("cta" to """{"text_key":"btn.other"}"""), texts).data.buyBase)
-        assertEquals(BuyButtonState.DISABLED, ProductCardMapper.map(with("cta" to "null"), texts).buyState)
+    fun unknownCtaKeyGoesThroughTextsThenFallsBackToBuyAndMissingCtaDisablesBuying() {
+        val other = with("cta" to """{"text_key":"btn.other"}""")
+        val rendered = mutableListOf<String>()
+        val shown = ProductCardMapper.map(other, texts, onCtaFallback = { rendered += it })
+        assertEquals("[btn.other]", shown.data.buyBase)
+        assertEquals(BuyButtonState.NORMAL, shown.buyState)
+        assertTrue("texts 给得出字不算缺键", rendered.isEmpty())
+        listOf(ProductCardTexts { "" }, ProductCardTexts { key -> key }).forEach { blank ->
+            val logged = mutableListOf<String>()
+            val m = ProductCardMapper.map(other, blank, onCtaFallback = { logged += it })
+            assertEquals("购买", m.data.buyBase)
+            assertEquals("缺键本身不置灰", BuyButtonState.NORMAL, m.buyState)
+            assertEquals(listOf("btn.other"), logged)
+        }
+        listOf("null", """{"text_key":""}""").forEach { cta ->
+            val logged = mutableListOf<String>()
+            val m = ProductCardMapper.map(with("cta" to cta), texts, onCtaFallback = { logged += it })
+            assertEquals("", m.data.buyBase)
+            assertEquals(BuyButtonState.DISABLED, m.buyState)
+            assertTrue("没有键不记诊断", logged.isEmpty())
+        }
     }
 }

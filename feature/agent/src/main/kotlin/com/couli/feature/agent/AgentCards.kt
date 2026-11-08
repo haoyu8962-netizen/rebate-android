@@ -766,6 +766,7 @@ private fun ProductItem(
                         amountHidden = mapped.data.amountHidden,
                         retryLaterText = override?.text ?: mapped.retryLaterText,
                         modifier = Modifier.fillMaxWidth().testTag(AgentTags.buy(v.card.cardId, itemId)),
+                        amountVerbSpoken = mapped.data.amountVerbSpoken(),
                     )
                 }
             } else {

@@ -283,14 +283,16 @@ object BuyButtonModel {
     /**
      * 单一金额 > 0、金额没隐藏、所在页面显示返利金额时，在动词后拼「 · 预估返 ¥x」；区间、无返利、金额未知、登录查看都只写动词。
      * loading、禁用、「稍后再试」不拼：由 [BuyButton] 组件按状态决定，不经这里。未知 context 保守不拼。
+     * [verbHasAmount]：动词里已填这笔金额（btn.buy.rebate，由映射显式给出，[ProductCardData.buyVerbAmount]）时不再拼（FU-X-CTA-KEY-DRIFT R1）。
      */
     fun text(
         base: String,
         rebate: RebateTagContent,
         amountHidden: Boolean,
         context: String,
+        verbHasAmount: Boolean = false,
     ): String {
-        val amount = rebate.singleAmount
+        val amount = rebate.singleAmount?.takeUnless { verbHasAmount }
         return if (amount != null && !amountHidden && context in contextsShowingAmount) {
             "$base " + PriceTerms.BUY_REBATE_SUFFIX_TEMPLATE.replace("{amount}", amount)
         } else {

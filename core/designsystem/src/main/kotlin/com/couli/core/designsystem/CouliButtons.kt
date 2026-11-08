@@ -235,10 +235,15 @@ fun BuyButton(
     size: CouliButtonSize = CouliButtonSize.COMPACT,
     /** RETRY_LATER 画成描边次按钮外观（仍不可点；剪贴板识别结果④ HomeClipboardResults-v3，APP-11v A18）。默认 false 保持原外观。 */
     retryLaterOutlined: Boolean = false,
+    /**
+     * [base] 已含同卡单一返利金额时它的读屏句（[ProductCardData.amountVerbSpoken]，FU-X-CTA-KEY-DRIFT R1）：不再拼后缀，读屏读这句、
+     * 不再追加返利金额（金额只读一次）。默认 null：动词不含金额。
+     */
+    amountVerbSpoken: String? = null,
 ) {
     val text =
         when (state) {
-            BuyButtonState.NORMAL -> BuyButtonModel.text(base, rebate, amountHidden, context)
+            BuyButtonState.NORMAL -> BuyButtonModel.text(base, rebate, amountHidden, context, verbHasAmount = amountVerbSpoken != null)
             BuyButtonState.RETRY_LATER -> retryLaterText
             else -> base
         }
@@ -249,7 +254,9 @@ fun BuyButton(
     val showsAmount = !amountHidden && context in BuyButtonModel.contextsShowingAmount
     val spoken =
         when {
-            state != BuyButtonState.NORMAL || !showsAmount || !rebate.hasAmount -> null
+            state != BuyButtonState.NORMAL || !showsAmount -> null
+            amountVerbSpoken != null -> amountVerbSpoken
+            !rebate.hasAmount -> null
             else -> base + PriceTerms.SPOKEN_PAUSE + rebate.spoken
         }
     CouliButton(

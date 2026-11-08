@@ -129,7 +129,8 @@ class ProductVisualBottomBarTest {
         assertEquals(16f, buy.left / density, 1f)
         assertEquals(16f, (root.boundsInRoot.right - buy.right) / density, 1f)
         assertTrue(buy.height >= 48 * density)
-        rule.onNodeWithText("去购买 · 预估返 ¥2.34", useUnmergedTree = true).assertNoTextOverflow()
+        // btn.buy 字典原文随锁 a89c1ec3a 由「去购买」改为「购买」（FU-X-CTA-KEY-DRIFT，#24）
+        rule.onNodeWithText("购买 · 预估返 ¥2.34", useUnmergedTree = true).assertNoTextOverflow()
         rule.onNodeWithTag(ProductTags.BUY).performClick()
         assertEquals(1, host.buys.size)
         assertEquals(ProductVisualFixtures.card("jd_no_coupon_single"), host.buys.single().first)

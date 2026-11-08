@@ -31,7 +31,7 @@
     },
     {
       "p": "contract.lock",
-      "h": "b48188f3da176340fe2af7417d0c2cf137193f29eaf8bd79c9216b3e4d8a314e"
+      "h": "8ebc35cd4ec850ce695f04fecc818b0d084cf79b58ae77f3f65ab13c148c2658"
     },
     {
       "p": "contracts/snapshot/contracts/agent-stream.schema.json",
@@ -47,7 +47,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/enums/admin.json",
-      "h": "0a31468548e9a376a822e896465781033bfd37e89cea123d950b42e6a6ca3f72"
+      "h": "15169659cbc717065f12d3c17893972a473b47d6271832e5c4acc026ea00a8ca"
     },
     {
       "p": "contracts/snapshot/contracts/enums/fund.json",
@@ -79,7 +79,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/error-codes.json",
-      "h": "c73af4261ea443dcd4ae07aeb22ded9ec844c85ae881555cdb5b01f48acd2540"
+      "h": "954c14c589f9681d66fa5c8518ad482ee892638a1b6f2adfc2cd8c801dcb2d8f"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/cancelled.ndjson",
@@ -143,7 +143,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/openapi.json",
-      "h": "366e96cf0793c7a58feee7fd7ecdfec6b4baa97677c4967cc52fa6e24b23655b"
+      "h": "4b658d0079bc173d5bed9081b122c202032b49247dc4afd45db0d2f2c0787214"
     },
     {
       "p": "contracts/snapshot/contracts/routes.json",
@@ -151,7 +151,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/texts.default.json",
-      "h": "23eac6f8bf02693840a02ac4828b226bff58a4458ffae467445ba5e2bb9881cc"
+      "h": "3ddce957d12e696d6276fd676cd0e78a719d337615f8d99d0d511b551d3022db"
     },
     {
       "p": "contracts/snapshot/design/design-tokens.json",
@@ -239,7 +239,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliButtons.kt",
-      "h": "e5c42761068ce5f90388e22a2ca4e6f9d810f6b24321fecc49385b7e0d7992f4"
+      "h": "7c5cfbe3eabd6009d14350edb59f590eac8e89182f0ff5e87bb5a8543352fe80"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliCategoryIcons.kt",
@@ -327,19 +327,19 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PriceModels.kt",
-      "h": "4d5266e6b239f742aa0c9f3085c9020304aa5d4c8f35657314c8c3732b123e4c"
+      "h": "50e6f981e050b1cf20f31746f279c39991bd8787ba7b18d2e5238568cf5701bd"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PriceTerms.kt",
-      "h": "10c777a6b026c53cc902e10bb03a50ea3d5f584d99e1ed2c7933daa70eb3f343"
+      "h": "88c4d04d20334c5339da37cc441d30487d3f3ae0f6d096949fe27e722df2edde"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/ProductCard.kt",
-      "h": "338669e7f267a5b6027f69480ba289201a4410b82de95c1e90f2d54a7dbc3632"
+      "h": "efa9cf83ad65dbcb933e2cb1dd47b399a5a6373fa3f4522dce0712f426773428"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/ProductCardMapper.kt",
-      "h": "99855b908b411b5cffbd5d889f7e00afb2731e2c8d71756f3cc6e77a3089a434"
+      "h": "dab02b720ef817166d5c0e3bd7b935c8af88387539f1a75306d57fee63a60e2b"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/ProductDetailState.kt",
