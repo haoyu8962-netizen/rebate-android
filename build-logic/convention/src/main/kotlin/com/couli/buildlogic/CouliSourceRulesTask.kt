@@ -9,6 +9,7 @@ import java.nio.file.attribute.BasicFileAttributes
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import org.gradle.work.DisableCachingByDefault
@@ -19,7 +20,13 @@ import org.gradle.work.DisableCachingByDefault
  *   2. sdk-init-only-in-privacy-gate：第三方 SDK 初始化调用只允许出现在 PrivacyGate.kt（03 §4.1）。
  * 规则 3（feature 互相依赖）在 couli.android.library 插件的配置阶段检查。
  *
+ *   4. LINT-STYLE 写死样式（[HardcodedStyleGuard]：no-hex-color / no-numeric-style / exemption-reason），按规则 × 文件计数对照扫描根下的
+ *      tools/ci/hardcoded-style-baseline.json，计数增、减都失败；`-Pcouli.rules.writeBaseline=true` 按现状重写该基线（再照常检查）。
+ *
  * 默认扫描仓库根；`-Pcouli.rules.root=<目录>` 改扫别的目录（tools/ci/lint-fixtures 用）。
+ * 扫描范围（D10-788）：源码集内（`<模块路径>/src/<源码集>/…`）的目录不论叫什么（build/、.gradle/、.idea/、.kotlin/）都会编译进包，照走，
+ * 其下源码交给全部规则，各规则按自己的适用条件管；源码集之外的这类目录（模块根 build/、工程根 .gradle/ 等）、扫描仓库时的 tools/、build-logic/ 跳过；
+ * .git 一律跳过。
  *
  * fail-closed（F-X-07，FU-AND-0715；对照鸿蒙 HM-LINT-10）：扫描根不存在、一个源码文件都没有、文件读不出、词法扫不完整（未闭合的字符串 / 块注释 /
  * 字符字面量 / 反引号 / 模板，[ScanProblem]）都算失败（`[scan-incomplete]`），任务以非零退出，不只打印诊断。第 1 轮评审 R1-04 / R1-05：Java 文件用
@@ -34,6 +41,10 @@ abstract class CouliSourceRulesTask : DefaultTask() {
     @get:Internal
     abstract val repositoryRoot: DirectoryProperty
 
+    /** true：先按现状重写扫描根下的样式基线（LINT-STYLE 生成入口），再照常检查。 */
+    @get:Internal
+    abstract val writeStyleBaseline: Property<Boolean>
+
     init {
         outputs.upToDateWhen { false }
     }
@@ -42,6 +53,10 @@ abstract class CouliSourceRulesTask : DefaultTask() {
     fun check() {
         val root = scanRoot.get().asFile
         val scanningRepository = root.isDirectory && root.canonicalFile == repositoryRoot.get().asFile.canonicalFile
+        if (writeStyleBaseline.getOrElse(false) && root.isDirectory) {
+            val target = CouliSourceRules.writeStyleBaseline(root, scanningRepository)
+            logger.lifecycle("couliRules：已按现状写出样式基线 $target")
+        }
         val violations = CouliSourceRules.check(root, scanningRepository)
         // DS-02 G1（组件清单 §6）：Feature 直接调系统基础控件——先只警告，不让任务失败；现有违规见 tools/ci/design-system-required-baseline.txt
         val baseline = if (scanningRepository) DesignSystemGuard.baseline(repositoryRoot.get().asFile) else emptyList()
@@ -71,7 +86,55 @@ internal object CouliSourceRules {
         val listing = sourceFiles(root, scanningRepository)
         val walkFailures = listing.failures.map { "$it，$INCOMPLETE_MESSAGE" }
         if (listing.files.isEmpty() && walkFailures.isEmpty()) return listOf("[scan-incomplete] 扫描根下没有 Kotlin / Java 源码：$root")
-        return walkFailures + listing.files.flatMap { file -> violationsIn(file, file.relativeTo(root).invariantSeparatorsPath) }
+        val style = styleScan(root, listing)
+        val (baseline, baselineProblems) = HardcodedStyleGuard.readBaseline(root)
+        // 读不出、扫不完整由 violationsIn 逐文件报一次（D10-788：样式扫描不再另报，同一文件不重复）
+        return walkFailures +
+            listing.files.flatMap { file -> violationsIn(file, file.relativeTo(root).invariantSeparatorsPath) } +
+            style.exemptionProblems +
+            baselineProblems +
+            HardcodedStyleGuard.compare(style.results, baseline)
+    }
+
+    /** LINT-STYLE 生成入口：按扫描根现状写出 [HardcodedStyleGuard.BASELINE_PATH]（规则、路径排序，逐字节稳定），返回写出的文件。 */
+    fun writeStyleBaseline(
+        root: File,
+        scanningRepository: Boolean,
+    ): File {
+        val style = styleScan(root, sourceFiles(root, scanningRepository))
+        val target = File(root, HardcodedStyleGuard.BASELINE_PATH)
+        target.parentFile.mkdirs()
+        target.writeText(HardcodedStyleGuard.render(HardcodedStyleGuard.counts(style.results)))
+        return target
+    }
+
+    /** 样式扫描结果：页面文件 → 结果；豁免注释问题（exemption-reason）。 */
+    private class StyleScanResult(
+        val results: Map<String, HardcodedStyleGuard.FileResult>,
+        val exemptionProblems: List<String>,
+    )
+
+    /**
+     * 对页面源码集（[HardcodedStyleGuard.applies]）与 G1 范围（[DesignSystemGuard.applies]）的 Kotlin 文件做样式扫描与豁免注释检查。
+     * 与旧规则共用同一份 [Listing.files]；读不出、扫不完整的诊断只由 [violationsIn] 报（每个文件一次），这里跳过读不出的文件。
+     */
+    private fun styleScan(
+        root: File,
+        listing: Listing,
+    ): StyleScanResult {
+        val results = sortedMapOf<String, HardcodedStyleGuard.FileResult>()
+        val exemptionProblems = mutableListOf<String>()
+        listing.files.forEach { file ->
+            val relative = file.relativeTo(root).invariantSeparatorsPath
+            val page = HardcodedStyleGuard.applies(relative)
+            if (file.extension != "kt" || !(page || DesignSystemGuard.applies(relative))) return@forEach
+            val text = runCatching { file.readText() }.getOrNull() ?: return@forEach
+            val scanned = scanKotlinSource(text)
+            val result = if (page) HardcodedStyleGuard.analyze(text, scanned) else HardcodedStyleGuard.exemptions(scanned)
+            if (page) results[relative] = result
+            exemptionProblems += result.exemptionProblems.map { "$relative:${it.line}: [${it.rule}] ${it.detail}" }
+        }
+        return StyleScanResult(results, exemptionProblems)
     }
 
     @Suppress("ReturnCount") // 读不出、不支持的语言、逐项规则三个出口
@@ -118,7 +181,7 @@ internal object CouliSourceRules {
     /**
      * DS-02 G1 警告（组件清单 §6）：feature 模块的非测试源码直接调用「必须经组件库」的系统控件（[DesignSystemGuard.CONTROLS]，
      * 直接导入、别名、全限定、星号导入四种写法）时，返回「相对路径:行: [design-system-required] 控件短名 …」，每个调用点一条。
-     * 只警告：不进 [check] 的失败列表；扫不完整的文件由 [check] 报，这里跳过。
+     * 只警告：不进 [check] 的失败列表；扫不完整的文件由 [check] 报，这里跳过。遍历与 [check] 相同（源码集内叫 build/ 等的目录同样算）。
      */
     fun warnings(
         root: File,
@@ -129,13 +192,21 @@ internal object CouliSourceRules {
             val relative = file.relativeTo(root).invariantSeparatorsPath
             if (file.extension != "kt" || !DesignSystemGuard.applies(relative)) return@flatMap emptyList()
             val text = runCatching { file.readText() }.getOrNull() ?: return@flatMap emptyList()
-            DesignSystemGuard.findings(scanKotlinSource(text).code).map { (line, control) ->
-                "$relative:$line: ${DesignSystemGuard.MARKER} $control ${DesignSystemGuard.MESSAGE}"
-            }
+            val scanned = scanKotlinSource(text)
+            // LINT-STYLE（D10-734 ⑤ / ⑦）：组件库没有替身时，行尾 `couli-style-disable-line couli-style/design-system-required -- 原因` 豁免本行；
+            // 没写原因的由 [check] 报 exemption-reason，且不豁免
+            val exempted = HardcodedStyleGuard.exemptions(scanned).exempted
+            DesignSystemGuard
+                .findings(scanned.code)
+                .filterNot { (line, _) -> DesignSystemGuard.EXEMPTION_RULE in exempted[line].orEmpty() }
+                .map { (line, control) -> "$relative:$line: ${DesignSystemGuard.MARKER} $control ${DesignSystemGuard.MESSAGE}" }
         }
     }
 
-    /** 遍历结果：源码文件与遍历失败的诊断（列不出内容的目录、属性查不了的条目）。 */
+    /**
+     * 遍历结果：源码文件与遍历失败的诊断（列不出内容的目录、属性查不了的条目）。[files] 是全部规则共用的同一份清单
+     * （旧规则、样式规则、G1 各按自己的适用条件取用），不再另分「只给样式规则」的文件（D10-788）。
+     */
     private class Listing(
         val files: List<File>,
         val failures: List<String>,
@@ -146,7 +217,8 @@ internal object CouliSourceRules {
      * （目录有读权限、没有执行 / 搜索权限）会被当成「既不是文件也不是目录」静默丢掉。这里：
      * - 列目录用 [Files.newDirectoryStream]（失败抛错）→ 记「目录列不出内容」；
      * - 每个列出的条目都用 [Files.readAttributes] 查属性（失败抛错，跟随符号链接）→ 记「条目属性查不了」，不论扩展名（查不了就无法确认它是不是源码目录）；
-     * - 跳过的目录（build、.gradle 等，扫描仓库时的 tools、build-logic）按名字 / 相对路径先排除，不查属性、不算失败；
+     * - 跳过的目录（源码集之外的 build、.gradle 等，任何位置的 .git，扫描仓库时的 tools、build-logic）按名字 / 相对路径先排除，不查属性、不算失败；
+     *   源码集内的这类目录照走（D10-788，见 SourceWalker 的 excluded）；
      * - 扩展名是 .kt / .java 但不是普通文件（设备、管道等）→ 记扫不完整；符号链接环按文件标识只走一次。
      */
     private fun sourceFiles(
@@ -203,9 +275,21 @@ internal object CouliSourceRules {
             entries.sortedBy { it.fileName.toString() }.forEach(::visit)
         }
 
+        /**
+         * 按名字 / 相对路径先排除（不查属性、不算失败）：扫描仓库时的 tools、build-logic；源码集之外的 [SKIPPED_DIRS]（模块根 build/、
+         * 工程根 .gradle/ 等构建产物与缓存）；任何位置的 .git。D10-788：源码集内（[SOURCE_SET]）叫 build、.gradle、.idea、.kotlin 的目录
+         * 照样编译进包，照走，其下源码进 [Listing.files]，旧规则（CJK、SDK 初始化）、样式规则、G1 都看得到。
+         */
+        private fun excluded(
+            entry: Path,
+            name: String,
+        ): Boolean =
+            (scanningRepository && relative(entry) in SKIPPED_REPOSITORY_DIRS) ||
+                (name in SKIPPED_DIRS && (name == GIT_DIR || !SOURCE_SET.containsMatchIn(relative(entry))))
+
         private fun visit(entry: Path) {
             val name = entry.fileName.toString()
-            if (name in SKIPPED_DIRS || (scanningRepository && relative(entry) in SKIPPED_REPOSITORY_DIRS)) return
+            if (excluded(entry, name)) return
             val attributes = attributesOf(entry) ?: return
             val source = name.endsWith(".kt") || name.endsWith(".java")
             when {
@@ -230,7 +314,14 @@ internal object CouliSourceRules {
     private const val SDK_MESSAGE = "第三方 SDK 只能在 PrivacyGate.onConsented() 里初始化（03 §4.1）"
     private const val INCOMPLETE_MESSAGE = "源码规则扫描器无法确认扫完整个文件（F-X-07 fail-closed）"
 
-    private val SKIPPED_DIRS = setOf("build", ".gradle", ".git", ".idea", ".kotlin")
+    private const val GIT_DIR = ".git"
+    private val SKIPPED_DIRS = setOf("build", ".gradle", GIT_DIR, ".idea", ".kotlin")
+
+    /**
+     * 目录自身的相对路径在某个源码集之内（`<模块路径>/src/<任意源码集>/…`）：`feature/x/src/main/kotlin/demo/build` 算，
+     * `feature/x/build`、工程根的 `build` 不算（D10-788）。
+     */
+    private val SOURCE_SET = Regex("""(?:^|/)src/[^/]+/""")
 
     /** 不受 no-cjk-string-in-feature 约束的测试源码集目录。 */
     private val TEST_SOURCE_DIRS = listOf("/src/test/", "/src/androidTest/")

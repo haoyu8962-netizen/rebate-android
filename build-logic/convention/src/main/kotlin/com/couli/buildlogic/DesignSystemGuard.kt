@@ -12,6 +12,9 @@ internal object DesignSystemGuard {
     const val MESSAGE = "：Feature 不直接调系统控件，改用组件库（组件清单 §6 G1，当前只警告）"
     private const val BASELINE_PATH = "tools/ci/design-system-required-baseline.txt"
 
+    /** 行尾豁免注释里 G1 的规则名（`// couli-style-disable-line couli-style/design-system-required -- 原因`）。 */
+    const val EXEMPTION_RULE = "couli-style/design-system-required"
+
     /** 必须经组件库的系统控件（全限定名）。 */
     val CONTROLS: List<String> =
         listOf(

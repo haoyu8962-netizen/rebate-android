@@ -36,6 +36,8 @@ internal data class ScannedSource(
     val problems: List<ScanProblem> = emptyList(),
     /** 字符字面量的内容（[StringLiteral.decoded] 为还原后的那一个字符；F-X-07 补充二：`'中'`、`'\u4e2d'` 同样是面向用户的文字）。 */
     val chars: List<StringLiteral> = emptyList(),
+    /** 行注释（含开头的 `//`，到行尾为止）及其所在行；LINT-STYLE 的行尾豁免注释只认真正的注释，不认字符串里的同样字样。 */
+    val lineComments: List<StringLiteral> = emptyList(),
 )
 
 /** 纯函数入口：扫描一段 Kotlin 源码。 */
@@ -77,11 +79,12 @@ internal class KotlinSourceScanner(
     private var index = 0
 
     private val chars = mutableListOf<StringLiteral>()
+    private val lineComments = mutableListOf<StringLiteral>()
 
     fun scan(): ScannedSource {
         problems += unicodeLineTerminatorProblems(source)
         scanCode(insideTemplate = false)
-        return ScannedSource(code.toString(), strings.toList(), problems.sortedBy { it.line }, chars.toList())
+        return ScannedSource(code.toString(), strings.toList(), problems.sortedBy { it.line }, chars.toList(), lineComments.toList())
     }
 
     /**
@@ -139,7 +142,10 @@ internal class KotlinSourceScanner(
     }
 
     private fun lineComment() {
+        val start = index
+        val startLine = line
         while (source.getOrNull(index) !in LINE_END_STOPS) step()
+        lineComments += StringLiteral(startLine, source.substring(start, index))
     }
 
     /** 代码里位于 `$` 时：连续的 `$` 后面紧跟引号就是插值前缀，返回 `$` 的个数；否则 0。 */

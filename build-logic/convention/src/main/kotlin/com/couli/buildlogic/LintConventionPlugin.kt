@@ -19,7 +19,7 @@ import org.gradle.process.CommandLineArgumentProvider
  * ktlint 与 detekt（03 §3.3 静态检查），以 CLI 经 JavaExec 运行（ktlint CLI、detekt CLI）：
  *   ktlintCheck / ktlintFormat / detekt —— 每个模块各一组，`./gradlew ktlintCheck detekt` 跑全部。
  * 根项目另有：
- *   couliRules —— 本仓库自定义规则（feature 字符串不含中文、SDK 初始化只在 PrivacyGate），
+ *   couliRules —— 本仓库自定义规则（feature 字符串不含中文、SDK 初始化只在 PrivacyGate、页面禁写死样式），
  *                 根项目的 detekt 依赖它，所以 `./gradlew detekt` 也会跑。
  * 生成物目录（core:generated 的 src/main、src/debugFeatures）不检查。
  */
@@ -44,6 +44,8 @@ class LintConventionPlugin : Plugin<Project> {
                         val override = providers.gradleProperty("couli.rules.root").orNull
                         scanRoot.set(if (override == null) rootDir else rootProject.file(override))
                         repositoryRoot.set(rootDir)
+                        // LINT-STYLE：-Pcouli.rules.writeBaseline=true 按现状重写扫描根下的 tools/ci/hardcoded-style-baseline.json
+                        writeStyleBaseline.set(providers.gradleProperty("couli.rules.writeBaseline").map { it.toBoolean() }.orElse(false))
                     }
                 detekt.configure { dependsOn(rules) }
             }

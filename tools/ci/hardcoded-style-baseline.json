@@ -1,0 +1,8 @@
+{
+  "couli-style/no-numeric-style": {
+    "app/src/main/kotlin/com/couli/app/shell/PrivacyPrompt.kt": 1,
+    "app/src/main/kotlin/com/couli/app/update/UpdatePages.kt": 1,
+    "feature/me/src/main/kotlin/com/couli/feature/me/AccountVisualParts.kt": 1,
+    "feature/me/src/main/kotlin/com/couli/feature/me/MeTabParts.kt": 1
+  }
+}

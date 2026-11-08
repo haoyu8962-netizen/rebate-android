@@ -233,6 +233,7 @@ expect_failure "违反样例：feature 依赖另一个 feature" "feature-to-feat
 
 step "DS-02 官方素材状态（未到位可见挂起）" python3 tools/ci/ds02/check_oauth_assets.py
 step "DS-02 守卫违反样例（13 类系统控件只警告）" python3 tools/ci/ds02/check_guard.py
+step "LINT-STYLE 写死样式规则与基线样例（违反样例失败、合法样例通过、按钮不出 G1 警告、基线生成稳定且计数增减都失败）" python3 tools/ci/tests/test_hardcoded_style_cli.py
 
 step "构建 debug / staging / release 与 androidTest" \
   $GRADLE assembleDebug assembleStaging assembleRelease assembleDebugAndroidTest
