@@ -608,6 +608,7 @@ enum class AuditSystemActor(
     val raw: kotlin.String,
 ) {
     SYSTEM_RISK("system:risk"),
+    SYSTEM_PAYOUT("system:payout"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -616,6 +617,7 @@ enum class AuditSystemActor(
         val known: kotlin.collections.List<AuditSystemActor> =
             listOf(
                 SYSTEM_RISK,
+                SYSTEM_PAYOUT,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, AuditSystemActor> = known.associateBy { it.raw }

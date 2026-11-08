@@ -35,7 +35,9 @@ class ClipboardInlineVisualTest {
         driver.launch()
         driver.parse(ClipboardVisualFixtures.unrecognized())
         val text = (driver.host.clipboard.result.value as ClipboardResult.Unrecognized).text
-        assertInline(ClipboardScreens.UNRECOGNIZED, ClipboardScreens.SEARCH_BY_NAME, text)
+        // 锁 a89c1ec3a 的 error.30132「这个链接或口令暂时识别不了」在 390dp 与【用商品名搜索】放不下一行：按 ClipboardScreens 现有规则
+        // 按钮整体换到下一行靠右（FU-X-CTA-KEY-DRIFT，#24，编排 D10-921 ①；保持一行属外观改动，归 FU-X-CLIPBOARD-30132-LAYOUT）
+        assertInline(ClipboardScreens.UNRECOGNIZED, ClipboardScreens.SEARCH_BY_NAME, text, actionWrapped = true)
     }
 
     @Test fun networkFailureHasLeftIconTextAndRightOutlineAction() {
@@ -94,6 +96,7 @@ class ClipboardInlineVisualTest {
         tag: String,
         actionTag: String,
         text: String,
+        actionWrapped: Boolean = false,
     ) {
         val root = rule.onNodeWithTag(tag).assertIsDisplayed().fetchSemanticsNode()
         val body =
@@ -103,8 +106,17 @@ class ClipboardInlineVisualTest {
                 .fetchSemanticsNode()
         val action = rule.onNodeWithTag(actionTag).assertIsDisplayed().fetchSemanticsNode()
         assertTrue("图标在文字左边留位", body.boundsInRoot.left - root.boundsInRoot.left >= 24f * root.layoutInfo.density.density)
-        assertTrue("文字与右按钮并排", body.boundsInRoot.right <= action.boundsInRoot.left)
-        assertTrue("按钮与文案垂直相交", body.boundsInRoot.top < action.boundsInRoot.bottom && action.boundsInRoot.top < body.boundsInRoot.bottom)
+        if (actionWrapped) {
+            val end = root.boundsInRoot.right - 16f * root.layoutInfo.density.density
+            assertTrue("放不下时按钮换到文案下一行", action.boundsInRoot.top >= body.boundsInRoot.bottom)
+            assertTrue("换行后按钮靠右", action.boundsInRoot.right >= end - 1f && action.boundsInRoot.right <= root.boundsInRoot.right)
+        } else {
+            assertTrue("文字与右按钮并排", body.boundsInRoot.right <= action.boundsInRoot.left)
+            assertTrue(
+                "按钮与文案垂直相交",
+                body.boundsInRoot.top < action.boundsInRoot.bottom && action.boundsInRoot.top < body.boundsInRoot.bottom,
+            )
+        }
         val probe = OverlayVisualProbe(rule)
         probe.assertTarget48(action)
         probe.assertOutline(action, driver.host.surface.toArgb(), driver.host.border.toArgb())

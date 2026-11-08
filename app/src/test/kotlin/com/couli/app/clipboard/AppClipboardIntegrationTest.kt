@@ -1600,7 +1600,8 @@ class AppClipboardIntegrationTest {
         hold?.countDown()
         idleUntil { clipboard.result.value is ClipboardResult.Unrecognized }
         composeRule.onNodeWithTag(ClipboardScreens.UNRECOGNIZED).assertIsDisplayed()
-        composeRule.onNodeWithText("这个口令暂时识别不了").assertIsDisplayed()
+        // error.30132 文案随锁 a89c1ec3a 换值（FU-X-CTA-KEY-DRIFT，#24）
+        composeRule.onNodeWithText("这个链接或口令暂时识别不了").assertIsDisplayed()
         composeRule.onNodeWithTag(ClipboardScreens.SEARCH_BY_NAME).assertIsDisplayed().performClick()
         composeRule.waitForIdle()
         assertEquals("填进本页，不另开一页", searchEntry, checkNotNull(navController.currentBackStackEntry).id)

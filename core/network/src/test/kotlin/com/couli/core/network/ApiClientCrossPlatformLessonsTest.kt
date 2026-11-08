@@ -657,7 +657,9 @@ class ApiClientCrossPlatformLessonsTest {
          * 暂列例外（锁 00deded0ef6f，#24，编排 D10-613 认可）：error-codes 的 action 有具体动作、安卓无对应页面，
          * 待编排定 / 另立单（随 Reverify 页与支付结果页）；现行为降为 Toast。
          * 10010「按 data.method 打开 Reverify」、20005「留在 Reverify，提示剩余次数」、30902「打开该支付单的结果页」。
+         * 锁 a89c1ec3a（FU-X-CTA-KEY-DRIFT，#24，编排 D10-921 ② 照 D10-613 认可）：30145「只提示，不重试」（商品反馈）、
+         * 30146「只提示，不外跳」（进店）两码随新操作 submitProductFeedback / openProductShop（planned）新增，安卓无对应页面，页面落点随 FU 定。
          */
-        val PENDING_PAGE_EXCEPTIONS = setOf(10010, 20005, 30902)
+        val PENDING_PAGE_EXCEPTIONS = setOf(10010, 20005, 30902, 30145, 30146)
     }
 }

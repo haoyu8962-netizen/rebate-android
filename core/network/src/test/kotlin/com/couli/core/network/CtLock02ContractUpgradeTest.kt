@@ -162,10 +162,14 @@ class CtLock02ContractUpgradeTest {
             assertEquals("$id gate", gate, operation.minVersionGate.name)
         }
         // 锁 00deded0ef6f（FU-X-HOME-PAGE-API，#24）：客户端 operation 86 → 101，只新增 NEW_OPERATIONS_00DEDED 的 15 个，没有删除
-        assertEquals(101, ApiOperations.all.size)
-        assertEquals(OPERATIONS_BEFORE.size + NEW_OPERATIONS.size + NEW_OPERATIONS_00DEDED.size, ApiOperations.all.size)
+        // 锁 a89c1ec3a（FU-X-CTA-KEY-DRIFT，#24，D10-857）：101 → 103，只新增 NEW_OPERATIONS_A89C1EC 的 2 个，没有删除
+        assertEquals(103, ApiOperations.all.size)
         assertEquals(
-            NEW_OPERATIONS + NEW_OPERATIONS_00DEDED,
+            OPERATIONS_BEFORE.size + NEW_OPERATIONS.size + NEW_OPERATIONS_00DEDED.size + NEW_OPERATIONS_A89C1EC.size,
+            ApiOperations.all.size,
+        )
+        assertEquals(
+            NEW_OPERATIONS + NEW_OPERATIONS_00DEDED + NEW_OPERATIONS_A89C1EC,
             ApiOperations.all.keys - OPERATIONS_BEFORE.map { it.substringBefore('|') }.toSet(),
         )
         assertTrue(ApiOperations.all.values.none { it.pathTemplate.startsWith("/admin/") })
@@ -196,6 +200,9 @@ class CtLock02ContractUpgradeTest {
                 "getSearchHotWords",
                 "createShare",
             )
+
+        /** 锁 a89c1ec3a 新增的客户端 operation（openapi.yaml 中非 /admin/ 的 operationId，00deded0ef6f 没有；均 x-implementation planned）。 */
+        val NEW_OPERATIONS_A89C1EC = setOf("submitProductFeedback", "openProductShop")
 
         val NEW_OPERATIONS =
             setOf(

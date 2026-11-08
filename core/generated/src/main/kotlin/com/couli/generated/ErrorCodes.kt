@@ -343,6 +343,24 @@ object ErrorCodes {
                     isDeprecated = false,
                     isP1 = false,
                 ),
+            30145 to
+                ErrorCodeInfo(
+                    code = 30145,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
+            30146 to
+                ErrorCodeInfo(
+                    code = 30146,
+                    http = 422,
+                    retryKind = RetryKind.NEVER,
+                    retryKindByReason = emptyMap(),
+                    isDeprecated = false,
+                    isP1 = false,
+                ),
             30151 to
                 ErrorCodeInfo(
                     code = 30151,

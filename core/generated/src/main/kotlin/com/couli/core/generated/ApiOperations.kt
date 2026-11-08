@@ -277,7 +277,7 @@ object ApiOperations {
                     signed = false,
                     idempotent = false,
                     stepUp = null,
-                    errorCodes = listOf(30101, 30102, 30153, 50301),
+                    errorCodes = listOf(30101, 30102, 30153, 50301, 50303),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
                     planned = false,
@@ -1177,6 +1177,34 @@ object ApiOperations {
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
                     planned = false,
+                ),
+            "submitProductFeedback" to
+                ApiOperation(
+                    operationId = "submitProductFeedback",
+                    method = "POST",
+                    pathTemplate = "/v1/products/{product_key}/feedback",
+                    auth = "optional",
+                    signed = true,
+                    idempotent = true,
+                    stepUp = null,
+                    errorCodes = listOf(30145, 20001, 30144, 42901, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
+                ),
+            "openProductShop" to
+                ApiOperation(
+                    operationId = "openProductShop",
+                    method = "POST",
+                    pathTemplate = "/v1/products/{product_key}/shop/open",
+                    auth = "login",
+                    signed = true,
+                    idempotent = true,
+                    stepUp = null,
+                    errorCodes = listOf(10001, 30101, 30102, 30111, 50301, 30146, 50303, 20001, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
+                    planned = true,
                 ),
             "getHotRank" to
                 ApiOperation(
