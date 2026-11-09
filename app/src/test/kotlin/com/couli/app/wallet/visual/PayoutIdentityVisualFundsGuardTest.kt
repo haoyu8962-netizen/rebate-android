@@ -23,7 +23,7 @@ class PayoutIdentityVisualFundsGuardTest {
         val baseline = resource("funds-baseline.json")
         assertEquals("6770a580c2c9eac45b47589f2b24e24b2659dbdc", baseline.getValue("base").jsonPrimitive.content)
         val files = baseline.getValue("files").jsonObject
-        assertTrue("清单不得被清空", files.size >= 34)
+        assertTrue("清单不得被清空", files.size >= 36)
         listOf(
             "feature/wallet/src/main/kotlin/com/couli/feature/wallet/PayoutAccountController.kt",
             "feature/wallet/src/main/kotlin/com/couli/feature/wallet/IdentityControllers.kt",
@@ -31,6 +31,8 @@ class PayoutIdentityVisualFundsGuardTest {
             "core/wallet/src/main/kotlin/com/couli/core/wallet/PayoutLogic.kt",
             "app/src/test/kotlin/com/couli/app/wallet/WalletPageWiringTest.kt",
             "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0721InvariantTest.kt",
+            "feature/wallet/src/main/kotlin/com/couli/feature/wallet/RealNameRemote.kt",
+            "app/src/main/kotlin/com/couli/app/wallet/RealNameWiring.kt",
         ).forEach { assertTrue("清单必须包含 $it", it in files) }
         files.forEach { (path, expected) ->
             assertEquals(
@@ -70,6 +72,30 @@ class PayoutIdentityVisualFundsGuardTest {
         }
     }
 
+    /** D10-1174（#24，对应 iOS v1.5 的覆盖面用例）：实名后端与接线文件逐个进资金基线，目录里新增或拆出的 RealName*.kt 也必须在清单内，防止跑出守卫。 */
+    @Test fun everyRealNameBackendFileIsCoveredByTheFundsBaseline() {
+        val listed = resource("funds-baseline.json").getValue("files").jsonObject.keys
+        REAL_NAME_BACKEND_FILES.forEach { assertTrue("实名资金文件必须在清单内：$it", it in listed) }
+        val root = PayoutIdentityVisualFixtures.root
+        val onDisk =
+            REAL_NAME_DIRS
+                .flatMap { dir ->
+                    File(root, dir)
+                        .walkTopDown()
+                        .filter { it.isFile && isRealNameSource(it.name) }
+                        .map { it.relativeTo(root).invariantSeparatorsPath }
+                        .toList()
+                }.toSet()
+        assertTrue("实名资金文件必须真实存在：$onDisk", onDisk.containsAll(REAL_NAME_BACKEND_FILES))
+        val listedRealName =
+            listed
+                .filter { path -> REAL_NAME_DIRS.any { path.startsWith("$it/") } && isRealNameSource(path.substringAfterLast('/')) }
+                .toSet()
+        assertEquals("目录里的 RealName*.kt 与资金基线必须一致，不能多也不能少", onDisk, listedRealName)
+    }
+
+    private fun isRealNameSource(name: String) = name.startsWith("RealName") && name.endsWith(".kt")
+
     private fun resource(name: String): JsonObject =
         WithdrawVisualFixtures.obj(
             checkNotNull(javaClass.getResourceAsStream("/payout-identity-visual/$name")).bufferedReader().use { it.readText() },
@@ -79,6 +105,12 @@ class PayoutIdentityVisualFundsGuardTest {
 
     private companion object {
         const val NEWLINE: Byte = 10
+        val REAL_NAME_DIRS = listOf("feature/wallet/src/main/kotlin/com/couli/feature/wallet", "app/src/main/kotlin/com/couli/app/wallet")
+        val REAL_NAME_BACKEND_FILES =
+            listOf(
+                "feature/wallet/src/main/kotlin/com/couli/feature/wallet/RealNameRemote.kt",
+                "app/src/main/kotlin/com/couli/app/wallet/RealNameWiring.kt",
+            )
 
         /** 与 couli-runs/NATIVE/APP-09v/tests-e-android-groups.py 同一规范：键排序；字符串 s:、数字 / 布尔 p: 原字面量、null n。 */
         fun canonical(element: JsonElement): String =

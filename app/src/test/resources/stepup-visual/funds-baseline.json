@@ -1,7 +1,7 @@
 {
   "base": "6770a580c2c9eac45b47589f2b24e24b2659dbdc",
   "files": {
-    "app/src/main/kotlin/com/couli/app/wallet/AppWallet.kt": "3466fbf35851cb171fb167255fb348b5a242bab50b40f36303c5c0e4f3b2d26f",
+    "app/src/main/kotlin/com/couli/app/wallet/AppWallet.kt": "e1de1ec6a4590ac4de3cd8ec3fda25ca66d1567a84f2a85b896d26160c7b8ad4",
     "app/src/test/kotlin/com/couli/app/AppStartupTrackerWiringTest.kt": "e717f5ef59913ec12b68ee740d47f5dd2c5584e1e19dc69244c8d3c4845589a2",
     "app/src/test/kotlin/com/couli/app/NetworkCleanupWiringTest.kt": "7ade89f0dad831df8985bd1b2fc6cbd257024ae31e3ca8c4e050460aca989908",
     "app/src/test/kotlin/com/couli/app/account/AccountFollowupAnd0717Test.kt": "117104407aeb5ec236f7c7ec94f47d5c64534f762fa3c490086ada7c119367c0",
@@ -52,12 +52,12 @@
     "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpPorts.kt": "311c5c20c851912507c280896947a906df4a876704e9d7b84546c53cf12950f9",
     "feature/me/src/main/kotlin/com/couli/feature/me/DeleteAccountController.kt": "0c93bf7cebfa8855c666457aabe10d1a6938428530589f00949a4f7840541e34",
     "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c",
-    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/IdentityControllers.kt": "8ca598117efb323b07bed0276a1c80d9aaa271eb90a5975167aacbae60baf885",
+    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/IdentityControllers.kt": "4034b3f9d7568ddc8587ad1957b2488d6b8eac0d0a535fb48382e1662cd073fc",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/PayoutAccountController.kt": "f32f4cebfc3c682d323ca3b4e5c3925b918bc7219300fe75bbeffea565fa021d",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/SensitiveFlow.kt": "920ee6a46bdfaa31fb40b8dfc1348f70e03244e036223456f61d32fbfdcbac1d",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/StepUpController.kt": "b1bbd8d54a7e15b04788b9d093f25183193c4cc6afcbef98ecddef4736a778d6",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletController.kt": "82b16382249a7866670e6b4d709a09d8086dda3e73ae48af0acee1b16e266a3f",
-    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletPorts.kt": "67799e171509751e9c6b199f1e9c903a990d768d56ede6853a51f010f9db27c6",
+    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletPorts.kt": "c06ae708204f7047e47976361dd9d3810386818463ee0a9c77d8b41902d57035",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WithdrawController.kt": "e54e41fb030260c1dea3ad7799a9ddf937c65ac25817f1cf45ef7f7da01230ae",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WithdrawRecordsController.kt": "3a5186491f9da46544d25822ad36569bf389dfcaa0fa19cdcc3c321cf20e8661"
   },

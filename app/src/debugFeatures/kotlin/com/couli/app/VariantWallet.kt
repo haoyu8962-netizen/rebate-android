@@ -6,7 +6,8 @@ import com.couli.feature.wallet.RealNameBackend
 import java.io.File
 
 /**
- * debug / staging：实名与劳务协议的进程内假实现（契约没有接口，G01 / G02），与假钱包服务共用状态；统一闸门（开关 + MOCK_DATA + 环境就绪，F-X-02）关着时一律按断网回答。
+ * debug / staging：实名（只有 debug 接线采用，staging 走真实实现，见 chooseRealNameBackend）与劳务协议（契约没有接口，G02）的进程内假实现，与假钱包服务共用状态；统一闸门
+ * （开关 + MOCK_DATA + 环境就绪，F-X-02）关着时一律按断网回答。
  */
 internal fun variantRealNameBackend(context: Context): RealNameBackend? = fakeWallet(context).realnameBackend
 

@@ -4,15 +4,19 @@
 package com.couli.feature.wallet
 
 import com.couli.core.network.ApiResult
+import com.couli.core.network.CallOwnership
 import com.couli.core.network.IdentityVerdict
 import com.couli.core.network.LocalRejectReason
 import com.couli.core.network.SessionIdentity
 import com.couli.core.wallet.RealNameForm
+import com.couli.core.wallet.RealNameInput
+import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.SensitiveOutcome
 import com.couli.core.wallet.WalletError
 import com.couli.core.wallet.WalletErrors
 import com.couli.generated.DefaultTexts
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,25 +46,38 @@ data class RealNameSnapshot(
 }
 
 /**
- * 实名认证执行器（RealName 路由；BR-ID-25，G01）：姓名去首尾空白；身份证号只收数字与 X，18 位，小写 x 转大写，不做校验位计算。提交前先弹单独同意
- * （默认不勾选，点遮罩不关闭）。实名提交接口契约没有（G01）：只由 Debug 假服务实现（[RealNameBackend]）；Release 为 null，【提交认证】置灰，显示
- * 「实名认证暂未开放」，不发任何请求。成功后刷新 realname_status、出栈回发起页（G05，不重放）。只在主线程使用。
+ * 实名认证执行器（RealName 路由；BR-ID-25，D10-887）：姓名去首尾空白；身份证号只收数字与 X，18 位，小写 x 转大写，不做校验位计算。提交前先弹单独同意（默认不勾选，点遮罩不关闭），
+ * 勾选后先记同意（code 0 之后才发实名提交）。后端为 null 时【提交认证】置灰，显示「实名认证暂未开放」，不发任何请求。
+ *
+ * 幂等键与规范化后的请求体绑定，同一个键绝不配另一份请求体：
+ * - 结果未知（断连）、10001 / 10005、10004 id_verification（重开单独同意，同意后原键重放）：保留原键，表单不变再提交沿用；表单改了旧键作废（D10-887 ③）。
+ * - 40901：不是终态，保持在途，退避后原键原体自动重发、不重记同意（连首发 6 秒内最多 4 次，D10-887 ⑤）；用完停下、出 error.40901、保留原键。
+ * - 结果未知后再拿到 10405 / 5xxxx / 42901 不结束键（D10-1018，核验按次计费）；其余错误结束本次键，下次用新键。50301 回落 error.50001 + trace6（D10-887 ②）。
+ *
+ * 成功后本会话按已实名放行、复查 GET /v1/me、清掉已填内容、出栈回发起页（G05，不重放）；结果只给表单固定的身份。只在主线程使用。
  */
-@Suppress("TooManyFunctions") // 页面每个入口一个函数（含可见性）
+@Suppress("TooManyFunctions") // 页面每个入口一个函数（含可见性）；键去留、同意先行、40901 重发各一个函数
 class RealNameController(
     private val deps: WalletDeps,
     private val scope: CoroutineScope,
     private val onBack: () -> Unit,
 ) {
-    private var left = false
+    /** 页面世代：离页时同步置位。网络线程经 [bindingFor] 的 stillOwned 读它，所以 @Volatile。 */
+    @Volatile private var left = false
     private var serial = 0L
+
+    /** 最近一次发送的归属（离页时取消已交给传输层的请求）。 */
+    private var activeOwnership: CallOwnership? = null
+
+    /** 保留的幂等键与它绑定的规范化请求体（只在内存）；null = 下次提交用新键。 */
+    private var retained: RetainedSubmit? = null
 
     // 表单身份在构造时一次性取得（APP-09 共性第 65 条）；之后只比较、不再读取当前会话来赋值
     private val mutable = MutableStateFlow(RealNameSnapshot(owner = FormOwner.of(deps.env)))
     val state: StateFlow<RealNameSnapshot> = mutable.asStateFlow()
     private val s: RealNameSnapshot get() = mutable.value
 
-    /** Release：契约补上实名接口之前不开放（G01）。 */
+    /** 没有实名后端（[WalletDeps.realname] 为 null）时不开放；生产接线是 [RemoteRealNameBackend]。 */
     val available: Boolean get() = deps.realname != null
 
     val submitEnabled: Boolean
@@ -76,6 +93,7 @@ class RealNameController(
     ) {
         if (left || !owns(owner)) return
         mutable.value = s.copy(name = text.take(NAME_MAX), fieldErrors = s.fieldErrors - FIELD_NAME, error = null)
+        dropRetainedIfFormChanged()
     }
 
     fun onIdChange(
@@ -84,6 +102,13 @@ class RealNameController(
     ) {
         if (left || !owns(owner)) return
         mutable.value = s.copy(idNo = RealNameForm.acceptIdNo(s.idNo, text), fieldErrors = s.fieldErrors - FIELD_ID, error = null)
+        dropRetainedIfFormChanged()
+    }
+
+    /** 表单改了：旧键作废，下次用新键（D10-887 ③；同一个键不配另一份请求体）。 */
+    private fun dropRetainedIfFormChanged() {
+        val held = retained ?: return
+        if (RealNameForm.normalize(s.name, s.idNo) != held.input) retained = null
     }
 
     /** 渲染快照的身份就是本表单的身份，且仍是当前会话（共性第 52 条）。 */
@@ -106,7 +131,7 @@ class RealNameController(
         deps.env.sensitiveOverlay(false)
     }
 
-    /** 单独同意里勾选后点【同意并继续】：同意记录与实名提交在 Debug 假服务里一起发生（Release 不调 /v1/consents）。 */
+    /** 单独同意里勾选后点【同意并继续】：先记同意（code 0 之后才提交），再发实名提交。 */
     @Suppress("ReturnCount")
     fun agreeAndSubmit(owner: FormOwner = s.owner) {
         val backend = deps.realname ?: return
@@ -126,10 +151,72 @@ class RealNameController(
                 if (!left) mutable.value = s.copy(submitting = false)
                 return@launch
             }
-            val result = backend.submit(input.name, input.idNo, deps.newKey())
+            val consentGate = bindingFor(account, sendEpoch)
+            val consent = backend.recordConsent(consentGate.binding)
             if (left || deps.env.sessionEpoch() != sendEpoch) return@launch
-            onResult(result)
+            if (consent !is ApiResult.Success) return@launch settleFailure(consent, consentGate.probe, keyApplies = false)
+            // 身份暂时确认不了：不发实名提交，恢复按钮（同意记录已成，重发时再记一次）
+            if (!deps.env.ownedBy(account, sendEpoch)) {
+                mutable.value = s.copy(submitting = false)
+                return@launch
+            }
+            submitWithBusyRetry(backend, input, account, sendEpoch)
         }
+    }
+
+    /** 实名提交：取键后发送，40901 保持在途、原键原体退避重发（F-AND-48，D10-887 ⑤）；重发用完交给失败结算，保留原键。 */
+    @Suppress("ReturnCount")
+    private suspend fun submitWithBusyRetry(
+        backend: RealNameBackend,
+        input: RealNameInput,
+        account: String,
+        sendEpoch: Long,
+    ) {
+        val key = claimKey(input)
+        var resends = 0
+        while (true) {
+            val gate = bindingFor(account, sendEpoch)
+            val result = backend.submit(input.name, input.idNo, key, gate.binding)
+            if (left || deps.env.sessionEpoch() != sendEpoch) return
+            if (result is ApiResult.Success) return onSubmitted()
+            if ((result as? ApiResult.Failure)?.code != BUSY_CODE || resends == BUSY_RESEND_DELAYS_MS.size) {
+                return settleFailure(result, gate.probe, keyApplies = true)
+            }
+            delay(BUSY_RESEND_DELAYS_MS[resends++])
+            // 重发前再核对（离页、换号都不再发）；同意记录不重记
+            if (left) return
+            if (!deps.env.ownedBy(account, sendEpoch)) {
+                mutable.value = s.copy(submitting = false)
+                return
+            }
+        }
+    }
+
+    /** 表单没改就沿用保留的键（断连、10001、10005、40901 用完等），否则新键（同一个键不配另一份请求体）。 */
+    private fun claimKey(input: RealNameInput): String {
+        val kept = retained?.takeIf { it.input == input }
+        val key = kept?.key ?: deps.newKey()
+        retained = RetainedSubmit(input, key, unknown = kept?.unknown ?: false)
+        return key
+    }
+
+    private class SendGate(
+        val binding: RealNameCallBinding,
+        val probe: SendProbe,
+    )
+
+    /**
+     * 每次发送一份绑定：禁用期是发送前闸门（共性第 62 条），页面世代与会话世代进归属，账号由网络层在写出前核对（共性第 39 条）。网络层的各个等待点（10002 刷新屏障、10402 设备注册、写出前与写出后）
+     * 都读同一个 stillOwned，所以离页只作废这里一处（评审 r1 S1）。
+     */
+    private fun bindingFor(
+        account: String,
+        sendEpoch: Long,
+    ): SendGate {
+        val probe = deps.gates.realname.probe()
+        val ownership = CallOwnership(deps.api.epochs(), sendAllowed = probe::allowed) { !left && deps.env.sessionEpoch() == sendEpoch }
+        activeOwnership = ownership
+        return SendGate(RealNameCallBinding(ownership, account), probe)
     }
 
     /** 页面可见性（共性第 37、41 条）：实名完成后的出栈只在页面此刻可见时做，否则回到可见再做。 */
@@ -143,44 +230,77 @@ class RealNameController(
         onBack()
     }
 
-    private fun onResult(result: ApiResult) {
-        if (result is ApiResult.Success) {
-            // 实名完成：清掉已填的姓名与身份证号，刷新 realname_status，出栈回发起页
-            mutable.value = RealNameSnapshot(done = Notice(DONE_KEY, ++serial, assertive = false), owner = s.owner)
-            deps.env.realnameChanged()
-            if (visible) onBack() else deferredBack = true
-            return
-        }
+    /** 实名成功：清掉已填的姓名与身份证号，按表单固定身份记已实名并复查 realname_status，出栈回发起页。 */
+    private fun onSubmitted() {
+        retained = null
+        val owner = s.owner
+        mutable.value = RealNameSnapshot(done = Notice(DONE_KEY, ++serial, assertive = false), owner = owner)
+        deps.env.realnameSubmitted(owner)
+        if (visible) onBack() else deferredBack = true
+    }
+
+    /** 同意记录或实名提交的失败结算。[keyApplies]：实名提交的结果才动保留的键（同意失败时键没用过）。 */
+    private fun settleFailure(
+        result: ApiResult,
+        probe: SendProbe,
+        keyApplies: Boolean,
+    ) {
         val failure = result as? ApiResult.Failure
         val code = failure?.code
         val error = WalletErrors.of(result)
-        if (error.kind ==
-            WalletError.RETRY_AFTER
-        ) {
+        if (error.kind == WalletError.RETRY_AFTER) {
             deps.gates.realname.start(error.disableMillis.takeIf { it > 0 } ?: SensitiveOutcome.DEFAULT_RETRY_MS)
         }
         if (error.kind == WalletError.FORCE_UPDATE) deps.env.forceUpdate()
-        val fields =
-            if (code == FIELD_ERROR) {
-                (failure.data["fields"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty()
-            } else {
-                emptyList()
-            }
-        val key =
-            when {
-                code == FIELD_ERROR -> "error.20001"
-                code != null && DefaultTexts.text("error.$code") != null && code / 10_000 != 5 -> "error.$code"
-                else -> error.textKey
-            }
+        val reopenConsent = keyApplies && code == CONSENT_REQUIRED && failure.consentType() == CONSENT_ID_VERIFICATION
+        if (keyApplies) retained = retained?.let { keyAfter(result, code, reopenConsent, it) }
+        serial += 1
+        if (reopenConsent) {
+            // 10004 id_verification：重开单独同意（默认不勾选），用户同意后先记同意、再用原键重放；不自动重放
+            mutable.value = s.copy(submitting = false, error = null, consentOpen = true, consentChecked = false)
+            deps.env.sensitiveOverlay(true)
+            return
+        }
+        val fields = if (keyApplies && code == FIELD_ERROR) failure.fieldNames() else emptyList()
         mutable.value =
             s.copy(
                 submitting = false,
-                error = Notice(key, ++serial, error.traceId, error.showTrace6),
+                // 带 fields 的 20001 由字段旁提示承担，页内错误条只给没有字段的错误（向量 e20001_field_*）
+                error = noticeFor(error, code, probe).takeIf { fields.isEmpty() },
                 fieldErrors = fields,
                 fieldErrorId = if (fields.isEmpty()) s.fieldErrorId else serial,
                 lockedToday = s.lockedToday || code == DAILY_LIMIT,
             )
     }
+
+    /** 错误条：发送前被禁用期拦下出 42901；被作废的结果不显示；50301 回落 error.50001 + trace6（D10-887 ②）；其余按码。 */
+    private fun noticeFor(
+        error: WalletError,
+        code: Int?,
+        probe: SendProbe,
+    ): Notice? {
+        val gated = probe.gated(error)
+        if (error.kind == WalletError.CANCELLED && !gated) return null
+        val key =
+            when {
+                gated -> "error.42901"
+                code == MAINTENANCE -> "error.50001"
+                code == FIELD_ERROR -> "error.20001"
+                code != null && DefaultTexts.text("error.$code") != null && code / 10_000 != 5 -> "error.$code"
+                else -> error.textKey
+            }
+        return Notice(key, serial, error.traceId, error.showTrace6)
+    }
+
+    /** 请求体只认 id_no、name 两个字段；服务端若带了别的字段名，当作没有字段错误（走错误条，不让用户看不到反馈）。 */
+    private fun ApiResult.Failure?.fieldNames(): List<String> =
+        (this?.data?.get("fields") as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.content }
+            ?.filter { it == FIELD_NAME || it == FIELD_ID }
+            .orEmpty()
+
+    private fun ApiResult.Failure?.consentType(): String? =
+        this?.effect?.consentType ?: (this?.data?.get("consent_type") as? JsonPrimitive)?.content
 
     /** 会话换代：同步清空已填的姓名与身份证号。 */
     fun onSessionChanged() = onSessionChanged(deps.env.identitySnapshot())
@@ -189,6 +309,7 @@ class RealNameController(
     fun onSessionChanged(identity: SessionIdentity) {
         if (left) return
         deferredBack = false
+        retained = null
         if (s.consentOpen) deps.env.sensitiveOverlay(false)
         mutable.value = RealNameSnapshot(owner = FormOwner.of(identity))
     }
@@ -211,7 +332,11 @@ class RealNameController(
 
     fun leave() {
         if (left) return
+        // 先同步作废（stillOwned 立刻为 false，等待中的恢复链不再重放），再取消已交给传输层的请求
         left = true
+        activeOwnership?.let(deps.api::cancelOwned)
+        activeOwnership = null
+        retained = null
         if (s.consentOpen) deps.env.sensitiveOverlay(false)
         mutable.value = RealNameSnapshot()
     }
@@ -227,8 +352,43 @@ class RealNameController(
         private const val FIELD_ERROR = 20001
         private const val DAILY_LIMIT = 30410
         private const val NAME_MAX = 64
+        private const val BUSY_CODE = 40901
+        private const val CONSENT_REQUIRED = 10004
+        private const val MAINTENANCE = 50301
+        private const val CONSENT_ID_VERIFICATION = "id_verification"
+
+        /** 40901 后自动重发前的等待：发出时刻约 0、1、2.5、4.5 秒，连首发共 4 次、都在 6 秒内（D10-887 ⑤，三端一致）。 */
+        private val BUSY_RESEND_DELAYS_MS = longArrayOf(1_000L, 1_500L, 2_000L)
+
+        /** 补办后沿用原键的码（ErrorActionMapper 1xxxx 前置）与 40901。 */
+        private val SAME_KEY_CODES = setOf(10001, 10005, BUSY_CODE)
+
+        /**
+         * 一次失败结果之后键的去留（null = 结束，下次用新键）：断连记下「出现过结果未知」并保留；没有响应外壳的（本地拒绝）没发出，保留；前置码、40901、10004 id_verification 保留；
+         * 出现过结果未知时 10405 / 5xxxx / 42901 也保留（D10-1018）；其余码结束。
+         */
+        private fun keyAfter(
+            result: ApiResult,
+            code: Int?,
+            reopenConsent: Boolean,
+            held: RetainedSubmit,
+        ): RetainedSubmit? {
+            val next = if (result is ApiResult.TransportFailure) held.copy(unknown = true) else held
+            if (code == null) return next
+            val keep = reopenConsent || code in SAME_KEY_CODES || (next.unknown && keepsUnknownKey(code))
+            return next.takeIf { keep }
+        }
+
+        private fun keepsUnknownKey(code: Int): Boolean = code == 10405 || code == 42901 || code / 10_000 == 5
     }
 }
+
+/** 保留的幂等键（只在内存）。[unknown]：这个键出现过结果未知（断连），之后 10405 / 5xxxx / 42901 也不结束键（D10-1018）。 */
+private data class RetainedSubmit(
+    val input: RealNameInput,
+    val key: String,
+    val unknown: Boolean,
+)
 
 /** 劳务协议页状态。 */
 data class LaborSnapshot(

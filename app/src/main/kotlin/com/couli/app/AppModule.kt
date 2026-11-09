@@ -59,6 +59,7 @@ import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
 import com.couli.app.update.variantUpdateStore
 import com.couli.app.wallet.AppWallet
+import com.couli.app.wallet.chooseRealNameBackend
 import com.couli.app.web.AppWeb
 import com.couli.app.web.BridgeHostRegistry
 import com.couli.app.web.TrustedWebAuth
@@ -127,6 +128,7 @@ import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
+import com.couli.feature.wallet.RemoteRealNameBackend
 import com.couli.feature.web.AndroidTrustedWebStore
 import com.couli.feature.web.TrustedWebViewFactory
 import com.couli.feature.web.WebViewCaches
@@ -1069,7 +1071,8 @@ object AppModule {
     /**
      * 钱包、提现、提现记录、收款账号、实名、劳务协议（APP-09）：读请求经 ApiClient（带页面归属与会话世代）；提交、确认、放弃经未决键管线
      * （SecurePendingKeyBackend）；交易流水号复制经剪贴板唯一写入口（APP-07）；10405 强制进入强更；断网缓存在 noBackupFilesDir 下按账号隔离（撤回、
-     * 切换环境、登出、换账号时删除）；实名与劳务协议的待定接口只在 debug / staging 由进程内假服务实现（G01、G02），release 为空（页面置灰）；
+     * 切换环境、登出、换账号时删除）；实名后端 staging / release 用真实实现（RemoteRealNameBackend，D10-887），debug 仍由进程内假服务实现；
+     * 劳务协议的待定接口只在 debug / staging 有假服务（G02），release 为空（页面置灰）；
      * route_params_dropped 进 Tracker 本地队列。
      */
     @Provides
@@ -1086,6 +1089,8 @@ object AppModule {
         tracker: Provider<TrackerQueue>,
         update: Provider<AppUpdate>,
         login: Provider<AppLogin>,
+        // 实名单独同意的回落版本（本机已同意版本，D10-1033）；放在末尾带默认值，按位置调用旧签名的测试图不受影响，Dagger 仍按此参数注入
+        privacy: AppPrivacy? = null,
     ): AppWallet =
         AppWallet(
             api = ApiClientWalletApi(client),
@@ -1097,7 +1102,16 @@ object AppModule {
             forceUpdate = { update.get().onServerForced() },
             cache = walletCacheStore(context, tokens),
             mask = mask,
-            realname = variantRealNameBackend(context),
+            realname =
+                chooseRealNameBackend(
+                    BuildConfig.BUILD_KIND,
+                    variantRealNameBackend(context),
+                    RemoteRealNameBackend(
+                        api = ApiClientWalletApi(client),
+                        configData = { config.store.snapshots.value.data },
+                        consentedVersion = { privacy?.consentedVersion()?.toIntOrNull() },
+                    ),
+                ),
             labor = variantLaborBackend(context),
             stepUpPhone = variantStepUpPhone(context),
             track = { event -> tracker.get().track(event) },

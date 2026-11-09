@@ -69,16 +69,33 @@ class ApiClientWalletApi(
 }
 
 /**
- * 实名提交（G01）：契约没有实名提交接口，手写的待定 operation submitRealname 只由 Debug 假服务实现；Release 没有实现（null），【提交认证】置灰并显示
- * 「实名认证暂未开放」，不发任何请求，也不调 /v1/consents。TODO(N-32) 契约补上后改为真实接口。
+ * 实名提交与实名单独同意（D10-887）。生产实现是 [RemoteRealNameBackend]（经 ApiClient 发 recordConsent、submitRealname）；Debug 由假服务实现；本端口为 null
+ * （[WalletDeps.realname]）时【提交认证】置灰并显示「实名认证暂未开放」，不发任何请求。
  */
 interface RealNameBackend {
-    /** 单独同意与实名提交（Debug 假服务里一起发生）；结果按 ApiResult（20001、30405 / 30406 / 30407 / 30410、42901、5xxxx、成功）。 */
+    /**
+     * 记单独同意（type=id_verification）。默认实现只给 Debug 假服务与测试替身用（假服务里同意和提交一起发生）；生产实现必须覆盖，不覆盖等于悄悄跳过单独同意，服务端回
+     * 10004。
+     */
+    suspend fun recordConsent(): ApiResult = ApiResult.Success(JsonObject(emptyMap()), null, null)
+
+    /** 实名提交；结果按 ApiResult（20001、30405 / 30406 / 30407 / 30410、42901、5xxxx、成功）。 */
     suspend fun submit(
         name: String,
         idNo: String,
         idempotencyKey: String,
     ): ApiResult
+
+    /** 带发送绑定的同意记录（共性第 39、52 条）：默认丢弃绑定，假服务不用实现。 */
+    suspend fun recordConsent(binding: RealNameCallBinding): ApiResult = recordConsent()
+
+    /** 带发送绑定的实名提交（共性第 39、52 条）：默认丢弃绑定，假服务不用实现。 */
+    suspend fun submit(
+        name: String,
+        idNo: String,
+        idempotencyKey: String,
+        binding: RealNameCallBinding,
+    ): ApiResult = submit(name, idNo, idempotencyKey)
 }
 
 /** 劳务协议（G02）：取协议与签署走手写的待定 operation，只由 Debug 假服务实现；Release 为 null（全文区「协议正文暂未提供」，【同意并签署】置灰）。 */
@@ -153,6 +170,12 @@ interface WalletEnv : StepUpEnv {
 
     /** 实名成功：刷新 GET /v1/me 的 realname_status，守卫按已实名放行（G05）。 */
     fun realnameChanged() = Unit
+
+    /**
+     * 实名提交成功（D10-887）：[owner] 是表单固定的身份，换号后到达的结果不算数。默认按 [realnameChanged]；App 实现先按已实名放行再复查 GET /v1/me（复查失败保持已实名，
+     * 三端一致）。
+     */
+    fun realnameSubmitted(owner: FormOwner) = realnameChanged()
 
     /**
      * 收款账号保存成功：从 Withdraw 进来的出栈回发起页，从别处进来的停在本页（brief §2.7）。返回是否已出栈。[entryId] 是发起的收款账号页条目

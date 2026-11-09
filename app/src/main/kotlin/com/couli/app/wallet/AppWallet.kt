@@ -34,6 +34,7 @@ import com.couli.core.wallet.WalletRateGate
 import com.couli.core.wallet.WalletRoutes
 import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.MeReadLimit
+import com.couli.feature.wallet.FormOwner
 import com.couli.feature.wallet.LaborAgreementScreen
 import com.couli.feature.wallet.LaborBackend
 import com.couli.feature.wallet.Notice
@@ -212,6 +213,13 @@ class AppWallet(
             override fun stepUpPhone(account: String): String? = this@AppWallet.stepUpPhone(account)
 
             override fun realnameChanged() = refreshRealname()
+
+            // 提交成功即按已实名放行并复查（复查失败保持已实名，三端一致）；只给表单固定的身份，换号后到达的结果丢弃（D10-887）
+            override fun realnameSubmitted(owner: FormOwner) {
+                if (!owner.current(this)) return
+                realnameState = owner.epoch to true
+                refreshRealname()
+            }
 
             // 提现成功的共享结算（共性第 40、53、61 条）：调用方已核对并固定点击时的账号与世代，原样通知仍存在的钱包页（订阅端再按自己的会话核对）；
             // 不在这里重新读取当前会话——结算之后新会话的令牌可能已在 IO 线程保存

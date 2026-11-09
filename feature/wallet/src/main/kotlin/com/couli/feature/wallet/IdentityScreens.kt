@@ -70,7 +70,7 @@ class RealNameViewModel(
 
 /**
  * 实名认证（RealName 路由，phone 档，不接受参数；设计稿 RealName、RealNameConsent）：说明 → 姓名、身份证号 → 两句提示 → 底部【提交认证】；点【提交认证】先弹
- * 单独同意（默认不勾选，点遮罩不关闭）。Release 里【提交认证】置灰，下方「实名认证暂未开放，请稍后再试」（G01）。
+ * 单独同意（默认不勾选，点遮罩不关闭）。没有实名后端时【提交认证】置灰，下方「实名认证暂未开放，请稍后再试」。
  */
 @Composable
 fun RealNameScreen(config: WalletPageConfig) {
