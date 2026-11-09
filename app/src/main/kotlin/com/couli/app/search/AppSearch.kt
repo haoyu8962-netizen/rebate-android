@@ -19,6 +19,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
 import com.couli.app.clipboard.AppClipboard
+import com.couli.app.clipboard.SearchSubmitCandidate
+import com.couli.app.clipboard.SearchSubmitShown
 import com.couli.app.clipboard.SearchTypingPasteEntry
 import com.couli.app.clipboard.SearchTypingPasteResult
 import com.couli.app.orders.AppOrders
@@ -29,6 +31,7 @@ import com.couli.app.trade.AppTrade
 import com.couli.app.trade.TradeDraftTexts
 import com.couli.app.variantBuyIntentNotice
 import com.couli.core.clientcore.ConfigStore
+import com.couli.core.clipboard.ParseInputService
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.ProductDetailState
@@ -49,10 +52,14 @@ import com.couli.feature.product.ProductPurchaseSlots
 import com.couli.feature.search.SearchConfigPort
 import com.couli.feature.search.SearchController
 import com.couli.feature.search.SearchHistory
+import com.couli.feature.search.SearchLinkOutcome
+import com.couli.feature.search.SearchLinkPort
+import com.couli.feature.search.SearchLinkStart
 import com.couli.feature.search.SearchPageActions
 import com.couli.feature.search.SearchPageConfig
 import com.couli.feature.search.SearchPurchaseSlots
 import com.couli.feature.search.SearchScreen
+import com.couli.feature.search.SearchSubmit
 import com.couli.feature.trade.CardPatch
 import com.couli.feature.trade.OpenPurchaseController
 import com.couli.feature.trade.PurchaseEnv
@@ -185,7 +192,15 @@ class AppSearch(
     }
 
     private val main = Handler(Looper.getMainLooper())
-    private val history = SearchHistory()
+
+    /**
+     * 进程级搜索历史（FU-AND-SEARCH-LINK-OWNER）：关键词请求的写出通知（网络线程）在这里切回主线程记账，不挂在页面的 viewModelScope 上——
+     * 已写出的搜索离页、ViewModel 清理之后照样记下。
+     */
+    private val history = SearchHistory(onMain = ::onMainThread)
+
+    /** 搜索框提交的链接 / 口令识别（POST /v1/inputs/parse，与粘贴同一个服务与请求形状）。 */
+    private val parser = ParseInputService(api)
 
     /** 回退栈条目 id → 该页的作废入口。 */
     private val leaves = mutableMapOf<String, () -> Unit>()
@@ -282,8 +297,80 @@ class AppSearch(
                 clipboard?.let { board ->
                     { fill -> SearchTypingPasteResult(board, entryId, fill) }
                 },
+            linkSubmit = clipboard?.let { board -> entryId?.let { origin -> linkSubmit(board, origin) } },
         )
     }
+
+    /** 已在主线程就当场执行，否则投递到主线程（历史记账用）。 */
+    private fun onMainThread(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
+    }
+
+    /**
+     * 输入框提交先识别链接 / 口令（FU-AND-SEARCH-LINK-SUBMIT，D10-640）：提交时读此刻的隐私结论，不是已同意（基本模式 BR-ATTR-29、未决定）不识别；
+     * 候选按手动粘贴的口径本地抽取（普通词、非白名单链接不上传，照关键词搜）；候选在 42901 共享禁用期中停止本次提交（评审 S1-3）。是候选时，
+     * 搜索页作废旧提交之后调 [SearchLinkStart.Recognize.begin]：由剪贴板发号（[AppClipboard.beginSearchSubmit]，D10-768），归属从此只看这个号。
+     */
+    private fun linkSubmit(
+        board: AppClipboard,
+        origin: String,
+    ): SearchLinkPort =
+        SearchLinkPort { text ->
+            val candidate = if (privacy() == PrivacyState.CONSENTED) board.searchSubmitCandidate(text) else null
+            when {
+                candidate == null -> null
+                candidate.blocked -> SearchLinkStart.Blocked
+                else -> SearchLinkStart.Recognize { ClipboardSearchSubmit(board, origin, candidate, board.beginSearchSubmit(origin)) }
+            }
+        }
+
+    /**
+     * 剪贴板发号的一次识别提交 [id]（D10-768）：持有判定、名下请求的归属、作废都交剪贴板（[AppClipboard.stillOwned]、
+     * [AppClipboard.searchSubmitOwnership]、[AppClipboard.dropSearchSubmit]）；识别 1 次，结果交剪贴板现有的出口（发起页 = 本页条目：详情、
+     * 卡片列表、30132 / 30131 / 30141 提示，D10-651、D10-656），只有识别失败（5xxxx、网络异常）才回落关键词搜。
+     */
+    private inner class ClipboardSearchSubmit(
+        private val board: AppClipboard,
+        private val origin: String,
+        private val candidate: SearchSubmitCandidate,
+        private val id: Long,
+    ) : SearchSubmit {
+        private val held = board.searchSubmitTicket(id)
+
+        /** 提交时的登录 / 隐私 / 环境身份（与发号同一主线程回合取定，评审 r1 S0-3）。 */
+        private val identity = board.searchSubmitIdentity()
+
+        override fun owned(): Boolean = held()
+
+        override fun sameIdentity(): Boolean = identity()
+
+        override fun ownership(
+            live: () -> Boolean,
+            onWritten: ((Boolean) -> Unit)?,
+        ) = board.searchSubmitOwnership(id, live, onWritten)
+
+        override fun drop() = board.dropSearchSubmit(id)
+
+        /** 识别 1 次并按剪贴板出口呈现；发送前（写出前守卫）与呈现前都只问 [owned]（失效即丢弃，[SearchLinkOutcome.Handled] 不回落、不预填）。 */
+        override suspend fun recognize(): SearchLinkOutcome {
+            if (!owned()) return SearchLinkOutcome.Handled
+            val outcome = parser.parse(candidate.upload, board.searchSubmitOwnership(id), candidate.title)
+            val action = outcome.action
+            return when {
+                outcome.dropped || !owned() -> SearchLinkOutcome.Handled
+                action == null -> SearchLinkOutcome.Fallback
+                else -> board.presentSearchSubmit(origin, action, candidate.title).toLinkOutcome()
+            }
+        }
+    }
+
+    /** 剪贴板出口的呈现结果 → 搜索页的结局：没有呈现（识别失败）回落关键词；30131 带标题时预填；其余已处理。 */
+    private fun SearchSubmitShown?.toLinkOutcome(): SearchLinkOutcome =
+        when {
+            this == null -> SearchLinkOutcome.Fallback
+            prefill != null -> SearchLinkOutcome.Prefill(prefill)
+            else -> SearchLinkOutcome.Handled
+        }
 
     private fun searchSlots(
         page: PurchasePage,

@@ -85,6 +85,10 @@ object ClipboardScreens {
     const val RETRY = "clipboard_retry"
     const val RETRY_ACTION = "clipboard_retry_action"
 
+    /** 搜索框提交识别到 30141 的「商品已下架」卡与它的【搜相似商品】（FU-AND-SEARCH-LINK-SUBMIT）。 */
+    const val OFF_SHELF = "clipboard_off_shelf"
+    const val SEARCH_SIMILAR = "clipboard_search_similar"
+
     /** 多卡弹层里行内 30132 的【用商品名搜索】（后接行号）。 */
     const val ROW_SEARCH_BY_NAME_PREFIX = "clipboard_row_search_by_name_"
     const val SETTINGS_ROW = "clipboard_settings_row"
@@ -210,6 +214,7 @@ fun SearchTypingPasteResult(
     val inset = Modifier.padding(start = CouliSpacing.space4, end = CouliSpacing.space4, top = CouliSpacing.space2)
     UnrecognizedInline(clipboard, origin = { it == entryId }, modifier = inset)
     RetryInline(clipboard, origin = { it == entryId }, modifier = inset)
+    OffShelfInline(clipboard, origin = { it == entryId }, modifier = inset)
     InviteConfirmInline(clipboard, origin = { it == entryId }, enabled = !blocked, modifier = inset)
 }
 
@@ -288,7 +293,7 @@ fun ClipboardResultHost(clipboard: AppClipboard) {
 
         // 30132 的提示与手动粘贴的邀请确认条在发起页内联显示（首页剪贴板区、SearchTyping 的粘贴入口下面），见 [UnrecognizedInline]、
         // [InviteConfirmInline]
-        is ClipboardResult.Unrecognized, is ClipboardResult.InviteConfirm -> {
+        is ClipboardResult.Unrecognized, is ClipboardResult.InviteConfirm, is ClipboardResult.OffShelf -> {
             Unit
         }
 
@@ -360,6 +365,36 @@ fun RetryInline(
             onAction = { clipboard.retryResult(current) },
             modifier = modifier.testTag(ClipboardScreens.RETRY),
             actionModifier = Modifier.testTag(ClipboardScreens.RETRY_ACTION),
+        )
+    }
+}
+
+/**
+ * 搜索框提交识别到 30141（FU-AND-SEARCH-LINK-SUBMIT，D10-651 ①）：与 30132 提示同一卡式，左 20 信息图标 + error.30141「商品已下架」+ 右侧描边次按钮
+ * 【搜相似商品】（btn.search_similar），点后按请求前抽出的标题在本页搜一次。只在发起页仍是当前页时显示；42901 禁用期与 parse 在途时置灰（执行层另在
+ * [AppClipboard.searchSimilar] 拦）。出现时读屏播报一次。
+ */
+@Composable
+fun OffShelfInline(
+    clipboard: AppClipboard,
+    origin: (String) -> Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val result by clipboard.result.collectAsStateWithLifecycle()
+    val blocked by clipboard.blocked.collectAsStateWithLifecycle()
+    val busy by clipboard.busy.collectAsStateWithLifecycle()
+    val current = result as? ClipboardResult.OffShelf ?: return
+    if (!origin(current.origin)) return
+    AnnounceResult(current.id, current.text, surfaceAnnouncesChanges = false)
+    key(current.id) {
+        InlineResultCard(
+            icon = CouliIcons.info,
+            text = current.text,
+            actionText = ClipboardDraftTexts.text(SEARCH_SIMILAR_KEY),
+            enabled = !blocked && !busy,
+            onAction = { clipboard.searchSimilar(current) },
+            modifier = modifier.testTag(ClipboardScreens.OFF_SHELF),
+            actionModifier = Modifier.testTag(ClipboardScreens.SEARCH_SIMILAR),
         )
     }
 }
@@ -664,3 +699,4 @@ internal class PromptPlatformTexts(
 
 private const val INVITE_PROMPT_KEY = "clipboard.invite_prompt"
 private const val NOTICE_MILLIS = 2_000L
+private const val SEARCH_SIMILAR_KEY = "btn.search_similar"

@@ -46,6 +46,73 @@ interface SearchConfigPort {
     fun platformStatus(platform: String): String? = null
 }
 
+/**
+ * 输入框提交时的链接 / 口令识别（FU-AND-SEARCH-LINK-SUBMIT，D10-640 / 651 / 656；App 给，feature 不依赖剪贴板模块）。
+ * [recognizer] 是本地判断、不发请求：不识别（基本模式、输入里没有链接 / 口令候选）返回 null，提交照关键词搜；输入是候选但识别在共享禁用期
+ * 返回 [SearchLinkStart.Blocked]；否则返回这次识别 [SearchLinkStart.Recognize]。
+ */
+fun interface SearchLinkPort {
+    fun recognizer(text: String): SearchLinkStart?
+}
+
+/** 输入框提交的识别怎么开始（[SearchLinkPort.recognizer]；null 是「没有候选」，照关键词搜）。 */
+sealed interface SearchLinkStart {
+    /** 输入是候选，但识别在 42901 共享禁用期中（评审 S1-3）：停止本次提交——不发识别、不改走关键词、不写历史；到期后再提交照常识别。 */
+    data object Blocked : SearchLinkStart
+
+    /**
+     * 发起 1 次识别。执行器先作废本页的旧提交，再调 [begin]：App 让剪贴板发号（D10-768），返回这次提交（[SearchSubmit]）。归属的唯一来源是
+     * 剪贴板，执行器不自建、不自拼。
+     */
+    class Recognize(
+        val begin: () -> SearchSubmit,
+    ) : SearchLinkStart
+}
+
+/**
+ * 一次输入框识别提交（FU-AND-SEARCH-LINK-OWNER，D10-768；App 给，剪贴板发号并统一管理，feature 只消费）。整次提交的生命周期——识别请求、
+ * 识别失败的关键词回落、配置驱动的自动续搜、呈现、预填、历史记账——都挂在这一个号下，只问 [owned]。
+ */
+interface SearchSubmit {
+    /** 单一谓词：这次提交仍被持有（剪贴板 stillOwned）。会在网络线程上求值，只读线程安全发布的状态。 */
+    fun owned(): Boolean
+
+    /**
+     * 这次提交名下的一个请求归属（回落、续搜的关键词请求）：剪贴板发放并登记，作废时一并取消。归属 = [owned] 且 [live]（本页这个请求自身的
+     * 序号仍是当前、页面没离开）；[onWritten] 是网络层的写出通知。
+     */
+    fun ownership(
+        live: () -> Boolean,
+        onWritten: ((Boolean) -> Unit)?,
+    ): CallOwnership
+
+    /** 搜索侧的作废出口（再提交、新关键词、离页、放弃）：交剪贴板清槽。 */
+    fun drop()
+
+    /**
+     * 提交时的登录 / 隐私 / 环境身份仍在（评审 r1 S0-3）：只比世代与隐私结论、不看槽——单纯离页清了槽仍为真，切号、切环境、撤回隐私为假。
+     * 历史记账在主线程真正记下之前用它再核一次。
+     */
+    fun sameIdentity(): Boolean
+
+    /** 发 1 次识别并按剪贴板出口呈现；结局见 [SearchLinkOutcome]（作废了的只丢弃，为 [SearchLinkOutcome.Handled]）。 */
+    suspend fun recognize(): SearchLinkOutcome
+}
+
+/** 一次输入框识别的结局（识别了就不写搜索历史，D10-651 ③；只有 [Fallback] 照普通关键词搜、照普通关键词写）。 */
+sealed interface SearchLinkOutcome {
+    /** 已处理：进详情、出卡片列表 / 提示（30132、30141 等，与粘贴同组件）、强更 / 限流照现有处理、归属失效丢弃。 */
+    data object Handled : SearchLinkOutcome
+
+    /** 已处理（30131 提示），并把 [text]（请求前抽出的「」标题）预填进本页搜索框，不自动搜。 */
+    data class Prefill(
+        val text: String,
+    ) : SearchLinkOutcome
+
+    /** 识别失败（5xxxx、网络异常）：回落关键词搜 1 次。 */
+    data object Fallback : SearchLinkOutcome
+}
+
 /** 一轮查询的条件（系统回收后按它恢复，A-R2-03）：已提交的关键词、平台、排序、筛选（整数分）与查询轮次。 */
 data class SearchConditions(
     val keyword: String,
@@ -55,6 +122,8 @@ data class SearchConditions(
     val priceMinFen: Long?,
     val priceMaxFen: Long?,
     val round: Long,
+    /** 这个关键词来自一次识别提交（回落、续搜）：归属只活在本次页面实例里，恢复时不得当普通词重搜（评审 r2 S0-1）。 */
+    val fromRecognition: Boolean = false,
 )
 
 /** 搜索页的阶段。 */
@@ -102,11 +171,14 @@ data class SearchSnapshot(
      * 第几轮查询（每次开始搜第一页加 1；翻页不变）。页面只在它变了时把列表滚回顶部（03 §10.4：返回本页、配置重建都保留滚动位置）。
      */
     val round: Long = 0,
+    /** [keyword] 来自一次识别提交：与关键词在同一次状态更新里写入、一起保存（评审 r2 S0-1）。 */
+    val keywordFromRecognition: Boolean = false,
 ) {
     val loadMoreFailed: Boolean get() = loadMoreError != null
 
     /** 当前条件（保存到 SavedStateHandle 用）。 */
-    val conditions: SearchConditions get() = SearchConditions(keyword, platform, sort, hasCoupon, priceMinFen, priceMaxFen, round)
+    val conditions: SearchConditions
+        get() = SearchConditions(keyword, platform, sort, hasCoupon, priceMinFen, priceMaxFen, round, keywordFromRecognition)
 }
 
 /**
@@ -121,15 +193,35 @@ class SearchController(
     private val api: PageApi,
     private val config: SearchConfigPort,
     private val scope: CoroutineScope,
+    /** 输入框提交的链接 / 口令识别；没有给时提交一律关键词搜（放在 [clock] 之前：既有调用以尾随 lambda 传 clock）。 */
+    private val links: SearchLinkPort? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val session = SearchSession()
+
+    /**
+     * 本页最新一次识别提交（剪贴板发号，D10-768）：识别在途或已呈现，回落时与 [keywordOwner] 是同一个。再提交、新关键词、离页时交还剪贴板作废
+     * （[dropSubmit]）；关键词上的请求不看它，只看 [keywordOwner]。只在主线程读写。
+     */
+    private var current: SearchSubmit? = null
+
+    /**
+     * 本页关键词（[SearchSnapshot.keyword]）所属的识别提交（评审 r1 S0-1）：识别失败回落时与关键词同时写入，查询与归属成对——第一页、自动续搜、
+     * 翻页的请求都只挂在它名下、只问它是否仍被持有，不借 [current]（再提交后 current 已是新提交，不能替旧关键词发请求）。它作废之后，下一次
+     * 自动或用户触发的请求一律放弃（回输入态）。用户直接搜的关键词为 null。只在主线程读写。
+     */
+    private var keywordOwner: SearchSubmit? = null
     private val gate = RetryAfterGate(clock)
     private var gateTimer: Job? = null
     private var pager = SearchPager()
     private val owners = mutableListOf<CallOwnership>()
     private val refetchOwners = mutableListOf<CallOwnership>()
-    private var left = false
+
+    /** 页面已离开。只在主线程写；请求归属在网络线程上读，volatile 发布（评审 r2 S1-2）。 */
+    @Volatile private var left = false
+
+    /** 当前第一页 / 翻页请求的序号（与 [session] 同步推进，离开为 null）：关键词请求的归属在网络线程上读它，volatile 发布（评审 r2 S1-2）。 */
+    @Volatile private var liveSeq: Long? = null
     private var unsubscribe: (() -> Unit)? = null
 
     /**
@@ -154,21 +246,25 @@ class SearchController(
     /**
      * 页面打开：按路由参数 q、platform（routes.json Search）。有 q 时直接搜。
      * [restored]：进程被系统回收后、按 SavedStateHandle 里保存的条件重建本页（APP-06a 共性第 17、20 条，A-R2-03）。这时不看路由参数，按
-     * 保存的关键词、平台、排序、筛选重新搜第一页，查询轮次沿用保存的值（不算新一轮，页面不把滚动位置清零）。
+     * 保存的关键词、平台、排序、筛选重新搜第一页，查询轮次沿用保存的值（不算新一轮，页面不把滚动位置清零）。来源是识别提交的查询不重搜（见 [restore]）。
+     * 返回页面是否按保存的条件继续（false 时待恢复的滚动位置已没有意义）。
      */
+    @Suppress("LongParameterList") // 路由参数、恢复条件与 submit 相同的三个回调
     fun open(
         q: String?,
         platform: String?,
         restored: SearchConditions? = null,
-    ) {
+        /** 路由 q 与输入框提交走同一条路（评审 S2-5）：三个回调与 [submit] 相同。 */
+        onKeyword: (normalized: String) -> Unit = {},
+        onPrefill: (text: String) -> Unit = {},
+        history: SearchHistory? = null,
+    ): Boolean {
         left = false
         if (unsubscribe == null) unsubscribe = config.subscribe(::configChanged)
-        if (restored != null) {
-            restore(restored)
-            return
-        }
+        if (restored != null) return restore(restored)
         refreshTabs(platform)
-        if (q != null && SearchQuery.normalizeKeyword(q).isNotEmpty()) submit(q) else idleOrUnavailable()
+        if (q != null && SearchQuery.normalizeKeyword(q).isNotEmpty()) submit(q, onKeyword, onPrefill, history) else idleOrUnavailable()
+        return true
     }
 
     /**
@@ -185,12 +281,25 @@ class SearchController(
         update { it.copy(phase = phase) }
     }
 
-    private fun restore(saved: SearchConditions) {
+    /**
+     * 按保存的条件恢复（评审 r2 S0-1）。三条路：
+     * - 恢复门等待期间用户已经提交了新的（在途或已呈现的识别、已受理的关键词）：不覆盖、不作废，只刷新 Tab；
+     * - 来源是识别提交的查询：归属活在上一个页面实例里，新实例无法证明它仍有效——不重搜、不当普通词、不补票，回输入态（关键词清空，输入框由页面保留），
+     *   保存状态随之落成输入态，再回收也不复活；
+     * - 普通词照常重搜第一页。
+     * 返回页面是否按保存的条件继续。Tab 刷新与配置订阅三条路都照常。
+     */
+    private fun restore(saved: SearchConditions): Boolean {
+        if (current != null || s.keyword.isNotEmpty()) {
+            refreshTabs(s.platform ?: saved.platform)
+            if (s.keyword.isEmpty()) idleOrUnavailable()
+            return false
+        }
         val sort = saved.sort.takeIf { Sort.fromRaw(it) != Sort.UNKNOWN } ?: Sort.RELEVANCE.raw
         val filtersOk = SearchQuery.filtersValid(saved.priceMinFen, saved.priceMaxFen)
         update {
             it.copy(
-                keyword = SearchQuery.normalizeKeyword(saved.keyword),
+                keyword = if (saved.fromRecognition) "" else SearchQuery.normalizeKeyword(saved.keyword),
                 sort = sort,
                 hasCoupon = saved.hasCoupon,
                 priceMinFen = saved.priceMinFen.takeIf { filtersOk },
@@ -199,18 +308,110 @@ class SearchController(
             )
         }
         refreshTabs(saved.platform)
-        if (s.keyword.isNotEmpty()) run(newRound = false)
+        if (s.keyword.isNotEmpty()) run(newRound = false) else idleOrUnavailable()
+        return !saved.fromRecognition
     }
 
-    /** 输入框【搜索】：关键词不合法（空、超长）或 42901 禁用中返回 false，不发请求。 */
-    @Suppress("ReturnCount") // 禁用、离开、条件不合法逐项提前返回
-    fun submit(keyword: String): Boolean {
+    /**
+     * 输入框【搜索】：关键词不合法（空、超长）或 42901 禁用中返回 false，不发请求。
+     * 接了 [links] 且输入是链接 / 口令候选时先识别（FU-AND-SEARCH-LINK-SUBMIT）：识别在途不发关键词请求、不改页面；已处理即结束（30131 另把
+     * 标题交 [onPrefill]），识别失败才按原文走一次关键词搜（同一个关键词入口，规范化与长度校验不变）。识别在共享禁用期（[SearchLinkStart.Blocked]）
+     * 返回 false：不发任何请求。[onKeyword] 在关键词搜索被受理时调（当场或回落），页面据此回写规范化后的输入；识别了的不调。
+     * [history]：关键词请求实际写出（网络层 [CallOwnership.onWritten]，评审 r2 S2-3）时由进程级历史服务记账（[SearchHistory.recorder]：去重、
+     * 切回主线程，不挂在 [scope] 上）；写出前被取消、被本地拒绝、没有可搜平台都不记。
+     * 识别提交的归属全部来自剪贴板（D10-768，[SearchSubmit]）：识别、回落、续搜的请求，呈现、预填、回落与历史，都只问 [SearchSubmit.owned]。
+     */
+    @Suppress("ReturnCount") // 禁用 / 离开、不识别走关键词、识别禁用期、识别已发起四个出口
+    fun submit(
+        keyword: String,
+        onKeyword: (normalized: String) -> Unit = {},
+        onPrefill: (text: String) -> Unit = {},
+        history: SearchHistory? = null,
+    ): Boolean {
+        if (gate.active || left) return false
+        val begin =
+            when (val start = links?.recognizer(keyword)) {
+                null -> return keywordSubmitted(keyword, onKeyword, history, submit = null)
+                SearchLinkStart.Blocked -> return false
+                is SearchLinkStart.Recognize -> start.begin
+            }
+        // 再提交：旧提交先作废（清槽、取消名下请求），再由剪贴板发新号
+        dropSubmit()
+        val submit = begin()
+        current = submit
+        scope.launch {
+            val outcome = submit.recognize()
+            if (!submit.owned()) return@launch
+            when (outcome) {
+                SearchLinkOutcome.Fallback -> {
+                    keywordSubmitted(keyword, onKeyword, history, submit)
+                }
+
+                // 已呈现：槽留着（仍是本页最新一次提交），由下一个作废出口清
+                is SearchLinkOutcome.Prefill -> {
+                    onPrefill(outcome.text)
+                }
+
+                SearchLinkOutcome.Handled -> {
+                    Unit
+                }
+            }
+        }
+        return true
+    }
+
+    /**
+     * 关键词搜索一次；受理了把规范化后的关键词交 [onKeyword]，返回是否已受理。[submit] 是识别回落时原来的识别提交（用户直接搜的关键词为
+     * null）：回落请求挂在它名下，历史记账也只在它仍被持有时记。
+     */
+    private fun keywordSubmitted(
+        keyword: String,
+        onKeyword: (String) -> Unit,
+        history: SearchHistory?,
+        submit: SearchSubmit?,
+    ): Boolean {
+        val normalized = SearchQuery.normalizeKeyword(keyword)
+        val owned: () -> Boolean = submit?.let { it::owned } ?: { true }
+        val valid: () -> Boolean = submit?.let { it::sameIdentity } ?: { true }
+        val record = history?.recorder(normalized, owned, valid)
+        if (!submitKeyword(keyword, submit, record)) {
+            submit?.let(::release)
+            return false
+        }
+        onKeyword(normalized)
+        return true
+    }
+
+    /** 搜索侧作废出口：本页当前的识别提交交还剪贴板清槽（再提交、新关键词、换条件、离页）。 */
+    private fun dropSubmit() {
+        val submit = current ?: return
+        current = null
+        submit.drop()
+    }
+
+    /** 识别提交 [submit] 结束（回落未受理、放弃）：交还剪贴板；本页当前 / 关键词所属若已是更新的提交，不动它们。 */
+    private fun release(submit: SearchSubmit) {
+        if (current === submit) current = null
+        if (keywordOwner === submit) keywordOwner = null
+        submit.drop()
+    }
+
+    /**
+     * 关键词搜索的入口：禁用、离开、条件不合法返回 false（未受理、不改界面）。受理不等于发出：没有可搜索平台时 [run] 只转「无可搜索平台」、
+     * 不发请求；发出与否以网络层的实际写出为准（[record]，评审 r2 S2-3）。
+     */
+    @Suppress("ReturnCount") // 禁用 / 离开、条件不合法逐项提前返回
+    private fun submitKeyword(
+        keyword: String,
+        submit: SearchSubmit?,
+        record: ((Boolean) -> Unit)?,
+    ): Boolean {
         if (gate.active || left) return false
         val normalized = SearchQuery.normalizeKeyword(keyword)
         val previous = s
         refreshTabs(s.platform)
-        update { it.copy(keyword = normalized) }
-        if (!userRun()) {
+        update { it.copy(keyword = normalized, keywordFromRecognition = submit != null) }
+        if (!keywordRun(submit, record)) {
             mutableState.value = previous
             return false
         }
@@ -258,15 +459,22 @@ class SearchController(
     @Suppress("ReturnCount")
     fun loadMore(): Boolean {
         val cursor = pager.nextCursor?.takeIf { canLoadMore() } ?: return false
+        // 回落页的翻页也挂在关键词所属的提交下（评审 r1 S0-2）：作废之后的翻页（含 AutoLoadMore 自动触发）不写出，页面回输入态
+        val owner = keywordOwner
+        if (abandonedBefore(owner)) return false
         val requested = s.platform ?: return false
         val query = SearchQuery.build(input(cursor))
         if (!query.valid) return false
         val seq = beginRequest("loadMore")
         update { it.copy(loadingMore = true, loadMoreError = null) }
         scope.launch {
-            val result = send(seq, query)
+            val result = send(seq, query, owner)
             if (!session.accept(seq)) return@launch
             owners.clear()
+            if (lost(owner)) {
+                abandon(checkNotNull(owner))
+                return@launch
+            }
             val view = viewOf(result)
             when {
                 view.isSearchDisabled() -> {
@@ -349,6 +557,8 @@ class SearchController(
     fun leave() {
         left = true
         session.leave()
+        liveSeq = null
+        dropSubmit()
         cancelAll()
         refetchOwners.toList().also { refetchOwners.clear() }.forEach(api::cancelOwned)
         gateTimer?.cancel()
@@ -471,19 +681,54 @@ class SearchController(
         if (s.keyword.isNotEmpty()) userRun()
     }
 
-    /** 用户主动发起的一轮搜索：清空本轮记下的 search_disabled 平台（之后的自动回落重新计）。 */
+    /**
+     * 用户在当前关键词上重搜（换 Tab / 排序 / 筛选、重试）：清空本轮记下的 search_disabled 平台。在途的另一次识别（不是本页关键词所属的提交）
+     * 作废（用户已换了要做的事）；关键词仍属原提交，请求照旧挂在它名下，它已作废则放弃（[run]）。
+     */
     private fun userRun(): Boolean {
+        if (current !== keywordOwner) dropSubmit()
         disabledThisRound.clear()
         return run()
     }
 
     /**
+     * 输入框 / 路由 q 的关键词受理：本页关键词换成新的一次，所属提交同时换成 [submit]（识别回落时是原提交，用户直接搜为 null），查询与归属成对
+     * （评审 r1 S0-1）。受理了才把旧的当前提交与旧关键词所属提交交还剪贴板作废；没受理（条件不合法）原样恢复、不作废。[record] 是历史记账。
+     */
+    private fun keywordRun(
+        submit: SearchSubmit?,
+        record: ((Boolean) -> Unit)?,
+    ): Boolean {
+        val previousCurrent = current
+        val previousOwner = keywordOwner
+        current = submit
+        keywordOwner = submit
+        disabledThisRound.clear()
+        if (!run(record = record)) {
+            current = previousCurrent
+            keywordOwner = previousOwner
+            return false
+        }
+        if (previousCurrent !== submit) previousCurrent?.drop()
+        if (previousOwner !== submit && previousOwner !== previousCurrent) previousOwner?.drop()
+        return true
+    }
+
+    /**
      * 搜第一页。条件不合法返回 false（不发请求、不改界面）。这是所有第一页请求的统一发送入口：42901 禁用期间一律不发（A-R1-02，
      * 共性第 11 条；翻页的入口 [loadMore] 同样检查）。[newRound] 为 false 只在系统回收后恢复时用：轮次不变，页面不把滚动位置清零。
+     * 本页关键词属于一次识别提交（[keywordOwner]：回落，以及配置变化、search_disabled 驱动的自动续搜）时，请求挂在它名下（[SearchSubmit.ownership]），
+     * 发送前与结果消费前都只问 [SearchSubmit.owned]：失效（切号、切环境、撤回隐私、发起页被覆盖或离开、再提交）就不发、不展示，页面回到输入态。
+     * [record] 是这次提交的历史记账（只给用户提交的那一次，续搜不记）。
      */
     @Suppress("ReturnCount")
-    private fun run(newRound: Boolean = true): Boolean {
+    private fun run(
+        newRound: Boolean = true,
+        record: ((Boolean) -> Unit)? = null,
+    ): Boolean {
         if (left || gate.active) return false
+        val submit = keywordOwner
+        if (abandonedBefore(submit)) return false
         val requested = s.platform
         if (requested == null) {
             // 没有可搜索的平台：不发请求（BR-PROD-10 细则）。旧请求照样作废
@@ -499,9 +744,13 @@ class SearchController(
         // TODO(N-27)：begin 时是否清除已展示的旧结果未规定；这里清掉并显示加载态，避免新条件下仍显示旧条件的结果
         update { it.cleared().copy(phase = SearchPhase.LOADING, round = if (newRound) it.round + 1 else it.round) }
         scope.launch {
-            val result = send(seq, query)
+            val result = send(seq, query, submit, record)
             if (!session.accept(seq)) return@launch
             owners.clear()
+            if (lost(submit)) {
+                abandon(checkNotNull(submit))
+                return@launch
+            }
             val view = viewOf(result)
             when {
                 view.isSearchDisabled() -> {
@@ -520,6 +769,33 @@ class SearchController(
             }
         }
         return true
+    }
+
+    /** 关键词所属的识别提交 [owner] 已不再被持有（用户直接搜的关键词为 null，不受约束）。 */
+    private fun lost(owner: SearchSubmit?): Boolean = owner != null && !owner.owned()
+
+    /** 发送前：[owner] 已作废就作废在途请求并放弃（回输入态），返回 true——不得再以它的关键词写出（评审 r1 S0-1、S0-2）。 */
+    private fun abandonedBefore(owner: SearchSubmit?): Boolean {
+        if (!lost(owner)) return false
+        beginRequest("abandon")
+        abandon(checkNotNull(owner))
+        return true
+    }
+
+    /**
+     * 识别提交 [submit] 已失效（评审 r2 S1-1、r3 S1）：结果不展示（不记 shownSeq、不当成本页的结果或错误态），交还剪贴板，清掉关键词回到输入态——
+     * 之后的配置变化不会按旧提交自动重搜（输入框由页面保留）。
+     */
+    private fun abandon(submit: SearchSubmit) {
+        release(submit)
+        pager = SearchPager()
+        update {
+            it.cleared().copy(
+                keyword = "",
+                keywordFromRecognition = false,
+                phase = if (it.tabs.isEmpty()) SearchPhase.UNAVAILABLE else SearchPhase.IDLE,
+            )
+        }
     }
 
     private fun SearchSnapshot.cleared(): SearchSnapshot =
@@ -557,15 +833,24 @@ class SearchController(
     /** 新请求开始：旧序号立即失效，并取消旧请求的传输。 */
     private fun beginRequest(kind: String): Long {
         val seq = session.begin(kind)
+        liveSeq = seq
         cancelAll()
         return seq
     }
 
+    /**
+     * 发一次搜索请求。本页请求自身的归属在网络线程（写出前守卫）上求值，只读 volatile 的 [left]、[liveSeq]（评审 r2 S1-2）。属于识别提交
+     * [submit] 的请求（回落、续搜）由剪贴板发放归属（[SearchSubmit.ownership]，D10-768）：再并上剪贴板的单一谓词，作废时由剪贴板一并取消。
+     * [record] 是网络层的写出通知（历史记账，[SearchHistory.recorder]）。
+     */
     private suspend fun send(
         seq: Long,
         query: SearchQueryResult,
+        submit: SearchSubmit? = null,
+        record: ((Boolean) -> Unit)? = null,
     ): ApiResult {
-        val owner = CallOwnership(api.epochs()) { !left && session.isCurrent(seq) }
+        val live = { !left && liveSeq == seq }
+        val owner = submit?.ownership(live, record) ?: CallOwnership(api.epochs(), onWritten = record, stillOwned = live)
         owners += owner
         return api.send(ApiCall(SEARCH_PRODUCTS, query = query.toQueryString(), ownership = owner))
     }

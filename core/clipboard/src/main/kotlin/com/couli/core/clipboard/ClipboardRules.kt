@@ -97,6 +97,11 @@ object ClipboardText {
     private val LINK = Regex("(?i)https?://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+")
     private val TITLE = Regex("「([^「」]+)」")
 
+    /** 首行链接的常见包装（评审 S2-6）：前缀、开 / 收括号与引号（全角、半角）。 */
+    private val LINK_LABELS = listOf("链接：", "链接:")
+    private const val WRAP_OPEN = "（(“‘\"'"
+    private const val WRAP_CLOSE = "）)”’\"'"
+
     fun links(text: String): List<String> = LINK.findAll(text).map { it.value }.toList()
 
     /** 「」内的第一段文字（去掉首尾空白）；没有为 null。 */
@@ -108,10 +113,32 @@ object ClipboardText {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
 
-    /** 30132【用商品名搜索】的预填（BR-TEXT-14：「」内或首行商品名，提取不到留空）。 */
+    /**
+     * 30132【用商品名搜索】的预填（BR-TEXT-14：「」内或首行商品名，提取不到留空）。D10-666 ①：首个非空行以链接开头（http / https，或不带 scheme
+     * 的平台短链如 m.tb.cn/h.…、u.jd.com/…）时它不是商品名，属「提取不到」，返回空，不退到第二行；粘贴与搜索框共用这一处。评审 S2-6：首行被常见
+     * 包装裹住的链接（全角 / 半角括号、中英文引号、「链接：」「链接:」前缀）同样算链接——[startsWithLink] 先剥包装再判。「」标题仍优先。
+     */
     fun searchPrefill(text: String?): String? {
         if (text.isNullOrBlank()) return null
-        return quotedTitle(text) ?: text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+        val firstLine = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+        return quotedTitle(text) ?: firstLine?.takeUnless(::startsWithLink)
+    }
+
+    /**
+     * [line] 以链接开头（D10-666 ①，编排 23:46 补充裁定：复用候选提取的同一份白名单，不另写正则）：开头是 http(s) 链接（[LINK]），或首段文字补上
+     * scheme 后经 [ClipboardHostPolicy.check] 命中包内默认白名单（[ClipboardRules.DEFAULT_HOSTS]，与 [CandidateExtractor] 同一入口）且带路径的平台
+     * 短链（m.tb.cn/h.…、u.jd.com/…）。以 HTTP 字母开头的商品名（「HTTP转接头 USB3.0」）两条都不中。
+     */
+    private fun startsWithLink(line: String): Boolean {
+        // 评审 S2-6：先剥开头的包装——开括号、开引号与空白，以及其后的「链接：」「链接:」前缀（前缀之后的空白、括号、引号一并剥）。只剥这些字符，
+        // 剥完是不是链接仍按下面两条判；「（新款）HTTP转接头」剥完是「新款）HTTP转接头」，不是链接
+        val opened = line.trimStart { it in WRAP_OPEN || it.isWhitespace() }
+        val label = LINK_LABELS.firstOrNull { opened.startsWith(it) }
+        val bare = if (label == null) opened else opened.removePrefix(label).trimStart { it in WRAP_OPEN || it.isWhitespace() }
+        if (LINK.find(bare)?.range?.first == 0) return true
+        // 首段到空白为止，去掉收尾的括号、引号（「（m.tb.cn/h.…）」「“u.jd.com/…”」）
+        val head = bare.substringBefore(' ').substringBefore('\t').trimEnd { it in WRAP_CLOSE }
+        return '/' in head && ClipboardHostPolicy.check("https://$head", ClipboardRules.defaults).allowed
     }
 
     /** 链接片段与它在原文中的位置（候选按原文位置排序用）。 */

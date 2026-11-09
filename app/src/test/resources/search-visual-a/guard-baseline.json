@@ -3,7 +3,7 @@
   "files": [
     {
       "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt",
-      "h": "3e464632d57b90b823c96fe32e502e877dd91bc7a35c203795e123464abd4e0f"
+      "h": "eda345db4a35779b4d8eed59af004d03fcbd357a802a0065dbcb13f2c4b39fb6"
     },
     {
       "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardDraftTexts.kt",
@@ -11,7 +11,7 @@
     },
     {
       "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardScreens.kt",
-      "h": "504158c01d17016e5f20c2ca9af7c2245f818af130f0e534294166558c01bd8a"
+      "h": "6f000e1c289436992718423b7181804cdfd5887b650456c059d2c4d5efe6c865"
     },
     {
       "p": "app/src/main/kotlin/com/couli/app/clipboard/ClipboardStores.kt",
@@ -435,7 +435,7 @@
     },
     {
       "p": "feature/search/src/main/kotlin/com/couli/feature/search/SearchController.kt",
-      "h": "4dda1a601edcb833bb143ca9caeea3d7d219a4267427864809b208129220d957"
+      "h": "a5d77b759a02785dccc5f3691e9430747a2d568a95ca615752c6e0e151ad2990"
     },
     {
       "p": "feature/search/src/main/kotlin/com/couli/feature/search/SearchFeature.kt",
@@ -447,7 +447,7 @@
     },
     {
       "p": "feature/search/src/main/kotlin/com/couli/feature/search/SearchViewModel.kt",
-      "h": "df44f7485648b3c64187a651a81a29d2092589620339a615033f28ec6cf67827"
+      "h": "b75827ac9337e86948603d84277b8b5691d1446423e68342c6b8d6a67169a144"
     },
     {
       "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchApiClientIntegrationTest.kt",
@@ -757,7 +757,7 @@
     "model::openPriceFilter",
     "model::resetPriceDraft"
   ],
-  "appSearchQ11Normalized": "d92babb7a44f8a4dcde059272b662562d19921f34b23151967da1798ee1a8436",
+  "appSearchQ11Normalized": "c814d6b47c4ca95142f91f6e793548c0d8d5915680fc6d55f66c42574bea6447",
   "draftKeys": [
     "card.disclaimer_button",
     "card.disclaimer_close",

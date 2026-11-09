@@ -1,7 +1,7 @@
 {
  "base": "5a795b516389b3d1947bcdea680ed2a587192bd0",
  "files": [
-  {"h": "3e464632d57b90b823c96fe32e502e877dd91bc7a35c203795e123464abd4e0f", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
+  {"h": "eda345db4a35779b4d8eed59af004d03fcbd357a802a0065dbcb13f2c4b39fb6", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
   {"h": "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},
@@ -967,7 +967,7 @@
   {"h": "510f251c58114abc4bba2b0a45c0bcf130245547709b663150228a23c1660a7c", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardHashes.kt"},
   {"h": "91e5f13b2f119aebe0a8dcf065ef6f7bce64b97df654699300cb56792a86e0f9", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardNotice.kt"},
   {"h": "3f71b2868fdb01cdc3dfbbde5f79398698945810f3454e151ad5d5e95ccb24fa", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRecords.kt"},
-  {"h": "88f3ad79236857df2fdbd2a2169f17833bddb134683c53719eb6c7cabfb20496", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRules.kt"},
+  {"h": "ee5dad2db07d25dc600a40bcb83ebca478addc28bfac311a1822136c888f4309", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRules.kt"},
   {"h": "e30e5caeb358c939196d0304d5fd520f4491c1c9aa6a3e13636e78d5b777c37c", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardSensitive.kt"},
   {"h": "db717ae5247edf23eecd582ea8a31eed33b9c80b463f3324da2135c0593355f4", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardUi.kt"},
   {"h": "216d83a41e3ae8dae6be3f4b9eaef2e1da7b5b8bbb7aad28dee062fa26dafbaa", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/HomePasteCard.kt"},
@@ -1160,8 +1160,8 @@
  "settingsHead": "2ef8243bb0c517a8575151fcaca9718343c4f31a7300a4f71e6d5c2b213cd32b",
  "nicknameHead": "914f6ad6c85fd64b1a971444668aaf60eba7736b85ffef337839c1ddb011c57e",
  "notifyBlock": "4773d28affea033e21cca7330880243aaed19324eff06cf3d69cb1fc868e3528",
- "clipboardPrefix": "edfb627d4e484c89dee40f8157cea75a95659235a5617dd6b1277b18995c6595",
- "clipboardSuffix": "4d2573e2c06d4a02999de9d72deb88fb52a236735b4bdaca0cca4174dfbd961b",
+ "clipboardPrefix": "f2f8029f2a3c8dd1eb35b151c8402208acb540552482f56ae509a597401e6f0f",
+ "clipboardSuffix": "b39b038f0d8b9a33917327c5f56b4001d37a018f5849fa0f3f563d4d966155da",
  "mePortsPrefix": "72cf287f273eca35a63f00e0099c5eab7f54cd7dded2293885812043eb0dea30",
  "meTags": [
   "object MeTags {",

@@ -159,7 +159,33 @@ sealed interface ClipboardResult {
         val code: String,
         override val id: Long,
     ) : ClipboardResult
+
+    /**
+     * 搜索框提交识别到 30141（FU-AND-SEARCH-LINK-SUBMIT，D10-651 ①；BR-PRICE-14、BR-PRICE-08 细则）：error.30141「商品已下架」加【搜相似商品】，
+     * 与 30132 提示同一卡式、在发起页内联显示（不按 2 秒轻提示消失）；点按钮按 [title]（请求前抽出的「」标题）在本页搜一次。
+     */
+    data class OffShelf(
+        override val origin: String,
+        val text: String,
+        val title: String,
+        override val id: Long,
+    ) : ClipboardResult
 }
+
+/**
+ * 搜索框提交的识别上传（[AppClipboard.searchSubmitCandidate]）：[upload] 是本地抽出的最小候选，[title] 是最小化后的「」标题（30132 预填用）。
+ * [blocked]：此刻在 42901 共享禁用期中——输入是候选，但这次提交应停止（不发识别、不改走关键词，评审 S1-3），与「不是候选」（null）区分。
+ */
+data class SearchSubmitCandidate(
+    val upload: String,
+    val title: String?,
+    val blocked: Boolean = false,
+)
+
+/** 搜索框提交的识别已按粘贴出口呈现（[AppClipboard.presentSearchSubmit]）；[prefill] 非空时搜索页把它预填进输入框、不自动搜（30131）。 */
+data class SearchSubmitShown(
+    val prefill: String?,
+)
 
 /**
  * 剪贴板普通互斥模态的生产来源（FU-AND-0724 G10 / G28 / G29）：任一为 true 时自动识别等待（不读、不弹用途层），全部回到 false 后同一轮
@@ -438,6 +464,20 @@ class AppClipboard(
         val round: Long = 0L,
         val ticket: Long? = null,
         val overlayClear: Boolean = true,
+        /** 在途的搜索框识别提交（FU-AND-SEARCH-LINK-OWNER，D10-768）：只由 [beginSearchSubmit] 发号、[clearSearchSubmit] 清空。 */
+        val searchSubmit: SearchSubmitSlot? = null,
+    )
+
+    /**
+     * 一次搜索框识别提交的槽（不可变）：剪贴板发的号 [id]，与发号时的发起页 [origin]、界面世代 [screen]、登录世代 [session]、隐私 / 环境世代
+     * [epochs]。随 [OwnerSnapshot] 原子发布，网络线程上的 [stillOwned] 只读它。
+     */
+    private class SearchSubmitSlot(
+        val id: Long,
+        val origin: String,
+        val screen: Long,
+        val session: Long,
+        val epochs: CallEpochs,
     )
 
     private val published = AtomicReference(OwnerSnapshot())
@@ -453,6 +493,7 @@ class AppClipboard(
                 round = currentEpoch(),
                 ticket = ticket?.id,
                 overlayClear = overlayClear(),
+                searchSubmit = searchSubmitSlot,
             ),
         )
     }
@@ -765,6 +806,7 @@ class AppClipboard(
             lastOrigin = origin
             screenGen += 1
             pageMoved(nowHome)
+            clearSearchSubmit()
         }
         // 先发布新快照、再取消：网络线程此后读到的已是作废后的归属（A-R2-04）
         publish()
@@ -803,6 +845,7 @@ class AppClipboard(
         clearPrompt()
         publish()
         cancelOwned()
+        clearSearchSubmit()
         dropAllFlights()
         clearResult()
     }
@@ -892,6 +935,7 @@ class AppClipboard(
         clearPrompt()
         publish()
         cancelOwned()
+        clearSearchSubmit()
         dropAllFlights()
         shareBusy = null
         refreshBusy()
@@ -1975,6 +2019,147 @@ class AppClipboard(
         route: String,
         params: JsonObject,
     ): Boolean = routing.router.open(RouteRequest(route, params, RouteSource.IN_APP)).opensPage
+
+    // ---------------------------------------------------------------- 搜索框提交（FU-AND-SEARCH-LINK-SUBMIT，D10-640）
+
+    /**
+     * 搜索框提交要上传的识别候选：与手动粘贴同一份规则（含平台收紧）与分享域名、同一个最小化标题。输入框里的文字是用户自己输入后主动提交的，
+     * 不读剪贴板、不看导入同意与首次用途说明、不做去重与邀请分支（D10-640 ②）。不是商品候选返回 null（调用方按关键词搜）；是候选但在 42901 共享
+     * 禁用期中（与粘贴同一个 [gate]，时长与计时不变）带 [SearchSubmitCandidate.blocked]，调用方停止本次提交（评审 S1-3），到期后照常识别。
+     */
+    @Suppress("ReturnCount") // 不是候选、没有上传片段
+    fun searchSubmitCandidate(text: String): SearchSubmitCandidate? {
+        val rules = rules()
+        val domains = shareDomains()
+        val product = CandidateExtractor.extract(text, rules, domains)
+        if (product.kindRaw != ClipboardClassifier.KIND_PRODUCT || product.candidates.isEmpty()) return null
+        val upload = product.uploadText ?: return null
+        val title = ClipboardTitlePolicy.minimize(ClipboardText.quotedTitle(text), rules, domains)
+        return SearchSubmitCandidate(upload, title, blocked = gate.active)
+    }
+
+    // ---------------------------------------------------------------- 搜索框识别提交的归属（FU-AND-SEARCH-LINK-OWNER，D10-768）
+
+    /** 在途的搜索框识别提交（主线程）：只由 [beginSearchSubmit] 写、[clearSearchSubmit] 清；[publish] 把它拷进 [OwnerSnapshot]。 */
+    private var searchSubmitSlot: SearchSubmitSlot? = null
+
+    /** 识别提交的发号器（主线程，只增不减）。 */
+    private var submitSerial = 0L
+
+    /** 当前识别提交名下的请求归属（识别、回落、续搜；主线程）：清槽时一并 cancelOwned。 */
+    private val submitOwners = mutableListOf<CallOwnership>()
+
+    /**
+     * 搜索框提交一次识别（主线程）：先顶掉旧槽（旧提交即刻失效、名下请求取消），再发号，记下发起页 [origin] 与此刻的界面世代、登录世代、隐私 /
+     * 环境世代，写槽并 [publish]。返回这次提交的 id——之后识别、回落、配置驱动的续搜、呈现、预填、历史记账都只问 [stillOwned]。
+     */
+    fun beginSearchSubmit(origin: String): Long {
+        clearSearchSubmit()
+        submitSerial += 1
+        searchSubmitSlot = SearchSubmitSlot(submitSerial, origin, screenGen, sessionEpoch(), api.epochs())
+        publish()
+        return submitSerial
+    }
+
+    /**
+     * 单一谓词（任意线程）：识别提交 [id] 仍被持有 = 原子快照里的槽仍是它，且界面世代、登录世代、隐私 / 环境世代都没变、隐私仍是已同意。
+     * 只读 [published] 与 final 的世代来源（评审 r2 S1-2）；世代比对兜住「世代已变、作废通知还没到」的窗口（评审 r2 S2-4）。
+     */
+    fun stillOwned(id: Long): Boolean {
+        val held = published.get()
+        val slot = held.searchSubmit ?: return false
+        return slot.id == id &&
+            held.screen == slot.screen &&
+            sessionEpoch() == slot.session &&
+            api.epochs() == slot.epochs &&
+            privacy() == PrivacyState.CONSENTED
+    }
+
+    /**
+     * 识别提交 [id] 的持有判定，交给搜索侧（v6 起的入口名，评审 r2 S1-2）：闭包只委托 [stillOwned]，在网络线程上求值也只读原子快照。
+     * 保持块体：v6 的结构断言按「fun searchSubmitTicket( 之后的块体、第一个 return 之后」定位闭包。
+     */
+    @Suppress("ktlint:standard:function-expression-body")
+    fun searchSubmitTicket(id: Long): () -> Boolean {
+        return { stillOwned(id) }
+    }
+
+    /**
+     * 此刻的登录 / 隐私 / 环境身份（评审 r1 S0-3）：在发号的同一主线程回合取定，之后登录世代、隐私 / 环境世代任一变了或隐私不再是已同意即为
+     * false。只比世代、不看槽（单纯离页清了槽仍为 true）：搜索历史在主线程真正记下之前用它区分「身份类作废不记」与「离页照记」。
+     */
+    fun searchSubmitIdentity(): () -> Boolean {
+        val session = sessionEpoch()
+        val epochs = api.epochs()
+        return { sessionEpoch() == session && api.epochs() == epochs && privacy() == PrivacyState.CONSENTED }
+    }
+
+    /**
+     * 识别提交 [id] 名下的一个请求归属（识别、回落、续搜）：归属 = [stillOwned] 且 [live]（搜索页这个请求自身的序号仍是当前、页面没离开）。
+     * 槽仍是 [id] 时登记在它名下，[clearSearchSubmit] 时一并 cancelOwned；槽已不是它时归属生来就失效（写出前守卫拒绝）。
+     */
+    fun searchSubmitOwnership(
+        id: Long,
+        live: () -> Boolean = { true },
+        onWritten: ((Boolean) -> Unit)? = null,
+    ): CallOwnership {
+        val owner = CallOwnership(api.epochs(), onWritten = onWritten) { stillOwned(id) && live() }
+        if (searchSubmitSlot?.id == id) submitOwners += owner
+        return owner
+    }
+
+    /** 搜索侧的作废出口（再提交、新关键词、离页、放弃）：槽仍是 [id] 时经唯一的清槽入口清掉；已被顶掉或清过的什么都不做。 */
+    fun dropSearchSubmit(id: Long) {
+        if (searchSubmitSlot?.id == id) clearSearchSubmit()
+    }
+
+    /**
+     * 唯一的清槽入口（主线程）：槽置空 + [publish]（网络线程此后读到的已是作废后的快照）+ cancelOwned 该提交名下的全部请求。剪贴板的既有作废出口
+     * （界面移动、[invalidateAll]——切号 / 切环境 / 撤回隐私都经它、敏感浮层）与搜索侧出口（[dropSearchSubmit]）都只调它。
+     */
+    private fun clearSearchSubmit() {
+        searchSubmitSlot = null
+        publish()
+        val cancelled = submitOwners.toList()
+        submitOwners.clear()
+        cancelled.forEach { owner -> api.cancelOwned(owner) }
+    }
+
+    /**
+     * 搜索框提交的识别结果（D10-640 ①、D10-651、D10-656），在发起页 [origin] 照粘贴的现有出口呈现：单卡直进详情（与点卡同一个 [openDetail]：路由参数
+     * 与商品种子）；多卡出 [ClipboardResult.CardList]（点卡走 [openCard]）；30132（整体 / 行内、不分口令链接）出 [ClipboardResult.Unrecognized]
+     * 与【用商品名搜索】；30131 等提示码出 [ClipboardResult.Notice]，30131 另把 [title] 交搜索页预填；30141 有 [title] 时出
+     * [ClipboardResult.OffShelf]（「商品已下架」+【搜相似商品】，按标题搜），没有标题时只提示；强更、42901 照粘贴。以上返回呈现结果；识别失败
+     * （5xxxx、网络异常）返回 null，由搜索页回落关键词搜。[title] 是请求前从原文抽出的「」标题（BR-TEXT-14），不读契约外字段。
+     */
+    fun presentSearchSubmit(
+        origin: String,
+        action: ParseAction,
+        title: String?,
+    ): SearchSubmitShown? =
+        when {
+            action.actionRaw == ParseResultAction.ERROR -> {
+                null
+            }
+
+            action.actionRaw == ParseResultAction.NOTICE && action.errorCode == ParseResultAction.OFF_SHELF && title != null -> {
+                val text = ResultSignals.withTrace6(textOrGeneric(action.textKey ?: GENERIC_ERROR_KEY), action.traceId)
+                publishResult(ClipboardResult.OffShelf(origin, text, title, nextResultId()))
+                SearchSubmitShown(prefill = null)
+            }
+
+            else -> {
+                act(action, origin, cardInPlace = false, retry = null)
+                SearchSubmitShown(prefill = title.takeIf { action.errorCode == ParseResultAction.UNSUPPORTED })
+            }
+        }
+
+    /** 30141 的【搜相似商品】（BR-PRICE-08 细则）：按请求前抽出的标题，在发起页本页搜一次（没有本页搜索框时经 Router 打开 Search 带 q）。 */
+    fun searchSimilar(result: ClipboardResult.OffShelf) {
+        if (!actionable(result)) return
+        consumeResult(result)
+        searchByName(result.origin, result.title)
+    }
 
     private fun block(millis: Long) {
         gate.start(millis)

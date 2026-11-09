@@ -8,6 +8,7 @@ import com.couli.core.designsystem.BuyButtonOverride
 import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.network.PageApi
 import com.couli.generated.Sort
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,18 +45,49 @@ class SearchPurchaseSlots(
     val button: @Composable (card: JsonObject) -> BuyButtonOverride? = { null },
 )
 
-/** 搜索历史（本进程内，新的在前，最多 [MAX] 条；App 里一份）。TODO(N-27)：是否持久化、条数上限未规定。 */
-class SearchHistory {
+/**
+ * 搜索历史（本进程内，新的在前，最多 [MAX] 条；App 里一份，进程级服务）。TODO(N-27)：是否持久化、条数上限未规定。
+ * 关键词请求的写出通知经 [recorder] 记账（FU-AND-SEARCH-LINK-OWNER）：去重、在主线程（[onMain]，App 给主线程投递）记，不挂在页面作用域上——
+ * 已写出的搜索在离页、ViewModel 清理之后照样记下。[add] / [clear] / [items] 只在主线程用。
+ */
+class SearchHistory(
+    private val onMain: (() -> Unit) -> Unit = { it() },
+) {
     private val words = ArrayDeque<String>()
+    private val mutableState = MutableStateFlow<List<String>>(emptyList())
+
+    /** 历史的可观察版本（页面显示用，与 [items] 同步）。 */
+    val state: StateFlow<List<String>> = mutableState.asStateFlow()
     val items: List<String> get() = words.toList()
 
     fun add(word: String) {
         words.remove(word)
         words.addFirst(word)
         while (words.size > MAX) words.removeLast()
+        mutableState.value = items
     }
 
-    fun clear() = words.clear()
+    fun clear() {
+        words.clear()
+        mutableState.value = items
+    }
+
+    /**
+     * 一次请求的写出通知（网络层 onWritten，可能在网络线程、重试时会再调）→ 记 [word] 一次：只在 written、[owned]（识别回落时是剪贴板的单一谓词）
+     * 时投递，同一请求只记一次（Z13），切回主线程再记（Z14）。主线程真正记下之前再核 [valid]（评审 r1 S0-3：识别回落时是提交时的登录 / 隐私 /
+     * 环境身份仍在——投递之后切号、切环境、撤回隐私就不记；单纯离页照记）。空词不记。
+     */
+    fun recorder(
+        word: String,
+        owned: () -> Boolean = { true },
+        valid: () -> Boolean = { true },
+    ): (Boolean) -> Unit {
+        // 空词视同已记（不记）
+        val fired = AtomicBoolean(word.isEmpty())
+        return { written ->
+            if (written && owned() && fired.compareAndSet(false, true)) onMain { if (valid()) add(word) }
+        }
+    }
 
     private companion object {
         const val MAX = 10
@@ -95,6 +127,8 @@ class SearchPageConfig(
      * 是否属于本页由 App 按发起页核对。参数是本页搜索框的「填入并搜索」。
      */
     val pasteResult: (@Composable (fill: (String) -> Unit) -> Unit)? = null,
+    /** 输入框提交先识别链接 / 口令（FU-AND-SEARCH-LINK-SUBMIT，App 给）；没有给时一律关键词搜。 */
+    val linkSubmit: SearchLinkPort? = null,
 )
 
 /** 搜索页的弹层。 */
@@ -145,7 +179,7 @@ class SearchViewModel(
 ) : ViewModel() {
     var config: SearchPageConfig = initial
         private set
-    val controller = SearchController(initial.api, initial.config, viewModelScope, initial.clock)
+    val controller = SearchController(initial.api, initial.config, viewModelScope, links = initial.linkSubmit, clock = initial.clock)
     val state: StateFlow<SearchSnapshot> = controller.state
 
     /** 本 ViewModel 是按保存状态恢复出来的（之前的 ViewModel 已被销毁，如进程被系统回收）。 */
@@ -201,8 +235,11 @@ class SearchViewModel(
     private val mutableInput = MutableStateFlow(if (restored) saved[K_INPUT] ?: "" else initial.query.orEmpty())
     val input: StateFlow<String> = mutableInput.asStateFlow()
 
-    private val mutableHistory = MutableStateFlow(initial.history.items)
-    val history: StateFlow<List<String>> = mutableHistory.asStateFlow()
+    /** 输入版本：输入框内容每变一次加 1。异步的识别结局（回落、30131 预填）只在版本仍是提交时的才回写输入框（评审 S2-7）。 */
+    private var inputVersion = 0L
+
+    /** 搜索历史：直接显示进程级历史服务（写出通知在那里记账，离页也不漏）。 */
+    val history: StateFlow<List<String>> = initial.history.state
 
     private val mutableOverlay =
         MutableStateFlow<SearchOverlay?>(if (saved.get<Boolean>(K_SHEET_OPEN) == true) SearchOverlay.PriceFilter else null)
@@ -224,8 +261,11 @@ class SearchViewModel(
         val conditions = savedConditions()
 
         fun start() {
-            controller.open(initial.query, initial.platform, conditions)
-            if (!restored) initial.query?.let(::remember)
+            // 路由 q 与输入框提交同一条路（评审 S2-5）：带链接 / 口令候选的 q 先识别，历史与预填交同样的回调，不在这里直接记历史
+            val version = inputVersion
+            val onKeyword = inputNormalized(version)
+            val resumed = controller.open(initial.query, initial.platform, conditions, onKeyword, titlePrefill(version), config.history)
+            if (conditions != null && !resumed) forgetRestoredScroll()
             saveInput(mutableInput.value)
             saveConditions(state.value.conditions)
             viewModelScope.launch { controller.state.collect { saveConditions(it.conditions) } }
@@ -246,6 +286,8 @@ class SearchViewModel(
         if (!restored) return null
         return SearchConditions(
             keyword = saved[K_KEYWORD] ?: "",
+            // 没有来源标记的旧保存状态：本页能识别时无法证明它是普通词，按识别来源处理（回输入态，安全一侧）；没有识别入口的页面只可能是普通词
+            fromRecognition = saved.get<Boolean>(K_FROM_RECOGNITION) ?: (config.linkSubmit != null),
             platform = saved[K_PLATFORM],
             sort = saved[K_SORT] ?: Sort.RELEVANCE.raw,
             hasCoupon = saved[K_COUPON] ?: false,
@@ -274,6 +316,16 @@ class SearchViewModel(
 
     private fun saveConditions(c: SearchConditions) = persist { writeConditions(c) }
 
+    /** 恢复没有按保存的条件继续（识别来源的查询回了输入态、恢复门内用户已有新提交）：待恢复的滚动位置作废，保存的锚点一并清掉。 */
+    private fun forgetRestoredScroll() {
+        mutablePendingScroll.value = null
+        persist {
+            saved[K_SCROLL_INDEX] = 0
+            saved[K_SCROLL_OFFSET] = 0
+            saved[K_SCROLL_LAST] = 0
+        }
+    }
+
     private fun writeConditions(c: SearchConditions) {
         // F-X-18 补充（FU-AND-0717）：开始了新一轮查询 → 同步放弃待执行的恢复、清掉旧锚点，第一次持久化就是「新条件 + 空锚点」（进程此刻被杀，
         // 重建后也不会把旧锚点套到新一轮的结果上）
@@ -284,6 +336,7 @@ class SearchViewModel(
             saved[K_SCROLL_LAST] = 0
         }
         saved[K_KEYWORD] = c.keyword
+        saved[K_FROM_RECOGNITION] = c.fromRecognition
         saved[K_PLATFORM] = c.platform
         saved[K_SORT] = c.sort
         saved[K_COUPON] = c.hasCoupon
@@ -293,6 +346,7 @@ class SearchViewModel(
     }
 
     private fun saveInput(text: String) {
+        if (text != mutableInput.value) inputVersion += 1
         mutableInput.value = text
         persist { saved[K_INPUT] = text }
     }
@@ -367,17 +421,21 @@ class SearchViewModel(
         saveInput("")
     }
 
-    /** 【搜索】或键盘搜索键：合法才记入历史。 */
+    /**
+     * 【搜索】或键盘搜索键：关键词请求实际写出才记入历史（评审 r2 S2-3：执行器在网络层的写出通知之后、切回主线程才交历史；写出前被取消、本地
+     * 拒绝、没有可搜平台都不记）。输入框识别（FU-AND-SEARCH-LINK-SUBMIT）识别了的不记（D10-651 ③），回落关键词搜时按原提交记；输入框的规范化
+     * 回写与历史分开：受理时回写，回落与 30131 的标题预填只在输入版本仍是提交时的才写，用户已改字就不覆盖（评审 S2-7）。
+     */
     fun onSubmit(): Boolean {
-        val text = mutableInput.value
-        val ok = controller.submit(text)
-        if (ok) {
-            val normalized = SearchQuery.normalizeKeyword(text)
-            saveInput(normalized)
-            remember(normalized)
-        }
-        return ok
+        val version = inputVersion
+        return controller.submit(mutableInput.value, inputNormalized(version), titlePrefill(version), config.history)
     }
+
+    /** 关键词搜索已受理（当场或回落）：输入框只在版本仍是 [version] 时回写规范化后的关键词（历史另由实际写出触发）。 */
+    private fun inputNormalized(version: Long): (String) -> Unit = { normalized -> if (inputVersion == version) saveInput(normalized) }
+
+    /** 30131 的标题预填（不自动搜）：页面仍在、输入版本仍是 [version] 时才填。 */
+    private fun titlePrefill(version: Long): (String) -> Unit = { title -> if (alive && inputVersion == version) saveInput(title) }
 
     fun onHistory(word: String) {
         saveInput(word)
@@ -386,7 +444,6 @@ class SearchViewModel(
 
     fun onClearHistory() {
         config.history.clear()
-        mutableHistory.value = config.history.items
     }
 
     fun onCouponToggle() {
@@ -449,12 +506,6 @@ class SearchViewModel(
         if (mutableOverlay.value == SearchOverlay.PriceFilter) closePriceFilter() else setOverlay(null)
     }
 
-    private fun remember(word: String) {
-        if (word.isEmpty()) return
-        config.history.add(word)
-        mutableHistory.value = config.history.items
-    }
-
     override fun onCleared() {
         leavePage()
         super.onCleared()
@@ -463,6 +514,7 @@ class SearchViewModel(
     private companion object {
         const val K_INPUT = "search.input"
         const val K_KEYWORD = "search.keyword"
+        const val K_FROM_RECOGNITION = "search.keyword_from_recognition"
         const val K_PLATFORM = "search.platform"
         const val K_SORT = "search.sort"
         const val K_COUPON = "search.has_coupon"

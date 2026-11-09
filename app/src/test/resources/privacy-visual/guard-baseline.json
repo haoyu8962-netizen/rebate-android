@@ -984,7 +984,7 @@
   {"h": "510f251c58114abc4bba2b0a45c0bcf130245547709b663150228a23c1660a7c", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardHashes.kt"},
   {"h": "91e5f13b2f119aebe0a8dcf065ef6f7bce64b97df654699300cb56792a86e0f9", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardNotice.kt"},
   {"h": "3f71b2868fdb01cdc3dfbbde5f79398698945810f3454e151ad5d5e95ccb24fa", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRecords.kt"},
-  {"h": "88f3ad79236857df2fdbd2a2169f17833bddb134683c53719eb6c7cabfb20496", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRules.kt"},
+  {"h": "ee5dad2db07d25dc600a40bcb83ebca478addc28bfac311a1822136c888f4309", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardRules.kt"},
   {"h": "e30e5caeb358c939196d0304d5fd520f4491c1c9aa6a3e13636e78d5b777c37c", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardSensitive.kt"},
   {"h": "db717ae5247edf23eecd582ea8a31eed33b9c80b463f3324da2135c0593355f4", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardUi.kt"},
   {"h": "216d83a41e3ae8dae6be3f4b9eaef2e1da7b5b8bbb7aad28dee062fa26dafbaa", "p": "core/clipboard/src/main/kotlin/com/couli/core/clipboard/HomePasteCard.kt"},
