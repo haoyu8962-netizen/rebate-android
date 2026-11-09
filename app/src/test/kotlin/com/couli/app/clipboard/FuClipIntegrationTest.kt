@@ -511,7 +511,7 @@ class FuClipIntegrationTest {
             privacy.requestFullFunction()
             privacy.agree()
             // R06 撤回已清用途同意；此 hash 回归显式恢复功能前提，按新口径直接出卡。
-            importPreferences.enable("1")
+            importPreferences.setOn()
             clipboard.setAutoSwitch(true)
         }
         composeRule.waitForIdle()

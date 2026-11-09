@@ -29,7 +29,7 @@ class ImportRetryBackoff0722Test {
         ImportWriteFailure0722Harness(clock = { now }).use { h ->
             // 特意省略 scheduleWriteRetry；不能用测试队列冒充默认退避策略。
             val store = ImportPreferenceStore(h.backend, clock = { now })
-            assertTrue(store.enable("purpose-02"))
+            assertTrue(store.setOn())
             h.backend.failFromNextWrite()
             assertFalse(store.setOff())
             assertBoundedRetryIntervals { h.backend.writes }
@@ -44,7 +44,7 @@ class ImportRetryBackoff0722Test {
     fun g42_productionAdapterDefaultRetryIntervalsNeverExceedFiveMinutes() {
         ProductionImportPreferences0722Harness(context).use { h ->
             val store = h.preferences.importPreferences(clock = { now })
-            assertTrue(store.enable("purpose-02"))
+            assertTrue(store.setOn())
             h.flaky.failFromNextCommit()
             assertFalse(store.setOff())
             assertBoundedRetryIntervals { h.flaky.commits }

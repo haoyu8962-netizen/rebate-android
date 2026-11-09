@@ -102,20 +102,6 @@ data class ClipboardPrompt(
 )
 
 /**
- * 要显示的首次用途弹层（[source]）：回前台的可读取场景（只由协调器的 showNotice 端口拉起，0723 接线说明第 5 条）、设置页打开开关、
- * 第一次点手动粘贴入口（G15：关弹层后继续那次点击）。
- */
-data class ClipboardConsentNotice(
-    val source: String,
-) {
-    companion object {
-        const val SOURCE_FOREGROUND = "foreground"
-        const val SOURCE_SETTINGS = "settings"
-        const val SOURCE_MANUAL = "manual"
-    }
-}
-
-/**
  * parse 或手动粘贴之后要在发起页上显示的东西（只在发起页仍是当前页时显示）。
  * [id]：每次发布自增的唯一编号（APP-07 共性第 26 条）。内容相同的两次结果编号不同，StateFlow 不会把它们合并；界面回调带渲染时的
  * 结果，执行层按编号核对是不是当前结果，不靠对象身份或 equals。
@@ -188,7 +174,7 @@ data class SearchSubmitShown(
 )
 
 /**
- * 剪贴板普通互斥模态的生产来源（FU-AND-0724 G10 / G28 / G29）：任一为 true 时自动识别等待（不读、不弹用途层），全部回到 false 后同一轮
+ * 剪贴板普通互斥模态的生产来源（FU-AND-0724 G10 / G28 / G29）：任一为 true 时自动识别等待（不读），全部回到 false 后同一轮
  * 重新尝试。[current] 给出此刻的模态取值（[ImportGates] 的 MODAL_*），没有为 null。生产里支付与回跳确认两路 Android 还没有对应状态，恒为
  * false（F-AND-55）；登录任务、外跳进行中、更新提示三路接真实服务（[AppClipboard.connectModalSources]）。
  */
@@ -221,7 +207,7 @@ class ClipboardModalSources(
  *   24 小时候选摘要去重（持久盐 HMAC，G07 / G14）；命中候选直接 POST /v1/inputs/parse（scene=clipboard，只带候选与最小化标题，G24 不上送
  *   requestId），发出前记摘要（G08）；结果在当前有效页弹卡 1 次（G09：单卡也先在当前页弹卡，点卡才进详情）；网络异常可显式重试，复用已批准的
  *   候选（R24）。没有商品时走邀请分支（R25：独立 24 小时提示去重，自动与手动共用；商品优先；邀请码不送 parse）；
- * - 手动粘贴（[paste]、[pasteInviteCode]）：G15 第一次点击先出用途弹层，关掉后继续那次点击；不查开关与轮次、不读写商品去重、不做自写排除（G14）；
+ * - 手动粘贴（[paste]、[pasteInviteCode]）：点击就读（2026-10-30 起没有用途弹层）；不查开关与轮次、不读写商品去重、不做自写排除（G14）；
  * - 原文只在内存里过一遍，不进存储、日志、导航参数与请求（R26）；识别前后都不写系统剪贴板，写只经 [writer]（先记自写 hash）；
  * - 系统分享（G19）：保留确认提示条与 scene=share_ext，分享在本轮处理时本轮跳过自动读剪贴板（协调器 markSkipped）。
  * 只在主线程使用；唯一的例外是交给网络层的归属核对（CallOwnership.stillOwned，可能在网络线程上调）：它只读原子标记或主线程发布的不可变快照。
@@ -245,11 +231,11 @@ class AppClipboard(
     private val clock: () -> Long = System::currentTimeMillis,
     /** 本机盐的随机源（FU-CLIP C3：生产为系统 CSPRNG；测试注入样例字节）。 */
     randomSalt: () -> ByteArray = ::secureSalt,
-    /** 开关与功能同意的本机状态（FU-AND-0722；设备级，与 [prefs] 同一偏好文件）。 */
+    /** 开关的本机状态（设备级，与 [prefs] 同一偏好文件）。 */
     private val importPreferences: ImportPreferenceStore = prefs.importPreferences(clock),
     /** 开关关闭的同步通知（G20：立即生效）：本机已置关、[autoSwitch] 已更新、协调器已撤销自动任务之后调。 */
     private val onAutoReadDisabled: () -> Unit = {},
-    /** 撤回隐私同意的同步通知（R06/R16）：本机开关与功能同意已清、[autoSwitch] 已置关、协调器已撤销之后调；隐私政策升级（NOT_DECIDED）不调。 */
+    /** 撤回隐私同意的同步通知（R16）：协调器已撤销之后调（开关值不动，C7）；首启拒绝、隐私政策升级、运行中复核都不调。 */
     private val onImportConsentWithdrawn: () -> Unit = {},
     /** 本组件的有限工作（协调器的排队尝试与回调、parse、限流计时）与普通模态来源的订阅都跑在这里。 */
     workScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
@@ -386,42 +372,16 @@ class AppClipboard(
         refreshBusy()
     }
 
-    private val mutableAutoSwitch = MutableStateFlow(importPreferences.snapshot().enabled == true)
+    private val mutableAutoSwitch = MutableStateFlow(importPreferences.isAutoSwitchOn())
 
-    /**
-     * 设备级开关「打开 App 自动识别剪贴板」此刻是否为开（BR-ID-16 新版：默认关；未选择、关都为 false）。功能同意版本失效时开关原值保留（R05），
-     * 是否真的自动读另看 [autoReadAllowed]。
-     */
+    /** 设备级开关「打开 App 自动识别剪贴板」此刻是否为开（BR-ID-16 2026-10-30 版：默认开启，从未选择也算开）。 */
     val autoSwitch: StateFlow<Boolean> = mutableAutoSwitch.asStateFlow()
 
-    private val mutableConsentNotice = MutableStateFlow<ClipboardConsentNotice?>(null)
-
-    /** 首次用途说明弹层（R02）：非 null 时由外壳（AppShell）显示 ClipboardNotice；【开启】→ [onNoticeEnable]，【暂不开启】/ 返回 → [onNoticeNotNow]。 */
-    val consentNotice: StateFlow<ClipboardConsentNotice?> = mutableConsentNotice.asStateFlow()
-
     /**
-     * 外壳此刻有别的弹窗（可关闭的更新提示等，G22）：外壳接线时给。自动识别与用途弹层排在它之后——它在时等待（本轮不读不弹），它关掉后同一轮
-     * 接着尝试（G31 修正）；用途弹层显示期间它晚到，用途弹层收起让位。它的显示状态一变，外壳就调 [onDialogsChanged]。
+     * 外壳此刻有别的弹窗（可关闭的更新提示等，G22）：外壳接线时给。自动识别排在它之后——它在时等待（本轮不读），它关掉后同一轮接着尝试（G31 修正）。
+     * 它的显示状态一变，外壳就调 [onDialogsChanged]。
      */
     var otherDialogShowing: () -> Boolean = { false }
-
-    /** 设置来源与手动来源的用途弹层出现时所在的页面（[currentOrigin]）：页面一变（被覆盖、出栈、切走）就收起。 */
-    private var noticeOrigin: String? = null
-
-    /** 回前台来源的用途弹层是哪一轮弹出的（让位后只在同一轮里恢复）。 */
-    private var noticeEpoch: Long? = null
-
-    /** 回前台来源的用途弹层被挡住让位（G41：同一轮里挡的东西没了再出同一个弹层，不重新判定、不读）。 */
-    private var yieldedNotice: ClipboardConsentNotice? = null
-
-    /** G15：第一次点手动粘贴时先出用途弹层，关掉后继续的那次点击（目的、发起页、邀请码框的填入回调）。 */
-    private class PendingTap(
-        val purpose: String,
-        val origin: String,
-        val onFilled: ((String?) -> Unit)?,
-    )
-
-    private var pendingTap: PendingTap? = null
 
     /** 邀请码框（fill_input）这次点击的填入回调，按发起页登记（同页同目的只有一个，F-AND-54）。 */
     private val fillCallbacks = mutableMapOf<String, (String?) -> Unit>()
@@ -555,19 +515,6 @@ class AppClipboard(
             // 读不到时的粘贴入口本来就常驻（首页「粘贴链接，先查返利」卡；开关没开时另有自绘按钮），不另出
             override fun showFallback(pageInstanceId: String) = Unit
 
-            override fun showNotice(
-                epoch: Long,
-                consentVersion: String,
-            ) {
-                // 回前台来源的用途弹层只由这里拉起（0723 接线说明第 5 条）；协调器在调用时已消费本轮，这里回执显示
-                if (mutableConsentNotice.value != null) return
-                yieldedNotice = null
-                noticeEpoch = epoch
-                noticeOrigin = currentOrigin()
-                mutableConsentNotice.value = ClipboardConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND)
-                importCoordinator.onNoticeShown(epoch)
-            }
-
             override fun finished(
                 task: ImportTask,
                 terminalRaw: String,
@@ -614,7 +561,7 @@ class AppClipboard(
 
     /**
      * 此刻的模态（0723 接线说明第 4 条）：敏感浮层（首启隐私、强更、AuthSheet、授权跳转、第三方登录进行中）→ 普通互斥模态的生产来源
-     * （[connectModalSources]）→ 外壳的其他弹窗与用途弹层自己 → 本轮的系统分享 → none。
+     * （[connectModalSources]）→ 外壳的其他弹窗 → 本轮的系统分享 → none。
      */
     private fun currentModal(): String {
         val overlay = currentOverlay()
@@ -626,7 +573,7 @@ class AppClipboard(
 
     private fun plainModal(): String =
         when {
-            otherDialogShowing() || mutableConsentNotice.value != null -> ImportGates.MODAL_OTHER_DIALOG
+            otherDialogShowing() -> ImportGates.MODAL_OTHER_DIALOG
             shareInRound() -> ImportGates.MODAL_SHARE_IMPORT
             else -> ImportGates.MODAL_NONE
         }
@@ -683,7 +630,6 @@ class AppClipboard(
     /** 真正进后台：协调器撤销排队的尝试、自动与手动任务；作废提示条、在途 parse 与结果提示。 */
     private fun enterBackground() {
         importCoordinator.onLifecycle(ImportLifecycleEvent.PROCESS_BACKGROUND)
-        yieldedNotice = null
         invalidateAll()
     }
 
@@ -817,8 +763,6 @@ class AppClipboard(
         if (mutableResult.value?.origin != origin) clearResult()
         // 分享已经回首页：到达首页 Tab 根页时再出提示条，身份按此刻一次取定（共性第 7 条）
         presentShare()
-        // 用途弹层随界面让位或恢复（G22）：首页来源离开首页根页、设置与手动来源离开发起页（敏感页、强更页推入）即收起
-        reviewConsentNotice()
     }
 
     /** 发起页 [origin] 已离开：协调器撤销它的排队尝试与任务（F-AND-54：别的页面实例不受影响）；它发起的重试 parse 作废。 */
@@ -834,8 +778,6 @@ class AppClipboard(
      * 浮层关闭后旧请求也不恢复（A-R1-04）。
      */
     fun onSensitiveOverlay() {
-        // 用途弹层不压在敏感浮层上（G22，各来源）：收起，不记看过、不入队；首页来源的浮层关了以后同一轮里可以再出
-        yieldConsentNotice()
         // 暂存与正回首页的系统分享同步作废（R1-02）
         pageGen += 1
         pendingShare = null
@@ -854,33 +796,19 @@ class AppClipboard(
 
     /**
      * 隐私结论变化：不再是已同意（撤回、基本模式）时作废全部，协调器撤销任务（隐私已不是同意，手动任务一起撤），并清掉本机的自写记录与提示记录
-     * （BR-ID-13 思路，brief §0）。[withdrawn]：这次变化是真实的「撤回隐私同意」（[connect] 按「已同意 → 基本模式」认定）——只有它清功能同意、
-     * 通知撤回钩子；首启或隐私政策升级后选【仍不同意】进入基本模式、政策升级转入未决定都不清（BR-ID-16「政策升级不清功能同意」，口径修正推翻 G33）。
+     * （BR-ID-13 思路，brief §0）。[withdrawn]：这次变化是真实的「撤回隐私同意」（[connect] 按「已同意 → 基本模式」认定）——只有它通知撤回钩子；
+     * 首启或隐私政策升级后选【仍不同意】进入基本模式、政策升级转入未决定都不算撤回。开关值一律不动（C7：关闭态本机保留，重新同意后按存储值）。
      */
     fun onPrivacyChanged(
         state: PrivacyState,
         withdrawn: Boolean = false,
     ) {
         if (state == PrivacyState.CONSENTED) return
-        // 首启弹窗（含隐私政策升级）在前：用途弹层先收起，同一轮不再补出
-        mutableConsentNotice.value = null
-        noticeOrigin = null
-        yieldedNotice = null
-        pendingTap = null
         invalidateAll()
         clearRecords()
-        if (withdrawn) withdrawImportConsent() else importCoordinator.onConsentRevoked()
-    }
-
-    /**
-     * 撤回隐私同意（R06）：同步清本机开关、功能同意与看过弹层（待上报队列保留，G26；写盘失败时内存里也已清、不许读，并自动重试，G35），置关后
-     * 协调器撤销（R16），再通知撤回钩子。确认落盘与失败重试另由 CredentialCleanerRegistry 登记的 [ClipboardPreferences.clearHashes] 负责。
-     */
-    private fun withdrawImportConsent() {
-        importPreferences.clearOnPrivacyWithdraw()
-        mutableAutoSwitch.value = false
+        if (withdrawn) importPreferences.clearOnPrivacyWithdraw()
         importCoordinator.onConsentRevoked()
-        onImportConsentWithdrawn()
+        if (withdrawn) onImportConsentWithdrawn()
     }
 
     /**
@@ -1006,12 +934,6 @@ class AppClipboard(
 
     private fun baseRules(data: JsonObject): ClipboardRules = ClipboardRules.fromConfig(data["clipboard"] as? JsonElement)
 
-    /** 当前功能同意版本（config.clipboard.consent_version）；缺键为 null，不用包内常量兜底（G47）。 */
-    fun consentVersion(): String? = ImportPreferenceStore.currentConsentVersion(configData())
-
-    /** 自动读取的开关门槛（R11 ②③）：开关开，且功能同意版本就是当前版本；当前版本缺失时一律不满足（G47）。 */
-    fun autoReadAllowed(): Boolean = importPreferences.isAutoReadAllowed(consentVersion())
-
     // ---------------------------------------------------------------- 普通互斥模态的来源（G28 / G29）
 
     private var modalSources: ClipboardModalSources? = null
@@ -1020,7 +942,7 @@ class AppClipboard(
 
     /**
      * 绑定普通互斥模态的来源快照：初始同步一次（不触发重试），之后任一来源变化就重新核对；模态从有到无（关闭）时通知协调器在同一轮再试
-     * （onPageReady），并让用途弹层按当前状态让位或恢复。同一个 [sources] 重复绑定幂等；换一份时释放旧订阅。订阅跑在注入的 workScope。
+     * （onPageReady）。同一个 [sources] 重复绑定幂等；换一份时释放旧订阅。订阅跑在注入的 workScope。
      */
     fun bindModalSources(sources: ClipboardModalSources) {
         if (modalSources === sources) return
@@ -1033,7 +955,6 @@ class AppClipboard(
                     val now = sources.current()
                     val closed = last != null && now == null
                     last = now
-                    reviewConsentNotice()
                     if (closed) importCoordinator.onPageReady()
                 }
             }
@@ -1064,118 +985,11 @@ class AppClipboard(
         )
     }
 
-    // ---------------------------------------------------------------- 首次用途说明弹层
-
-    /** 回前台来源可以（再）显示用途弹层：已同意隐私、有当前版本、没看过、还没有有效同意、服务端没停本端自动读取。 */
-    private fun noticeEligible(): Boolean {
-        // 配置缺 consent_version：无版本可记，不出用途弹层（G47）
-        val version = consentVersion() ?: return false
-        return privacy() == PrivacyState.CONSENTED &&
-            !importPreferences.hasSeenNotice(version) &&
-            !autoReadAllowed() &&
-            ImportGates.autoReadEnabled(configData())
-    }
-
-    /** 别的弹窗、普通互斥模态、首启弹窗、强更与敏感浮层（G22）都不在：用途弹层此刻可以显示。 */
-    private fun noticeUnobstructed(): Boolean =
-        !otherDialogShowing() && modalSources?.current() == null && !promptShowing() && overlayClear()
-
     /**
-     * 外壳的弹窗显示状态变了（可关闭的更新提示出现 / 关闭、强更结论到达、敏感浮层关闭，AppShell 接线）：用途弹层让位或在同一轮里恢复（G22、G41），
-     * 并通知协调器同一轮再试（G31：等待中的回前台判定继续）。
+     * 外壳的弹窗显示状态变了（可关闭的更新提示出现 / 关闭、强更结论到达、敏感浮层关闭，AppShell 接线）：通知协调器同一轮再试（G31：等待中的回前台判定继续）。
      */
     fun onDialogsChanged() {
-        reviewConsentNotice()
         importCoordinator.onPageReady()
-    }
-
-    /**
-     * 用途弹层显示期间持续让位（口径修正）：首启弹窗、强更、更新提示、普通互斥模态、敏感浮层出现，或它所在的页面变了（首页来源离开首页根页、
-     * 设置与手动来源离开发起页）就收起——不记看过、不入队；首页来源记下，挡的东西没了且仍在同一轮、首页根页时恢复同一个弹层（本轮仍不读，G21）。
-     */
-    private fun reviewConsentNotice() {
-        val notice = mutableConsentNotice.value
-        if (notice == null) {
-            resumeYieldedNotice()
-        } else if (!noticeStays(notice)) {
-            yieldConsentNotice()
-        }
-    }
-
-    /** 正在显示的用途弹层可以留着：仍已同意隐私、没有别的弹窗与敏感浮层、它所在的页面没变。 */
-    private fun noticeStays(notice: ClipboardConsentNotice): Boolean {
-        val onItsPage =
-            when (notice.source) {
-                ClipboardConsentNotice.SOURCE_FOREGROUND -> homeRoot()
-                else -> currentOrigin() == noticeOrigin
-            }
-        return privacy() == PrivacyState.CONSENTED && noticeUnobstructed() && onItsPage
-    }
-
-    /** 被挡住让位的回前台弹层：仍是同一轮（在前台、轮次没变）、仍在首页根页、没有被挡且仍该出时恢复显示（同一个弹层，不重新消费轮次）。 */
-    private fun resumeYieldedNotice() {
-        val notice = yieldedNotice ?: return
-        val sameRound = importCoordinator.inForeground && noticeEpoch == importCoordinator.snapshot().epoch
-        if (!sameRound) {
-            yieldedNotice = null
-            return
-        }
-        val canShow = homeRoot() && !shareInRound() && noticeEligible()
-        if (canShow && noticeUnobstructed()) {
-            yieldedNotice = null
-            noticeOrigin = currentOrigin()
-            mutableConsentNotice.value = notice
-        }
-    }
-
-    /** 收起用途弹层让位（不是用户选择：不记看过、不入队）；首页来源的本轮仍可在同一轮里恢复；手动来源那次点击作废（须再点）。 */
-    private fun yieldConsentNotice() {
-        val notice = mutableConsentNotice.value ?: return
-        mutableConsentNotice.value = null
-        noticeOrigin = null
-        pendingTap = null
-        if (notice.source == ClipboardConsentNotice.SOURCE_FOREGROUND && importCoordinator.inForeground) yieldedNotice = notice
-    }
-
-    private fun showConsentNotice(source: String) {
-        noticeOrigin = currentOrigin()
-        mutableConsentNotice.value = ClipboardConsentNotice(source)
-    }
-
-    /** 收起用途弹层（选择本身由调用方记录或不记）；弹窗关闭也是「可以再试」的时刻。 */
-    private fun closeNotice() {
-        mutableConsentNotice.value = null
-        noticeOrigin = null
-        importCoordinator.onPageReady()
-    }
-
-    /**
-     * 手动粘贴入口这次点击要不要先出用途弹层（R02 ③、R19、G15）：已同意隐私、配置有当前版本、还没看过这一版的弹层。配置缺版本（G47）无版本可记、
-     * 不出弹层，手动照常。
-     */
-    fun manualNoticeNeeded(): Boolean {
-        val version = consentVersion() ?: return false
-        return privacy() == PrivacyState.CONSENTED && !importPreferences.hasSeenNotice(version)
-    }
-
-    /** G15：先出用途弹层（也消费本轮，G21），记下这次点击，关弹层后继续。 */
-    private fun showManualNotice(
-        purpose: String,
-        onFilled: ((String?) -> Unit)?,
-    ) {
-        if (mutableConsentNotice.value != null || !noticeUnobstructed()) return
-        pendingTap = PendingTap(purpose, currentOrigin(), onFilled)
-        showConsentNotice(ClipboardConsentNotice.SOURCE_MANUAL)
-        importCoordinator.snapshot().epoch?.let(importCoordinator::onNoticeShown)
-    }
-
-    /** 用途弹层关了（开启或暂不开启都算）：继续挂起的那次手动点击（仍在发起页、仍已同意隐私）。 */
-    private fun continuePendingTap() {
-        val tap = pendingTap ?: return
-        pendingTap = null
-        if (tap.origin != currentOrigin() || privacy() != PrivacyState.CONSENTED) return
-        tap.onFilled?.let { fillCallbacks[tap.origin] = it }
-        importCoordinator.onPasteTap(tap.purpose)
     }
 
     // ---------------------------------------------------------------- 端口实现：提取、去重、邀请分支
@@ -1480,16 +1294,12 @@ class AppClipboard(
 
     /**
      * 用户点商品粘贴入口（[entry]：首页卡与开关关闭时首页的自绘按钮 home、SearchTyping 的「粘贴查返利」search_typing，都是 product_lookup，G25）。
-     * 已同意隐私、不在 42901 禁用期、本页没有商品 parse 在途、没有敏感浮层时受理；没看过用途弹层先出弹层（G15）。读取、提取、上传、出卡经协调器的
+     * 已同意隐私、不在 42901 禁用期、本页没有商品 parse 在途、没有敏感浮层时受理。读取、提取、上传、出卡经协调器的
      * 手动任务（R19：不查开关与轮次、不读写去重、不做自写排除），结果绑定发起页。
      */
     @Suppress("UnusedParameter") // 两个商品入口同一个目的（G25）；保留入口参数供诊断与旧调用方
     fun paste(entry: String) {
-        if (!pasteAllowed() || mutableConsentNotice.value != null) return
-        if (manualNoticeNeeded()) {
-            showManualNotice(ImportTask.PURPOSE_PRODUCT_LOOKUP, onFilled = null)
-            return
-        }
+        if (!pasteAllowed()) return
         importCoordinator.onPasteTap(ImportTask.PURPOSE_PRODUCT_LOOKUP)
     }
 
@@ -1513,14 +1323,15 @@ class AppClipboard(
 
     /**
      * 邀请码框【粘贴】（fill_input，R20）：只抽码，不上传；抽不到返回 null（页面轻提示「未识别到邀请码」，不清空已有输入）。42901 禁用期内执行层
-     * 也拦（不读剪贴板，A-R1-06）。G15：还没看过用途弹层时先出弹层并返回 null，关掉后同一次点击经协调器读一次、抽码交给 [onFilled] 一次（发起页
-     * 离开则不填）；已看过时立即读一次并返回码（[onFilled] 不调用）。基本模式不读、不出弹层。
+     * 也拦（不读剪贴板，A-R1-06）。传了 [onFilled]：经协调器的手动任务读一次，抽码交给它一次、返回 null（发起页离开则不填）；没传：立即读一次并返回码。
+     * 基本模式不读。
      */
-    @Suppress("ReturnCount") // 未同意 / 限流、先出用途弹层、立即读三个出口
+    @Suppress("ReturnCount") // 未同意 / 限流、经协调器、立即读三个出口
     fun pasteInviteCode(onFilled: ((String?) -> Unit)? = null): String? {
         if (privacy() != PrivacyState.CONSENTED || gate.active) return null
-        if (manualNoticeNeeded()) {
-            if (mutableConsentNotice.value == null) showManualNotice(ImportTask.PURPOSE_FILL_INPUT, onFilled)
+        if (onFilled != null) {
+            fillCallbacks[currentOrigin()] = onFilled
+            importCoordinator.onPasteTap(ImportTask.PURPOSE_FILL_INPUT)
             return null
         }
         val read = adapter.read()
@@ -1667,7 +1478,7 @@ class AppClipboard(
     /** 外壳就绪：Tab、基本模式与回退栈都已按恢复后的状态同步，且 NavHost 接着 Router（R1-01：确认导航器已接好）。 */
     private fun shellReady(): Boolean = tabSynced && stackSynced && routing.navigatorAttached
 
-    /** 用户刚从别的 App 分享过来（暂存、正回首页或分享提示条显示中）：这一轮前台不读剪贴板，也不出用途弹层（AS04、G19）。 */
+    /** 用户刚从别的 App 分享过来（暂存、正回首页或分享提示条显示中）：这一轮前台不读剪贴板（AS04、G19）。 */
     private fun shareInRound(): Boolean = pendingShare != null || awaitingShare != null || ticket?.scene == ShareImportAction.SCENE_SHARE
 
     /**
@@ -2175,62 +1986,20 @@ class AppClipboard(
     // ---------------------------------------------------------------- 设置
 
     /**
-     * 设置页开关（设备级，存本机；登录、退出、换账号都不改它）。打开：功能同意版本仍有效时直接开（G20，不再弹层、不重复上报）；否则先出用途弹层，
-     * 点【开启】才开（R02 ②）。重新打开不通知协调器再试（G29：只改开关状态，下一次真实页面就绪或下一轮再判定）。关闭：立即置关，协调器同步撤销
-     * 排队的尝试与在途自动任务（R16），再通知 [onAutoReadDisabled]（G20）；只改本机，不写撤回记录。
+     * 设置页开关（设备级，存本机；登录、退出、换账号、撤回隐私同意都不改它）。打开：直接生效，不出弹层、不写同意（C2、C3、C8）；写盘失败时 store 已回滚，
+     * 开关保持原样，用户可再点（G35）。重新打开不通知协调器再试（G29：只改开关状态，下一次真实页面就绪或下一轮再判定）。关闭：立即置关，协调器同步撤销
+     * 排队的尝试与在途自动任务（R16，已读未提交的候选随之丢弃，C5），再通知 [onAutoReadDisabled]（G20）；只改本机，不写撤回记录。
      */
     fun setAutoSwitch(enabled: Boolean) {
-        if (!enabled) {
-            // 写盘失败也立即按关闭生效（不读），store 自动重试落盘（G35）
-            importPreferences.setOff()
-            mutableAutoSwitch.value = false
-            importCoordinator.onSwitchOff()
-            onAutoReadDisabled()
+        if (enabled) {
+            mutableAutoSwitch.value = importPreferences.setOn() || importPreferences.isAutoSwitchOn()
             return
         }
-        val version = consentVersion()
-        if (version == null) {
-            // 配置缺 consent_version（G47）：开关可拨，只记本机开关；不写功能同意、不入队、不弹层，门槛②不满足、不读。写盘失败已回滚（G35）
-            mutableAutoSwitch.value = importPreferences.switchOnWithoutConsent() || importPreferences.snapshot().enabled == true
-        } else if (importPreferences.hasValidConsent(version)) {
-            // 写盘失败：store 已回滚，开关保持原样，用户可再点（G35）
-            mutableAutoSwitch.value = importPreferences.enable(version) || importPreferences.snapshot().enabled == true
-        } else if (mutableConsentNotice.value == null && noticeUnobstructed()) {
-            showConsentNotice(ClipboardConsentNotice.SOURCE_SETTINGS)
-        }
-    }
-
-    /**
-     * 用途弹层【开启】（R03）：写当前版本、点击时刻、开，并把设备级同意记录入待上报队列（不发请求，G03）；本轮不补读（G21）。手动来源的弹层随后
-     * 继续那次点击（G15）。写盘失败（G35）：store 已回滚为点击前的状态（不读、不入队），弹层留着让用户再点，不自动重试开启。
-     */
-    fun onNoticeEnable() {
-        if (mutableConsentNotice.value == null) return
-        // 弹层显示期间版本被撤掉（G47）：无版本可记，收起弹层，不写同意、不记看过、不入队
-        val version =
-            consentVersion() ?: run {
-                pendingTap = null
-                return closeNotice()
-            }
-        if (importPreferences.enable(version)) {
-            closeNotice()
-            mutableAutoSwitch.value = true
-            continuePendingTap()
-        } else {
-            mutableAutoSwitch.value = importPreferences.snapshot().enabled == true
-        }
-    }
-
-    /**
-     * 用途弹层【暂不开启】、返回键或点外部（R04、G27）：只记看过当前版本，保持原选择，不读（写盘失败时内存里已记，store 自动重试）；手动来源的
-     * 弹层随后继续那次点击（G15：当次的手动粘贴照常）。
-     */
-    fun onNoticeNotNow() {
-        if (mutableConsentNotice.value == null) return
-        closeNotice()
-        // 配置缺 consent_version 时无版本可记（G47）：只收起
-        consentVersion()?.let(importPreferences::markNoticeSeen)
-        continuePendingTap()
+        // 写盘失败也立即按关闭生效（不读），store 自动重试落盘（G35）
+        importPreferences.setOff()
+        mutableAutoSwitch.value = false
+        importCoordinator.onSwitchOff()
+        onAutoReadDisabled()
     }
 
     private fun JsonObject.text(name: String): String? =

@@ -37,7 +37,6 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.couli.app.search.SearchDraftTexts
 import com.couli.core.clipboard.ClipboardClassifier
-import com.couli.core.clipboard.ClipboardNotice
 import com.couli.core.clipboard.ClipboardPromptBar
 import com.couli.core.clipboard.ClipboardPromptInfo
 import com.couli.core.clipboard.HomePasteCard
@@ -166,7 +165,7 @@ fun HomeClipboardTop(
 
 /**
  * 首页常驻粘贴卡（Main-v3，G-V03）：一张卡、一个按钮——卡标题「粘贴查返利」（clipboard.paste_hint），按钮文字「粘贴查返利」（BR-ID-16 Android 自绘，
- * clipboard.paste_entry）。自动识别开关开或关都只有这一个入口；首次点击未看过用途说明先出用途说明（[AppClipboard.paste] 内，行为不变）。
+ * clipboard.paste_entry）。自动识别开关开或关都只有这一个入口。
  * 42901 禁用期 / 在途置灰。
  */
 @Composable
@@ -610,24 +609,9 @@ private fun ErrorRow(
 }
 
 /**
- * 首次用途说明弹层的宿主（R02；AppShell 挂在首启隐私弹窗之外）：[AppClipboard.consentNotice] 非 null 时显示 Core 的 [ClipboardNotice]，文案取草稿键
- * clipboard.consent.*（TODO(N-30) 待定稿，不得提审）。
- */
-@Composable
-fun ClipboardConsentHost(clipboard: AppClipboard) {
-    val notice by clipboard.consentNotice.collectAsStateWithLifecycle()
-    if (notice == null) return
-    ClipboardNotice(
-        text = ClipboardDraftTexts::text,
-        onEnable = clipboard::onNoticeEnable,
-        onNotNow = clipboard::onNoticeNotNow,
-    )
-}
-
-/**
- * 设置页「打开 App 自动识别剪贴板」一行（Settings / SettingsGuest；只 Android）：标题 17、副标题 12（纵向 2），上下内边距 8，
+ * 设置页「打开 App 自动识别剪贴板」一行（Settings / SettingsGuest）：标题 17、副标题 12（纵向 2），上下内边距 8，
  * 右侧开关；读屏为开关角色，读作「名称，副标题，开关，已打开 / 已关闭」——状态由开关角色读出，副标题只作说明、
- * 不再覆盖状态描述（APP-12w-a G-S12）。设备级、默认关闭（打开时没有有效功能同意先出用途弹层，FU-AND-0722）；已同意隐私政策的游客也显示，基本模式与撤回同意后不显示（由调用方按隐私结论决定是否组合本行）。
+ * 不再覆盖状态描述（APP-12w-a G-S12）。设备级、默认开启（BR-ID-16 2026-10-30 版；打开、关闭都直接生效，不出弹层）；已同意隐私政策的游客也显示，基本模式与撤回同意后不显示（由调用方按隐私结论决定是否组合本行）。
  * APP-12：这一行原样挂进正式设置页的「通用」组（存储与键不变，基本模式不显示）。
  */
 @Composable

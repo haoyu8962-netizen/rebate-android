@@ -19,19 +19,20 @@ internal class ImportCoordinator0723Fixture(
 ) {
     private val ownerThread = Thread.currentThread()
     private val values = mutableMapOf<String, String>()
+    val backend =
+        object : ImportPreferenceBackend {
+            override fun read(key: String): String? = values[key]
+
+            override fun write(changes: Map<String, String?>): Boolean {
+                changes.forEach { (key, value) ->
+                    if (value == null) values.remove(key) else values[key] = value
+                }
+                return true
+            }
+        }
     val prefs =
         ImportPreferenceStore(
-            backend =
-                object : ImportPreferenceBackend {
-                    override fun read(key: String): String? = values[key]
-
-                    override fun write(changes: Map<String, String?>): Boolean {
-                        changes.forEach { (key, value) ->
-                            if (value == null) values.remove(key) else values[key] = value
-                        }
-                        return true
-                    }
-                },
+            backend = backend,
             clock = { test.testScheduler.currentTime },
             scheduleWriteRetry = { error("成功的内存存储不应重试") },
         )
@@ -49,7 +50,6 @@ internal class ImportCoordinator0723Fixture(
     val cards = mutableListOf<Pair<ImportTask, JsonObject>>()
     val deliveries = mutableListOf<Pair<ImportTask, String>>()
     val fallbacks = mutableListOf<String>()
-    val notices = mutableListOf<Pair<Long, String>>()
     val finishes = mutableListOf<Pair<ImportTask, String>>()
     var readFailure: (() -> Throwable?)? = null
     var duringRead: ((ImportTask) -> Unit)? = null
@@ -110,14 +110,6 @@ internal class ImportCoordinator0723Fixture(
                         fallbacks += pageInstanceId
                     }
 
-                    override fun showNotice(
-                        epoch: Long,
-                        consentVersion: String,
-                    ) {
-                        assertOwnerThread()
-                        notices += epoch to consentVersion
-                    }
-
                     override fun finished(
                         task: ImportTask,
                         terminalRaw: String,
@@ -133,7 +125,7 @@ internal class ImportCoordinator0723Fixture(
 
     init {
         if (enabled != null) {
-            assertTrue(prefs.enable("v1"))
+            assertTrue(prefs.setOn())
             if (!enabled) assertTrue(prefs.setOff())
         }
     }

@@ -14,7 +14,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.couli.app.clipboard.ClipboardConsentHost
 import com.couli.app.clipboard.ClipboardResult
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardScreens
@@ -71,8 +70,6 @@ class SearchMultiCardSubmitTest {
         launch()
         val originalPreferences = fixture.preferences.importPreferences().snapshot()
         assertNull(originalPreferences.enabled)
-        assertNull(originalPreferences.consentVersion)
-        assertNull(originalPreferences.noticeSeenVersion)
         val input = "本地备注 $LINK https://x.test $SECOND_LINK"
         val expected = "$LINK\n$SECOND_LINK"
         // 独立固定期望，同时核对当前 CandidateExtractor；不以提取器输出替代请求体的期望值。
@@ -80,7 +77,7 @@ class SearchMultiCardSubmitTest {
         submit(input, expected)
         reply()
         assertCardList()
-        assertEquals("提交不得代用户补记剪贴板同意或已读说明", originalPreferences, fixture.preferences.importPreferences().snapshot())
+        assertEquals("提交不得改写本机剪贴板开关", originalPreferences, fixture.preferences.importPreferences().snapshot())
     }
 
     private fun launch() {
@@ -93,9 +90,8 @@ class SearchMultiCardSubmitTest {
                 CouliTheme {
                     Box {
                         SearchScreen(fixture.pageConfig)
-                        // 与 AppShell 相同的结果 / 用途说明宿主，读真实 AppClipboard 的状态。
+                        // 与 AppShell 相同的结果宿主，读真实 AppClipboard 的状态（用途说明宿主随 C2 删除）。
                         ClipboardResultHost(fixture.clipboard)
-                        ClipboardConsentHost(fixture.clipboard)
                     }
                 }
             }
@@ -178,7 +174,7 @@ class SearchMultiCardSubmitTest {
     }
 
     private fun assertNoConsentNotice() {
-        rule.runOnIdle { assertNull("输入框主动提交不套剪贴板同意或首次用途说明", fixture.clipboard.consentNotice.value) }
+        // 用途说明弹层已随 C2 删除；保留「界面上没有该弹层」作回归守卫
         rule.onNodeWithTag("clipboard_consent_notice").assertDoesNotExist()
     }
 

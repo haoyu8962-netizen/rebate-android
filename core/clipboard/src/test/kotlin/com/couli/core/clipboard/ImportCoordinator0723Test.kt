@@ -24,7 +24,6 @@ class ImportCoordinator0723Test {
             assertEquals(1L, first.epoch)
             assertEquals("auto", first.kind)
             assertEquals("page-A", first.pageInstanceId)
-            assertEquals("v1", first.consentVersion)
             f.coordinator.onRead(first, ImportReadResult("empty"))
             f.settle()
             val noise =
@@ -142,16 +141,12 @@ class ImportCoordinator0723Test {
     @Test
     fun r11ScheduledReadRechecksAllExternalGatesBeforeTouchingClipboard() =
         runTest {
-            for (gate in listOf("privacy", "version", "switch", "config", "ready", "focus", "sensitive", "modal", "web")) {
+            for (gate in listOf("privacy", "switch", "config", "ready", "focus", "sensitive", "modal", "web")) {
                 val f = ImportCoordinator0723Fixture(this)
                 f.foreground() // 尚未执行注入调度器上的读取。
                 when (gate) {
                     "privacy" -> {
                         f.environment = f.environment.copy(privacyAgreed = false)
-                    }
-
-                    "version" -> {
-                        f.environment = f.environment.copy(configData = ImportCoordinator0723Fixture.config(null))
                     }
 
                     "switch" -> {
@@ -194,28 +189,6 @@ class ImportCoordinator0723Test {
                 assertEquals(gate, 0, reads)
                 assertEquals(gate, 0, parses)
             }
-        }
-
-    @Test
-    fun g21NoticeAppearanceConsumesBeforeEnableAndOldNoticeCannotConsumeNextEpoch() =
-        runTest {
-            val f = ImportCoordinator0723Fixture(this, enabled = null)
-            f.foreground()
-            f.settle()
-            val shownEpoch = f.notices.single().first
-            assertTrue(f.coordinator.snapshot().consumed)
-            assertTrue(f.prefs.enable("v1"))
-            f.coordinator.onPageReady()
-            f.settle()
-            val afterEnable = f.reads.size
-            assertEquals(0, afterEnable)
-            f.background()
-            f.coordinator.onLifecycle(ImportLifecycleEvent.PROCESS_FOREGROUND)
-            f.coordinator.onNoticeShown(shownEpoch) // 上一轮弹层迟到通知。
-            f.coordinator.onPageReady()
-            f.settle()
-            assertEquals(1, f.reads.size)
-            assertNotEquals(shownEpoch, f.reads.single().epoch)
         }
 
     @Test

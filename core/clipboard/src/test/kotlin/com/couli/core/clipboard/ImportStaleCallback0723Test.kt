@@ -16,25 +16,12 @@ class ImportStaleCallback0723Test {
     fun r15ReadAndParseCallbacksEachMatchEveryOwnershipField() =
         runTest {
             for (stage in listOf("read", "parse")) {
-                for (field in listOf("page", "consent", "reconsented", "missing_consent", "switch", "interactive")) {
+                for (field in listOf("page", "switch", "interactive")) {
                     val f = ImportCoordinator0723Fixture(this)
                     val task = if (stage == "read") f.start() else f.parsing()
                     when (field) {
                         "page" -> {
                             f.environment = f.environment.copy(page = f.environment.page.copy(pageInstanceId = "page-B"))
-                        }
-
-                        "consent" -> {
-                            f.environment = f.environment.copy(configData = ImportCoordinator0723Fixture.config("v2"))
-                        }
-
-                        "reconsented" -> {
-                            f.environment = f.environment.copy(configData = ImportCoordinator0723Fixture.config("v2"))
-                            assertTrue(f.prefs.enable("v2")) // 当前门槛重新全过，旧票据的 v1 仍必须过期。
-                        }
-
-                        "missing_consent" -> {
-                            f.environment = f.environment.copy(configData = ImportCoordinator0723Fixture.config(null))
                         }
 
                         "switch" -> {

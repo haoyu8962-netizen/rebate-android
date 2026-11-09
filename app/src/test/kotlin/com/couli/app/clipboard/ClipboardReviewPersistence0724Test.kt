@@ -66,7 +66,7 @@ class ClipboardReviewPersistence0724Test {
     private fun seed(prefs: ClipboardPreferences) {
         assertTrue(prefs.salt.write(SAMPLE_SALT))
         assertTrue(prefs.salt.read() is ClipboardSaltRead.Present)
-        assertTrue(prefs.importPreferences { ClipboardReview0724Harness.NOW }.enable("1"))
+        assertTrue(prefs.importPreferences { ClipboardReview0724Harness.NOW }.setOn())
         // 建立有效盐命名空间，故障只能命中商品摘要提交，而不是首次盐/元数据初始化。
         val records = ClipboardRecords(prefs.hashes, prefs.salt, { ClipboardReview0724Harness.NOW }, { SAMPLE_SALT.copyOf() })
         assertTrue(records.recordSelfWritten("独立的自写样例，不是商品候选"))

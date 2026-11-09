@@ -682,10 +682,10 @@ class AppClipboardIntegrationTest {
         launch(autoReadEnabled = null)
         composeRule.runOnUiThread { navController.navigate(RouteDestination(SETTINGS, "{}", readonly = false)) }
         composeRule.waitForIdle()
-        // FU-AND-0722 G01：游客缺省关闭；点击开启先出用途弹层，交给新文件专项覆盖。
+        // BR-ID-16 2026-10-30：同意隐私政策、从未选择的游客按开启（C1 / C8）。
         composeRule.onNodeWithTag(ClipboardScreens.SETTINGS_ROW).assertIsDisplayed()
-        assertFalse(clipboard.autoSwitch.value)
-        assertFalse(ClipboardPreferences(context).autoDetect)
+        assertTrue(clipboard.autoSwitch.value)
+        assertTrue(ClipboardPreferences(context).autoDetect)
     }
 
     @Test
@@ -1160,7 +1160,7 @@ class AppClipboardIntegrationTest {
         assertFalse("旧回调不按旧结果去搜索", "Search" in routes())
         val parseBeforeShare = parseRequests().size
         // 提示条：旧编号的回调不动当前分享提示
-        composeRule.runOnUiThread { importPreferences.enable("1") }
+        composeRule.runOnUiThread { importPreferences.setOn() }
         composeRule.runOnUiThread { clipboard.setAutoSwitch(true) }
         composeRule.runOnUiThread {
             clipboard.receiveShare("text/plain", LINK)

@@ -37,7 +37,7 @@ class ClipboardReviewRules0724Test {
         try {
             val context = ApplicationProvider.getApplicationContext<Context>()
             ProductionImportPreferences0722Harness(context).use { disk ->
-                assertTrue(disk.preferences.importPreferences { ClipboardReview0724Harness.NOW }.enable("1"))
+                assertTrue(disk.preferences.importPreferences { ClipboardReview0724Harness.NOW }.setOn())
                 val nextConfig = AtomicReference(ClipboardReview0724Harness.CONFIG)
                 val store =
                     ConfigStore(

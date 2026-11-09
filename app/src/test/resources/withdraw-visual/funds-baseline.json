@@ -4,7 +4,7 @@
     "app/src/test/kotlin/com/couli/app/AppStartupTrackerWiringTest.kt": "e717f5ef59913ec12b68ee740d47f5dd2c5584e1e19dc69244c8d3c4845589a2",
     "app/src/test/kotlin/com/couli/app/NetworkCleanupWiringTest.kt": "7ade89f0dad831df8985bd1b2fc6cbd257024ae31e3ca8c4e050460aca989908",
     "app/src/test/kotlin/com/couli/app/account/AccountWiringSmokeTest.kt": "f90c4bf1da24ba3e31ca8e15e1f8a2a8ed276cd0e873e8e2689bdddaee917e90",
-    "app/src/test/kotlin/com/couli/app/clipboard/PendingInviteWiring17cTest.kt": "1b7f47dce13c11a93ed8e420ac88cbe42b804519bf7b86c203a9b194e2576512",
+    "app/src/test/kotlin/com/couli/app/clipboard/PendingInviteWiring17cTest.kt": "b883df513aa29dd4e525381990982c02aa91fe2262c34e190d997a67ba2d043b",
     "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0714LoginEpochWiringTest.kt": "252ccff8dd519297747fbb685b0a56da4880821675b1cf7dd78dcceea52a5cd3",
     "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0718FlowLockTest.kt": "a4dde7a0be3a76501f269f406b58e9c5e7d8718f526786a1933908fb05170cff",
     "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0718WithdrawTest.kt": "506a942de3fdcbdcdb08bbbbdaf8c1292cec9a5418f5bd64b6511e865ec90545",

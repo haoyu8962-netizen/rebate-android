@@ -12,7 +12,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.couli.app.clipboard.ClipboardConsentHost
 import com.couli.app.clipboard.ClipboardResultHost
 import com.couli.app.clipboard.ClipboardScreens
 import com.couli.core.designsystem.CouliTheme
@@ -92,9 +91,8 @@ class SearchLinkNoticeSubmitTest {
                 CouliTheme {
                     Box {
                         SearchScreen(fixture.pageConfig)
-                        // 与 AppShell 相同的结果 / 用途说明宿主，读真实 AppClipboard 的状态。
+                        // 与 AppShell 相同的结果宿主，读真实 AppClipboard 的状态（用途说明宿主随 C2 删除）。
                         ClipboardResultHost(fixture.clipboard)
-                        ClipboardConsentHost(fixture.clipboard)
                     }
                 }
             }

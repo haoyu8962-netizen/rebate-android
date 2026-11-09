@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.couli.app.account.AppAccountTexts
 import com.couli.app.clipboard.AppClipboard
-import com.couli.app.clipboard.ClipboardConsentHost
 import com.couli.app.clipboard.ClipboardPreferences
 import com.couli.app.clipboard.ClipboardSettingsRow
 import com.couli.app.clipboard.SampleCipher
@@ -75,7 +74,7 @@ import org.robolectric.Shadows.shadowOf
 
 /**
  * 设置一族的真实页面宿主：SettingsScreen → SettingsController / NicknameController / NotifySettingsController → MeRepository → DS；
- * 剪贴板行是真实 ClipboardSettingsRow + 真实 AppClipboard（本机偏好、用途说明弹层 ClipboardConsentHost），注销 / 换号接线是真实 AccountDeps。
+ * 剪贴板行是真实 ClipboardSettingsRow + 真实 AppClipboard（本机偏好；用途说明弹层随 C2 删除），注销 / 换号接线是真实 AccountDeps。
  * 只替换传输层（[api]）、环境出口（[env]、[accountEnv]）与两个 Debug 待定后端（[nickname]、[notify]）。顶部 54dp 是状态栏占位。
  */
 @Suppress("TooManyFunctions") // 宿主逐项给真实入口
@@ -195,7 +194,6 @@ internal class SettingsVisualTestHost(
                                 ),
                             )
                         }
-                        ClipboardConsentHost(row)
                     }
                 }
             }
@@ -252,7 +250,7 @@ internal class SettingsVisualTestHost(
                     configData = { SettingsVisualFixtures.clipboardConfig },
                     prefs = ClipboardPreferences(context, SampleCipher),
                     pendingInvite = PendingInviteCode(),
-                    // 无有效功能同意、开关关（visualSettings.sessions.*.clipboardConsent = false）
+                    // 从未选择（默认开启，BR-ID-16 2026-10-30）
                     importPreferences = regressionImportPreferences(context, { SettingsVisualFixtures.now }, null),
                     clock = { SettingsVisualFixtures.now },
                     randomSalt = { ByteArray(32) { it.toByte() } },

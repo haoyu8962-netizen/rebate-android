@@ -4,7 +4,6 @@ package com.couli.app.clipboard
 
 import android.app.Application
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.couli.core.clipboard.ClipRead
 import com.couli.core.clipboard.ClipboardFingerprint
 import com.couli.core.clipboard.ClipboardSaltRead
 import com.couli.core.clipboard.ClipboardText
@@ -249,7 +248,7 @@ class ClipboardSources0724Test {
         }
 
     @Test
-    fun inviteFillInBasicModeDoesNotReadUploadOrShowPurposeNotice() =
+    fun inviteFillInBasicModeDoesNotReadOrUpload() =
         runTest {
             Clipboard0724Fixture(this, enabled = null).use { f ->
                 f.privacy = PrivacyState.BASIC_MODE
@@ -258,36 +257,6 @@ class ClipboardSources0724Test {
                 f.foreground()
                 assertNull(f.clipboard.pasteInviteCode())
                 f.noEffects()
-                assertNull(f.clipboard.consentNotice.value)
-            }
-        }
-
-    @Test
-    fun inviteFirstTapWaitsForNoticeAndDeliversThatTapExactlyOnceForEitherChoice() =
-        runTest {
-            for (enable in listOf(false, true)) {
-                Clipboard0724Fixture(this, enabled = null).use { f ->
-                    f.clipboard.onBackStack("InviteBackfill", "invite", setOf("invite"))
-                    f.system.content = ClipRead.Text("邀请码 K7M2QX")
-                    f.foreground()
-                    val filled = mutableListOf<String?>()
-                    assertNull(f.clipboard.pasteInviteCode { filled += it })
-                    f.noEffects()
-                    assertTrue(filled.isEmpty())
-                    assertTrue(f.clipboard.consentNotice.value != null)
-                    if (enable) f.clipboard.onNoticeEnable() else f.clipboard.onNoticeNotNow()
-                    f.settle()
-                    assertEquals(listOf("K7M2QX"), filled)
-                    assertEquals(1, f.system.reads)
-                    assertEquals(0, f.parseBodies().size)
-                    assertNull(f.clipboard.result.value)
-                    // G21：手动用途弹层也已消费本轮；同轮开启不会补一次自动读。
-                    f.clipboard.onActivityResumed()
-                    f.clipboard.onNoticeNotNow()
-                    f.settle()
-                    assertEquals(listOf("K7M2QX"), filled)
-                    assertEquals(1, f.system.reads)
-                }
             }
         }
 }

@@ -407,7 +407,7 @@ class ClipboardInviteManualDedupTest {
         private fun consentAgain() {
             f.privacy = PrivacyState.CONSENTED
             f.clipboard.onPrivacyChanged(PrivacyState.CONSENTED)
-            assertTrue(f.preferences.enable("1"))
+            assertTrue(f.preferences.setOn())
         }
 
         /** 仍有效的条数：属于当前盐、距今严格小于 24 小时；盐读不出（安全存储不可用）时数存储里 24 小时内的条数。 */

@@ -35,12 +35,5 @@ class CtLock02BundledConsentVersionTest {
         val bundled = Json.parseToJsonElement(BundledConfig.dataJson).jsonObject
         assertTrue("clipboard section is kept", bundled["clipboard"] is JsonObject)
         assertNull("bundled clipboard has no consent_version", (bundled["clipboard"] as JsonObject)["consent_version"])
-        // 没有 LKG 用包内配置时：当前功能同意版本缺失 → 门槛②不满足（G47 行为不变）
-        assertNull(ImportPreferenceStore.currentConsentVersion(bundled))
-    }
-
-    @Test
-    fun serverConsentVersionIsStillRead() {
-        assertEquals("2026-10-01", ImportPreferenceStore.currentConsentVersion(exampleData))
     }
 }

@@ -23,7 +23,7 @@ import kotlinx.serialization.json.JsonObject
  * 剪贴板识别的统一入口（FU-AND-0723；BR-ID-16；03 §4.6 结构、前台轮次与门控、伪代码）：前台轮次、自动任务 7 项门槛的原子检查、
  * ImportTask 的登记与六种终态、四类撤销、过期回调先释放再丢弃。纯逻辑，读取 / 提取 / parse / 弹卡都经 [ports]，由 0724 接上。
  *
- * 线程：生命周期与界面入口（onLifecycle / onPageReady / onPageDestroyed / onSwitchOff / onConsentRevoked / onNoticeShown / onPasteTap）
+ * 线程：生命周期与界面入口（onLifecycle / onPageReady / onPageDestroyed / onSwitchOff / onConsentRevoked / onPasteTap）
  * 在主线程调用，轮次与撤销同步生效；I/O 一律经 [workScope] 排队（只放有限工作，不挂常驻循环），执行时在同一主线程步骤里重查门槛、领取并
  * 调用端口。结果回调（onRead / onCandidates / onParsed / onAwaitingSystem）可以来自工作线程，先回 [workScope] 再看状态。
  *
@@ -31,20 +31,19 @@ import kotlinx.serialization.json.JsonObject
  * 与系统界面事件都不换轮。[ImportLifecycleEvent.PROCESS_BACKGROUND] 不加轮次，只撤销。
  *
  * 自动任务（R11–R17）：[onPageReady] 排一次尝试；执行时按 [ImportGates.decide]：敏感页跳过即消费、非目标页本轮失效、等待保留 pending、
- * 没看过弹层就弹层并消费、全部通过就在同一步里领取本轮（consumed）、登记活动任务、再调 [ImportCoordinatorPorts.read]。同一时刻至多一个
+ * 全部通过就在同一步里领取本轮（consumed）、登记活动任务、再调 [ImportCoordinatorPorts.read]。同一时刻至多一个
  * 活动的自动任务；本轮「已消费」不因任何终态回退。
  *
- * 手动任务（R19）：只查隐私同意与发起页面仍有效，不查开关、功能同意版本、轮次与节流，不占自动任务的位置、不改 consumed。看过用途说明的
- * 前置（G15：Android 自绘按钮先弹层、关弹层后本次照常读）由界面在调用 [onPasteTap] 之前处理。同一页面实例上同一目的同时只有一个手动任务
+ * 手动任务（R19）：只查隐私同意与发起页面仍有效，不查开关、轮次与节流，不占自动任务的位置、不改 consumed。同一页面实例上同一目的同时只有一个手动任务
  * （连点去重，F-AND-54 ①：按 pageInstanceId + purpose，别的页面实例上的有效点击照常受理）。只有 product_lookup 走提取 → 上传 → 弹卡；
  * fill_input / bridge_read 读到的文本经 [ImportCoordinatorPorts.deliver] 原样交付一次即成功收束（R20）。
  *
- * 撤销（R16）只有四类：真正进后台、页面实例销毁、关开关、撤回同意。关开关与撤回功能同意只撤自动任务（手动任务不校验开关与功能同意：
- * BR-ID-16 正文「手动任务不校验开关、功能同意版本」，03 §4.6「关闭与撤回：取消待执行的自动任务」）；撤回隐私同意（[onConsentRevoked]
+ * 撤销（R16）只有四类：真正进后台、页面实例销毁、关开关、撤回同意。关开关只撤自动任务（手动任务不校验开关：
+ * BR-ID-16「手动任务不校验开关」，03 §4.6「关闭与撤回：取消待执行的自动任务」）；撤回隐私同意（[onConsentRevoked]
  * 时环境已是未同意）连手动任务一起撤。
  *
  * 回调归属（R15）：按 requestId 找登记的任务（找不到、或阶段不对的重复回调静默丢弃）；两种任务都核对页面实例与隐私同意，自动任务另核对
- * 轮次、consent_version、本机开关与服务端按端开关、页面可交互。不符即过期：先释放自己，再通知 finished(expired)，不提取、不上传、不弹卡。
+ * 轮次、本机开关与服务端按端开关、页面可交互。不符即过期：先释放自己，再通知 finished(expired)，不提取、不上传、不弹卡。
  */
 @Suppress("TooManyFunctions") // 每个外部入口一个函数，另有登记、核对与终态的私有步骤
 class ImportCoordinator(
@@ -136,18 +135,12 @@ class ImportCoordinator(
     }
 
     /**
-     * 0722 钩子 onImportConsentWithdrawn（撤回隐私，store 已清）或撤回功能同意之后转发：撤自动任务；此时隐私已不是同意（撤回隐私）则手动任务
-     * 一起撤。
+     * 撤回隐私同意（onImportConsentWithdrawn）或隐私结论不再是同意之后转发：撤自动任务；此时隐私已不是同意（撤回隐私）则手动任务一起撤。
      */
     fun onConsentRevoked() {
         cancelAttempt()
         cancelAuto()
         if (!environment().privacyAgreed) cancelManual { true }
-    }
-
-    /** 用途说明弹层已显示：只消费它携带的当前轮次（上一轮迟到的通知无效，G21）。 */
-    fun onNoticeShown(epoch: Long) {
-        if (foreground && epoch == this.epoch) round = Round.CONSUMED
     }
 
     /**
@@ -235,11 +228,6 @@ class ImportCoordinator(
                 return
             }
 
-            ImportGateDecision.NOTICE -> {
-                round = Round.CONSUMED
-                ports.showNotice(current, requireNotNull(ImportPreferenceStore.currentConsentVersion(env.configData)))
-            }
-
             ImportGateDecision.READ -> {
                 round = Round.CONSUMED
                 val task =
@@ -249,7 +237,6 @@ class ImportCoordinator(
                         requestId = requestIdGen(),
                         epoch = current,
                         pageInstanceId = env.page.pageInstanceId,
-                        consentVersion = ImportPreferenceStore.currentConsentVersion(env.configData),
                         phase = PHASE_READING,
                     )
                 activeAuto = task
@@ -272,7 +259,6 @@ class ImportCoordinator(
                 requestId = requestIdGen(),
                 epoch = epoch,
                 pageInstanceId = queued.pageInstanceId,
-                consentVersion = ImportPreferenceStore.currentConsentVersion(env.configData),
                 phase = PHASE_READING,
             )
         manualTasks[task.requestId] = task
@@ -352,7 +338,7 @@ class ImportCoordinator(
 
     /**
      * 回调时的归属核对（R15，03 §4.6「回调匹配」）。requestId 已由登记表匹配；这里核对页面实例与隐私同意，自动任务另核对仍在发起时的
-     * 前台轮次、consent_version 未变且仍有效、本机开关与服务端按端开关仍开、页面仍可交互。
+     * 前台轮次、本机开关与服务端按端开关仍开、页面仍可交互。
      */
     private fun stillValid(task: ImportTask): Boolean {
         val env = environment()
@@ -363,16 +349,12 @@ class ImportCoordinator(
     private fun autoStillValid(
         task: ImportTask,
         env: ImportEnvironment,
-    ): Boolean {
-        val version = ImportPreferenceStore.currentConsentVersion(env.configData)
-        return foreground &&
+    ): Boolean =
+        foreground &&
             task.epoch == epoch &&
             env.page.interactive &&
-            version != null &&
-            version == task.consentVersion &&
-            prefs.isAutoReadAllowed(version) &&
+            prefs.canAutoRead() &&
             ImportGates.autoReadEnabled(env.configData)
-    }
 
     private fun registered(requestId: String): ImportTask? = activeAuto?.takeIf { it.requestId == requestId } ?: manualTasks[requestId]
 

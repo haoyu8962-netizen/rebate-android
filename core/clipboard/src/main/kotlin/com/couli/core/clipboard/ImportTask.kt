@@ -30,7 +30,7 @@ data class ImportEnvironment(
 /**
  * 一次读取任务。交给端口的是发起时的不可变归属票据；回调时协调器按 [requestId] 找登记的任务、以登记的阶段与字段为准。
  * - [kind]：[KIND_AUTO] / [KIND_MANUAL]；[purpose] 只有手动任务有（[PURPOSE_PRODUCT_LOOKUP] 等）；
- * - [epoch]：发起时的前台轮次（手动任务可能为 null：进程还没报过前台）；[consentVersion]：发起时的 config.clipboard.consent_version；
+ * - [epoch]：发起时的前台轮次（手动任务可能为 null：进程还没报过前台）；
  * - [phase]：[PHASE_READING] → [PHASE_AWAITING_SYSTEM]（系统界面暂时失焦，Android 基本碰不到）→ [PHASE_EXTRACTING] → [PHASE_PARSING]。
  */
 data class ImportTask(
@@ -39,7 +39,6 @@ data class ImportTask(
     val requestId: String,
     val epoch: Long?,
     val pageInstanceId: String,
-    val consentVersion: String?,
     val phase: String,
 ) {
     companion object {
@@ -89,7 +88,7 @@ data class ImportCandidateResult(
     }
 }
 
-/** 只读诊断快照：[pending] = 本轮还可以尝试自动读取；[consumed] = 本轮已消费（领取、弹用途层、敏感页跳过）；[activeAutoTask] 带当前阶段。 */
+/** 只读诊断快照：[pending] = 本轮还可以尝试自动读取；[consumed] = 本轮已消费（领取、敏感页跳过）；[activeAutoTask] 带当前阶段。 */
 data class ImportCoordinatorSnapshot(
     val epoch: Long?,
     val pending: Boolean,
@@ -115,7 +114,6 @@ enum class ImportLifecycleEvent {
  * [ImportCoordinator.onRead] / [ImportCoordinator.onCandidates] / [ImportCoordinator.onParsed] 送回（可以来自工作线程）。
  * - [read] 抛异常按 unavailable 收束；
  * - [showFallback]：自动任务读不到时在该页面保留「粘贴查返利」入口；
- * - [showNotice]：拉起首次用途说明弹层，调用当时即按已显示消费本轮（G21）；
  * - [finished]：释放之后的观察通知，同一 requestId 至多一次；
  * - [deliver]：手动 fill_input / bridge_read 读到的成功文本原样交付（FU-AND-0724，R20）：同一 requestId 至多一次，不进候选提取、不上传；
  *   缺省空实现只为兼容既有端口实现，生产端口必须接上。它不是 bridge.complete 的错误 / 取消出口（0725）。
@@ -144,11 +142,6 @@ interface ImportCoordinatorPorts {
     )
 
     fun showFallback(pageInstanceId: String)
-
-    fun showNotice(
-        epoch: Long,
-        consentVersion: String,
-    )
 
     fun finished(
         task: ImportTask,

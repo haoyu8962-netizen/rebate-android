@@ -50,16 +50,17 @@ class ImportGate0723VectorTest(
                 f.coordinator.onLifecycle(ImportLifecycleEvent.PROCESS_FOREGROUND)
             }
             if (state.flag("consumed")) {
-                f.coordinator.onNoticeShown(requireNotNull(f.coordinator.snapshot().epoch))
+                // 本轮已消费的等价入口（2026-10-30 起原 onNoticeShown 随弹层取消，向量 fields.consumed）
+                f.coordinator.markSkipped(requireNotNull(f.coordinator.snapshot().epoch))
             }
             repeat(3) { f.coordinator.onPageReady() }
             f.settle()
             val reads = f.reads.size
-            val notices = f.notices.size
             val snapshot = f.coordinator.snapshot()
             val expect = row.getValue("expect").jsonObject
             assertEquals(name, expect.getValue("reads").jsonPrimitive.int, reads)
-            assertEquals(name, expect.getValue("notices").jsonPrimitive.int, notices)
+            // 用途说明弹层入口已移除（C2）；向量 notices 恒为 0，作回归守卫
+            assertEquals(name, 0, expect.getValue("notices").jsonPrimitive.int)
             expect["pending"]?.let { assertEquals(name, it.jsonPrimitive.boolean, snapshot.pending) }
             expect["consumed"]?.let { assertEquals(name, it.jsonPrimitive.boolean, snapshot.consumed) }
             // 门槛不通过不能偷偷探测内容；通过时仍只走 read，端口未回调不许提取或上传。
@@ -86,18 +87,21 @@ class ImportGate0723VectorTest(
                 f.coordinator.onPageReady()
                 f.settle()
                 val after = f.reads.size
-                val afterNotices = f.notices.size
                 assertEquals(name, recovery.getValue("reads").jsonPrimitive.int, after)
-                assertEquals(name, recovery.getValue("notices").jsonPrimitive.int, afterNotices)
+                assertEquals(name, 0, recovery.getValue("notices").jsonPrimitive.int)
             }
         }
 
+    /**
+     * 经真实入口建立 enabled 三态（向量 fields.preferenceSetup）；storedConsentVersion / seenVersion 已不经任何入口建立，这里把向量里的
+     * 非 null 残留值直接写进旧键，端上残留也不得改变 reads（fields.storedConsentVersion/seenVersion、C4）。
+     */
     private fun seedPreferences(
         f: ImportCoordinator0723Fixture,
         state: JsonObject,
     ) {
-        val version = state.textOrNull("storedConsentVersion")
-        version?.let { assertTrue(f.prefs.enable(it)) }
+        state.textOrNull("storedConsentVersion")?.let { assertTrue(f.backend.write(mapOf("import.consent_version" to it))) }
+        state.textOrNull("seenVersion")?.let { assertTrue(f.backend.write(mapOf("import.notice_seen_version" to it))) }
         val enabled =
             state
                 .getValue("enabled")
@@ -105,15 +109,11 @@ class ImportGate0723VectorTest(
                 ?.jsonPrimitive
                 ?.boolean
         when (enabled) {
-            true -> if (version == null) assertTrue(f.prefs.switchOnWithoutConsent())
+            true -> assertTrue(f.prefs.setOn())
             false -> assertTrue(f.prefs.setOff())
             null -> Unit
         }
-        state.textOrNull("seenVersion")?.let { assertTrue(f.prefs.markNoticeSeen(it)) }
-        val actual = f.prefs.snapshot()
-        assertEquals("$name.enabled precondition", enabled, actual.enabled)
-        assertEquals("$name.consent precondition", version, actual.consentVersion)
-        assertEquals("$name.seen precondition", state.textOrNull("seenVersion"), actual.noticeSeenVersion)
+        assertEquals("$name.enabled precondition", enabled, f.prefs.snapshot().enabled)
     }
 
     companion object {
@@ -125,7 +125,7 @@ class ImportGate0723VectorTest(
                     .first { File(it, "contract.lock").isFile }
             val document = Json.parseToJsonElement(File(root, "specs/clipboard-vectors.json").readText()).jsonObject
             val group = document.getValue("importGate").jsonObject
-            assertEquals(1, group.getValue("schemaVersion").jsonPrimitive.int)
+            assertEquals(2, group.getValue("schemaVersion").jsonPrimitive.int)
             val rows = group.getValue("cases").jsonArray.map { it.jsonObject }
             assertTrue(rows.isNotEmpty())
             val names = rows.map { it.getValue("name").jsonPrimitive.content }

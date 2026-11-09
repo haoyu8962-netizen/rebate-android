@@ -17,7 +17,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -31,50 +30,6 @@ import org.robolectric.shadows.ShadowLog
 @Config(application = Application::class, sdk = [36])
 @Suppress("TooManyFunctions") // AC-S1-03 各步骤与裁定分别保留独立用例。
 class ClipboardFlow0724Test {
-    @Test
-    fun ac03_1_unselectedAndNotNowNeverAutoReadButOneManualClickWorks() =
-        runTest {
-            Clipboard0724Fixture(this, enabled = null).use { f ->
-                assertFalse(f.clipboard.autoSwitch.value)
-                f.foreground()
-                f.noEffects()
-                assertNotNull(f.clipboard.consentNotice.value)
-                f.clipboard.onNoticeNotNow()
-                f.settle()
-                f.nextRound()
-                f.noEffects()
-                assertNull(f.clipboard.consentNotice.value)
-                f.clipboard.paste(ManualPasteAction.ENTRY_HOME)
-                f.settle()
-                assertEquals(1, f.system.reads)
-                assertEquals(1, f.parseBodies().size)
-                f.card()
-            }
-        }
-
-    @Test
-    fun g15_firstManualTapShowsNoticeThenContinuesThatSameTapForEitherChoice() =
-        runTest {
-            for (enable in listOf(false, true)) {
-                Clipboard0724Fixture(this, enabled = null).use { f ->
-                    // 用普通互斥弹窗阻止回前台来源，以单独证明手动来源。
-                    f.clipboard.otherDialogShowing = { true }
-                    f.foreground()
-                    f.clipboard.otherDialogShowing = { false }
-                    f.clipboard.paste(ManualPasteAction.ENTRY_HOME)
-                    f.settle()
-                    f.noEffects()
-                    assertNotNull(f.clipboard.consentNotice.value)
-                    if (enable) f.clipboard.onNoticeEnable() else f.clipboard.onNoticeNotNow()
-                    f.settle()
-                    assertEquals(1, f.system.reads)
-                    assertEquals(1, f.parseBodies().size)
-                    assertEquals(enable, f.clipboard.autoSwitch.value)
-                    f.card()
-                }
-            }
-        }
-
     @Test
     fun ac03_2_and_5_directMinimalUploadOneCurrentPageCardAndClipboardUnchanged() =
         runTest {
@@ -308,10 +263,8 @@ class ClipboardFlow0724Test {
                 )
                 f.privacy = PrivacyState.BASIC_MODE
                 f.clipboard.onPrivacyChanged(PrivacyState.BASIC_MODE, withdrawn = true)
-                assertFalse(f.clipboard.autoSwitch.value)
                 f.privacy = PrivacyState.CONSENTED
                 f.clipboard.onPrivacyChanged(PrivacyState.CONSENTED)
-                f.preferences.enable("1")
                 f.clipboard.setAutoSwitch(true)
                 f.noEffects() // 同轮恢复前提：没有新 pageReady，旧排队尝试不能复活。
                 f.nextRound()

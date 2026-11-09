@@ -16,7 +16,7 @@ class ImportTiming0724Test {
             f.foreground()
             assertTrue(f.prefs.setOff())
             f.coordinator.onSwitchOff()
-            assertTrue(f.prefs.enable("v1"))
+            assertTrue(f.prefs.setOn())
             f.settle()
             val reads = f.reads.toList()
             assertEquals(emptyList<ImportTask>(), reads)

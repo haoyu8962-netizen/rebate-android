@@ -41,6 +41,8 @@ internal class Clipboard0724Fixture(
     enabled: Boolean? = true,
     lifecycle: Lifecycle? = null,
     cipher: SecretCipher = SampleCipher,
+    // 测试替换存储（例如提交失败的包装）；缺省原样用本夹具的偏好文件
+    wrapPrefs: (SharedPreferences) -> SharedPreferences = { it },
 ) : AutoCloseable {
     // 和 TestScope 共用虚拟调度器；独立持有 Job，close 后结束来源订阅，避免 runTest 等待常驻 collector。
     private val clipboardJob = Job(test.coroutineContext[Job])
@@ -59,7 +61,7 @@ internal class Clipboard0724Fixture(
                 return disk.getString(key, defValue)
             }
         }
-    val prefs = ClipboardPreferences(observedDisk, cipher)
+    val prefs = ClipboardPreferences(wrapPrefs(observedDisk), cipher)
     val preferences = prefs.importPreferences({ now })
     var now = 1_800_000_000_000L
     var privacy = PrivacyState.CONSENTED
@@ -106,7 +108,7 @@ internal class Clipboard0724Fixture(
 
     init {
         if (enabled != null) {
-            assertTrue(preferences.enable("1"))
+            assertTrue(preferences.setOn())
             if (!enabled) assertTrue(preferences.setOff())
         }
         routing.attach(

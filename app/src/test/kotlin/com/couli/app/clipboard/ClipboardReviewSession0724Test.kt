@@ -24,7 +24,7 @@ class ClipboardReviewSession0724Test {
     private fun scenario(restart: Boolean) {
         ClipboardReviewLogin0724Graph().use { h ->
             assertTrue(h.prefs().salt.write(SAMPLE_SALT))
-            assertTrue(h.prefs().importPreferences { ClipboardReview0724Harness.NOW }.enable("1"))
+            assertTrue(h.prefs().importPreferences { ClipboardReview0724Harness.NOW }.setOn())
             h.loginAs(ClipboardReviewLogin0724Wire.PHONE_A)
             assertEquals("account-A", h.client.activeUserId())
             assertEquals(SessionState.PHONE_BOUND, h.routing.session.value)

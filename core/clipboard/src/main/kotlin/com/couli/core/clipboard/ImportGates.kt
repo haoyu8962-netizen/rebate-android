@@ -12,29 +12,25 @@ enum class ImportGateDecision {
     /** 已就绪的非目标页（G11）：本轮 pending 失效、不读不弹，切回首页也不补；不计为「已消费」。 */
     DROP_NON_TARGET,
 
-    /** 隐私、功能同意版本、服务端按端开关、H5 暂停、本机开关不满足：本次不读，pending 保留（条件变好后同轮可再试）。 */
+    /** 隐私、服务端按端开关、H5 暂停、本机开关不满足：本次不读，pending 保留（条件变好后同轮可再试）。 */
     BLOCKED,
 
     /** 普通互斥模态，或目标页未就绪 / 不可交互 / 未获焦：等待，pending 保留（R13，G10）。 */
     WAIT,
-
-    /** 可读取场景、没看过当前版本的用途说明：拉起弹层并消费本轮，不读（R02 ①，G21）。 */
-    NOTICE,
 
     /** 7 项门槛全部通过：领取本轮并发起读取。 */
     READ,
 }
 
 /**
- * 自动任务的门槛判定（BR-ID-16 正文「自动任务的读取门槛」7 项；03 §4.6「前台轮次与门控」；decision G05 / G10 / G11 / G21 / G22 / G47）。
+ * 自动任务的门槛判定（BR-ID-16 2026-10-30 版「自动任务的读取门槛」；03 §4.6「前台轮次与门控」；decision G05 / G10 / G11 / G22）。
  * 纯函数，不读剪贴板。判定顺序（先命中先返回）：
  * 1. 敏感路由或敏感浮层 → [ImportGateDecision.SKIP_SENSITIVE]（优先于未就绪，R13）；
  * 2. 已就绪的非目标页（0724 只有首页根页是目标，G27；AgentChat 0725 恢复）→ [ImportGateDecision.DROP_NON_TARGET]；
- * 3. ① 隐私、② 当前 consent_version 缺失（G47，不兜底）、③ 服务端 auto_read.android 明确为 false（G05）、H5 暂停 → BLOCKED，且不弹用途层；
- * 4. ⑤ 普通互斥模态、④ 未就绪 / 不可交互 / 未获焦 → WAIT（等待期间也不弹用途层，G22）；
- * 5. 没看过当前版本的用途说明 → NOTICE（包括开关已开但版本到达前打开的、明确关闭但版本已变的，G30 / G47）；
- * 6. ② ③ 本机开关开且功能同意等于当前版本 → READ，否则 BLOCKED。
- * ⑥ 本轮未消费由协调器判；⑦ Android 没有跨轮节流，恒通过。
+ * 3. 隐私、服务端 auto_read.android 明确为 false（G05）、H5 暂停 → BLOCKED（配置只能关不能开，C5）；
+ * 4. 普通互斥模态、未就绪 / 不可交互 / 未获焦 → WAIT；
+ * 5. 本机开关不是关（未选择 = 开，C1）且没有还没落盘的升级迁移（C6）→ READ，否则 BLOCKED。
+ * 本轮未消费由协调器判；Android 没有跨轮节流，恒通过。
  */
 object ImportGates {
     const val ROUTE_HOME = "Home"
@@ -53,7 +49,7 @@ object ImportGates {
     const val MODAL_TRADE_RETURN_CONFIRMATION = "trade_return_confirmation"
     const val MODAL_UPDATE_PROMPT = "update_prompt"
 
-    /** 外壳的其他弹窗（可关闭的更新提示由外壳报来、用途说明弹层自己显示中，0723 接线说明第 4 条）：等待，不读、不再弹。 */
+    /** 外壳的其他弹窗（可关闭的更新提示由外壳报来，0723 接线说明第 4 条）：等待，不读。 */
     const val MODAL_OTHER_DIALOG = "other_dialog"
 
     /** 本轮有系统分享在处理（G19：分享到达那轮跳过自动读）：等待；分享真正进入本轮处理时协调器另按 markSkipped 消费本轮。 */
@@ -88,14 +84,12 @@ object ImportGates {
     ): ImportGateDecision {
         if (sensitive(env)) return ImportGateDecision.SKIP_SENSITIVE
         if (env.page.ready && !target(env.page)) return ImportGateDecision.DROP_NON_TARGET
-        val version = ImportPreferenceStore.currentConsentVersion(env.configData)
-        if (version == null || externallyBlocked(env)) return ImportGateDecision.BLOCKED
+        if (externallyBlocked(env)) return ImportGateDecision.BLOCKED
         if (env.modal != MODAL_NONE || !pageUsable(env.page)) return ImportGateDecision.WAIT
-        if (!prefs.hasSeenNotice(version)) return ImportGateDecision.NOTICE
-        return if (prefs.isAutoReadAllowed(version)) ImportGateDecision.READ else ImportGateDecision.BLOCKED
+        return if (prefs.canAutoRead()) ImportGateDecision.READ else ImportGateDecision.BLOCKED
     }
 
-    /** 隐私未同意（门槛①）、服务端停了本端自动读取（③）、当前页面实例被 H5 暂停。 */
+    /** 隐私未同意、服务端停了本端自动读取、当前页面实例被 H5 暂停。 */
     private fun externallyBlocked(env: ImportEnvironment): Boolean =
         !env.privacyAgreed || !autoReadEnabled(env.configData) || env.webSuppressed
 

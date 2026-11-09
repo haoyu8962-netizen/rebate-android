@@ -6,7 +6,6 @@ import android.app.Application
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.couli.app.clipboard.ClipboardScreens
 import com.couli.feature.me.MeTags
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -67,13 +66,6 @@ class SettingsVisualSnapshotTest {
     }
 
     // ---------------------------------------------------------------- 弹层与轻提示
-
-    @Test fun clipboardConsent() {
-        host.launch()
-        host.tap(ClipboardScreens.SETTINGS_ROW)
-        assertTrue(host.has("clipboard_consent_notice"))
-        screen("SettingsClipboardConsent-light")
-    }
 
     @Test fun agreementSheet() {
         host.launch()

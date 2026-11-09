@@ -13,9 +13,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -226,36 +224,6 @@ class ClipboardResults0724Test {
                         .toString()
                         .contains("K7M2QX"),
                 )
-            }
-        }
-
-    @Test
-    fun foregroundNoticeHasOneCoordinatorSourceAndDoesNotReadAfterEnableInThatRound() =
-        runTest {
-            Clipboard0724Fixture(this, enabled = null).use { f ->
-                f.foreground()
-                val first = f.clipboard.consentNotice.value
-                assertNotNull(first)
-                val snapshot = f.clipboard.importCoordinator.snapshot()
-                assertTrue(snapshot.consumed)
-                repeat(4) {
-                    f.clipboard.onDialogsChanged()
-                    f.clipboard.onWindowFocus(true)
-                    f.clipboard.onShell("Home", false)
-                    f.settle()
-                }
-                assertSame("同一轮不能重新创建同值用途弹层", first, f.clipboard.consentNotice.value)
-                assertEquals(
-                    snapshot.epoch,
-                    f.clipboard.importCoordinator
-                        .snapshot()
-                        .epoch,
-                )
-                f.clipboard.onNoticeEnable()
-                f.noEffects()
-                assertNull(f.clipboard.consentNotice.value)
-                f.nextRound()
-                assertEquals(1, f.parseBodies().size)
             }
         }
 }

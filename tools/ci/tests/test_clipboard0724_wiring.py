@@ -29,23 +29,6 @@ def block_at(source, opening):
     raise AssertionError('unclosed production block')
 
 
-def foreground_notice_has_one_emitter(source):
-    source = uncomment(source)
-    ports = list(re.finditer(r'override\s+fun\s+showNotice\s*\([^)]*\)[^{]*\{', source))
-    if len(ports) != 1:
-        return False
-    port = ports[0]
-    body, end = block_at(source, port.end() - 1)
-    if len(re.findall(r'\bSOURCE_FOREGROUND\b', body)) != 1:
-        return False
-    remaining = source[:port.start()] + source[end:]
-    # 常量定义和只读来源判断合法；任何其他构造/传递来源的路径都不能绕过协调器。
-    remaining = re.sub(r'const\s+val\s+SOURCE_FOREGROUND\s*=\s*"foreground"', '', remaining)
-    remaining = re.sub(r'(?:ClipboardConsentNotice\.)?SOURCE_FOREGROUND\s*->', '', remaining)
-    remaining = re.sub(r'\.source\s*==\s*(?:ClipboardConsentNotice\.)?SOURCE_FOREGROUND', '', remaining)
-    return not re.search(r'\bSOURCE_FOREGROUND\b', remaining)
-
-
 def modal_sources_are_connected(source):
     """只守生产绑定函数调用；工厂内真实服务到协调器的行为由 Kotlin 测试锁定。
 
@@ -121,10 +104,6 @@ class ProductionWiringTest(unittest.TestCase):
         self.assertFalse((ROOT / 'core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardWatcher.kt').exists())
         self.assertFalse((ROOT / 'core/clipboard/src/main/kotlin/com/couli/core/clipboard/ClipboardReadPolicy.kt').exists())
 
-    def test_foreground_notice_is_emitted_only_by_coordinator_port(self):
-        self.assertTrue(foreground_notice_has_one_emitter((APP / 'clipboard/AppClipboard.kt').read_text()),
-                        '回前台用途弹层只能从协调器 showNotice 端口创建')
-
     def test_modal_sources_are_bound_from_real_producers(self):
         candidates = [(APP / 'AppModule.kt').read_text(), (APP / 'shell/AppShell.kt').read_text()]
         self.assertTrue(any(modal_sources_are_connected(source) for source in candidates),
@@ -132,19 +111,6 @@ class ProductionWiringTest(unittest.TestCase):
 
 
 class SourceCheckerSelfTest(unittest.TestCase):
-    def test_notice_allows_manual_predicate_but_rejects_second_emitter(self):
-        valid = """
-        const val SOURCE_FOREGROUND = "foreground"
-        fun noticeEligible() = manualNoticeNeeded()
-        override fun showNotice(epoch: Long) { showConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND) }
-        """
-        self.assertTrue(foreground_notice_has_one_emitter(valid))
-        for name in ['resumeDeferredNotice', 'foregroundNoticeReady', 'anyOtherName']:
-            self.assertFalse(foreground_notice_has_one_emitter(valid +
-                'fun ' + name + '() { showConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND) }'))
-        self.assertFalse(foreground_notice_has_one_emitter(valid +
-            'fun extra() { val second = ClipboardConsentNotice(ClipboardConsentNotice.SOURCE_FOREGROUND) }'))
-
     def test_modal_checker_accepts_created_nullable_and_provider_instances(self):
         for valid in [
             'clipboard.connectModalSources(trade=shop,login=created,update=updater)',

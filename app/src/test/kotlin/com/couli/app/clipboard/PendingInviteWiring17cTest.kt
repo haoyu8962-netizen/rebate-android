@@ -91,7 +91,7 @@ class PendingInviteWiring17cTest {
             assertSame(graph.pendingInvite, graph.login.pendingInvite)
             assertSame(graph.pendingInvite, graph.login.service.pendingInvite)
             assertTrue(graph.prefs().salt.write(SAMPLE_SALT))
-            assertTrue(graph.prefs().importPreferences { ClipboardReview0724Harness.NOW }.enable("1"))
+            assertTrue(graph.prefs().importPreferences { ClipboardReview0724Harness.NOW }.setOn())
             graph.recognize("邀请码 K7M2QX")
             graph.board.onPromptAction(checkNotNull(graph.board.prompt.value).id)
             graph.settle()

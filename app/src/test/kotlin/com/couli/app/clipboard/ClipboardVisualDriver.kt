@@ -1,9 +1,6 @@
 package com.couli.app.clipboard
 
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
-import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.IntSize
 import com.couli.app.home.HomeVisualFixtures
 import com.couli.app.home.HomeVisualTestHost
@@ -79,13 +76,6 @@ internal class ClipboardVisualDriver(
         }
         host.idle()
         assertEquals(ClipboardVisualFixtures.INVITE, (host.clipboard.result.value as ClipboardResult.InviteConfirm).code)
-    }
-
-    fun consent() {
-        if (host.clipboard.consentNotice.value == null) rule.onNodeWithTag(ClipboardScreens.HOME_PASTE_BUTTON).performClick()
-        host.idle()
-        rule.onNodeWithTag("clipboard_consent_notice").assertIsDisplayed()
-        assertEquals("说明前不得读剪贴板", 0, host.system.reads)
     }
 
     private fun foreground() {

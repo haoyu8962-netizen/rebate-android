@@ -27,8 +27,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * S8 / G-S11 / G-S12 / S24：剪贴板开关行只改间距与读屏；开关外观不改；首次打开先出用途说明、点【开启】才记功能同意并打开、关闭即时生效不弹确认
- * （BR-ID-16）。全部经真实 ClipboardSettingsRow + 真实 AppClipboard + ClipboardConsentHost 的真实触摸。
+ * S8 / G-S11 / G-S12 / S24：剪贴板开关行只改间距与读屏；开关外观不改；默认开启、打开关闭都不出弹层、不发请求（BR-ID-16 2026-10-30，C8）。
+ * （BR-ID-16）。全部经真实 ClipboardSettingsRow + 真实 AppClipboard 的真实触摸。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class, sdk = [36], qualifiers = "w390dp-h1039dp-xhdpi")
@@ -43,6 +43,7 @@ class SettingsVisualClipboardTest {
 
     @Test fun s8RowPaddingTitleGapAndSwitchDoNotSqueezeText() {
         host.launch()
+        turnOff()
         val row = host.node(ClipboardScreens.SETTINGS_ROW)
         val d = row.density()
         val box = row.box()
@@ -63,6 +64,7 @@ class SettingsVisualClipboardTest {
 
     @Test fun g11SwitchKeepsMaterialAppearanceAndUncheckedTrackToken() {
         host.launch()
+        turnOff()
         val switch = switchBox()
         val d = host.node(ClipboardScreens.SETTINGS_ROW).density()
         assertEquals("M3 Switch 外形 52×32（不改成画板 51×31）", 52f, switch.width / d, 1f)
@@ -76,44 +78,39 @@ class SettingsVisualClipboardTest {
 
     @Test fun g12ReadsNameStateAndDescriptionWithoutDescriptionOverridingState() {
         host.launch()
+        turnOff()
         assertReadout(ToggleableState.Off, "已关闭")
     }
 
-    @Test fun s24FirstOpenShowsConsentNoticeNotNowKeepsOffThenEnableRecordsOnceAndOffIsImmediate() {
-        host.launch()
-        host.tap(ClipboardScreens.SETTINGS_ROW)
-        assertTrue("首次打开先出用途说明", host.has(NOTICE))
-        assertEquals("用途说明期间开关仍关", false, host.clipboard.autoSwitch.value)
-        assertEquals("未点【开启】不写同意", 0, store().consentQueue.pending().size)
-        host.tap(NOT_NOW)
-        assertFalse(host.has(NOTICE))
-        assertEquals(false, host.clipboard.autoSwitch.value)
-        assertEquals(null, store().snapshot().enabled)
-        host.tap(ClipboardScreens.SETTINGS_ROW)
-        assertTrue("设置来源可再次询问", host.has(NOTICE))
-        host.tap(ENABLE)
-        assertFalse(host.has(NOTICE))
-        assertEquals("【开启】才打开", true, host.clipboard.autoSwitch.value)
-        val pending = store().consentQueue.pending()
-        assertEquals("恰好记一次功能同意", 1, pending.size)
-        assertEquals("purpose-02", pending.single().version)
+    /** C8 / C1：默认开启（品牌色轨道），打开关闭都不出弹层、不发请求；游客与登录用户一致。 */
+    @Test fun c8DefaultOnBrandTrackTogglesDirectlyWithoutNoticeMember() = defaultOnRow("settings_member")
+
+    @Test fun c8DefaultOnBrandTrackTogglesDirectlyWithoutNoticeGuest() = defaultOnRow("guest_consented")
+
+    private fun defaultOnRow(session: String) {
+        host.launch(session = session)
+        assertEquals("默认开启", true, host.clipboard.autoSwitch.value)
         assertReadout(ToggleableState.On, "已打开")
+        assertTrue("开启轨道用品牌色", rule.pixels().countNear(switchBox(), host.palette.brand, 24) > 40)
+        val requestsBefore = host.api.calls.map { it.operationId }
         host.tap(ClipboardScreens.SETTINGS_ROW)
-        assertFalse("关闭不弹确认", host.has(NOTICE))
-        assertEquals("关闭即时生效", false, host.clipboard.autoSwitch.value)
-        assertEquals("关闭不新增同意", 1, store().consentQueue.pending().size)
-        assertEquals("剪贴板开关不发任何请求：${host.api.calls.map { it.operationId }}", listOf("getMe"), host.api.calls.map { it.operationId })
+        assertFalse("关闭不出弹层", host.has(NOTICE))
+        assertEquals("关闭立即生效", false, host.clipboard.autoSwitch.value)
+        assertReadout(ToggleableState.Off, "已关闭")
+        assertEquals("关闭写本机", false, store().snapshot().enabled)
+        host.tap(ClipboardScreens.SETTINGS_ROW)
+        assertFalse("打开不出弹层", host.has(NOTICE))
+        assertEquals("打开立即生效", true, host.clipboard.autoSwitch.value)
+        assertReadout(ToggleableState.On, "已打开")
+        assertEquals("打开写本机", true, store().snapshot().enabled)
+        assertEquals("打开关闭都不发任何请求（含 clipboard_auto_import）", requestsBefore, host.api.calls.map { it.operationId })
         assertTrue("设置页零导航", host.env.opened.isEmpty())
     }
 
-    @Test fun s24ConsentNoticeTitleAndButtonsMatchHomeComponent() {
-        host.launch()
-        host.tap(ClipboardScreens.SETTINGS_ROW)
-        val heading = rule.textNode(ClipboardDraftTexts.text("clipboard.consent.title"))
-        assertEquals("标题 22（沿用 HomeClipboardConsent-v3 组件）", 22f, heading.textStyle().fontSize.value, 0.01f)
-        val enable = host.node(ENABLE).box()
-        val notNow = host.node(NOT_NOW).box()
-        assertTrue("【暂不开启】在左、【开启】在右并排", notNow.right <= enable.left && kotlin.math.abs(notNow.center.y - enable.center.y) < 2)
+    /** C8：基本模式不显示这一行。 */
+    @Test fun c8BasicModeHasNoRow() {
+        host.launch(session = "basic")
+        assertFalse("基本模式无剪贴板行", host.has(ClipboardScreens.SETTINGS_ROW))
     }
 
     private fun assertReadout(
@@ -145,6 +142,12 @@ class SettingsVisualClipboardTest {
             .minBy { it.width * it.height }
     }
 
+    /** 视觉用例需要未选轨道时先经真实入口关闭（默认开启）。 */
+    private fun turnOff() {
+        rule.runOnUiThread { host.clipboard.setAutoSwitch(false) }
+        host.idle()
+    }
+
     private fun store() =
         ClipboardPreferences(
             ApplicationProvider.getApplicationContext<Context>(),
@@ -152,8 +155,7 @@ class SettingsVisualClipboardTest {
         ).importPreferences { SettingsVisualFixtures.now }
 
     private companion object {
+        // 已移除的用途说明弹层标记（C2），只用于断言不存在
         const val NOTICE = "clipboard_consent_notice"
-        const val ENABLE = "clipboard_consent_enable"
-        const val NOT_NOW = "clipboard_consent_not_now"
     }
 }

@@ -29,7 +29,6 @@ class ImportManual0723Test {
             assertEquals(0, parses)
             assertEquals(0, cards)
             f.environment = f.environment.copy(privacyAgreed = true)
-            assertTrue(f.prefs.markNoticeSeen("v1"))
             // 恢复本身不重放先前被拒的点击，必须再点一次。
             f.coordinator.onPageReady()
             f.settle()
@@ -61,7 +60,7 @@ class ImportManual0723Test {
                 val before = f.coordinator.snapshot()
                 assertNull(before.activeAutoTask)
                 assertTrue(!before.consumed)
-                assertTrue(f.prefs.enable("v1"))
+                assertTrue(f.prefs.setOn())
                 if (alreadyForeground) f.coordinator.onPageReady() else f.foreground()
                 f.settle()
                 val auto = f.reads.last()
@@ -115,7 +114,7 @@ class ImportManual0723Test {
                 f.candidates(task)
                 when (reason) {
                     "switch_off" -> {
-                        assertTrue(f.prefs.enable("v1"))
+                        assertTrue(f.prefs.setOn())
                         assertTrue(f.prefs.setOff())
                         f.coordinator.onSwitchOff()
                     }

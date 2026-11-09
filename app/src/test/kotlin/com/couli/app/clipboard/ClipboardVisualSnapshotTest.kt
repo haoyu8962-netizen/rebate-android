@@ -27,14 +27,6 @@ class ClipboardVisualSnapshotTest {
 
     @After fun close() = driver.close()
 
-    @Test
-    @Config(qualifiers = "w390dp-h1171dp-xhdpi")
-    fun consentSheet() {
-        driver.launch(fresh = true)
-        driver.consent()
-        capture("HomeClipboardConsent-v3-light", "clipboard_consent_notice")
-    }
-
     @Test fun singleProductLight() {
         driver.launch()
         driver.parse()
@@ -79,14 +71,6 @@ class ClipboardVisualSnapshotTest {
         driver.launch(guest = true)
         driver.invite()
         capture("HomeClipboardInvite-v3-light", ClipboardUi.PROMPT_BAR)
-    }
-
-    @Test
-    @Config(qualifiers = "w320dp-h844dp-xhdpi")
-    fun consentFont200() {
-        driver.launch(fontScale = 2f, fresh = true)
-        driver.consent()
-        capture("HomeClipboardConsent-v3-font200-w320-light", "clipboard_consent_notice")
     }
 
     @Test
