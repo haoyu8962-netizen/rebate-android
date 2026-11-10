@@ -1,14 +1,8 @@
 package com.couli.core.designsystem
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.LocalIndication
-import androidx.compose.foundation.background
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,13 +10,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Tab
@@ -34,18 +31,14 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.CollectionInfo
-import androidx.compose.ui.semantics.CollectionItemInfo
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.collectionInfo
-import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
@@ -249,8 +242,10 @@ data class TabItem(
 )
 
 /**
- * 一级 Tab 栏（GUIDE §3）：白底、上 1 分隔线、4 等分；选中项图标 #C44820、文字 #A83B1F 600，未选 #655E57。
- * 选中状态经 selectable 读出，不只靠颜色（选中项另有字重变化）。系统导航区由调用方加 navigationBarsPadding。
+ * 一级 Tab 栏（D10-824 / D10-827，组件清单 §3.4【改系统】）：M3 `NavigationBar`，容器自带系统边距铺到屏底，调用方不必再垫色条。
+ * 选中项只由调用方的 [selectedIndex] 决定（壳层在 Router 放行后才写入），点击只回调 [onSelect]，被守卫拦下时选中不变。
+ * 配色只取主题角色：选中图标 primary、选中文字 onPrimaryContainer、指示条 secondaryContainer、未选 onSurfaceVariant，容器 surface。
+ * 读屏与大字号交给系统（D10-827 ①②）。M3 在有文字时清空图标槽语义，所以角标说明要另挂在项上，经 stateDescription 读出。
  */
 @Composable
 fun TabBar(
@@ -259,57 +254,34 @@ fun TabBar(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.fillMaxWidth().background(CouliColors.backgroundSurface)) {
-        Box(Modifier.fillMaxWidth().height(CouliSizes.hairline).background(CouliColors.borderSubtle))
-        Row(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = CouliSpacing.space1)
-                    .selectableGroup()
-                    .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = items.size) },
-        ) {
-            items.forEachIndexed { index, item ->
-                val selected = index == selectedIndex
-                val interaction = remember { MutableInteractionSource() }
-                Column(
-                    modifier =
-                        Modifier
-                            .weight(1f)
-                            .heightIn(min = CouliSizes.touchTarget)
-                            .couliFocusRing(focusRingVisible(interaction), CouliRadius.small)
-                            .selectable(
-                                selected = selected,
-                                interactionSource = interaction,
-                                indication = LocalIndication.current,
-                                role = Role.Tab,
-                                onClick = { onSelect(index) },
-                            ).semantics {
-                                // 读屏「标签，第 n 个，共 4 个，已选中」（adaptation-a11y-spec）：Role.Tab + 选中态 + 集合位置
-                                collectionItemInfo = CollectionItemInfo(rowIndex = 0, rowSpan = 1, columnIndex = index, columnSpan = 1)
-                            }.padding(vertical = CouliSpacing.space1),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2, Alignment.CenterVertically),
-                ) {
-                    Box {
-                        Icon(
-                            item.icon,
-                            contentDescription = null,
-                            tint = if (selected) CouliColors.brandPrimary else CouliColors.textSecondary,
-                            modifier = Modifier.size(CouliSizes.iconLarge),
-                        )
-                        if (item.badgeDescription != null) {
-                            CouliBadge(contentDescription = item.badgeDescription, modifier = Modifier.align(Alignment.TopEnd))
-                        }
+    val scheme = MaterialTheme.colorScheme
+    val itemColors =
+        NavigationBarItemDefaults.colors(
+            selectedIconColor = scheme.primary,
+            selectedTextColor = scheme.onPrimaryContainer,
+            indicatorColor = scheme.secondaryContainer,
+            unselectedIconColor = scheme.onSurfaceVariant,
+            unselectedTextColor = scheme.onSurfaceVariant,
+        )
+    NavigationBar(modifier = modifier, containerColor = scheme.surface) {
+        items.forEachIndexed { index, item ->
+            val badge = item.badgeDescription
+            NavigationBarItem(
+                selected = index == selectedIndex,
+                onClick = { onSelect(index) },
+                icon = {
+                    BadgedBox(badge = { if (badge != null) CouliBadge(contentDescription = badge) }) {
+                        Icon(item.icon, contentDescription = null)
                     }
-                    Text(
-                        text = item.label,
-                        style = if (selected) CouliTextStyles.captionSemibold else CouliTypography.caption,
-                        color = if (selected) CouliColors.brandEmphasis else CouliColors.textSecondary,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-            }
+                },
+                modifier =
+                    Modifier.testTag("tab_bar_item_$index").semantics {
+                        if (badge != null) stateDescription = badge
+                    },
+                label = { Text(item.label, style = CouliTypography.caption) },
+                alwaysShowLabel = true,
+                colors = itemColors,
+            )
         }
     }
 }
