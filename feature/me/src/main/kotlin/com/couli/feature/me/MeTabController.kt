@@ -320,7 +320,7 @@ private fun GuestCard(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space4),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.CenterVertically) {
-            Avatar()
+            MeAvatar()
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
                 Text(text = texts.text("me.guest.title"), style = CouliTextStyles.bodySemibold, color = CouliColors.textPrimary)
                 Text(text = texts.text("me.guest.desc"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
@@ -331,17 +331,6 @@ private fun GuestCard(
             onClick = controller::login,
             modifier = Modifier.fillMaxWidth().testTag(MeTags.ME_LOGIN),
         )
-    }
-}
-
-/** 默认头像：56 圆、muted 底、人形 32 次文字色（身份卡与游客卡共用；页面私有，不进 DS，G-M17）。 */
-@Composable
-private fun Avatar() {
-    Box(
-        modifier = Modifier.size(AVATAR).background(CouliColors.backgroundMuted, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(CouliIcons.user, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSpacing.space8))
     }
 }
 
@@ -368,7 +357,7 @@ private fun MemberBody(
     when {
         me != null -> {
             val version = snapshot.version
-            IdentityCard(deps, controller, me.nickname, view, version)
+            IdentityCard(deps, controller, me.nickname, meAvatarUrl(me), view, version)
             HeroCard(texts, controller, view, mask, version, eye)
         }
 
@@ -580,6 +569,7 @@ private fun IdentityCard(
     deps: MeDeps,
     controller: MeTabController,
     nickname: String,
+    avatarUrl: String?,
     view: MeViewModel,
     version: Long,
 ) {
@@ -589,7 +579,8 @@ private fun IdentityCard(
         horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar()
+        // 服务端头像（FU-AND-ME-AVATAR）：按身份取键，换号 / 退出不残留
+        MeAvatar(avatarUrl, controller.identity)
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
             Text(
                 text = nickname,

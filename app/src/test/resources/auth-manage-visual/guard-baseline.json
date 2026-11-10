@@ -2695,7 +2695,7 @@
   {"h": "15bb7b7309b5cbe2176283e6e193f2a8f93ceb9face2cdac2191468c825050dd", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MePageHolder.kt"},
   {"h": "9c4a8ebdca7992b8b6bef615e72360dc90b23d14d921d90315e37a2276d289f1", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MePorts.kt"},
   {"h": "c2c17ef3ed3b96631eabcf5d09ea987f6262ff055ff18324fcdb56e023256d8d", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeRepository.kt"},
-  {"h": "190129c0b9adcd61bb30273850a0849d965a92531281c774ad92e9dac321afed", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabController.kt"},
+  {"h": "73102625bea01801cafd7749482c75002b5c82cb5485bdd15da017bfa821aa97", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabController.kt"},
   {"h": "1da16aa59dec0cf7b30987851bc546f59ce27c1cd7326c2445d9e33e6b6a1791", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeTabParts.kt"},
   {"h": "5652a8c8607939a7bd0086f6cec8db5ea846a1d8d62e4a7caf23de21ffe28e84", "p": "feature/me/src/main/kotlin/com/couli/feature/me/MeUi.kt"},
   {"h": "45ebfcf4e0c275220e514dafcaf40865e7e96a52860a62a404f154572454e96c", "p": "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeController.kt"},
@@ -2976,27 +2976,27 @@
  "mergedAm": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "5a381280a875d87efa69fce71ad034b7f03218bfc12f5600f2a1327d2ca20c3f",
+   "h": "271c5eb4d06b589017713b083e752bbb9db3c58dc2e5a0d382e6ecc8e9129acb",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "51ecb381d0ccf145b281703f675014d06b507e1fa988e3d802c698e68ec1b4c5",
+   "h": "2423c49573a3b5fdd4a9cc5b72bc8c8daf5e0ed881a996bb14ce9d1450ec824b",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "a9efc6a3468a30f3b2868c653f37ad02f721cf339773b941b7f34644dbb343d8",
+   "h": "fb2f7c99cd6eb52d0e8457d4f64d85dd89f84879a612a3639487c7f62ad4887f",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "85aa252ce3a80017bd1db9295337a91ec54ea12d86e70ba7927b8c03c7ca7c6b",
+   "h": "bc4c3b9af1daff96c4297a9e046a1cf4974f1acfccb7f8a0ca4ddbcdbfc7a19a",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "6c26aba1c589b3f3b53fb29c4493bd0570f70ae20271aa0e45d97573ee68cd9a",
+   "h": "b01c8dca59469ef05463f5578af2f873d20a9e2e5fb9f2ea6047f9cf8a87746c",
    "swaps": 1
   }
  ],
@@ -3006,5 +3006,5 @@
    "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"
   }
  ],
- "verifyOutside": "a72086db7418797c7b9c5e1e2920e5559400e156e81c977a238c165233d2930e"
+ "verifyOutside": "867bbc3a609881a0636b342033b6b72d05ded3ae232e129144c00b760d785f24"
 }

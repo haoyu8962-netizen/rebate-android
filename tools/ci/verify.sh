@@ -247,6 +247,7 @@ step "钱包视觉整页浅 / 深快照（APP-09v-a：Wallet / WalletFrozen / Wa
 step "订单详情视觉整页浅 / 深快照（APP-08v-b：OrderDetail* 14 态 / OrderDetailDark / ReasonStates 12 卡 / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*OrderDetailVisualSnapshotTest"
 step "提现记录视觉整页浅 / 深快照（APP-09v-b：WithdrawRecords-v2 / Pending / Paid / Failed / 自动判定 / 打款中 / 空态 / States-v2 与 More 证据稿局部 / 深色 / 骨架 / 翻页错误 / 定位异月 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*WithdrawRecordsVisualSnapshotTest"
 step "我的视觉整页浅 / 深快照（APP-12v-a：Me / MeEarningsEntry / MeGuest / MeHidden / MeMinor / MeStates 版式 / MeDark / 无稿状态 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*MeVisualSnapshotTest"
+step "「我的」资料卡头像截图浅 / 深快照（FU-AND-ME-AVATAR：有头像 / 兜底 × 浅深 × 100% / 200%）" $GRADLE :app:verifyRoborazziDebug --tests "*MeAvatarSnapshotTest"
 step "设置一族视觉浅 / 深快照（APP-12w-a：Settings-v2 / 游客 / 基本模式 / 协议半屏 / 确认框 / 轻提示 / 昵称 / 通知 / 深色 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*SettingsVisualSnapshotTest"
 step "隐私中心 / 关于 / 客服半屏视觉浅 / 深快照（APP-12w-b：PrivacyCenter / Basic-v2 / Withdraw / ForceUpdate / About-v2 / CsOpenFailed-v2 / CsWechatMissing-v2 / 深色 / 无稿 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*PrivacyVisualSnapshotTest"
 step "账号状态 / 申诉视觉浅 / 深快照（APP-12w-c：RiskNotice / Appeal / 进度 / 结果 / 深色 / 无稿 / 200% / 840）" $GRADLE :app:verifyRoborazziDebug --tests "*RiskVisualSnapshotTest"
