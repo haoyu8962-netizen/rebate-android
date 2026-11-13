@@ -44,8 +44,9 @@ import org.robolectric.annotation.GraphicsMode
  *   短值对照与压力值都恰好 4 条墨迹带——非空且没多出一行；数值墨迹带高与独立基准（同样式不受约束单行排出的同一串值）相差 ≤2px——长短值一起缩字也拦；
  *   数值墨迹宽不小于基准 −2px——逐格完整，单行裁切会被拦）。框内横向滚动这条像素证明不了，AmountGrid 请用整段换行或上下排。
  * - 测试 r7（D10-1513 / D10-1521 退路）：真实 [WholeNumberText] 在 w320 × 200% 下，含数字的超宽串整串单行横滑、AmountOverflow 三项 true、
- *   读屏完整、数字段不跨行——32 位流水号，以及字母与数字粘连、数字段放得下而整串放不下的串（AAAAAAAAAA1234567890、user2024***@mail.com）。
- *   每条先核前提（整串单行宽于视口；粘连串的数字段单行放得下）。不含数字的账号串换行由收款账号绘制点负责，见 app 的 NumWrapPayoutEmailPageTest。
+ *   读屏完整、数字段不跨行——32 位流水号，以及字母与数字粘连、数字段放得下而整串放不下的串（AAAAAAAAAA1234567890）。
+ *   每条先核前提（整串单行宽于视口；粘连串的数字段单行放得下）。带数字的脱敏邮箱 user2024***@mail.com 按判据 1 口径（D10-1538）：
+ *   数字段 2024*** 不跨行、不省略、不缩字、读屏完整，不要求整串横滑（Robolectric 下断行器在「mail.」后可断，最长段放得下）。不含数字的账号串换行由收款账号绘制点负责，见 app 的 NumWrapPayoutEmailPageTest。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class, sdk = [36], qualifiers = "w390dp-h1400dp-xhdpi")
@@ -93,8 +94,11 @@ class NumWrapDesignSystemComponentTest {
     /** 字母与数字粘连（D10-1521）：10 位数字放得下、整串放不下时，整串单行横滑、AmountOverflow 三项 true、数字不跨行。 */
     @Test fun letterDigitGlueScrollsWholeAtW320Font200() = scrolls(GLUE, "字母数字粘连", digits = GLUE_DIGITS)
 
-    /** 同上，脱敏邮箱里粘着数字（数字段「2024***」放得下、整串放不下）。 */
-    @Test fun maskedEmailWithDigitsScrollsWholeAtW320Font200() = scrolls(GLUE_EMAIL, "带数字的脱敏邮箱", digits = GLUE_EMAIL_DIGITS)
+    /**
+     * 脱敏邮箱里粘着数字（D10-1538，判据 1 口径）：数字段「2024***」不跨行、不省略、不缩字、首尾可达、读屏完整；
+     * 整串换行还是横滑不钉（Robolectric 下断行器在「mail.」后可断）。数字段被劈开时由 [NumWrap.checkRun] 的「从中间断行」断言拦下。
+     */
+    @Test fun maskedEmailWithDigitsKeepsDigitRunWholeAtW320Font200() = keepsDigitRun(GLUE_EMAIL, "带数字的脱敏邮箱", GLUE_EMAIL_DIGITS)
 
     private fun hero(
         amount: String,
@@ -238,6 +242,39 @@ class NumWrapDesignSystemComponentTest {
         NumHint.assertHint(rule, NumHintSpec(field, row = NumWrap.within(CARD), expect = true))
         NumWrap.assertField(rule, field)
         digits?.let { NumWrap.checkRun(rule, textNode(value), it, "${field.where} 里的「$it」", TOKEN) }
+    }
+
+    /** w320 × 200% 下排 [value]：前提是数字段 [digits] 单行放得下视口；文字节点是完整串、读屏读得到（横滑与否只核一致），[digits] 整段不断、不缩字。 */
+    private fun keepsDigitRun(
+        value: String,
+        what: String,
+        digits: String,
+    ) {
+        content(320, dark = false) {
+            Column {
+                Box(Modifier.fillMaxWidth().testTag(CARD)) { WholeNumberText(value, style = STYLE) }
+                // 前提用的独立基准：同样式、不受宽度约束的单行数字段
+                Box(Modifier.wrapContentWidth(Alignment.Start, unbounded = true)) {
+                    Text(digits, style = STYLE, softWrap = false, modifier = Modifier.testTag(REF))
+                }
+            }
+        }
+        val viewport = tagged(CARD).size.width
+        val run = NumWrap.layout(rule.onNodeWithTag(REF, useUnmergedTree = true)).size.width
+        assertTrue("$what 前提：数字段单行 $run px 须放得下视口 $viewport px", run <= viewport)
+        val node = textNode(value)
+        val where = "WholeNumberText $what（w320×200%）"
+        assertEquals(
+            "$where：文字节点须是完整串（读屏读得到整串）",
+            value,
+            NumWrap
+                .layout(node)
+                .layoutInput.text.text,
+        )
+        val field = NumField(value, where, NumWrap.within(CARD), TOKEN, exact = true)
+        // 读屏完整（合并树里读得到整串）；横滑与否不钉，只核语义与实际一致、渐隐 / 指示器随横滑出现
+        NumHint.assertHint(rule, NumHintSpec(field, row = NumWrap.within(CARD), expect = null))
+        NumWrap.checkRun(rule, node, digits, "$where 里的「$digits」", TOKEN)
     }
 
     private fun textNode(value: String): SemanticsNodeInteraction =
