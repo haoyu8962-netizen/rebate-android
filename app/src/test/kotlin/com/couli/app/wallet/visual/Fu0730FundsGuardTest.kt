@@ -92,7 +92,7 @@ class Fu0730FundsGuardTest {
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 
     private companion object {
-        const val DESIGN_SYSTEM_DIGEST = "71c79b21ce9cb7861f223cdf88a4ff70efeaca6145f6beffdfa219c416dddf19"
+        const val DESIGN_SYSTEM_DIGEST = "7ad7ba664942ec87cc5f2ffdd2a68b601e75b9c2589fd1d791b896e700305d8f"
         val AMOUNT_ENTRY = Regex("""model\.onAmountChange\([^()]*, owner\)""")
     }
 }

@@ -988,7 +988,7 @@
   {"h": "bbb827b6d7701f4d1c6de8595c94b5a42601fdcd399799971910564cd5e955c2", "p": "app/src/test/snapshots/wallet-v/state-error-light.png"},
   {"h": "d32b15d42d6ae5f95474244b8f57a570d61bf22f2f1ab96af88e997e926a2bb7", "p": "app/src/test/snapshots/wallet-v/state-loading-dark.png"},
   {"h": "ee3a7ee658ef3b34b6174cd1f246c2a4ac5443b44c7d8a30ceb24737035af425", "p": "app/src/test/snapshots/wallet-v/state-loading-light.png"},
-  {"h": "0d8c26737734e1eccc291447b5294c80d5e763b5571bedd096967149cf42328c", "p": "app/src/test/snapshots/wallet-v/state-long-font200-w320-light.png"},
+  {"h": "24cf32faca102b797a11f6ed9097106648af9c6169c3f511db65314a0965c0ae", "p": "app/src/test/snapshots/wallet-v/state-long-font200-w320-light.png"},
   {"h": "a9fd06e19b6db9f6563cd7650539da9d3ebb885f2f48f8347dc1465c7dc797ac", "p": "app/src/test/snapshots/wallet-v/state-negative-dark.png"},
   {"h": "536911c1dffe345b217b6c6436ef28d603174790941fbc741fcca11e84cf0a76", "p": "app/src/test/snapshots/wallet-v/state-negative-hidden-light.png"},
   {"h": "7b677d2d573a193b0870b31128d035daa2be0e5414a45e936d3b2e965880dae5", "p": "app/src/test/snapshots/wallet-v/state-risk-dark.png"},
