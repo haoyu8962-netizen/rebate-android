@@ -12,6 +12,8 @@ import kotlinx.serialization.json.JsonPrimitive
 // - card 帧外壳不合 → invalid_frame；外壳合法而内层 data 不合、schema_version 高于本端支持（全部为 1）或类型未注册 → 卡片 fallback
 //   （只显示 fallback_text，G09）。page_guide 另按包内 routes.json 的 agent_guide 判定（不在 → fallback 并带 blockedRoute，G10）；
 //   earnings_summary 判形状（实时 / 历史，history 来源一律按历史，G13）。
+// - 卡片 data 及其嵌套对象：同一 schema_version 下本端不认识的可选字段忽略、照常渲染；缺必需字段或类型不符仍 fallback
+//   （03 §7.2，FU-AND-AGENT-UNKNOWN-FIELDS）。page_guide 与收益卡按钮仍不许多键（§7.4）；帧与卡片外壳仍按 additionalProperties:false。
 // 不认任何 url / scheme / js 字段：卡片动作只认契约给的 route_target 与固定按钮（brief §0 第 5 条）。三端同一套判定（鸿蒙 AgentDecoder.ets）。
 
 object AgentEvent {
@@ -372,9 +374,25 @@ object AgentCardDecoder {
     private fun historyOnly(data: JsonObject): JsonObject =
         JsonObject(linkedMapOf("as_of" to (data["as_of"] ?: JsonNull), "actions" to (data["actions"] ?: JsonNull)))
 
+    /**
+     * 卡片 data 及其嵌套对象（03 §7.2，FU-AND-AGENT-UNKNOWN-FIELDS）：同一 schema_version 下必需键都在即可，本端不认识的可选字段忽略、照常渲染；
+     * 类型与取值仍逐字段判定。page_guide（[PageGuideCheck]）、收益卡按钮（[earningsActions]）、卡片外壳与各种帧仍用 [AgentJson.exactKeys]（§7.4）。
+     */
+    private fun hasRequired(
+        o: JsonObject,
+        required: List<String>,
+    ): Boolean = required.all { it in o.keys }
+
+    /** suggestions 帧的快捷回复：帧不在放宽范围，仍按 additionalProperties:false 严格判定。 */
     fun quickReply(v: JsonElement?): Boolean {
         val o = AgentJson.objectOf(v) ?: return false
         return AgentJson.exactKeys(o, listOf("text", "send_text")) && AgentJson.str(o["text"], 1) && AgentJson.str(o["send_text"], 1)
+    }
+
+    /** notice 卡 actions 里的快捷回复：卡片 data 的嵌套对象，未知键忽略（与 suggestions 帧的 [quickReply] 分开）。 */
+    private fun noticeReply(v: JsonElement?): Boolean {
+        val o = AgentJson.objectOf(v) ?: return false
+        return hasRequired(o, listOf("text", "send_text")) && AgentJson.str(o["text"], 1) && AgentJson.str(o["send_text"], 1)
     }
 
     @Suppress("CyclomaticComplexMethod") // 每种已注册卡一个分支
@@ -384,14 +402,14 @@ object AgentCardDecoder {
     ): Boolean =
         when (type) {
             AgentCardType.PRODUCT_LIST -> {
-                AgentJson.exactKeys(d, listOf("result_set_id", "items", "layout")) &&
+                hasRequired(d, listOf("result_set_id", "items", "layout")) &&
                     AgentJson.str(d["result_set_id"], 1) &&
                     AgentJson.arrayAll(d["items"], 1, PRODUCTS_MAX) { productCard(it) } &&
                     AgentJson.oneOf(d["layout"], listOf("list", "grid"))
             }
 
             AgentCardType.REBATE_QUOTE -> {
-                AgentJson.exactKeys(d, listOf("product", "material", "tlj_kind")) &&
+                hasRequired(d, listOf("product", "material", "tlj_kind")) &&
                     productCard(d["product"]) &&
                     (AgentJson.isNull(d["material"]) || material(d["material"])) &&
                     AgentJson.oneOf(d["tlj_kind"], listOf("ours", "brand_open", "third_party", "unknown"))
@@ -406,7 +424,7 @@ object AgentCardDecoder {
             }
 
             AgentCardType.HANDOFF -> {
-                AgentJson.exactKeys(d, listOf("entry", "summary")) && AgentJson.str(d["entry"], 1) && AgentJson.str(d["summary"], 1)
+                hasRequired(d, listOf("entry", "summary")) && AgentJson.str(d["entry"], 1) && AgentJson.str(d["summary"], 1)
             }
 
             AgentCardType.AUTH_REQUIRED -> {
@@ -414,10 +432,10 @@ object AgentCardDecoder {
             }
 
             AgentCardType.NOTICE -> {
-                AgentJson.exactKeys(d, listOf("level", "text_key", "actions")) &&
+                hasRequired(d, listOf("level", "text_key", "actions")) &&
                     AgentJson.oneOf(d["level"], listOf("info", "warn")) &&
                     AgentJson.textKey(d["text_key"]) &&
-                    AgentJson.arrayAll(d["actions"]) { quickReply(it) }
+                    AgentJson.arrayAll(d["actions"]) { noticeReply(it) }
             }
 
             AgentCardType.RULE_REF -> {
@@ -430,7 +448,7 @@ object AgentCardDecoder {
         }
 
     private fun authRequired(d: JsonObject): Boolean =
-        AgentJson.exactKeys(d, listOf("platform", "reason", "resume_link_id")) &&
+        hasRequired(d, listOf("platform", "reason", "resume_link_id")) &&
             (AgentJson.isNull(d["platform"]) || AgentJson.platform(d["platform"])) &&
             AgentJson.oneOf(d["reason"], listOf("union_auth", "login", "bind_phone")) &&
             AgentJson.strOrNull(d["resume_link_id"], 1, RESUME_LINK_MAX) &&
@@ -472,7 +490,7 @@ object AgentCardDecoder {
     @Suppress("ReturnCount", "CyclomaticComplexMethod", "ComplexCondition") // 契约 product_card 逐字段
     private fun productCard(v: JsonElement?): Boolean {
         val p = AgentJson.objectOf(v) ?: return false
-        if (!AgentJson.exactKeys(p, PRODUCT_KEYS)) return false
+        if (!hasRequired(p, PRODUCT_KEYS)) return false
         val identity =
             AgentJson.cardId(p["card_id"]) &&
                 AgentJson.str(p["product_key"], PRODUCT_KEY_MIN, PRODUCT_KEY_MAX) &&
@@ -525,7 +543,7 @@ object AgentCardDecoder {
 
     private fun tlj(v: JsonElement?): Boolean {
         val t = AgentJson.objectOf(v) ?: return false
-        return AgentJson.exactKeys(t, listOf("amount_fen", "remain", "kind")) &&
+        return hasRequired(t, listOf("amount_fen", "remain", "kind")) &&
             AgentJson.int(t["amount_fen"]) &&
             AgentJson.int32(t["remain"], 0) &&
             AgentJson.oneOf(t["kind"], listOf("ours", "brand_open", "third_party", "unknown"))
@@ -533,7 +551,7 @@ object AgentCardDecoder {
 
     private fun cta(v: JsonElement?): Boolean {
         val c = AgentJson.objectOf(v) ?: return false
-        return AgentJson.exactKeys(c, listOf("text_key")) && AgentJson.textKey(c["text_key"])
+        return hasRequired(c, listOf("text_key")) && AgentJson.textKey(c["text_key"])
     }
 
     private fun disclaimers(v: JsonElement?): Boolean {
@@ -544,7 +562,7 @@ object AgentCardDecoder {
 
     private fun material(v: JsonElement?): Boolean {
         val m = AgentJson.objectOf(v) ?: return false
-        return AgentJson.exactKeys(
+        return hasRequired(
             m,
             listOf("title_hint", "spec", "claimed_price_fen", "claimed_unit_price_fen", "conditions", "benefits", "tpwd"),
         ) &&
@@ -592,7 +610,7 @@ object AgentCardDecoder {
         )
 
     private fun orderStatus(d: JsonObject): Boolean =
-        AgentJson.exactKeys(
+        hasRequired(
             d,
             listOf(
                 "order_id",
@@ -617,26 +635,26 @@ object AgentCardDecoder {
 
     @Suppress("ReturnCount") // 外壳、动作依次判定
     private fun claimDraft(d: JsonObject): Boolean {
-        if (!AgentJson.exactKeys(d, listOf("platform", "order_no", "click_times", "evidence_summary", "submit_action"))) return false
+        if (!hasRequired(d, listOf("platform", "order_no", "click_times", "evidence_summary", "submit_action"))) return false
         val action = AgentJson.objectOf(d["submit_action"]) ?: return false
         return AgentJson.platform(d["platform"]) &&
             AgentJson.str(d["order_no"], 1) &&
             AgentJson.arrayAll(d["click_times"]) { AgentJson.timestamp(it) } &&
             AgentJson.isNull(d["evidence_summary"]) &&
-            AgentJson.exactKeys(action, listOf("text_key", "action")) &&
+            hasRequired(action, listOf("text_key", "action")) &&
             AgentJson.textKey(action["text_key"]) &&
             AgentJson.stringOf(action["action"]) == "submit_claim"
     }
 
     @Suppress("ReturnCount") // 外壳、动作依次判定
     private fun ruleRef(d: JsonObject): Boolean {
-        if (!AgentJson.exactKeys(d, listOf("chunk_id", "title", "excerpt", "published_version", "action"))) return false
+        if (!hasRequired(d, listOf("chunk_id", "title", "excerpt", "published_version", "action"))) return false
         val action = AgentJson.objectOf(d["action"]) ?: return false
         return AgentJson.entityId(d["chunk_id"]) &&
             AgentJson.str(d["title"], 1) &&
             AgentJson.str(d["excerpt"], 1, EXCERPT_MAX) &&
             AgentJson.str(d["published_version"], 1) &&
-            AgentJson.exactKeys(action, listOf("route"), listOf("params")) &&
+            hasRequired(action, listOf("route")) &&
             AgentJson.routeName(action["route"]) &&
             (!AgentJson.has(action, "params") || action["params"] is JsonObject)
     }
@@ -659,24 +677,25 @@ object AgentCardDecoder {
     const val EARNINGS_WALLET = "Wallet"
     const val EARNINGS_RECORDS = "WithdrawRecords"
 
+    /** 收益卡实时形状独有的字段：带了其中任何一个就不能判成历史形状（实时形状缺一个字段不得被当成历史形状，G13）。 */
+    private val EARNINGS_LIVE_ONLY =
+        listOf(
+            "withdrawable_fen",
+            "estimated_total_fen",
+            "next_credit_period",
+            "credit_overdue",
+            "latest_withdrawal",
+        )
+
+    /** 实时形状：as_of、actions 加 [EARNINGS_LIVE_ONLY] 全在；未知可选字段忽略，按钮仍严格（[earningsActions]）。 */
     @Suppress("ReturnCount") // 外壳、提现摘要依次判定
     fun earningsLive(d: JsonObject): Boolean {
-        val keys =
-            listOf(
-                "as_of",
-                "withdrawable_fen",
-                "estimated_total_fen",
-                "next_credit_period",
-                "credit_overdue",
-                "latest_withdrawal",
-                "actions",
-            )
-        if (!AgentJson.exactKeys(d, keys)) return false
+        if (!hasRequired(d, listOf("as_of", "actions") + EARNINGS_LIVE_ONLY)) return false
         val latest = d["latest_withdrawal"]
         val latestOk =
             AgentJson.isNull(latest) ||
                 AgentJson.objectOf(latest)?.let { l ->
-                    AgentJson.exactKeys(l, listOf("title_key", "amount_fen")) && AgentJson.textKey(l["title_key"]) &&
+                    hasRequired(l, listOf("title_key", "amount_fen")) && AgentJson.textKey(l["title_key"]) &&
                         AgentJson.int(l["amount_fen"])
                 } == true
         return AgentJson.timestamp(d["as_of"]) &&
@@ -688,6 +707,10 @@ object AgentCardDecoder {
             earningsActions(d["actions"])
     }
 
+    /** 历史形状：as_of、actions 都在且不带任何实时形状独有字段；未知可选字段忽略，按钮仍严格。 */
     fun earningsHistory(d: JsonObject): Boolean =
-        AgentJson.exactKeys(d, listOf("as_of", "actions")) && AgentJson.timestamp(d["as_of"]) && earningsActions(d["actions"])
+        hasRequired(d, listOf("as_of", "actions")) &&
+            EARNINGS_LIVE_ONLY.none { it in d.keys } &&
+            AgentJson.timestamp(d["as_of"]) &&
+            earningsActions(d["actions"])
 }

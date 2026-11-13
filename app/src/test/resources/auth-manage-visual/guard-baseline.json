@@ -2079,7 +2079,7 @@
   {"h": "973d39f6c274c05c4c6a8109ee79adb5f297a9f375a9cc9fb53995ad03c84eb2", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentAvailability.kt"},
   {"h": "41a1f6d5912b3a4ee70e2854d28ba41b8d8b166c7353b5b0bcf6130995155f7e", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentContextHandoff.kt"},
   {"h": "dd9223244cb72b6e6837330eb16ab52cb524242ec7961dfb7c408a780768fb2c", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentController.kt"},
-  {"h": "e317f05ea0165e41db6e6577ae240bddc1c55b1a296e25d7c01bc7e1a0729169", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentDecoder.kt"},
+  {"h": "54dd3b7f898ae7526dc5a84fc6d49afd8ccb7839da6cf1686c5048b2e6714069", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentDecoder.kt"},
   {"h": "01bd4c9b353488db0520916db0ec28e7379745166a50985a039f132a3e9573cf", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentDraftTexts.kt"},
   {"h": "e855d56ecce89a9d87771b928074108468999245648ef79ad97ee2536d092178", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentErrors.kt"},
   {"h": "4bfacc05b3f3fb1ca10aa77af236064266f2d8b930e95857944866dc90421e54", "p": "core/agent/src/main/kotlin/com/couli/core/agent/AgentFeedback.kt"},
@@ -2858,7 +2858,7 @@
   {"h": "cbea63b2c3b6f3e60a9e0b83338b1322405fd5d3c19da5c7c143ca920b37a3d9", "p": "specs/account-vectors.json"},
   {"h": "667654a6826a2a79282035edc1d04703323bdd131567149e0f12f1fe20805957", "p": "specs/account-visual-vectors.json"},
   {"h": "425531ad9cdfc22ba12c0ff7c9586b6c42abee047b114136234ded15c8b65e51", "p": "specs/agent-transport-vectors.json"},
-  {"h": "b7650e17d5a5f0e2083346949d2355c42b1d4a6975b4d7e690ed4ee6ee8df2c0", "p": "specs/agent-vectors.json"},
+  {"h": "079d38dfdaef9d9f8607c771ac3720a4fa274e9cc0e58e82885efe6de879eb1e", "p": "specs/agent-vectors.json"},
   {"h": "7fd1fb394ef4014c92915f21902309921dd8ca32fde14fe1b266ca9b6d8518f0", "p": "specs/bridge-vectors.json"},
   {"h": "8c2cd0681d428711889a8e69d042b84a19c74a359a5247605121525a3b0e2020", "p": "specs/client-core-vectors.json"},
   {"h": "056a6365845ce0302552d2f92889265135b3fb396bcd4ee14cc4ee73eea11cb0", "p": "specs/clipboard-candidates-vectors.json"},
@@ -2991,12 +2991,12 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "daaa128944e2fd1cdbb5b790535fcfa3d1c743bfd9fbb11245f99978c7bcd3e7",
+   "h": "c24d5cc1dba23f45e3efa041b22e948289b6524ea5cc850c870d374080303994",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "4adc47fc126ed69b37a00f2a7eb49a280a7fa35d6b2ae5e37fe21e306113f67a",
+   "h": "af298b54858a5146ebba6b9a9341bce99d6f79178341621e2ebaa223f74efedf",
    "swaps": 1
   }
  ],
