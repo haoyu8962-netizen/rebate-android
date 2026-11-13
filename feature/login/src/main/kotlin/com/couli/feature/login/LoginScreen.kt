@@ -75,6 +75,9 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.SendCodeButton
+import com.couli.core.designsystem.WholeNumberText
+import com.couli.core.designsystem.sendCodeAsButton
 import kotlinx.coroutines.delay
 
 /** UI 测试与冒烟用的标记。 */
@@ -298,7 +301,7 @@ private fun CodeStep(
             color = CouliColors.textPrimary,
             modifier = Modifier.semantics { heading() },
         )
-        Text(
+        WholeNumberText(
             text = texts.format("login.code.sent_to", mapOf("phone" to state.maskedPhone)),
             style = CouliTypography.footnote,
             color = CouliColors.textSecondary,
@@ -650,14 +653,27 @@ private fun ResendRow(
             } else {
                 texts.text("login.code.resend")
             }
-        TextLink(
-            text = label,
-            onClick = model::onResend,
-            enabled = !waiting && !limited && !state.sending,
-            color = if (waiting || limited) CouliColors.textSecondary else CouliColors.textLink,
-            style = CouliTypography.footnote.copy(fontFeatureSettings = "tnum"),
-            modifier = Modifier.testTag(LoginTags.RESEND),
-        )
+        val enabled = !waiting && !limited && !state.sending
+        val style = CouliTypography.footnote.copy(fontFeatureSettings = "tnum")
+        if (sendCodeAsButton()) {
+            // FU-AND-ADAPT-CHECK ①：200% 下倒计时 / 重新获取改描边按钮（与绑号、换号同款），仍靠右、不缩字
+            SendCodeButton(
+                text = label,
+                onClick = model::onResend,
+                textStyle = style,
+                enabled = enabled,
+                modifier = Modifier.testTag(LoginTags.RESEND),
+            )
+        } else {
+            TextLink(
+                text = label,
+                onClick = model::onResend,
+                enabled = enabled,
+                color = if (waiting || limited) CouliColors.textSecondary else CouliColors.textLink,
+                style = style,
+                modifier = Modifier.testTag(LoginTags.RESEND),
+            )
+        }
     }
 }
 

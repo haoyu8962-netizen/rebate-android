@@ -44,6 +44,8 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 
 /** 头部图标块 96、图标 32（画板 RiskNotice* / AppealResultLifted*）。 */
@@ -145,7 +147,8 @@ internal fun RiskInfoRow(
     tag: String = "",
     valueContent: (@Composable () -> Unit)? = null,
 ) {
-    Row(
+    // 判据 1 / D10-1265：值（如进行中提现的金额）在标签右侧放不下时整行改上下排，值先独占整行，仍放不下才横滑
+    KeyValueRow(
         modifier =
             Modifier
                 .fillMaxWidth()
@@ -153,20 +156,18 @@ internal fun RiskInfoRow(
                 .semantics(mergeDescendants = true) {}
                 .then(if (tag.isNotEmpty()) Modifier.testTag(tag) else Modifier)
                 .padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
+        centerVertically = true,
     ) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
         if (valueContent != null) {
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { valueContent() }
+            Box(contentAlignment = Alignment.CenterEnd) { valueContent() }
         } else {
             // 通栏占满剩余宽度再右对齐（字形右缘 = 卡内 16；折行时每行右对齐）
-            Text(
+            WholeNumberText(
                 text = value,
                 style = CouliTextStyles.footnoteMedium.tabular(),
                 color = CouliColors.textPrimary,
                 textAlign = TextAlign.End,
-                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -238,21 +239,13 @@ internal fun InlineRow(
     value: String,
     valueContent: (@Composable () -> Unit)? = null,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-    ) {
+    // 判据 1：值在标签右侧放不下时整行改上下排，值先独占整行，仍放不下才横滑
+    KeyValueRow(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}, gap = CouliSpacing.space2) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
         if (valueContent != null) {
-            valueContent()
+            Box { valueContent() }
         } else {
-            Text(
-                text = value,
-                style = CouliTypography.footnote.tabular(),
-                color = CouliColors.textPrimary,
-                modifier = Modifier.weight(1f, fill = false),
-            )
+            WholeNumberText(text = value, style = CouliTypography.footnote.tabular(), color = CouliColors.textPrimary)
         }
     }
 }

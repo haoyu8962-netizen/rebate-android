@@ -48,6 +48,9 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.SendCodeButton
+import com.couli.core.designsystem.WholeNumberText
+import com.couli.core.designsystem.sendCodeAsButton
 
 /** 步骤圆 24、连线最短 16、圆与文字间距 8、文字与连线间距 12、整条左右内边距 4（PhoneChange-v2 步骤条）。 */
 private val STEP_CIRCLE = 24.dp
@@ -207,20 +210,31 @@ internal fun CodeSendRow(
     onClick: () -> Unit,
 ) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Box(
-            modifier =
-                Modifier
-                    .heightIn(min = CouliSizes.touchTarget)
-                    .widthIn(min = CouliSizes.touchTarget)
-                    .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-                    .testTag(tag),
-            contentAlignment = Alignment.CenterEnd,
-        ) {
-            Text(
+        if (sendCodeAsButton()) {
+            // FU-AND-ADAPT-CHECK ①：200% 下改描边按钮（发码前 / 倒计时禁用 / 可重发三态同款），仍靠右、不缩字
+            SendCodeButton(
                 text = text,
-                style = CouliTypography.footnote.tabular(),
-                color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
+                onClick = onClick,
+                textStyle = CouliTypography.footnote.tabular(),
+                enabled = enabled,
+                modifier = Modifier.testTag(tag),
             )
+        } else {
+            Box(
+                modifier =
+                    Modifier
+                        .heightIn(min = CouliSizes.touchTarget)
+                        .widthIn(min = CouliSizes.touchTarget)
+                        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+                        .testTag(tag),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Text(
+                    text = text,
+                    style = CouliTypography.footnote.tabular(),
+                    color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -367,7 +381,8 @@ internal fun DoneHeader(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().semantics { heading() },
         )
-        Text(
+        // 判据 1：句中脱敏新号经共用整段数字件，整段不断
+        WholeNumberText(
             text = body,
             style = CouliTypography.footnote.tabular(),
             color = CouliColors.textSecondary,

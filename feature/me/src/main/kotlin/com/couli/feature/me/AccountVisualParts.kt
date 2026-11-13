@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -53,7 +54,10 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.LoadingSize
+import com.couli.core.designsystem.NumberLine
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusRing
 import com.couli.core.designsystem.focusRingVisible
@@ -89,7 +93,8 @@ internal fun NoticeStrip(
     link: (@Composable () -> Unit)? = null,
 ) {
     val warning = tone == NoticeTone.WARNING
-    Row(
+    // 判据 1：提示句里的金额（如「账户有待扣回金额 {amount}」）经共用整段数字件；放不下时图标让行，句子先独占整行
+    NumberLine(
         modifier =
             Modifier
                 .fillMaxWidth()
@@ -97,21 +102,24 @@ internal fun NoticeStrip(
                     if (warning) CouliColors.statusWarningBackground else CouliColors.backgroundMuted,
                     RoundedCornerShape(CouliRadius.button),
                 ).padding(CouliSpacing.space3),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = {
+            Icon(
+                if (warning) CouliIcons.alert else CouliIcons.info,
+                contentDescription = null,
+                tint = if (warning) CouliColors.statusWarningText else CouliColors.textSecondary,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+        },
     ) {
-        Icon(
-            if (warning) CouliIcons.alert else CouliIcons.info,
-            contentDescription = null,
-            tint = if (warning) CouliColors.statusWarningText else CouliColors.textSecondary,
-            modifier = Modifier.size(CouliSizes.iconMedium),
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-            Text(
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
+            WholeNumberText(
                 text = text,
                 style = CouliTypography.footnote,
                 color = if (warning) CouliColors.statusWarningText else CouliColors.textPrimary,
-                modifier =
+                textModifier =
                     Modifier
                         .semantics { live?.let { liveRegion = it } }
                         .then(if (tag.isNotEmpty()) Modifier.testTag(tag) else Modifier),
@@ -193,7 +201,7 @@ internal fun TitledCard(
 
 /**
  * 资金两列大数（注销画板资金卡）：两列各占一半、顶对齐；标签 12 在上、金额 28 在下（可提现 700 主文字；预估收益 600 brand.emphasis，
- * 标签前一个 14 装饰时钟）。每列一个读屏节点「标签，金额」，[leftTag] / [rightTag] 挂在列上；大字号时金额在列内折行，不截断。
+ * 标签前一个 14 装饰时钟）。每列一个读屏节点「标签，金额」，[leftTag] / [rightTag] 挂在列上；金额整段不断、不截断（判据 1，见 [AmountColumnsLayout]）。
  */
 @Suppress("LongParameterList")
 @Composable
@@ -205,16 +213,16 @@ internal fun AmountColumns(
     rightAmount: String,
     rightTag: String,
 ) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+    AmountColumnsLayout {
         Column(
-            modifier = Modifier.weight(1f).semantics(mergeDescendants = true) {}.testTag(leftTag),
+            modifier = Modifier.semantics(mergeDescendants = true) {}.testTag(leftTag),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
             Text(text = leftLabel, style = CouliTypography.caption, color = CouliColors.textSecondary)
-            Text(text = leftAmount, style = CouliTextStyles.amountHeading, color = CouliColors.textPrimary)
+            WholeNumberText(text = leftAmount, style = CouliTextStyles.amountHeading, color = CouliColors.textPrimary)
         }
         Column(
-            modifier = Modifier.weight(1f).semantics(mergeDescendants = true) {}.testTag(rightTag),
+            modifier = Modifier.semantics(mergeDescendants = true) {}.testTag(rightTag),
             verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
@@ -226,7 +234,7 @@ internal fun AmountColumns(
                 )
                 Text(text = rightLabel, style = CouliTypography.caption, color = CouliColors.brandEmphasis)
             }
-            Text(text = rightAmount, style = CouliTypography.heading.tabular(), color = CouliColors.brandEmphasis)
+            WholeNumberText(text = rightAmount, style = CouliTypography.heading.tabular(), color = CouliColors.brandEmphasis)
         }
     }
 }
@@ -239,13 +247,13 @@ internal fun SplitAmountRow(
     tag: String,
 ) {
     HorizontalDivider(color = CouliColors.borderSubtle)
-    Row(
+    KeyValueRow(
         modifier = Modifier.fillMaxWidth().testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-        verticalAlignment = Alignment.CenterVertically,
+        centerVertically = true,
+        valueAtEnd = true,
     ) {
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary, modifier = Modifier.weight(1f))
-        Text(text = value, style = CouliTextStyles.amountBody, color = CouliColors.textPrimary, textAlign = TextAlign.End)
+        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
+        WholeNumberText(text = value, style = CouliTextStyles.amountBody, color = CouliColors.textPrimary, textAlign = TextAlign.End)
     }
 }
 
@@ -391,7 +399,7 @@ internal fun PendingPanel(
                 style = CouliTextStyles.footnoteSemibold,
                 color = CouliColors.statusWarningText,
             )
-            Text(text = desc, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
+            WholeNumberText(text = desc, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
         }
         DetailBlock(details)
         Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
@@ -416,11 +424,11 @@ internal fun PendingPanel(
         if (inFlight) BusyRow(texts.text(PENDING_BUSY_KEY))
         if (notice != null) {
             WarningBlock(modifier = Modifier) {
-                Text(
+                WholeNumberText(
                     text = notice,
                     style = CouliTypography.footnote,
                     color = CouliColors.statusWarningText,
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(AccountTags.PENDING_NOTICE),
+                    textModifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(AccountTags.PENDING_NOTICE),
                 )
             }
         }
@@ -437,22 +445,26 @@ private fun WarningBlock(
     modifier: Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Row(
+    // 判据 1：警告句里的脱敏新号经共用整段数字件；放不下时图标让行，句子先独占整行
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
                 .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
                 .padding(CouliSpacing.space3),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusWarningText,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+        },
     ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconMedium),
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2), content = content)
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2), content = content)
     }
 }
 
@@ -485,14 +497,13 @@ private fun DetailBlock(details: List<Pair<String, String>>) {
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
         details.forEach { (label, value) ->
-            Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
+            KeyValueRow {
                 Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(
+                WholeNumberText(
                     text = value,
                     style = CouliTypography.footnote.tabular(),
                     color = CouliColors.textPrimary,
                     textAlign = TextAlign.End,
-                    modifier = Modifier.weight(1f),
                 )
             }
         }
@@ -580,5 +591,37 @@ internal fun CoolingStatusCard(
             color = CouliColors.textSecondary,
             modifier = if (descTag.isNotEmpty()) Modifier.testTag(descTag) else Modifier,
         )
+    }
+}
+
+/**
+ * 资金两列的排法（判据 1，FU-AND-NUM-WRAP）：两个子项（左列、右列）与改前 Row（两列 weight(1f)、间距 12）一样各占一半、顶对齐；任一列的
+ * 最小固有宽（金额整段宽）在半宽里放不下时两列改上下排、各占整行（间距 12），金额独占一行仍放不下才由共用整段数字件框内横滑。
+ */
+@Composable
+private fun AmountColumnsLayout(content: @Composable () -> Unit) {
+    Layout(content = content, modifier = Modifier.fillMaxWidth()) { columns, constraints ->
+        val width = constraints.maxWidth
+        val gap = CouliSpacing.space3.roundToPx()
+        // 与改前 Row 的 weight 分法一致：奇数余量给第二列
+        val first = ((width - gap) / 2).coerceAtLeast(0)
+        val second = (width - gap - first).coerceAtLeast(0)
+        val halves = listOf(first, second)
+        val sideBySide = columns.indices.all { columns[it].minIntrinsicWidth(Constraints.Infinity) <= halves.getOrElse(it) { second } }
+        if (sideBySide) {
+            val placed = columns.mapIndexed { i, column -> column.measure(Constraints.fixedWidth(halves.getOrElse(i) { second })) }
+            layout(width, placed.maxOfOrNull { it.height } ?: 0) {
+                placed.forEachIndexed { i, column -> column.place(if (i == 0) 0 else first + gap, 0) }
+            }
+        } else {
+            val placed = columns.map { it.measure(Constraints.fixedWidth(width)) }
+            layout(width, placed.sumOf { it.height } + gap * (placed.size - 1).coerceAtLeast(0)) {
+                var y = 0
+                placed.forEach { column ->
+                    column.place(0, y)
+                    y += column.height + gap
+                }
+            }
+        }
     }
 }

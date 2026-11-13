@@ -61,6 +61,7 @@ import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
 import com.couli.core.designsystem.WalletHeroCard
 import com.couli.core.designsystem.WalletHeroTexts
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.wallet.MaskableAmount
 import com.couli.core.wallet.WalletSummaryDisplay
@@ -443,7 +444,7 @@ private fun ProgressCell(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2),
     ) {
         Text(text = label, style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Text(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary)
+        WholeNumberText(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary)
     }
 }
 

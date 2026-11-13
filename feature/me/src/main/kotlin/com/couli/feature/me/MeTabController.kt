@@ -464,7 +464,8 @@ private fun Estimated(
             )
             Text(text = texts.text("me.estimated"), style = CouliTypography.footnote, color = CouliColors.rebateSolidText)
         }
-        Text(
+        // 判据 1：预估收益金额经共用整段数字件，整段不断；放不下才框内横滑（全限定名引用：本文件前 192 行受 gm18 冻结，不加 import）
+        com.couli.core.designsystem.WholeNumberText(
             text = if (view.masked) MeView.MASK else CouliFormat.money(estimated),
             style = CouliTextStyles.amountTitle,
             color = CouliColors.rebateSolidText,

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
@@ -34,8 +33,9 @@ import com.couli.core.designsystem.CouliTag
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
-import com.couli.core.designsystem.EndWrapRow
 import com.couli.core.designsystem.Skeleton
+import com.couli.core.designsystem.TrailingWrapRow
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.wallet.Withdrawal
 
@@ -97,7 +97,8 @@ private fun CollapsedRecordRow(
     val id = view.item.withdrawalId
     val version = view.version
     ForgetRecordOnDispose(ctx.keeper, id)
-    Row(
+    // 判据 1：金额、渠道行的脱敏号、副文案经共用整段数字件整段不断；数字串在箭头旁放不下时箭头让位，先独占整行，仍放不下才横滑
+    TrailingWrapRow(
         modifier =
             Modifier
                 .fillMaxWidth()
@@ -108,22 +109,18 @@ private fun CollapsedRecordRow(
                     stateDescription = view.toggleLabel
                     contentDescription = view.description
                 }.padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space3),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-            EndWrapRow(
-                modifier = Modifier.fillMaxWidth(),
-                start = { Text(text = view.title, style = CouliTextStyles.bodySemibold.tabular(), color = CouliColors.textPrimary) },
-                end = { RecordStatusPill(view) },
-            )
-            Text(text = view.channel, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
-            recordVisibleSubLines(view.lines, expanded = false).forEach {
-                Text(text = it, style = CouliTypography.footnote.tabular(), color = CouliColors.textPrimary)
+        lead = { WholeNumberText(text = view.title, style = CouliTextStyles.bodySemibold.tabular(), color = CouliColors.textPrimary) },
+        badge = { RecordStatusPill(view) },
+        body = {
+            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
+                WholeNumberText(text = view.channel, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
+                recordVisibleSubLines(view.lines, expanded = false).forEach {
+                    WholeNumberText(text = it, style = CouliTypography.footnote.tabular(), color = CouliColors.textPrimary)
+                }
             }
-        }
-        RecordArrow(id, expanded = false)
-    }
+        },
+        trailing = { RecordArrow(id, expanded = false) },
+    )
 }
 
 /** 状态胶囊（W21）：色调与图标由 [withdrawalStatusTone] / [withdrawalStatusIcon] 决定，文字取字典。 */

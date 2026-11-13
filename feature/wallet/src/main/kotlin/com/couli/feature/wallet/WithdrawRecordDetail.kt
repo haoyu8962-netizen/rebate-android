@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -22,6 +23,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import com.couli.core.designsystem.CouliButton
 import com.couli.core.designsystem.CouliButtonSize
 import com.couli.core.designsystem.CouliButtonVariant
@@ -35,8 +37,10 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
-import com.couli.core.designsystem.EndWrapRow
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.PriceTerms
+import com.couli.core.designsystem.TrailingWrapRow
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.wallet.TradeNoRow
 import com.couli.core.wallet.WalletTexts
@@ -107,7 +111,8 @@ private fun ExpandedHeader(
 ) {
     val id = view.item.withdrawalId
     val version = view.version
-    Row(
+    // 判据 1 / D10-1265：金额在箭头旁放不下时箭头让位（与胶囊一起排到下一行靠右），金额先独占整行，仍放不下才横滑
+    TrailingWrapRow(
         modifier =
             Modifier
                 .fillMaxWidth()
@@ -117,36 +122,38 @@ private fun ExpandedHeader(
                     stateDescription = view.toggleLabel
                     contentDescription = view.headerDescription
                 },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        EndWrapRow(
-            modifier = Modifier.weight(1f),
-            start = {
-                Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                    Text(
-                        text = ctx.texts.text("withdraw_detail.amount"),
-                        style = CouliTypography.caption,
-                        color = CouliColors.textSecondary,
-                    )
-                    Text(text = view.amount, style = AMOUNT_HEADER, color = CouliColors.textPrimary)
-                }
-            },
-            end = { RecordStatusPill(view) },
-        )
-        RecordArrow(id, expanded = true)
-    }
+        lead = {
+            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
+                Text(
+                    text = ctx.texts.text("withdraw_detail.amount"),
+                    style = CouliTypography.caption,
+                    color = CouliColors.textSecondary,
+                )
+                WholeNumberText(text = view.amount, style = AMOUNT_HEADER, color = CouliColors.textPrimary)
+            }
+        },
+        badge = { RecordStatusPill(view) },
+        trailing = { RecordArrow(id, expanded = true) },
+    )
 }
 
-/** 状态块（W24）：主句 17 主文字；分号后的半句 14 次文字；附句 12 次文字；句间 4。 */
+/** 状态块（W24）：主句 17 主文字；分号后的半句 14 次文字；附句 12 次文字；句间 4。句中金额、脱敏账号经共用整段数字件，整段不断（判据 1）。 */
 @Composable
 private fun StatusBlock(lines: List<Pair<String, RecordLineLevel>>) {
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
         lines.forEach { (text, level) ->
             when (level) {
-                RecordLineLevel.LEAD -> Text(text = text, style = CouliTypography.body.tabular(), color = CouliColors.textPrimary)
-                RecordLineLevel.FOLLOW -> Text(text = text, style = CouliTypography.footnote.tabular(), color = CouliColors.textSecondary)
-                RecordLineLevel.NOTE -> Text(text = text, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
+                RecordLineLevel.LEAD -> {
+                    WholeNumberText(text = text, style = CouliTypography.body.tabular(), color = CouliColors.textPrimary)
+                }
+
+                RecordLineLevel.FOLLOW -> {
+                    WholeNumberText(text = text, style = CouliTypography.footnote.tabular(), color = CouliColors.textSecondary)
+                }
+
+                RecordLineLevel.NOTE -> {
+                    WholeNumberText(text = text, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
+                }
             }
         }
     }
@@ -154,7 +161,8 @@ private fun StatusBlock(lines: List<Pair<String, RecordLineLevel>>) {
 
 /**
  * 明细（W26，BR-TEXT-11）：申请金额、手续费、预计 / 实际到账（按状态）、代扣个税（tax_fen>0）、收款账号、申请时间。
- * 标签不伸缩 14 次文字；值右对齐等宽、可折行；行距 8。每行一个读屏元素（金额读「12.34 元」，脱敏号读「星号」）。
+ * 标签不伸缩 14 次文字；值右对齐等宽、可在空格处折行；行距 8。每行一个读屏元素（金额读「12.34 元」，脱敏号读「星号」）。
+ * 判据 1：值经共用整段数字件，金额、脱敏账号不在中间断；右列放不下时整行改上下排（[KeyValueRow]），独占一行仍放不下才框内横滑。
  */
 @Composable
 private fun DetailRows(
@@ -165,22 +173,19 @@ private fun DetailRows(
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
         detailRowValues(item, netKey, texts).forEach { (label, value, spoken) ->
-            Row(
+            KeyValueRow(
                 modifier =
                     Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
                         contentDescription =
                             label + PriceTerms.SPOKEN_PAUSE + spoken
                     },
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
             ) {
                 Text(text = label, style = DETAIL_TEXT, color = CouliColors.textSecondary)
-                Text(
+                WholeNumberText(
                     text = value,
                     style = DETAIL_TEXT.tabular(),
                     color = CouliColors.textPrimary,
                     textAlign = TextAlign.End,
-                    modifier = Modifier.weight(1f),
                 )
             }
         }
@@ -220,8 +225,9 @@ private fun detailRowValues(
 }
 
 /**
- * 交易流水号（W27）：标签 / 号码两行（14，号码等宽可折行），右侧【复制】（16 图标 + 14/500 链接色），与号码末行底对齐；
- * 复制只走统一剪贴板入口（G27，不变）。
+ * 交易流水号（W27）：标签 / 号码两行（14，号码等宽），右侧【复制】（16 图标 + 14/500 链接色），与号码末行底对齐；
+ * 复制只走统一剪贴板入口（G27，不变）。判据 1：号码在【复制】旁放不下整段时，标签与【复制】同一行、号码整段换到下一行独占整行，
+ * 独占整行仍放不下才框内横滑（共用整段数字件），不按字符折行。
  */
 @Composable
 private fun TradeNumber(
@@ -229,20 +235,18 @@ private fun TradeNumber(
     texts: WalletTexts,
     onCopy: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-    ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-            Text(text = texts.text("withdraw_detail.trade_no"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-            Text(
-                text = tradeNo,
-                style = CouliTypography.footnote.tabular(),
-                color = CouliColors.textPrimary,
-                modifier = Modifier.testTag(WalletTags.RECORD_TRADE_NO),
-            )
-        }
+    val label: @Composable () -> Unit = {
+        Text(text = texts.text("withdraw_detail.trade_no"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+    }
+    val number: @Composable () -> Unit = {
+        WholeNumberText(
+            text = tradeNo,
+            style = CouliTypography.footnote.tabular(),
+            color = CouliColors.textPrimary,
+            textModifier = Modifier.testTag(WalletTags.RECORD_TRADE_NO),
+        )
+    }
+    val copy: @Composable () -> Unit = {
         CouliButton(
             text = texts.text("withdraw_detail.copy"),
             onClick = onCopy,
@@ -254,6 +258,34 @@ private fun TradeNumber(
             textStyle = CouliTextStyles.footnoteMedium,
             modifier = Modifier.hitBeyondVisualRow().testTag(WalletTags.RECORD_COPY),
         )
+    }
+    Layout(contents = listOf(label, number, copy), modifier = Modifier.fillMaxWidth()) { (labels, numbers, copies), constraints ->
+        val width = constraints.maxWidth
+        val gap = CouliSpacing.space3.roundToPx()
+        val lineGap = CouliSpacing.space1.roundToPx()
+        val copyButton = copies.single().measure(Constraints(maxWidth = width))
+        val column = (width - gap - copyButton.width).coerceAtLeast(0)
+        val title = labels.single().measure(Constraints(maxWidth = column))
+        if (numbers.single().minIntrinsicWidth(Constraints.Infinity) <= column) {
+            // 号码整段放得下：改前排法——左列标签 / 号码两行（宽 = 剩余宽），【复制】在右、整行底对齐
+            val digits = numbers.single().measure(Constraints(maxWidth = column))
+            val columnHeight = title.height + lineGap + digits.height
+            val height = maxOf(columnHeight, copyButton.height)
+            layout(width, height) {
+                title.place(0, height - columnHeight)
+                digits.place(0, height - columnHeight + title.height + lineGap)
+                copyButton.place(width - copyButton.width, height - copyButton.height)
+            }
+        } else {
+            // 号码在【复制】旁放不下：标签与【复制】一行（垂直居中），号码整段换到下一行独占整行
+            val top = maxOf(title.height, copyButton.height)
+            val digits = numbers.single().measure(Constraints(maxWidth = width))
+            layout(width, top + lineGap + digits.height) {
+                title.place(0, Alignment.CenterVertically.align(title.height, top))
+                copyButton.place(width - copyButton.width, Alignment.CenterVertically.align(copyButton.height, top))
+                digits.place(0, top + lineGap)
+            }
+        }
     }
 }
 

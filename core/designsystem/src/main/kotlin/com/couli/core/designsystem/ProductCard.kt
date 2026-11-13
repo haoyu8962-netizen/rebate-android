@@ -464,12 +464,17 @@ fun ProductCardGrid(
             val info = onInfo.takeIf { data.showsDisclaimerButton }
             val rebateShown = data.rebate.kind != RebateKind.NONE
             if (data.price != null) {
-                // 返利区不显示（暂无返利）时口径 i 放在价格行右侧，不随返利区一起消失（F-AND-06）
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PriceTagMain(content = data.price, size = PriceTagSize.AI, modifier = Modifier.weight(1f, fill = false))
-                    if (!rebateShown && info != null) {
-                        DisclaimerInfoButton(label = data.infoLabel, expanded = false, onToggle = info)
-                    }
+                // 返利区不显示（暂无返利）时口径 i 放在价格行右侧，不随返利区一起消失（F-AND-06）。
+                // 判据 1：主价在「整行 − 按钮」里放不下时按钮先让到下一行（靠右），主价独占整行；整行也放不下才由 AmountText 框内横滑
+                NumberLine(
+                    trailing =
+                        if (!rebateShown && info != null) {
+                            { DisclaimerInfoButton(label = data.infoLabel, expanded = false, onToggle = info) }
+                        } else {
+                            null
+                        },
+                ) {
+                    PriceTagMain(content = data.price, size = PriceTagSize.AI)
                 }
             }
             PriceSubLines(lines = data.priceSubLines(estNet = null))
@@ -701,7 +706,7 @@ private fun LargePriceBlock(
         val meta = if (data.price == null) emptyList() else listOfNotNull(data.visibleEstNet, data.quotedAt)
         if (meta.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
-                meta.forEach { Text(text = it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }
+                meta.forEach { WholeNumberText(text = it, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary) }
             }
         }
         if (data.price != null && data.staleNote != null) {

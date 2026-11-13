@@ -51,10 +51,12 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.PlatformIcon
 import com.couli.core.designsystem.PlatformIconSize
 import com.couli.core.designsystem.PriceTagModel
 import com.couli.core.designsystem.ProductCardTexts
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonObject
@@ -663,10 +665,11 @@ private fun PriceRow(
     emphasized: Boolean,
 ) {
     // 金额未知时不显示数字（不补 0）
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary, modifier = Modifier.weight(1f))
+    // 判据 1：价格经共用整段数字件，贴右；标签旁放不下时整行改上下排
+    KeyValueRow(modifier = Modifier.fillMaxWidth(), gap = 0.dp, centerVertically = true, valueAtEnd = true) {
+        Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
         fen?.let {
-            Text(
+            WholeNumberText(
                 text = CouliFormat.money(it),
                 style = if (emphasized) CouliTextStyles.bodySemibold else CouliTypography.footnote,
                 color = CouliColors.textPrimary,

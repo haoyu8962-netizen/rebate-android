@@ -48,9 +48,11 @@ import com.couli.core.designsystem.CouliTagTone
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.PriceTerms
 import com.couli.core.designsystem.Skeleton
 import com.couli.core.designsystem.StateAction
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.wallet.PayoutAccountDisplay
@@ -355,12 +357,14 @@ private fun BoundCard(
             method?.let { CouliTag(text = it, tone = CouliTagTone.NEUTRAL) }
         }
         val value = listOfNotNull(account.bankName?.takeIf { it.isNotBlank() }, account.maskedAccount).joinToString(" ")
-        Text(
-            text = value,
-            style = CouliTextStyles.amountTitle,
-            color = CouliColors.textPrimary,
-            modifier = Modifier.semantics { contentDescription = spokenMask(texts, value) },
-        )
+        val spoken = Modifier.semantics { contentDescription = spokenMask(texts, value) }
+        if (accountHasDigit(value)) {
+            // 判据 1：银行名 + 脱敏账号经共用整段数字件，账号整段不断
+            WholeNumberText(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary, textModifier = spoken)
+        } else {
+            // 不含数字的账号（脱敏邮箱等）：普通文字照常换行，不横滑；读屏仍读完整串（见 [accountHasDigit]）
+            Text(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary, modifier = spoken)
+        }
         CouliDivider()
         Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
             account.maskedPayee?.let { payee ->
@@ -399,25 +403,31 @@ private fun LabelValue(
     value: String,
     spoken: String? = null,
 ) {
-    Row(
+    // 判据 1：值经共用整段数字件；右列放不下时整行改上下排
+    KeyValueRow(
         modifier =
             Modifier.fillMaxWidth().semantics(mergeDescendants = true) {
                 contentDescription =
                     label + PriceTerms.SPOKEN_PAUSE + (spoken ?: value)
             },
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
-        verticalAlignment = Alignment.CenterVertically,
+        centerVertically = true,
     ) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(
+        WholeNumberText(
             text = value,
             style = TABULAR_FOOTNOTE,
             color = CouliColors.textPrimary,
             textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f),
         )
     }
 }
+
+/**
+ * 收款账号串里有没有数字（按码点 `Character.isDigit`）。判据 1（D10-1230）只管数字串：有数字（脱敏手机号、尾号、卡号）时经整段数字件，
+ * 数字段不从中间断开；没有数字（脱敏邮箱等）时不归判据 1 管，按普通文字换行、不横滑。D10-1513 / D10-1521 退路：口径只落在收款账号这一个
+ * 绘制点，共用件 [WholeNumberText] 不动。
+ */
+private fun accountHasDigit(account: String): Boolean = account.codePoints().anyMatch(Character::isDigit)
 
 private val TABULAR_FOOTNOTE: TextStyle = with(CouliTextStyles) { CouliTypography.footnote.tabular() }
 

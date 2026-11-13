@@ -46,6 +46,7 @@ import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.LoadingSize
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusRing
 import com.couli.core.designsystem.focusRingVisible
@@ -101,7 +102,7 @@ internal fun QuickChip(
                 .padding(horizontal = CouliSpacing.space4),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, style = QUICK_STYLE, color = if (enabled) CouliColors.textPrimary else CouliColors.textSecondary)
+        WholeNumberText(text = text, style = QUICK_STYLE, color = if (enabled) CouliColors.textPrimary else CouliColors.textSecondary)
     }
 }
 

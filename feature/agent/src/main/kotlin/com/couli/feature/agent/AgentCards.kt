@@ -78,12 +78,14 @@ import com.couli.core.designsystem.CouliTag
 import com.couli.core.designsystem.CouliTagTone
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.MappedProductCard
 import com.couli.core.designsystem.MatchBadge
 import com.couli.core.designsystem.MatchBadgeKind
 import com.couli.core.designsystem.ProductCardGrid
 import com.couli.core.designsystem.ProductCardList
 import com.couli.core.designsystem.ProductCardVariant
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 
 /**
@@ -530,11 +532,12 @@ private fun EarningsCard(
                         e.latestTitle,
                         "$applied ${spoken(e.appliedAmount)}",
                     ).joinToString(AgentDraftTexts.SPOKEN_SEPARATOR)
-                Text(
+                // 判据 1：最近一笔提现摘要里的金额经共用整段数字件，整段不断
+                WholeNumberText(
                     text = line,
                     style = CouliTypography.footnote,
                     color = CouliColors.textPrimary,
-                    modifier = Modifier.semantics { contentDescription = spokenLine },
+                    textModifier = Modifier.semantics { contentDescription = spokenLine },
                 )
             }
             e.updatedAt?.let {
@@ -581,7 +584,7 @@ private fun AmountColumn(
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
         Text(text = label, style = CouliTypography.caption, color = CouliColors.textSecondary)
-        Text(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary)
+        WholeNumberText(text = value, style = CouliTextStyles.amountTitle, color = CouliColors.textPrimary)
         note?.let { Text(text = it, style = CouliTypography.caption, color = CouliColors.textSecondary) }
     }
 }
@@ -625,19 +628,21 @@ private fun InfoCard(
                 color = CouliColors.textPrimary,
             )
         }
-        v.lines.forEach { Text(text = it, style = CouliTypography.footnote, color = CouliColors.textPrimary) }
+        // 判据 1（D10-1249）：正文行（含找回草稿卡「订单号 {号码}」）经共用整段数字件，号码整段不断；只改数字防断行，卡片布局不变
+        v.lines.forEach { WholeNumberText(text = it, style = CouliTypography.footnote, color = CouliColors.textPrimary) }
         v.amountText?.let { amount ->
             val spoken = if (s.amountMasked) texts.text("agent.draft.amount_hidden") else amount
-            Row(
+            // 判据 1：金额经共用整段数字件；标签旁放不下时金额换到标签下一行独占整行（只改数字展示，卡片布局不变）
+            KeyValueRow(
                 modifier =
                     Modifier.semantics(mergeDescendants = true) {
                         contentDescription =
                             v.amountLabel + AgentDraftTexts.SPOKEN_SEPARATOR + spoken
                     },
-                horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
+                gap = CouliSpacing.space2,
             ) {
                 Text(text = v.amountLabel, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(text = amount, style = CouliTextStyles.amountBody, color = CouliColors.rebateText)
+                WholeNumberText(text = amount, style = CouliTextStyles.amountBody, color = CouliColors.rebateText)
             }
         }
         val button: AgentTap? = v.rule ?: v.auth ?: v.handoff

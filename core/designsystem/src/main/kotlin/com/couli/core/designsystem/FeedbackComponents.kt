@@ -424,7 +424,8 @@ fun CouliDialogContent(
         // 正文：可交互的正文（如带协议链接的确认框，链接各自可点、读屏可单独聚焦）用 [body]，否则是纯文字 [message]
         body =
             body ?: message?.let {
-                { Text(text = it, style = CouliTypography.footnote, color = CouliColors.textPrimary) }
+                // 判据 1：纯文字正文经共用整段数字件（如返利归零弹窗的金额句），金额、号码不在中间断开；放得下时与普通 Text 一样
+                { WholeNumberText(text = it, style = CouliTypography.footnote, color = CouliColors.textPrimary) }
             },
         footer = {
             DialogButtons(

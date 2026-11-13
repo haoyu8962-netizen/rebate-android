@@ -85,9 +85,12 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.LoadingSize
 import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.designsystem.NavBar
+import com.couli.core.designsystem.NumberLine
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.designsystem.couliFocusTarget
 import com.couli.core.wallet.SensitiveOutcome
@@ -265,7 +268,8 @@ internal fun ErrorBar(
             WalletBarTone.WARNING -> CouliColors.statusWarningText
             WalletBarTone.NEUTRAL -> CouliColors.textPrimary
         }
-    Row(
+    // 判据 1：错误句里的金额（如「单笔最低提现 {min_amount}」）经共用整段数字件；放不下时图标让行，句子先独占整行
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
@@ -273,20 +277,22 @@ internal fun ErrorBar(
                 .padding(CouliSpacing.space3)
                 .semantics { liveRegion = if (notice.assertive) LiveRegionMode.Assertive else LiveRegionMode.Polite }
                 .testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = {
+            Icon(
+                if (tone == WalletBarTone.NEUTRAL) CouliIcons.info else CouliIcons.alert,
+                contentDescription = null,
+                tint = if (tone == WalletBarTone.NEUTRAL) CouliColors.textSecondary else content,
+                modifier = Modifier.padding(top = BAR_ICON_TOP).size(CouliSizes.iconMedium),
+            )
+        },
     ) {
-        Icon(
-            if (tone == WalletBarTone.NEUTRAL) CouliIcons.info else CouliIcons.alert,
-            contentDescription = null,
-            tint = if (tone == WalletBarTone.NEUTRAL) CouliColors.textSecondary else content,
-            modifier = Modifier.padding(top = BAR_ICON_TOP).size(CouliSizes.iconMedium),
-        )
-        Text(
+        WholeNumberText(
             text = text,
             style = if (tone == WalletBarTone.NEUTRAL) CouliTypography.footnote else CouliTextStyles.footnoteMedium,
             color = content,
-            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -343,7 +349,7 @@ internal fun StatusBar(
     live: Boolean = true,
 ) {
     val tint = CouliColors.statusWarningText
-    Row(
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
@@ -358,21 +364,26 @@ internal fun StatusBar(
                 ).padding(CouliSpacing.space3)
                 .semantics(mergeDescendants = true) { if (live) liveRegion = LiveRegionMode.Polite }
                 .testTag(tag),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = { Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium)) },
+        trailing =
+            if (onClick != null) {
+                { Icon(CouliIcons.chevron, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium)) }
+            } else {
+                null
+            },
     ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium))
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
-            Text(
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
+            // 判据 1：「待抵扣 {amount}」等句子里的金额经共用整段数字件；放不下时两侧图标让行，句子先独占整行
+            WholeNumberText(
                 text = text,
                 style = textStyle,
                 color = tint,
-                modifier = if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier,
+                textModifier = if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier,
             )
             if (secondary != null) Text(text = secondary, style = CouliTypography.footnote, color = tint)
-        }
-        if (onClick != null) {
-            Icon(CouliIcons.chevron, contentDescription = null, tint = tint, modifier = Modifier.size(CouliSizes.iconMedium))
         }
     }
 }
@@ -652,18 +663,24 @@ internal fun FieldErrorText(
         injected?.announce(text) ?: view.announceForAccessibility(text)
     }
     // W50 / W82：14 红字 + 左侧 16 三角图标（间距 4）；焦点、tag、文字仍在同一个文字节点上
-    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1), verticalAlignment = Alignment.Top) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusErrorText,
-            modifier = Modifier.padding(top = FIELD_ERROR_ICON_TOP).size(CouliSizes.iconSmall),
-        )
-        Text(
+    // 判据 1：金额错误句（如「单笔最低提现 {min_amount}」）经共用整段数字件；放不下时图标让行
+    NumberLine(
+        gap = CouliSpacing.space1,
+        centerVertically = false,
+        leading = {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusErrorText,
+                modifier = Modifier.padding(top = FIELD_ERROR_ICON_TOP).size(CouliSizes.iconSmall),
+            )
+        },
+    ) {
+        WholeNumberText(
             text = text,
             style = CouliTypography.footnote,
             color = CouliColors.statusErrorText,
-            modifier =
+            textModifier =
                 Modifier
                     .bringIntoViewRequester(bring)
                     .couliFocusTarget(focus)
@@ -874,24 +891,28 @@ private fun PendingWarningBlock(
     text: String,
     modifier: Modifier,
 ) {
-    Row(
+    // 判据 1：「上一笔提现 {amount} … 收款账号 {payout_account}」里的金额、脱敏账号经共用整段数字件；放不下时图标让行
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
                 .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
                 .padding(CouliSpacing.space3),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusWarningText,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+        },
     ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconMedium),
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2)) {
             if (title != null) Text(text = title, style = CouliTextStyles.footnoteSemibold, color = CouliColors.statusWarningText)
-            Text(text = text, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
+            WholeNumberText(text = text, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
         }
     }
 }
@@ -959,13 +980,13 @@ private fun DetailBlock(details: List<Pair<String, String>>) {
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
     ) {
         details.forEach { (label, value) ->
-            Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.CenterVertically) {
+            // 判据 1：值经共用整段数字件（金额、脱敏账号不在中间断）；右列放不下时整行改上下排，独占一行仍放不下才框内横滑
+            KeyValueRow(centerVertically = true) {
                 Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(
+                WholeNumberText(
                     text = value,
                     style = CouliTypography.footnote.copy(textAlign = TextAlign.End),
                     color = CouliColors.textPrimary,
-                    modifier = Modifier.weight(1f),
                 )
             }
         }

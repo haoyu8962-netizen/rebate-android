@@ -32,7 +32,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.AlignmentLine
 import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.IntrinsicMeasurable
+import androidx.compose.ui.layout.IntrinsicMeasureScope
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.MeasurePolicy
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -82,12 +88,25 @@ fun PriceTagMain(
             Text(text = content.mainLabel, style = labelStyle, color = CouliColors.textSecondary)
             AmountText(text = content.mainAmount, style = amountStyle, color = CouliColors.priceText)
         },
-    ) { measurables, constraints ->
+        measurePolicy = PriceTagMainPolicy,
+    )
+}
+
+/**
+ * [PriceTagMain] 的排法：放得下时口径词与主价按基线并排，放不下时主价整块换到口径词下一行。
+ * 最小固有宽 = 口径词与主价各自最小宽的较大者（主价可以换到下一行，所以真正不可再窄的只是整段主价），
+ * 供 [NumberLine] 这类让行容器判断「主价放不放得下」（网格卡价格行的口径按钮据此让行）。
+ */
+private object PriceTagMainPolicy : MeasurePolicy {
+    override fun MeasureScope.measure(
+        measurables: List<Measurable>,
+        constraints: Constraints,
+    ): MeasureResult {
         val maxWidth = if (constraints.hasBoundedWidth) constraints.maxWidth else Constraints.Infinity
         val label = measurables[0].measure(Constraints(maxWidth = maxWidth))
         val amount = measurables[1].measure(Constraints(maxWidth = maxWidth))
         val gap = CouliSpacing.space1.roundToPx()
-        if (label.width + gap + amount.width <= maxWidth) {
+        return if (label.width + gap + amount.width <= maxWidth) {
             val labelBase = label.baseline()
             val amountBase = amount.baseline()
             val base = maxOf(labelBase, amountBase)
@@ -104,6 +123,11 @@ fun PriceTagMain(
             }
         }
     }
+
+    override fun IntrinsicMeasureScope.minIntrinsicWidth(
+        measurables: List<IntrinsicMeasurable>,
+        height: Int,
+    ): Int = maxOf(measurables[0].minIntrinsicWidth(height), measurables[1].minIntrinsicWidth(height))
 }
 
 private fun priceAmountStyle(size: PriceTagSize): TextStyle =
@@ -116,7 +140,9 @@ private fun priceAmountStyle(size: PriceTagSize): TextStyle =
 private fun Placeable.baseline(): Int = this[FirstBaseline].takeIf { it != AlignmentLine.Unspecified } ?: height
 
 /**
- * 金额文字：不可拆分段，单行不折行（R2-01：区间只在破折号处断，金额本身不断）。宽度由父布局保证（见 [AmountMetrics]）；
+ * 金额文字：不可拆分段，单行不折行（R2-01：区间只在破折号处断，金额本身不断）。宽度先由父布局让（见 [AmountMetrics]，主价换到口径词下一行）；
+ * 让到独占整行仍放不下时，走共用整段数字件的兜底（[WholeNumberLayout]）：框内横滑、初始停在开头、末端渐隐、下方指示器，字号不变、
+ * 文字仍是一个完整 Text（读屏读完整金额）；放得下时与改前的单个 Text 完全一样。
  * 排版结果报给 [LocalAmountLayoutObserver]（测试用来断言每段金额都在一行内、没有被裁切）。
  */
 @Composable
@@ -127,15 +153,16 @@ internal fun AmountText(
     modifier: Modifier = Modifier,
 ) {
     val observer = LocalAmountLayoutObserver.current
-    Text(
-        text = text,
-        style = style,
-        color = color,
-        softWrap = false,
-        maxLines = 1,
-        modifier = modifier,
-        onTextLayout = { observer?.invoke(text, it) },
-    )
+    WholeNumberLayout(style = style, color = color, modifier = modifier, wholeLine = true) {
+        Text(
+            text = text,
+            style = style,
+            color = color,
+            softWrap = false,
+            maxLines = 1,
+            onTextLayout = { observer?.invoke(text, it) },
+        )
+    }
 }
 
 /** 测试钩子：收集每段金额文字的排版结果（默认 null，不影响运行）。 */
@@ -207,7 +234,7 @@ fun PriceSubLines(
     if (lines.isEmpty()) return
     Column(modifier = modifier) {
         lines.forEach { line ->
-            Text(text = line, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
+            WholeNumberText(text = line, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary)
         }
     }
 }
@@ -326,7 +353,7 @@ fun EstNetLine(
     modifier: Modifier = Modifier,
 ) {
     if (text == null) return
-    Text(text = text, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary, modifier = modifier)
+    WholeNumberText(text = text, style = CouliTextStyles.captionAmount, color = CouliColors.textSecondary, modifier = modifier)
 }
 
 /** 口径说明的一行：图标 + 文字（文字由调用方按 disclaimer_keys 从字典取）。 */

@@ -2,8 +2,6 @@ package com.couli.feature.orders
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -13,7 +11,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.AlignmentLine
@@ -40,7 +37,9 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.EndWrapRow
+import com.couli.core.designsystem.NumberLine
 import com.couli.core.designsystem.PriceTerms
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.orders.AmountCellView
 import com.couli.core.orders.AmountCellsView
 import com.couli.core.orders.OrderActionButton
@@ -189,7 +188,8 @@ internal fun StatusPill(
 ) {
     val settled = OrderUi.settled(status)
     val content = if (settled) CouliColors.statusSuccessText else CouliColors.textSecondary
-    Row(
+    // 判据 1：「已结算（部分扣回 {z}）」里的金额经共用整段数字件；放不下时图标让行，文字先独占整行，仍放不下才横滑
+    NumberLine(
         modifier =
             modifier
                 .heightIn(min = CouliSizes.tagHeight)
@@ -197,11 +197,12 @@ internal fun StatusPill(
                     if (settled) CouliColors.statusSuccessBackground else CouliColors.backgroundMuted,
                     RoundedCornerShape(CouliRadius.pill),
                 ).padding(horizontal = CouliSpacing.space2),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
-        verticalAlignment = Alignment.CenterVertically,
+        gap = CouliSpacing.space1,
+        leading = {
+            Icon(OrderUi.statusIcon(status), contentDescription = null, tint = content, modifier = Modifier.size(CouliSizes.iconTiny))
+        },
     ) {
-        Icon(OrderUi.statusIcon(status), contentDescription = null, tint = content, modifier = Modifier.size(CouliSizes.iconTiny))
-        Text(text = label, style = CouliTypography.caption, color = content)
+        WholeNumberText(text = label, style = CouliTypography.caption, color = content)
     }
 }
 
@@ -256,8 +257,8 @@ internal fun OrderNumberRow(
 
 /**
  * 列表卡的订单号（APP-08v O10）：「订单号 {no}」12 次文字 + 紧随其后的【复制】（12 强调色；视觉只占文字高，≥48 命中区由最小触控区扩展给出，
- * 不撑高这一行）。单号按整列宽度折行；【复制】不拆行，按流式排在单号末行实际文字之后（间距 8、基线对齐），末行放不下时整体换到下一行
- * 的列起点（评审 r1 S2-2：不停在多行中部）。分享单只有脱敏号，没有【复制】，读屏把「*」读成「星号」（不变）。
+ * 不撑高这一行）。单号整段不断（放不下整段换行，独占一行仍放不下框内横滑，见 [WholeNumberText]）；【复制】不拆行，按流式排在单号末行
+ * 实际文字之后（间距 8、基线对齐），末行放不下时整体换到下一行的列起点（评审 r1 S2-2：不停在多行中部）。分享单只有脱敏号，没有【复制】，读屏把「*」读成「星号」（不变）。
  * 详情仍用 [OrderNumberRow]（独立一行、复制靠右）。
  */
 @Composable
@@ -275,12 +276,14 @@ internal fun OrderNumberInline(
     Layout(
         modifier = modifier,
         content = {
-            Text(
+            // 判据 1：「订单号 {号码}」经共用整段数字件——号码整段放得下时照常在空格处整段换到下一行；独占一行仍放不下时整行框内横滑
+            // （末端渐隐 + 指示器），【复制】随之换到下一行的列起点，不跟在断出的尾巴后
+            WholeNumberText(
                 text = shown,
                 style = CouliTextStyles.captionAmount,
                 color = CouliColors.textSecondary,
                 onTextLayout = { lines.result = it },
-                modifier =
+                textModifier =
                     Modifier
                         .testTag(textTag)
                         .then(

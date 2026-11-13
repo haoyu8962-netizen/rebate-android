@@ -52,8 +52,13 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.LoadingSize
+import com.couli.core.designsystem.NumberLine
+import com.couli.core.designsystem.SendCodeButton
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
+import com.couli.core.designsystem.sendCodeAsButton
 
 /** 字段错误行的三角 16。 */
 private val ERROR_ICON = 16.dp
@@ -173,20 +178,31 @@ internal fun BindCodeSendRow(
     onClick: () -> Unit,
 ) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Box(
-            modifier =
-                Modifier
-                    .heightIn(min = CouliSizes.touchTarget)
-                    .widthIn(min = CouliSizes.touchTarget)
-                    .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-                    .testTag(tag),
-            contentAlignment = Alignment.CenterEnd,
-        ) {
-            Text(
+        if (sendCodeAsButton()) {
+            // FU-AND-ADAPT-CHECK ①：200% 下改描边按钮（发码前 / 倒计时禁用 / 可重发三态同款），仍靠右、不缩字
+            SendCodeButton(
                 text = text,
-                style = CouliTypography.footnote.tabular(),
-                color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
+                onClick = onClick,
+                textStyle = CouliTypography.footnote.tabular(),
+                enabled = enabled,
+                modifier = Modifier.testTag(tag),
             )
+        } else {
+            Box(
+                modifier =
+                    Modifier
+                        .heightIn(min = CouliSizes.touchTarget)
+                        .widthIn(min = CouliSizes.touchTarget)
+                        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+                        .testTag(tag),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Text(
+                    text = text,
+                    style = CouliTypography.footnote.tabular(),
+                    color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
+                )
+            }
         }
     }
 }
@@ -235,7 +251,7 @@ internal fun BindPendingWarning(
 ) {
     WarningShell(modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Assertive }) {
         Text(text = title, style = CouliTextStyles.footnoteSemibold, color = CouliColors.statusWarningText)
-        Text(text = desc, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
+        WholeNumberText(text = desc, style = CouliTypography.footnote, color = CouliColors.statusWarningText)
     }
 }
 
@@ -246,11 +262,11 @@ internal fun BindPendingNotice(
     tag: String,
 ) {
     WarningShell(modifier = Modifier) {
-        Text(
+        WholeNumberText(
             text = text,
             style = CouliTypography.footnote,
             color = CouliColors.statusWarningText,
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(tag),
+            textModifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(tag),
         )
     }
 }
@@ -260,22 +276,26 @@ private fun WarningShell(
     modifier: Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Row(
+    // 判据 1：警告句里的脱敏新号经共用整段数字件；放不下时图标让行，句子先独占整行
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
                 .background(CouliColors.statusWarningBackground, RoundedCornerShape(CouliRadius.button))
                 .padding(CouliSpacing.space3),
-        horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
-        verticalAlignment = Alignment.Top,
+        gap = CouliSpacing.space2,
+        fill = true,
+        centerVertically = false,
+        leading = {
+            Icon(
+                CouliIcons.alert,
+                contentDescription = null,
+                tint = CouliColors.statusWarningText,
+                modifier = Modifier.size(CouliSizes.iconMedium),
+            )
+        },
     ) {
-        Icon(
-            CouliIcons.alert,
-            contentDescription = null,
-            tint = CouliColors.statusWarningText,
-            modifier = Modifier.size(CouliSizes.iconMedium),
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2), content = content)
+        Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2), content = content)
     }
 }
 
@@ -300,14 +320,14 @@ internal fun BindDetailRow(
     value: String,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+    // 判据 1：脱敏号经共用整段数字件；右列放不下时整行改上下排
+    KeyValueRow(modifier = modifier.fillMaxWidth()) {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(
+        WholeNumberText(
             text = value,
             style = CouliTypography.footnote.tabular(),
             color = CouliColors.textPrimary,
             textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f),
         )
     }
 }

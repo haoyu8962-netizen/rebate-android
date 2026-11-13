@@ -115,7 +115,8 @@ fun CouliButton(
             } else if (leadingIcon != null) {
                 Icon(leadingIcon, contentDescription = null, tint = colors.content, modifier = Modifier.size(leadingIconSize))
             }
-            Text(text = text, style = style, color = colors.content, textAlign = TextAlign.Center)
+            // 判据 1：按钮文案里的金额（如购买按钮「· 预估返 {amount}」）经共用整段数字件，不在数字中间断开；放得下时与普通 Text 一样
+            WholeNumberText(text = text, style = style, color = colors.content, textAlign = TextAlign.Center)
         }
     }
 }
@@ -290,7 +291,7 @@ private fun OutlinedDisabledButton(
                 .padding(buttonPadding(CouliButtonVariant.SECONDARY, size)),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        WholeNumberText(
             text = text,
             style = buttonTextStyle(CouliButtonVariant.SECONDARY, size),
             color = CouliColors.textSecondary,

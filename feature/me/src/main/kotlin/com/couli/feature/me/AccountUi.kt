@@ -53,7 +53,9 @@ import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.KeyValueRow
 import com.couli.core.designsystem.LocalCouliAnnouncer
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliFocusTarget
 import kotlinx.coroutines.delay
 
@@ -123,9 +125,10 @@ internal fun SummaryRow(
     label: String,
     value: String,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space3), verticalAlignment = Alignment.Top) {
+    // 判据 1：值（脱敏新号等）在标签右侧放不下时整行改上下排
+    KeyValueRow {
         Text(text = label, style = CouliTypography.footnote, color = CouliColors.textSecondary)
-        Text(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
+        WholeNumberText(text = value, style = CouliTypography.footnote, color = CouliColors.textPrimary)
     }
 }
 

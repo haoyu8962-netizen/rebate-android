@@ -1,6 +1,7 @@
 package com.couli.core.designsystem
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,7 +11,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -33,11 +36,13 @@ import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -371,16 +376,68 @@ fun CodeResendRow(
             color = CouliColors.textSecondary,
             modifier = Modifier.align(Alignment.CenterVertically),
         )
-        if (countdown != null) {
+        if (countdown != null && sendCodeAsButton()) {
+            // 200% 下倒计时也用禁用的描边按钮（Role.Button + 不可用状态，≥48），字号沿用 captionAmount 令牌
+            SendCodeButton(text = countdown, onClick = {}, textStyle = CouliTextStyles.captionAmount, enabled = false)
+        } else if (countdown != null) {
             Text(
                 text = countdown,
                 style = CouliTextStyles.captionAmount,
                 color = CouliColors.textSecondary,
                 modifier = Modifier.align(Alignment.CenterVertically),
             )
+        } else if (sendCodeAsButton()) {
+            SendCodeButton(text = resendText, onClick = onResend, textStyle = CouliTextStyles.bodySemibold)
         } else {
             CouliButton(text = resendText, onClick = onResend, variant = CouliButtonVariant.TEXT)
         }
+    }
+}
+
+/**
+ * 发码入口（获取验证码 / N 秒后重新获取 / 重新获取）在 200% 字号下改成有描边的按钮外观（FU-AND-ADAPT-CHECK ①，D10-1223 第 4 条）：
+ * 大字号下光文字链接看不出是按钮；默认字号仍是各页原来的右对齐链接色文字（调用方保留原分支）。
+ */
+@Composable
+fun sendCodeAsButton(): Boolean = LocalDensity.current.fontScale >= CouliAlpha.LARGE_FONT_SCALE
+
+/**
+ * 200% 下的发码按钮：描边按钮（圆角 12、1px border.control 描边，可点 / 禁用都画描边，禁用只把文字换成次文字色），按钮语义、命中区 ≥48；
+ * 文字样式由调用方给（沿用各页原令牌，不缩字），可点时文字 text.link。绑号、换号、短信登录、二次验证、[CodeResendRow] 共用这一个。
+ */
+@Composable
+fun SendCodeButton(
+    text: String,
+    onClick: () -> Unit,
+    textStyle: TextStyle,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(CouliRadius.button)
+    Box(
+        modifier =
+            modifier
+                .defaultMinSize(minWidth = CouliSizes.touchTarget, minHeight = CouliSizes.touchTarget)
+                .couliFocusRing(focusRingVisible(interaction), CouliRadius.button)
+                .clip(shape)
+                .border(CouliSizes.hairline, CouliColors.borderControl, shape)
+                .clickable(
+                    interactionSource = interaction,
+                    indication = LocalIndication.current,
+                    enabled = enabled,
+                    role = Role.Button,
+                    onClick = onClick,
+                ).padding(horizontal = CouliSpacing.space4, vertical = CouliSpacing.space2),
+        contentAlignment = Alignment.Center,
+    ) {
+        // 排版宽 = 内容宽（放不下时按可用宽折行），文字落在自身框内（与改前倒计时文字的 width(IntrinsicSize.Max) 一致）
+        Text(
+            text = text,
+            style = textStyle,
+            color = if (enabled) CouliColors.textLink else CouliColors.textSecondary,
+            modifier = Modifier.width(IntrinsicSize.Max),
+        )
     }
 }
 

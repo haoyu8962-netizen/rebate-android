@@ -568,7 +568,12 @@ private fun WithdrawContent(
                 verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1),
             ) {
                 Text(text = texts.text("wallet.withdrawable"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                Text(text = CouliFormat.money(display.balanceFen), style = CouliTextStyles.amountDisplay, color = CouliColors.textPrimary)
+                // 判据 1 / D10-1265：页头余额经共用整段数字件（全限定名引用：本文件前 305 行受资金守卫冻结，不加 import）
+                com.couli.core.designsystem.WholeNumberText(
+                    text = CouliFormat.money(display.balanceFen),
+                    style = CouliTextStyles.amountDisplay,
+                    color = CouliColors.textPrimary,
+                )
             }
             Text(
                 text =
@@ -608,8 +613,23 @@ private fun WithdrawContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2),
                 ) {
-                    Text(text = texts.text("withdraw.payout_label"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
-                    Text(text = line, style = WITHDRAW_PAYOUT_LINE_STYLE, color = CouliColors.textPrimary, modifier = Modifier.weight(1f))
+                    // 判据 1：脱敏账号整段不断；右侧放不下时整行改上下排（标签在上、账号在下）
+                    com.couli.core.designsystem.KeyValueRow(
+                        modifier = Modifier.weight(1f),
+                        gap = CouliSpacing.space2,
+                        centerVertically = true,
+                    ) {
+                        Text(
+                            text = texts.text("withdraw.payout_label"),
+                            style = CouliTypography.footnote,
+                            color = CouliColors.textSecondary,
+                        )
+                        com.couli.core.designsystem.WholeNumberText(
+                            text = line,
+                            style = WITHDRAW_PAYOUT_LINE_STYLE,
+                            color = CouliColors.textPrimary,
+                        )
+                    }
                     Icon(
                         CouliIcons.chevron,
                         contentDescription = null,
@@ -711,11 +731,11 @@ private fun AmountField(
         )
     }
     display.maxLineFen?.let { fen ->
-        Text(
+        com.couli.core.designsystem.WholeNumberText(
             text = texts.format("withdraw.max_line", mapOf("amount" to CouliFormat.money(fen))),
             style = CouliTextStyles.captionAmount,
             color = CouliColors.textSecondary,
-            modifier = Modifier.testTag(WalletTags.WITHDRAW_MAX),
+            textModifier = Modifier.testTag(WalletTags.WITHDRAW_MAX),
         )
     }
     if (display.quick.isNotEmpty()) {
@@ -782,26 +802,25 @@ private fun EstimateRow(
                     }
                 }
             EstimateDivider()
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space1)) {
-                Text(
+            // 判据 1 / D10-1265：估算句里的金额经共用整段数字件（仍是一个文字节点）；金额在问号旁放不下时问号让到下一行，金额先独占整行
+            com.couli.core.designsystem.NumberLine(
+                gap = CouliSpacing.space1,
+                trailing = {
+                    CouliIconButton(
+                        icon = CouliIcons.help,
+                        label = texts.text("wallet.help.fee_tax_label"),
+                        onClick = onHelp,
+                        tint = CouliColors.textSecondary,
+                        iconSize = CouliSizes.iconTiny,
+                        modifier = Modifier.inlineHelpSlot(),
+                    )
+                },
+            ) {
+                com.couli.core.designsystem.WholeNumberText(
                     text = estimateText(text, net),
                     style = CouliTypography.footnote,
                     color = CouliColors.textPrimary,
-                    modifier =
-                        Modifier
-                            .weight(
-                                1f,
-                                fill = false,
-                            ).semantics { liveRegion = LiveRegionMode.Polite }
-                            .testTag(WalletTags.WITHDRAW_ESTIMATE),
-                )
-                CouliIconButton(
-                    icon = CouliIcons.help,
-                    label = texts.text("wallet.help.fee_tax_label"),
-                    onClick = onHelp,
-                    tint = CouliColors.textSecondary,
-                    iconSize = CouliSizes.iconTiny,
-                    modifier = Modifier.inlineHelpSlot(),
+                    textModifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag(WalletTags.WITHDRAW_ESTIMATE),
                 )
             }
         }

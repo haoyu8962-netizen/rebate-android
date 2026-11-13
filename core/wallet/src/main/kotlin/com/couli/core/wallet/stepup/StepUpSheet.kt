@@ -61,7 +61,9 @@ import com.couli.core.designsystem.CouliSizes
 import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.SendCodeButton
 import com.couli.core.designsystem.SheetHandle
+import com.couli.core.designsystem.sendCodeAsButton
 import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletTexts
 
@@ -236,12 +238,30 @@ private fun StatusRowEnd(
     resendEnabled: Boolean,
     onResend: () -> Unit,
 ) {
-    if (countdown != null) {
+    if (countdown != null && sendCodeAsButton()) {
+        // FU-AND-ADAPT-CHECK ①（r1 S2-1）：200% 下倒计时也用禁用的描边按钮（Role.Button + 不可用状态，≥48），默认字号仍是不可点次文字（W67）
+        SendCodeButton(
+            text = countdown,
+            onClick = {},
+            textStyle = CouliTypography.footnote,
+            enabled = false,
+            modifier = Modifier.testTag(StepUpTags.STEP_UP_RESEND),
+        )
+    } else if (countdown != null) {
         Text(
             text = countdown,
             style = CouliTypography.footnote,
             color = CouliColors.textSecondary,
             modifier = Modifier.width(IntrinsicSize.Max).testTag(StepUpTags.STEP_UP_RESEND),
+        )
+    } else if (sendCodeAsButton()) {
+        // FU-AND-ADAPT-CHECK ①：200% 下【重新获取】改描边按钮，不缩字
+        SendCodeButton(
+            text = resendLabel,
+            onClick = onResend,
+            textStyle = CouliTypography.footnote,
+            enabled = resendEnabled,
+            modifier = Modifier.testTag(StepUpTags.STEP_UP_RESEND),
         )
     } else {
         Text(

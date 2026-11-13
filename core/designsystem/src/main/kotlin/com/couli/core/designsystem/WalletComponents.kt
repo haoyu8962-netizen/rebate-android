@@ -403,7 +403,8 @@ private fun AmountCellValue(
             segments.forEach { AmountText(text = it, style = style, color = color) }
         }
     } else {
-        Text(text = cell.value, style = style, color = color, modifier = Modifier.clearAndSetSemantics { })
+        // 判据 1：单值金额经共用整段数字件（放不下框内横滑）；读屏仍由格名称读，数值本身不进无障碍树
+        WholeNumberText(text = cell.value, style = style, color = color, modifier = Modifier.clearAndSetSemantics { })
     }
 }
 
@@ -418,9 +419,10 @@ private fun AmountNote(
     masked: Boolean,
     hiddenSpoken: String? = null,
 ) {
-    Text(
+    // 判据 1：说明句里的金额经共用整段数字件，整段不断
+    WholeNumberText(
         text = note,
-        modifier =
+        textModifier =
             when {
                 !masked -> Modifier
                 hiddenSpoken != null -> Modifier.clearAndSetSemantics { contentDescription = hiddenSpoken }
@@ -486,11 +488,12 @@ fun WalletHeroCard(
             horizontalGap = CouliSpacing.space3,
             verticalGap = CouliSpacing.space3,
             start = {
-                Text(
+                // 大字金额经共用整段数字件：放不下时整块换到【提现】上方独占一行（EndWrapRow），独占一行仍放不下才框内横滑（D10-1265）
+                WholeNumberText(
                     text = if (amountHidden) hiddenMask else texts.amount,
                     style = CouliTextStyles.amountDisplay,
                     color = CouliColors.rebateSolidText,
-                    modifier =
+                    textModifier =
                         Modifier.semantics {
                             contentDescription =
                                 if (amountHidden) texts.hiddenSpoken ?: texts.label else texts.amountSpoken
@@ -680,7 +683,23 @@ fun InfoStrip(
      */
     compactHelp: Boolean = false,
 ) {
-    Row(
+    val help: (@Composable () -> Unit)? =
+        if (helpLabel != null && onHelp != null) {
+            {
+                CouliIconButton(
+                    icon = CouliIcons.help,
+                    label = helpLabel,
+                    onClick = onHelp,
+                    tint = CouliColors.textSecondary,
+                    iconSize = if (compactHelp) CouliSizes.iconTiny else CouliSizes.iconSmall,
+                    modifier = if (compactHelp) Modifier.size(CouliSizes.iconTiny).wrapContentSize(unbounded = true) else Modifier,
+                )
+            }
+        } else {
+            null
+        }
+    // 判据 1 / D10-1265：条内句子里的金额经共用整段数字件；金额在问号旁放不下时问号让到下一行，金额先独占整行，仍放不下才横滑
+    NumberLine(
         modifier =
             modifier
                 .fillMaxWidth()
@@ -691,29 +710,16 @@ fun InfoStrip(
                         Modifier.clip(RoundedCornerShape(CouliRadius.button)).background(background)
                     },
                 ).padding(start = CouliSpacing.space3),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (compactHelp) Arrangement.spacedBy(CouliSpacing.space1) else Arrangement.Start,
+        gap = if (compactHelp) CouliSpacing.space1 else 0.dp,
+        trailing = help,
     ) {
-        Text(
+        WholeNumberText(
             text = text,
             style = CouliTextStyles.captionAmount,
             color = CouliColors.textSecondary,
-            modifier =
-                Modifier
-                    .weight(1f, fill = false)
-                    .padding(vertical = CouliSpacing.space2)
-                    .then(if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier),
+            modifier = Modifier.padding(vertical = CouliSpacing.space2),
+            textModifier = if (spoken != null) Modifier.clearAndSetSemantics { contentDescription = spoken } else Modifier,
         )
-        if (helpLabel != null && onHelp != null) {
-            CouliIconButton(
-                icon = CouliIcons.help,
-                label = helpLabel,
-                onClick = onHelp,
-                tint = CouliColors.textSecondary,
-                iconSize = if (compactHelp) CouliSizes.iconTiny else CouliSizes.iconSmall,
-                modifier = if (compactHelp) Modifier.size(CouliSizes.iconTiny).wrapContentSize(unbounded = true) else Modifier,
-            )
-        }
     }
 }
 

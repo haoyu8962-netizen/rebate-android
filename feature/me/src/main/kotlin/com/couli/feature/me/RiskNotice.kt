@@ -26,6 +26,7 @@ import com.couli.core.designsystem.CouliTextStyles.tabular
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.ErrorState
 import com.couli.core.designsystem.StateAction
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.me.AppealView
 import com.couli.core.me.MeJson
 import com.couli.core.me.PendingWithdrawals
@@ -609,15 +610,17 @@ private fun WithdrawalValue(
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space1 / 2),
     ) {
-        Text(
+        // 判据 1：「金额 · 状态」里的金额经共用整段数字件，整段不断
+        WholeNumberText(
             text = value,
             style = CouliTextStyles.footnoteMedium.tabular(),
             color = CouliColors.textPrimary,
             textAlign = TextAlign.End,
             modifier = Modifier.fillMaxWidth(),
         )
+        // 判据 1：副文案（如「{amount} 已冻结」）里的金额同样经共用整段数字件
         sublines.forEach { line ->
-            Text(
+            WholeNumberText(
                 text = line,
                 style = CouliTypography.caption,
                 color = CouliColors.textSecondary,

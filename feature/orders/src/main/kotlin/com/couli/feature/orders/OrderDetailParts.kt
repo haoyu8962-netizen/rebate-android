@@ -57,8 +57,10 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.EndWrapRow
+import com.couli.core.designsystem.NumberLine
 import com.couli.core.designsystem.PlatformBadge
 import com.couli.core.designsystem.ProductThumbnail
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.orders.CreditPeriodText
 import com.couli.core.orders.OrderActionButton
@@ -183,28 +185,36 @@ private fun StatusTitleRow(
     val summary = model.detail.summary
     val status = summary.displayStatus
     val settled = OrderUi.settled(status)
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(CouliSpacing.space2)) {
-        Icon(
-            OrderUi.statusIcon(status),
-            contentDescription = null,
-            tint = if (settled) CouliColors.statusSuccessText else CouliColors.textSecondary,
-            modifier = Modifier.size(CouliSizes.iconMedium).testTag(OrderTags.DETAIL_STATUS_ICON),
-        )
-        Text(
+    // 判据 1：标题里的扣回金额经共用整段数字件；金额在图标、眼睛之间放不下时两侧让行，标题先独占整行，仍放不下才横滑
+    NumberLine(
+        gap = CouliSpacing.space2,
+        fill = true,
+        leading = {
+            Icon(
+                OrderUi.statusIcon(status),
+                contentDescription = null,
+                tint = if (settled) CouliColors.statusSuccessText else CouliColors.textSecondary,
+                modifier = Modifier.size(CouliSizes.iconMedium).testTag(OrderTags.DETAIL_STATUS_ICON),
+            )
+        },
+        trailing = {
+            // 眼睛命中区 48（不撑高标题行：视觉只按图标高参与测量，上下溢出到卡片内边距）；向右移 12 使图标与画板同位（画板按钮 -12 外边距），
+            // 命中区右缘仍在卡片内
+            CouliIconButton(
+                icon = if (model.masked) CouliIcons.eyeOff else CouliIcons.eye,
+                label = texts.text(if (model.masked) OrderUi.MASK_SHOW_KEY else OrderUi.MASK_HIDE_KEY),
+                onClick = onToggleMask,
+                tint = CouliColors.textSecondary,
+                iconSize = CouliSizes.iconMedium,
+                modifier = Modifier.visualHeight(CouliSizes.iconMedium).offset(x = CouliSpacing.space3).testTag(OrderTags.MASK),
+            )
+        },
+    ) {
+        WholeNumberText(
             text = OrderUi.statusLabel(texts, OrderStatusText.of(status).labelKey, summary.clawbackFen, model.masked),
             style = CouliTextStyles.bodySemibold,
             color = if (settled) CouliColors.statusSuccessText else CouliColors.textPrimary,
-            modifier = Modifier.weight(1f).semantics { heading() },
-        )
-        // 眼睛命中区 48（不撑高标题行：视觉只按图标高参与测量，上下溢出到卡片内边距）；向右移 12 使图标与画板同位（画板按钮 -12 外边距），
-        // 命中区右缘仍在卡片内
-        CouliIconButton(
-            icon = if (model.masked) CouliIcons.eyeOff else CouliIcons.eye,
-            label = texts.text(if (model.masked) OrderUi.MASK_SHOW_KEY else OrderUi.MASK_HIDE_KEY),
-            onClick = onToggleMask,
-            tint = CouliColors.textSecondary,
-            iconSize = CouliSizes.iconMedium,
-            modifier = Modifier.visualHeight(CouliSizes.iconMedium).offset(x = CouliSpacing.space3).testTag(OrderTags.MASK),
+            textModifier = Modifier.semantics { heading() },
         )
     }
 }

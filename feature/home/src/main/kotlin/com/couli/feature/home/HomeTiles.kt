@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -36,6 +35,7 @@ import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliTypography
 import com.couli.core.designsystem.DisclaimerInfoButton
 import com.couli.core.designsystem.GridRebateBlock
+import com.couli.core.designsystem.NumberLine
 import com.couli.core.designsystem.PriceSubLines
 import com.couli.core.designsystem.PriceTagMain
 import com.couli.core.designsystem.PriceTagSize
@@ -143,14 +143,19 @@ internal fun HomeScrollTile(
 
             price != null -> {
                 Column {
-                    // 不显示返利区（暂无返利）时口径 i 放在价格行右侧，不随返利区一起消失（r1 S1-1，同 F-AND-06 网格卡）
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 不显示返利区（暂无返利）时口径 i 放在价格行右侧，不随返利区一起消失（r1 S1-1，同 F-AND-06 网格卡）。
+                    // 判据 1：主价在「整行 − 按钮」里放不下时按钮先让到下一行（靠右），主价独占整行；整行也放不下才由 AmountText 框内横滑
+                    NumberLine(
+                        trailing =
+                            if (!rebateShown && info != null) {
+                                { DisclaimerInfoButton(label = data.infoLabel, expanded = false, onToggle = info) }
+                            } else {
+                                null
+                            },
+                    ) {
                         // 价格读屏已并入整卡一句：这里整块清掉（含 PriceTagMain 自带的读屏句），不重复
-                        Box(modifier = Modifier.weight(1f, fill = false).clearAndSetSemantics {}) {
+                        Box(modifier = Modifier.clearAndSetSemantics {}) {
                             PriceTagMain(content = price, size = PriceTagSize.AI)
-                        }
-                        if (!rebateShown && info != null) {
-                            DisclaimerInfoButton(label = data.infoLabel, expanded = false, onToggle = info)
                         }
                     }
                     PriceSubLines(lines = price.subLines(specNote = data.specNote), modifier = Modifier.clearAndSetSemantics {})
