@@ -128,6 +128,9 @@ internal fun WholeNumberLayout(
     val fading = overflow.fadeEnd
     val tint = color.takeOrElse { style.color.takeOrElse { LocalContentColor.current } }
     val fade = with(LocalDensity.current) { FADE.toPx() }
+    // 渐隐遮罩起点色：DstIn 只取遮罩的透明度、不取颜色，任一不透明色效果相同。取令牌色（textPrimary 深浅两套都不透明），
+    // 不写 Color.Black（设计系统不许手抄色值），也不用文字色 tint（可能半透明，渐隐会变浅）。
+    val mask = CouliColors.textPrimary
     Layout(
         content = {
             Layout(
@@ -135,7 +138,7 @@ internal fun WholeNumberLayout(
                 // 只有数字串整段放不下视口时才挂框架的横滑（放得下时与普通 Text 一样，没有滚动语义）
                 modifier =
                     if (wrap.overflowing) {
-                        Modifier.drawWithContent { drawFadingEnd(overflow, fade) }.horizontalScroll(scroll, overscrollEffect = null)
+                        Modifier.drawWithContent { drawFadingEnd(overflow, fade, mask) }.horizontalScroll(scroll, overscrollEffect = null)
                     } else {
                         Modifier
                     },
@@ -148,10 +151,14 @@ internal fun WholeNumberLayout(
     )
 }
 
-/** 末端渐隐：还能往后滑时，把视口最后 [fadePx] 宽的内容按从实到透明的线性渐变遮掉（DstIn，底色透出来）；不滑时原样画。 */
+/**
+ * 末端渐隐：还能往后滑时，把视口最后 [fadePx] 宽的内容按从实到透明的线性渐变遮掉（DstIn，底色透出来）；不滑时原样画。
+ * [mask] 是渐变起点的不透明色（DstIn 只用它的透明度，颜色不影响结果）。
+ */
 private fun ContentDrawScope.drawFadingEnd(
     overflow: NumberOverflowState,
     fadePx: Float,
+    mask: Color,
 ) {
     if (!overflow.fadeEnd) {
         drawContent()
@@ -162,7 +169,7 @@ private fun ContentDrawScope.drawFadingEnd(
         canvas.saveLayer(Rect(Offset.Zero, size), Paint())
         drawContent()
         drawRect(
-            brush = Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = size.width - span, endX = size.width),
+            brush = Brush.horizontalGradient(listOf(mask, Color.Transparent), startX = size.width - span, endX = size.width),
             topLeft = Offset(size.width - span, 0f),
             size = Size(span, size.height),
             blendMode = BlendMode.DstIn,
@@ -582,10 +589,12 @@ private fun MeasureScope.stacked(
 }
 
 /** 末端渐隐宽（建议 ≥ 24dp）；视口很窄时不超过视口的 1 / [FADE_MAX_SHARE]。 */
-private val FADE = 24.dp
+private val FADE = CouliSpacing.space6
 private const val FADE_MAX_SHARE = 3f
-private val INDICATOR_GAP = 3.dp
-private val INDICATOR_HEIGHT = 3.dp
-private val INDICATOR_MIN_THUMB = 24.dp
+
+// 横滑指示器：与文字的间距 space.1（4dp）、条高 component.tab-indicator.height（2dp），合计 6dp 同改前（D10-1558，读令牌、不手抄）
+private val INDICATOR_GAP = CouliSpacing.space1
+private val INDICATOR_HEIGHT = CouliComponentTokens.tabIndicatorHeight
+private val INDICATOR_MIN_THUMB = CouliSpacing.space6
 private const val TRACK_ALPHA = 0.2f
 private const val THUMB_ALPHA = 0.7f
