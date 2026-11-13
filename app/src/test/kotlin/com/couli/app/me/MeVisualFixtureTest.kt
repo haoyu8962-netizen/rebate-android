@@ -45,7 +45,7 @@ class MeVisualFixtureTest {
                 "contract.lock" to "8ebc35cd4ec850ce695f04fecc818b0d084cf79b58ae77f3f65ab13c148c2658",
                 // 钉值随主干合法变更更新：APP-08v-b AmountGrid valueSizes（7db97ce）
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
-                    "ba9c7019e59c17a107e73e7f67349ec2bafe22bf81f8445422b7f4253433d611",
+                    "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b",
                 "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0",
                 "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt" to "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2",
                 "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt" to

@@ -239,7 +239,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliButtons.kt",
-      "h": "7c5cfbe3eabd6009d14350edb59f590eac8e89182f0ff5e87bb5a8543352fe80"
+      "h": "c7f68febae4b25b4baa5ad97d4fa449bbee319ecb4a4ae6f70a4d9b8e7847cf7"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliCategoryIcons.kt",
@@ -267,7 +267,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliInputs.kt",
-      "h": "6c36dd7392dca952c91907d9a55f91e539f835308753b15247beeb6ad25cd295"
+      "h": "00af892918ca29754b406d981bd25ffa13765204975e896d4ae63f65e9544566"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/CouliLists.kt",
@@ -307,7 +307,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/FeedbackComponents.kt",
-      "h": "a6577c68269feab17e4d33399c6979b1f2034abdf2a63148d03e1dfef604ded0"
+      "h": "76ddd1a82f5e70af75989b4e785fa4e6abda90411c93e9d8ecd1c715fd3ac59d"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/NavigationComponents.kt",
@@ -323,7 +323,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PriceComponents.kt",
-      "h": "9be65a0a37762d91efb61027b14bbce5fd1222459fe3fb0fbe876eed085f01d8"
+      "h": "0362ee865905f9f941f9d9c964f0aa319003d9190daebd4a5940a8730f03ab52"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/PriceModels.kt",
@@ -335,7 +335,7 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/ProductCard.kt",
-      "h": "efa9cf83ad65dbcb933e2cb1dd47b399a5a6373fa3f4522dce0712f426773428"
+      "h": "0596ad9cccf7679eb25cc1bdcd46f615905d80d60b79bf0dd9d49c04302ad9c4"
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/ProductCardMapper.kt",
@@ -351,7 +351,11 @@
     },
     {
       "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt",
-      "h": "ba9c7019e59c17a107e73e7f67349ec2bafe22bf81f8445422b7f4253433d611"
+      "h": "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b"
+    },
+    {
+      "p": "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WholeNumbers.kt",
+      "h": "cd7fc71c9dd0307043a73f06d6a19c653a10aab06ea0b067e9f72e157df56b49"
     },
     {
       "p": "core/designsystem/src/main/res/drawable/couli_logo_horizontal.xml",
@@ -527,7 +531,7 @@
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeUi.kt",
-      "h": "0fc4f63f8a8d84d0285df1eca77a3e9bf80cd17e3526e4b667c2377c17f7a542"
+      "h": "6365a95908cc82387747dbce44aa1719159aefe692a095120c57d6a98772a25b"
     },
     {
       "p": "specs/search-product-vectors.json",

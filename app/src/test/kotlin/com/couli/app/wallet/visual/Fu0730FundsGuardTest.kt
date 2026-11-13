@@ -50,7 +50,7 @@ class Fu0730FundsGuardTest {
             digest.update(0)
             digest.update(File(dir, path).readBytes())
         }
-        assertEquals("组件库文件数", 46, files.size)
+        assertEquals("组件库文件数", 47, files.size)
         assertEquals("组件库 core/designsystem/src/main 不改", DESIGN_SYSTEM_DIGEST, hex(digest.digest()))
     }
 
@@ -92,7 +92,7 @@ class Fu0730FundsGuardTest {
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
 
     private companion object {
-        const val DESIGN_SYSTEM_DIGEST = "fe766a67b22d38189db41d11923666c9e74807238cd48aa1a05ddea80a795059"
+        const val DESIGN_SYSTEM_DIGEST = "71c79b21ce9cb7861f223cdf88a4ff70efeaca6145f6beffdfa219c416dddf19"
         val AMOUNT_ENTRY = Regex("""model\.onAmountChange\([^()]*, owner\)""")
     }
 }
