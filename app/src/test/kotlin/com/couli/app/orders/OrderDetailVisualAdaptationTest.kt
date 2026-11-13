@@ -13,9 +13,13 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.numwrap.NumField
+import com.couli.app.numwrap.NumToken
+import com.couli.app.numwrap.NumWrap
 import com.couli.app.product.assertNoTextOverflow
 import com.couli.app.product.textLayout
 import com.couli.core.designsystem.CouliSpacing
+import com.couli.core.designsystem.CouliTextStyles
 import com.couli.feature.orders.OrderTags
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -115,11 +119,17 @@ class OrderDetailVisualAdaptationTest {
                 .layoutInput.style.fontSize.value,
             .01f,
         )
-        val number = rule.onNodeWithTag(OrderTags.DETAIL_ORDER_NO, useUnmergedTree = true).performScrollTo()
-        number.assertNoTextOverflow()
-        number.assertCopyFollowsLastLine(rule.onNodeWithText("复制", useUnmergedTree = true))
+        // #24 ③（FU-AND-NUM-WRAP，D10-1265 / 判据 1）：订单号独占一行仍放不下时框内横滑，布局宽 > 可见框，「整段落在可见框内」换成
+        // 整段不断、不截断、不缩字、真滚到首尾（NumWrap.assertField → NumReach），纵向不裁切照旧；复制位置改 NumCopy 可视窗口口径。
+        // 先滚外层页面把号码露出来（对号码所在整段数字件的外壳滚动），不对号码本身 performScrollTo（横滑时那只会滚号码自己的横滑框）。
+        val number = rule.onNodeWithTag(OrderTags.DETAIL_ORDER_NO, useUnmergedTree = true)
+        rule.revealNumber(number)
+        val where = "订单详情订单号（200%）"
+        number.assertNumberNotClippedVertically(where)
+        NumWrap.assertField(rule, NumField(STRESS_NO, where, NumWrap.within(OrderTags.DETAIL_ORDER_NO), ORDER_NO_TOKEN))
+        number.assertCopyClearOfNumber(rule, STRESS_NO, OrderTags.DETAIL_COPY, where)
         rule.clickDetail(OrderTags.DETAIL_COPY)
-        assertEquals(listOf("3741234567890123456"), host.copies)
+        assertEquals(listOf(STRESS_NO), host.copies)
     }
 
     @Test
@@ -169,5 +179,13 @@ class OrderDetailVisualAdaptationTest {
         }
         rule.clickDetail(OrderTags.DETAIL_ACTION_PREFIX + "withdraw")
         assertEquals(listOf("Withdraw" to JsonObject(emptyMap())), host.opened)
+    }
+
+    private companion object {
+        /** detail_stress 的订单号（19 位，QA-11 断开的那串）。 */
+        const val STRESS_NO = "3741234567890123456"
+
+        /** 订单号令牌 captionAmount，200%（不缩字）。 */
+        val ORDER_NO_TOKEN = NumToken(CouliTextStyles.captionAmount.fontSize, 2f)
     }
 }

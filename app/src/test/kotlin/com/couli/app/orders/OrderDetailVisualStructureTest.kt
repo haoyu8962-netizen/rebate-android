@@ -129,7 +129,8 @@ class OrderDetailVisualStructureTest {
                 ?.weight,
         )
         assertEquals(title.fetchSemanticsNode().boundsInRoot.left, number.fetchSemanticsNode().boundsInRoot.left, 1f)
-        number.assertCopyFollowsLastLine(rule.onNodeWithText("复制", useUnmergedTree = true))
+        // #24 ⑨（FU-AND-NUM-WRAP）：复制位置改 NumCopy 可视窗口口径 + 原 M10 流式位置（号码不横滑时逐字同旧）
+        number.assertCopyClearOfNumber(rule, "305678901234", OrderTags.DETAIL_COPY, "订单详情默认字号")
         rule.clickDetail(OrderTags.DETAIL_VIEW_PRODUCT)
         assertEquals(
             listOf("ProductDetail" to JsonObject(mapOf("platform" to JsonPrimitive("jd"), "product_key" to JsonPrimitive("fixture:C")))),

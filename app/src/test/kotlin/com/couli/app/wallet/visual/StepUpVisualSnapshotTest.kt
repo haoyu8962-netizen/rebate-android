@@ -52,15 +52,15 @@ class StepUpVisualSnapshotTest {
 
     @Test
     @Config(qualifiers = "w390dp-h844dp-xhdpi", fontScale = 2f)
-    fun font200W390() = shot("WithdrawStepUp-v2-font200-w390-light") { typing() }
+    fun font200W390() = shot("WithdrawStepUp-v2-font200-w390-light", fontScale = 2f) { typing() }
 
     @Test
     @Config(qualifiers = "w320dp-h844dp-xhdpi", fontScale = 2f)
-    fun font200W320() = shot("WithdrawStepUp-v2-font200-w320-light") { typing() }
+    fun font200W320() = shot("WithdrawStepUp-v2-font200-w320-light", fontScale = 2f) { typing() }
 
     @Test
     @Config(qualifiers = "w320dp-h360dp-xxhdpi", fontScale = 2f)
-    fun font200Short() = shot("WithdrawStepUp-v2-font200-short-light") { typing() }
+    fun font200Short() = shot("WithdrawStepUp-v2-font200-short-light", fontScale = 2f) { typing() }
 
     @Test
     @Config(qualifiers = "w840dp-h1000dp-xhdpi")
@@ -68,6 +68,7 @@ class StepUpVisualSnapshotTest {
 
     @Test fun hostPayout() = shot("WithdrawStepUp-v2-host-payout-light", payout = true) { typing() }
 
+    // #24 ⑧（FU-AND-NUM-WRAP，brief §2.5 ③）：fontScale 传给 kit.open，200% 截图的宿主页也按 200% 渲染（与 @Config fontScale 一致），不再默认 1.0
     @Suppress("LongParameterList") // 场景开关逐项
     private fun shot(
         name: String,
@@ -75,11 +76,12 @@ class StepUpVisualSnapshotTest {
         payout: Boolean = false,
         wrong: Boolean = false,
         smsFails: Boolean = false,
+        fontScale: Float = 1f,
         then: () -> Unit = {},
     ) {
         if (wrong) host.api.stepUpAnswers += WithdrawVisualFixtures.failure(WRONG_CODE)
         if (smsFails) host.api.smsAnswers += WithdrawVisualFixtures.failure()
-        kit.open(payout = payout, dark = dark)
+        kit.open(payout = payout, dark = dark, fontScale = fontScale)
         then()
         rule.waitForIdle()
         captureScreenRoboImage("src/test/snapshots/stepup-v/$name.png")

@@ -3,6 +3,9 @@ package com.couli.app.orders
 import android.app.Application
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.LayoutInfo
+import androidx.compose.ui.platform.InspectableValue
+import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
@@ -105,7 +108,7 @@ class OrderListVisualDecorationTest {
             assertEquals("$status 的胶囊字号", 12f, style.fontSize.value, .01f)
             val green = status == "CREDITED" || status == "CREDITED_PART_CLAWED"
             assertEquals("$status 的文字令牌", if (green) host.successText else host.secondary, style.color)
-            val pill = outerBounds(checkNotNull(node.layoutInfo.parentInfo))
+            val pill = outerBounds(pillOf(node))
             val d = node.layoutInfo.density.density
             assertEquals("胶囊视觉高度", 22f, pill.height / d, 2f)
             assertTrue("胶囊不拉成全宽状态行", pill.width <= node.boundsInRoot.width + 40 * d)
@@ -115,4 +118,21 @@ class OrderListVisualDecorationTest {
             }
         }
     }
+
+    /**
+     * 胶囊节点 = 状态文字往上第一个修饰链里有 background 的布局节点（#24 第 15 条，D10-1456：只改取节点的方式）。
+     * bbde9ea：Text 的父节点就是胶囊 Row（heightIn + background + padding），第一个带底色的祖先即该 Row；
+     * 现行：Text → WholeNumberLayout 内层 → 外层（只有语义）→ NumberLine（同一串 heightIn + background + padding），
+     * 第一个带底色的祖先即该 NumberLine。
+     */
+    private fun pillOf(text: SemanticsNode): LayoutInfo {
+        val ancestors = generateSequence(text.layoutInfo.parentInfo) { it.parentInfo }
+        return checkNotNull(ancestors.firstOrNull { it.paintsBackground() }) { "状态文字之上找不到带底色的胶囊节点" }
+    }
+
+    private fun LayoutInfo.paintsBackground(): Boolean =
+        getModifierInfo().any { info ->
+            val modifier = info.modifier
+            modifier::class.simpleName == "BackgroundElement" || (modifier as? InspectableValue)?.nameFallback == "background"
+        }
 }

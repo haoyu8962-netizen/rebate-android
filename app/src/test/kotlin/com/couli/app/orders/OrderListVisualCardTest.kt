@@ -102,7 +102,8 @@ class OrderListVisualCardTest {
         host.launch(OrderListVisualFixtures.page("short_number"))
         val number = rule.onNodeWithTag(OrderTags.ORDER_NO_PREFIX + "SHORT", useUnmergedTree = true)
         val label = rule.cardText("复制", "SHORT")
-        number.assertCopyFollowsLastLine(label)
+        // #24 ⑨（FU-AND-NUM-WRAP）：复制位置改 NumCopy 可视窗口口径 + 原 M10 流式位置（号码不横滑时逐字同旧）
+        number.assertCopyClearOfNumber(rule, "1234", OrderTags.COPY_PREFIX + "SHORT", "订单列表卡短单号")
         val copy = label.fetchSemanticsNode()
         val d = copy.layoutInfo.density.density
         assertEquals(

@@ -8,8 +8,12 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.numwrap.NumField
+import com.couli.app.numwrap.NumToken
+import com.couli.app.numwrap.NumWrap
 import com.couli.app.product.assertNoTextOverflow
 import com.couli.app.product.textLayout
+import com.couli.core.designsystem.CouliTextStyles
 import com.couli.feature.orders.OrderTags
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -52,14 +56,19 @@ class OrderListVisualAdaptationTest {
                 .layoutInput.density.fontScale,
             .001f,
         )
-        assertTrue("必须实际形成多行，不能用短号绕过末行检查", number.textLayout().lineCount > 1)
-        number.assertNoTextOverflow()
+        // #24 ①（FU-AND-NUM-WRAP，D10-1265 / 判据 1）：19 位号码在 w320×200% 列表卡独占一行也放不下，现在整行框内横滑、一行。
+        // 「必须实际形成多行」换成「必须实际处在横滑态」（同样防短号绕过）；「整段落在可见框内」换成整段不断、不截断、不缩字、真滚到首尾，纵向不裁切照旧；
+        // 复制位置改 NumCopy 可视窗口口径，且横滑时【复制】必须整体换到号码下一行、回到列起点。
+        val where = "订单列表卡订单号（w320×200%）"
+        number.assertNumberScrollsFromStart(where)
+        number.assertNumberNotClippedVertically(where)
+        NumWrap.assertField(rule, NumField(STRESS_NO, where, NumWrap.within(OrderTags.ORDER_NO_PREFIX + "STRESS"), ORDER_NO_TOKEN))
         copy.assertNoTextOverflow()
-        number.assertCopyFollowsLastLine(copy)
+        number.assertCopyClearOfNumber(rule, STRESS_NO, OrderTags.COPY_PREFIX + "STRESS", where)
         val target = rule.onNodeWithTag(OrderTags.COPY_PREFIX + "STRESS").fetchSemanticsNode()
         target.assertTouch48()
         rule.touch(target.touchBoundsInRoot.center)
-        assertEquals(listOf("3741234567890123456"), host.copies)
+        assertEquals(listOf(STRESS_NO), host.copies)
         assertTrue(host.opened.isEmpty())
     }
 
@@ -117,11 +126,15 @@ class OrderListVisualAdaptationTest {
         rule.onNodeWithTag(OrderTags.CARD_PREFIX + "STRESS").performScrollTo()
         val rebate = rule.orderAmount("¥99999.99", "STRESS")
         val paid = rule.orderAmount("¥88888.88", "STRESS")
-        listOf(
-            rule.cardText("复制", "STRESS"),
-            rule.onNodeWithTag(OrderTags.ORDER_NO_PREFIX + "STRESS", useUnmergedTree = true),
-        ).forEach {
-            it.assertNoTextOverflow() // 复用 main 的 v3 宽度+位置判据，不能恢复 didOverflowWidth 假阳性。
+        val copy = rule.cardText("复制", "STRESS")
+        val number = rule.onNodeWithTag(OrderTags.ORDER_NO_PREFIX + "STRESS", useUnmergedTree = true)
+        copy.assertNoTextOverflow() // 复用 main 的 v3 宽度+位置判据，不能恢复 didOverflowWidth 假阳性。
+        // #24 ②（FU-AND-NUM-WRAP，D10-1265 / 判据 1）：订单号独占一行仍放不下时框内横滑，布局宽 > 可见框；「整段落在可见框内」换成
+        // 整段不断、不截断、不缩字（captionAmount 令牌）、真滚到首尾（NumReach），纵向不裁切照旧。
+        val where = "订单列表卡订单号（200%）"
+        number.assertNumberNotClippedVertically(where)
+        NumWrap.assertField(rule, NumField(STRESS_NO, where, NumWrap.within(OrderTags.ORDER_NO_PREFIX + "STRESS"), ORDER_NO_TOKEN))
+        listOf(copy, number).forEach {
             assertEquals(
                 2f,
                 it
@@ -147,10 +160,18 @@ class OrderListVisualAdaptationTest {
             assertEquals(2f, it.result.layoutInput.density.fontScale, .001f)
         }
         assertTrue("200% 必须纵排返利在上", rebate.bounds.bottom <= paid.bounds.top)
-        val copy = rule.onNodeWithTag(OrderTags.COPY_PREFIX + "STRESS").fetchSemanticsNode()
-        copy.assertTouch48()
-        rule.touch(copy.touchBoundsInRoot.center)
-        assertEquals(listOf("3741234567890123456"), host.copies)
+        val target = rule.onNodeWithTag(OrderTags.COPY_PREFIX + "STRESS").fetchSemanticsNode()
+        target.assertTouch48()
+        rule.touch(target.touchBoundsInRoot.center)
+        assertEquals(listOf(STRESS_NO), host.copies)
         assertTrue(host.opened.isEmpty())
+    }
+
+    private companion object {
+        /** visualOrders.stress 的订单号（19 位，QA-11 断开的那串）。 */
+        const val STRESS_NO = "3741234567890123456"
+
+        /** 订单号令牌 captionAmount，200%（不缩字）。 */
+        val ORDER_NO_TOKEN = NumToken(CouliTextStyles.captionAmount.fontSize, 2f)
     }
 }

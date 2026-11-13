@@ -1,6 +1,7 @@
 package com.couli.app.wallet.visual
 
 import android.app.Application
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -8,11 +9,13 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.numwrap.NumOverflow
 import com.couli.feature.wallet.WalletTags
 import com.github.takahirom.roborazzi.captureRoboImage
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -148,8 +151,15 @@ class WithdrawRecordsVisualSnapshotTest {
         }
         if (fontScale == 2f) {
             capture("$name-top")
-            rule.onNodeWithTag(WalletTags.RECORD_TRADE_NO, useUnmergedTree = true).performScrollTo()
+            // #24 ⑦（FU-AND-NUM-WRAP）：流水号 200% 下框内横滑；对号码本身 performScrollTo 只会滚它自己的横滑框、外层列表不动（w320 时【复制】仍在屏外）。
+            // 改为对号码所在整段数字件的外壳（声明 AmountOverflow、不在横滑框里）performScrollTo，先滚外层列表，再断言【复制】与号码都可见。
+            val number = rule.onNodeWithTag(WalletTags.RECORD_TRADE_NO, useUnmergedTree = true).fetchSemanticsNode()
+            val shell = generateSequence(number) { it.parent }.firstOrNull { node -> node.config.any { it.key.name == NumOverflow.KEY } }
+            assertNotNull("流水号没有走共用整段数字件（找不到语义 ${NumOverflow.KEY}）", shell)
+            val id = checkNotNull(shell).id
+            rule.onNode(SemanticsMatcher("流水号整段数字件外壳") { it.id == id }, useUnmergedTree = true).performScrollTo()
             rule.onNodeWithTag(WalletTags.RECORD_COPY).assertIsDisplayed()
+            rule.onNodeWithTag(WalletTags.RECORD_TRADE_NO, useUnmergedTree = true).assertIsDisplayed()
         }
         capture(name)
     }
