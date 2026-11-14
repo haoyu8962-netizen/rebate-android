@@ -39,14 +39,14 @@ class MeVisualFixtureTest {
                 "feature/me/src/main/kotlin/com/couli/feature/me/MeRepository.kt" to
                     "c2c17ef3ed3b96631eabcf5d09ea987f6262ff055ff18324fcdb56e023256d8d",
                 "core/me/src/main/kotlin/com/couli/core/me/MePresentation.kt" to
-                    "9da8db187987dab2ddddd0ff131cd37d0867249e0e778cdb8cf67f47457e5940",
+                    "7dc5f1551dd8af3a36226ff259b7b64f4fc0247d4258e0b2a17542bf4ab2c86b",
                 "core/me/src/main/kotlin/com/couli/core/me/MeJson.kt" to "65eb62b5571856f11d06c82cb3c7da3a957ad9ec69eb0c8f71ae5a560d910e9c",
                 // 钉值随锁升级更新：FU-X-CTA-KEY-DRIFT 锁 a89c1ec3a（D10-857，#24）
-                "contract.lock" to "8ebc35cd4ec850ce695f04fecc818b0d084cf79b58ae77f3f65ab13c148c2658",
+                "contract.lock" to "09c3b66563c1067be963a4d4b0c96c7f00610c57acf6e8741a6dc3ae1876a2bc",
                 // 钉值随主干合法变更更新：APP-08v-b AmountGrid valueSizes（7db97ce）
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
                     "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b",
-                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "0f6121f68a3c624c242655df20ca5ee86da19066c32c3e1cc3cf80f8985c08f0",
+                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "313ae4236fa8089a72fbc9390d73d342e50cad1b6a0f8671c242567a2702e91f",
                 "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt" to "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2",
                 "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt" to
                     "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d",

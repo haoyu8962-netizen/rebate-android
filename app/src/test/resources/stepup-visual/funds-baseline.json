@@ -22,7 +22,7 @@
     "app/src/test/kotlin/com/couli/app/product/ProductVisualWiringTest.kt": "b6341c2f646fce2e7fc9f96aa87839aca1db5a1a5d378d58b4dbd46767945fb7",
     "app/src/test/kotlin/com/couli/app/trade/AppSearchLeaveWiringTest.kt": "59b936e4b64e8a5d942ec6cc1012ae5a35961691399c23c9612fa453a21aaef5",
     "app/src/test/kotlin/com/couli/app/trade/AppSearchPlatformStatusWiringTest.kt": "82469192b46e6784b76cb9cd2fb401fffb0343a488154dd70f0e9f42f48cb2aa",
-    "app/src/test/kotlin/com/couli/app/trade/CtLock01LinkJumpWiringTest.kt": "7dda22a8b1fdb5ec329420ef0f100fb7d7f0414ac891e436744710269fdce246",
+    "app/src/test/kotlin/com/couli/app/trade/CtLock01LinkJumpWiringTest.kt": "f8bdb7b415917f102a04ca7e4047b611c164fa5a217ba3f8751baf976dfac3bc",
     "app/src/test/kotlin/com/couli/app/wallet/WalletPageWiringTest.kt": "19bf2333494d882592ba28448dbc5129920c1df6b41acfa7dd0e608babec99a0",
     "app/src/test/kotlin/com/couli/app/wallet/WalletReviewR1Test.kt": "131ddcfb0cb7fa17117ed003c1ef7f82b01d79414fb697e12f0d84f219e9da5d",
     "app/src/test/kotlin/com/couli/app/wallet/WalletReviewR2Test.kt": "fcc4d933a7ebce8d7eecc1499636ce2ea7cc810c22a8d2818ccfda24f2b239ce",

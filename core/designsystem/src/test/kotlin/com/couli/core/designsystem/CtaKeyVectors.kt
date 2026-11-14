@@ -21,10 +21,10 @@ internal object CtaKeyVectors {
     const val NOW = 1_794_022_200_000L
 
     /** D10-857：三端统一锁到 rebate-platform a89c1ec3a（CT-26t #2450）。 */
-    const val LOCK_COMMIT = "a89c1ec3a7f4de0b069742af909eba6545358ea3"
+    const val LOCK_COMMIT = "56c99d0b961debb9684289a7dd5643a38734464c"
 
     /** iOS 原件 worktrees/native/FU-X-CTA-KEY-DRIFT-ios/specs/cta-key-vectors.json 的 sha256（tests-ios-v1.sha256 末行）。 */
-    const val SHARED_SHA256 = "d93b2905983bb07a8cca624f3a8af2a9a9b7220e49f34d43886270cb32f4bc40"
+    const val SHARED_SHA256 = "15d59b80879ed6d7292992dba904ea337118a150521168fd4ac6b112d103e7ff"
 
     val root: File =
         generateSequence(File(System.getProperty("user.dir") ?: ".").canonicalFile) { it.parentFile }

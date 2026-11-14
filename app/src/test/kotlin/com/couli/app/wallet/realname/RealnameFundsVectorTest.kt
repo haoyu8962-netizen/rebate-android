@@ -268,7 +268,7 @@ class RealnameFundsVectorTest : RealnameFundsHarness() {
     private fun JsonObject.flag(name: String): Boolean = this[name]?.jsonPrimitive?.booleanOrNull == true
 
     private companion object {
-        const val VECTORS_SHA256 = "2b3f872080677d36e3965bf57a5af30c9e7e39c5c1212ff34e6b30ce22b85cf9"
+        const val VECTORS_SHA256 = "5d37463070f64452f752f04d85e7053b16a49896780948ba510e19c7ecb982a5"
         const val CASE_COUNT = 25
         const val RECOVER_WINDOW_MS = 1_500L
         const val TRACE6 = "zz9876"

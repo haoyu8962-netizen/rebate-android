@@ -27,31 +27,31 @@
     },
     {
       "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt",
-      "h": "e04853501bef27bc1723d0cd8e1dacf1bdc196442bdaf4194af3ac2ab3c59ff4"
+      "h": "b0df8bf05fce0a0f41b2bd978343c12e7039435fc81d646176b7d338529d95ea"
     },
     {
       "p": "contract.lock",
-      "h": "8ebc35cd4ec850ce695f04fecc818b0d084cf79b58ae77f3f65ab13c148c2658"
+      "h": "09c3b66563c1067be963a4d4b0c96c7f00610c57acf6e8741a6dc3ae1876a2bc"
     },
     {
       "p": "contracts/snapshot/contracts/agent-stream.schema.json",
-      "h": "895bd7458fc9185e5b9022e316fc4313b90b84f91d75f72227bd3e907139fb9e"
+      "h": "c7c6960cd0d606ef3b07757f44aad653681788d5ed1338d9ec4ea4d728c7a38d"
     },
     {
       "p": "contracts/snapshot/contracts/apps.json",
-      "h": "b7c3e07ad63d52e7ec5b6021b13dc2003cabb0755adffa4af5079aa3ac2267dd"
+      "h": "755f083b1ab1c58eeb7e80b1d1db8158e6118b0ecfbc8f1d07557a0b46105dc8"
     },
     {
       "p": "contracts/snapshot/contracts/bridge.schema.json",
-      "h": "553c7f79b4a803fcdab70d6efa5c0d631f9a8a3263f9fd7f373a053c654dc1e3"
+      "h": "65605d08e15edda6a49036413b534a77f89202cedae7398d145e47b81833a874"
     },
     {
       "p": "contracts/snapshot/contracts/enums/admin.json",
-      "h": "15169659cbc717065f12d3c17893972a473b47d6271832e5c4acc026ea00a8ca"
+      "h": "b2f84f6c3749f43793c11fbbaf58b3035752f2e8eab200d2857e6f745b1e0db2"
     },
     {
       "p": "contracts/snapshot/contracts/enums/fund.json",
-      "h": "609f58a2598222e9b9c88364a77662c9c7efce5612fad7f84b43c133b62e3f5e"
+      "h": "fbdfbe6f4698b6e55d4ce613774a6d7dd1477b042fe33b30988f05b0549439ac"
     },
     {
       "p": "contracts/snapshot/contracts/enums/identity.json",
@@ -59,11 +59,11 @@
     },
     {
       "p": "contracts/snapshot/contracts/enums/ops.json",
-      "h": "cf931b2a615086bc3a37e781041baf2ab937fbce8457e4da04f029ef77f7ffc6"
+      "h": "e999d6072cd5d22dfec81526a65f72e01ab52d7cea1cfdb1e71d207c073b0b23"
     },
     {
       "p": "contracts/snapshot/contracts/enums/order.json",
-      "h": "9c520a728229f8636b5d1c4556719d61d8cee0d2fd7d5739fb07580134e3007e"
+      "h": "10cb34f7028892b0c4a2a30a7523e1d203017a3bdb1c6abe0ded1d6cda78a9e0"
     },
     {
       "p": "contracts/snapshot/contracts/enums/pay.json",
@@ -79,15 +79,15 @@
     },
     {
       "p": "contracts/snapshot/contracts/error-codes.json",
-      "h": "954c14c589f9681d66fa5c8518ad482ee892638a1b6f2adfc2cd8c801dcb2d8f"
+      "h": "a312384e185aefcc1db7f0538ac98b63082b064a3c9fe77f19a0a889b6a398db"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/cancelled.ndjson",
-      "h": "ce745cae752b6f7b8e3caa8930e6115488c1d3fd40174628fb33fb8f3b0909e8"
+      "h": "516ea694a1dbf7da32086cfaa5ad810f4b45f7c8242ce0a5cb0fb8480ffb9fc3"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/disconnected.ndjson",
-      "h": "bf17e86ed82cd30caed137ddd091135970a2f2105f61376e77aeaec1e8d7a9cd"
+      "h": "f6971b85cf4e778b3d1565ba959fe1df8d3bd69addb45849901065688cb43429"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/duplicate-ended-done.ndjson",
@@ -111,7 +111,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/fallback.ndjson",
-      "h": "b9277baf0817d4073c66e89cfd6e59dbaa1fc3235167f9a879d46b3b24b27866"
+      "h": "3b36b2c640ba38973ec69b9d66961dedcdec31aa093c9115edd4c6e5e1c7869c"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/normal-earnings-history.ndjson",
@@ -127,7 +127,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/normal.ndjson",
-      "h": "9cc04f7b9188431daf1bf12f12992ec8df794bf1ac0bed36bd16b08aa035aaca"
+      "h": "7955c0e19d22729bc6db85f08632721a3e29655a7c3f48d75385c3bf1096f9bf"
     },
     {
       "p": "contracts/snapshot/contracts/fixtures/agent-streams/tool-failed.ndjson",
@@ -143,15 +143,15 @@
     },
     {
       "p": "contracts/snapshot/contracts/openapi.json",
-      "h": "4b658d0079bc173d5bed9081b122c202032b49247dc4afd45db0d2f2c0787214"
+      "h": "b8d2295f260f567d780bf628189980279d14c3ce152b5c5644b36b76bda7607d"
     },
     {
       "p": "contracts/snapshot/contracts/routes.json",
-      "h": "ab9b31952c979f61b40608edc982423423a38617f40b0937e3541e0766a31b06"
+      "h": "cf26c7512c92766e132e6801f2a8f56564af240eb4c8330738b39dd889e229af"
     },
     {
       "p": "contracts/snapshot/contracts/texts.default.json",
-      "h": "3ddce957d12e696d6276fd676cd0e78a719d337615f8d99d0d511b551d3022db"
+      "h": "5cdeb62c000f23d926bc53f8ffa60779d47568a56ff2126a2d87bb12f752776c"
     },
     {
       "p": "contracts/snapshot/design/design-tokens.json",
@@ -175,7 +175,7 @@
     },
     {
       "p": "contracts/snapshot/specs/events.json",
-      "h": "2f3628e7a02e48f10269d60e54f5116a9934e500582e9aa6fefb55587dfe8d3a"
+      "h": "87f144bee6ce0f3d7025b9ab56ac0193ea61f9be26fe0ba2adde2bae0bec15a5"
     },
     {
       "p": "contracts/snapshot/specs/request-sign.vectors.json",
@@ -183,7 +183,7 @@
     },
     {
       "p": "contracts/snapshot/specs/system-permissions.json",
-      "h": "bd7c09ae405d0ed5493704be0a51e59ec2628bf7a0c24c2433c39acfe8175b2f"
+      "h": "e5040ac178dc76fe2be510351827425a54d65b1a4cd616683237241a38a479b5"
     },
     {
       "p": "core/designsystem/src/main/assets/platform/README.md",
