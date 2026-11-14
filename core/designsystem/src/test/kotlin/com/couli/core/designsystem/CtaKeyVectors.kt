@@ -20,12 +20,18 @@ internal object CtaKeyVectors {
     /** 2026-11-07 11:30:00 +08:00，固定（与 iOS 同一时刻）。 */
     const val NOW = 1_794_022_200_000L
 
-    /** D10-857：三端统一锁到 rebate-platform a89c1ec3a（CT-26t #2450）。 */
-    // modify_existing：锁换 d47f660e5（FU-AND-STEPUP-SUMMARY，三端同步换向量 contractCommit），ruling D10-1664
+    /**
+     * D10-857：三端统一锁到 rebate-platform a89c1ec3a（CT-26t #2450）。
+     *
+     * modify_existing：锁换 d47f660e5（FU-AND-STEPUP-SUMMARY，三端同步换向量 contractCommit），ruling D10-1664
+     */
     const val LOCK_COMMIT = "d47f660e5d42729899ade06298ddf5457791ff3d"
 
-    /** iOS 原件 worktrees/native/FU-X-CTA-KEY-DRIFT-ios/specs/cta-key-vectors.json 的 sha256（tests-ios-v1.sha256 末行）。 */
-    // modify_existing：向量 contractCommit 换 d47f660e5 后的新字节（旧 15d59b80…e7ff），iOS / 鸿蒙照同一份字节跟，ruling D10-1664
+    /**
+     * iOS 原件 worktrees/native/FU-X-CTA-KEY-DRIFT-ios/specs/cta-key-vectors.json 的 sha256（tests-ios-v1.sha256 末行）。
+     *
+     * modify_existing：向量 contractCommit 换 d47f660e5 后的新字节（旧 15d59b80…e7ff），iOS / 鸿蒙照同一份字节跟，ruling D10-1664
+     */
     const val SHARED_SHA256 = "84b2897e7ed523e835395e0cc073dc206620bab8e9b43f6a9c4596f6c3de3ffa"
 
     val root: File =
