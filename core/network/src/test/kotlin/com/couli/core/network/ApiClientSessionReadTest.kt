@@ -140,14 +140,17 @@ class ApiClientSessionReadTest {
 
     // ---------- session_unreadable ----------
 
+    // modify_existing（#24）rule_change ruling D10-1667（D10-1658 ④）：x-auth=optional 有令牌就带、从不等待不拦截——会话读不出时照常发出、不带令牌
     @Test
     fun unreadableSessionRejectsAuthRequiredAndOptionalLocally() {
         val tokens = UnreadableTokens(MemorySessionTokens("access-A", "refresh-A", SessionScopeRaw.FULL, "account-A"))
         val api = client(tokens)
 
         assertEquals(ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE), api.execute(ApiCall("getMe")))
-        assertEquals("x-auth=optional 也拒绝", ApiResult.LocalReject(LocalRejectReason.SESSION_UNREADABLE), api.execute(ApiCall("getConfig")))
-        assertEquals("不发出", 0, server.requestCount)
+        assertEquals("auth-required 不发出", 0, server.requestCount)
+        assertTrue("x-auth=optional 照常发出", api.execute(ApiCall("getConfig")) is ApiResult.Success)
+        val sent = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertNull("读不出就不带令牌", sent.getHeader(HeaderNames.AUTHORIZATION))
         assertEquals("不清会话", 0, tokens.clears.get())
         assertEquals("access-A", tokens.inner.accessToken)
     }

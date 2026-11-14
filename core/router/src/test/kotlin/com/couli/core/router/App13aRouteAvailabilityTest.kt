@@ -30,13 +30,23 @@ class App13aRouteAvailabilityTest {
 
     private val params = JsonObject(mapOf("phone" to JsonPrimitive("13900001234"), "status" to JsonPrimitive("cooling")))
 
+    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android 改为 1.0.0，since=null 的例子换成 Favorites，ruling D10-1664
     @Test
     fun sinceNullDefaultsToUpgradePrompt() {
-        val decision = EntryGuard.decide(RouteRequest(DELETE, JsonObject(emptyMap()), RouteSource.IN_APP), state())
+        val decision = EntryGuard.decide(RouteRequest(SINCE_NULL, JsonObject(emptyMap()), RouteSource.IN_APP), state())
         assertEquals(GuardKind.UPGRADE, decision.kind)
         assertEquals(GuardReason.UNKNOWN_ROUTE, decision.reason)
-        assertFalse(RouteAvailability.available(DELETE, "1.0.0"))
-        assertFalse(DELETE in RouteAvailability.all("1.0.0"))
+        assertFalse(RouteAvailability.available(SINCE_NULL, "1.0.0"))
+        assertFalse(SINCE_NULL in RouteAvailability.all("1.0.0"))
+    }
+
+    // modify_existing：钉住 CT-17i——DeleteAccount since.android=1.0.0，不加覆盖在 1.0.0 即可用、可打开，ruling D10-1664
+    @Test
+    fun deleteAccountSince100IsAvailableWithoutOverride() {
+        assertTrue(RouteAvailability.available(DELETE, "1.0.0"))
+        assertTrue(DELETE in RouteAvailability.all("1.0.0"))
+        val decision = EntryGuard.decide(RouteRequest(DELETE, JsonObject(emptyMap()), RouteSource.IN_APP), state())
+        assertTrue(decision.opensPage)
     }
 
     @Test
@@ -89,5 +99,8 @@ class App13aRouteAvailabilityTest {
 
     private companion object {
         const val DELETE = "DeleteAccount"
+
+        // modify_existing：d47f660e5 routes.json 里 Favorites 的 since.android=null，作 since=null 的例子，ruling D10-1664
+        const val SINCE_NULL = "Favorites"
     }
 }

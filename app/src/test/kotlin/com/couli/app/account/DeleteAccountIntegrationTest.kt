@@ -51,7 +51,9 @@ class DeleteAccountIntegrationTest : AccountHarness() {
         val sms = all("POST", SMS).single()
         assertEquals("step_up", body(sms)["purpose"].toString().trim('"'))
         assertEquals("account_deletion", body(sms)["action"].toString().trim('"'))
-        assertEquals(PHONE_OLD, body(sms)["phone"].toString().trim('"'))
+        // modify_existing：锁 d47f660e5（B1-02zzz）step_up 发码不带 phone、由服务端按令牌发到绑定号，ruling D10-1664
+        assertNull("step_up 发码不带 phone（B1-02zzz）", body(sms)["phone"])
+        assertNotNull("step_up 发码带登录令牌（B1-02zzz）", sms.header("Authorization"))
         assertTrue("无请求体（G14）", applies.all { it.body.isEmpty() })
         assertTrue("键结束：没有未决记录", records().isEmpty())
         assertTrue(has(AccountTags.DELETE_CANCEL))

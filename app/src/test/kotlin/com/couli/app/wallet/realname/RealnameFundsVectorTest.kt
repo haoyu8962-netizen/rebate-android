@@ -268,7 +268,8 @@ class RealnameFundsVectorTest : RealnameFundsHarness() {
     private fun JsonObject.flag(name: String): Boolean = this[name]?.jsonPrimitive?.booleanOrNull == true
 
     private companion object {
-        const val VECTORS_SHA256 = "5d37463070f64452f752f04d85e7053b16a49896780948ba510e19c7ecb982a5"
+        // modify_existing：向量只改 contractCommit 一行（56c99d0b… → d47f660e5…，三端同步），新字节 sha（旧 5d374630…82a5），ruling D10-1664
+        const val VECTORS_SHA256 = "762989b80ab8bd1a1bbefe01236d2675cb6246408272152c7e5e5f796bb4d048"
         const val CASE_COUNT = 25
         const val RECOVER_WINDOW_MS = 1_500L
         const val TRACE6 = "zz9876"

@@ -40,9 +40,11 @@ class MeVisualFixtureTest {
                     "c2c17ef3ed3b96631eabcf5d09ea987f6262ff055ff18324fcdb56e023256d8d",
                 "core/me/src/main/kotlin/com/couli/core/me/MePresentation.kt" to
                     "7dc5f1551dd8af3a36226ff259b7b64f4fc0247d4258e0b2a17542bf4ab2c86b",
-                "core/me/src/main/kotlin/com/couli/core/me/MeJson.kt" to "65eb62b5571856f11d06c82cb3c7da3a957ad9ec69eb0c8f71ae5a560d910e9c",
+                // modify_existing（#24）re-pin ruling D10-1670：FU-AND-STEPUP-SUMMARY Me 加 masked_phone（B1-02zzza）
+                "core/me/src/main/kotlin/com/couli/core/me/MeJson.kt" to "af5f873d68b50ea3378abef0dd4860c47737e6756a28b4bf9033e1e76230009f",
                 // 钉值随锁升级更新：FU-X-CTA-KEY-DRIFT 锁 a89c1ec3a（D10-857，#24）
-                "contract.lock" to "09c3b66563c1067be963a4d4b0c96c7f00610c57acf6e8741a6dc3ae1876a2bc",
+                // modify_existing（#24）re-pin ruling D10-1670：锁 d47f660e5（FU-AND-STEPUP-SUMMARY）
+                "contract.lock" to "0ef8f287fee288204af64118d18491848ee977225ab798a9965a28acfd082b75",
                 // 钉值随主干合法变更更新：APP-08v-b AmountGrid valueSizes（7db97ce）
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
                     "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b",

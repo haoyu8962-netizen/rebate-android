@@ -251,7 +251,8 @@ class CtLock02ContractUpgradeTest {
                 "getHealthz|GET|/healthz|none|false|false|-|UNSPECIFIED",
                 "registerDevice|POST|/v1/devices|none|false|false|-|EXEMPT",
                 "reportPushToken|POST|/v1/devices/push-token|login|false|false|-|GATED",
-                "sendSmsCode|POST|/v1/auth/sms-codes|none|true|false|-|CONDITIONAL",
+                // modify_existing：锁 d47f660e5（B1-02zzz）sendSmsCode 的 x-auth none→optional，跟契约 ruling D10-1664
+                "sendSmsCode|POST|/v1/auth/sms-codes|optional|true|false|-|CONDITIONAL",
                 "loginBySms|POST|/v1/auth/login/sms|none|true|false|-|EXEMPT",
                 "createOauthAttempt|POST|/v1/auth/oauth-attempts|optional|true|false|-|CONDITIONAL",
                 "loginByWechat|POST|/v1/auth/login/wechat|none|true|false|-|EXEMPT",

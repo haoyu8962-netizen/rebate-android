@@ -260,12 +260,13 @@ class CtaKeyVectorTest {
             mapOf("title" to JsonPrimitive("张三 13800001111 的收货地址"), "shop_name" to JsonPrimitive("某某旗舰店"))
         val SECRETS = listOf("张三", "13800001111", "tb:cta", "ref-cta", "0199a3b4", "某某旗舰店", "2990", "29.9")
 
-        const val TEXTS_SHA256 = "5cdeb62c000f23d926bc53f8ffa60779d47568a56ff2126a2d87bb12f752776c"
+        // modify_existing：锁 d47f660e5 的快照实测值（旧 TEXTS 5cdeb62c…776c、openapi b8d2295f…607d；admin、error-codes 未变），ruling D10-1664
+        const val TEXTS_SHA256 = "9892db319fa5d29da786d5feaf1ffd1fd1e61f97ff2ecbfa3d72bcf33d322a2e"
         val SAME_NAME_SHA256 =
             listOf(
                 "contracts/snapshot/contracts/enums/admin.json" to "b2f84f6c3749f43793c11fbbaf58b3035752f2e8eab200d2857e6f745b1e0db2",
                 "contracts/snapshot/contracts/error-codes.json" to "a312384e185aefcc1db7f0538ac98b63082b064a3c9fe77f19a0a889b6a398db",
-                "contracts/snapshot/contracts/openapi.json" to "b8d2295f260f567d780bf628189980279d14c3ce152b5c5644b36b76bda7607d",
+                "contracts/snapshot/contracts/openapi.json" to "4815635c38d6c2d90af40304a8e87cfff65834e78a8fdf7f7590b4e2163e1295",
                 "contracts/snapshot/contracts/texts.default.json" to TEXTS_SHA256,
                 "core/generated/src/main/resources/texts.default.json" to TEXTS_SHA256,
             )

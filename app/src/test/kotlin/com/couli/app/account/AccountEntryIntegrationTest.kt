@@ -185,37 +185,38 @@ class AccountEntryIntegrationTest : AccountHarness() {
         assertFalse(top() == DELETE_ACCOUNT)
     }
 
+    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android=1.0.0，本端 1.0.0 不加覆盖即可用；原「since=null 隐藏入口、只提示 10007」前提失效，
+    // 改为正向断言三处入口显示、Router 直接进注销页且不弹 10007 提示（通用 since=null→升级提示改由 core/router 两条用例以 Favorites 覆盖），ruling D10-1664
     @Test
-    fun g01_sinceNullHidesTheThreeEntriesAndTheForceUpdateLinkAnd10007OnlyPrompts() {
+    fun g01_since100ShowsTheThreeEntriesAndTheForceUpdateLinkAnd10007OpensDeletion() {
         override = emptySet()
         launch()
         open(SETTINGS)
         idleUntil { has(MeTags.SETTINGS_PAGE) && has(PHONE_ROW) }
-        assertFalse("设置注销行隐藏", has(DELETE_ROW))
+        assertTrue("since=1.0.0 无覆盖也显示设置注销行（CT-17i）", has(DELETE_ROW))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
-        // 10007 cooling（写接口得到）只提示、不导航、键不结束
         serverState.risk = "banned"
         open("RiskNotice")
         idleUntil { has(MeTags.RISK_PAGE) && has(MeTags.RISK_CS) }
-        assertFalse("封禁说明页底部注销入口隐藏", has(AccountTags.RISK_DELETE))
+        assertTrue("since=1.0.0 无覆盖也显示封禁说明页底部注销入口（CT-17i）", has(AccountTags.RISK_DELETE))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
-        val before = stack()
         val prompts = routing.deletionPrompt.value
         composeRule.runOnUiThread { routing.router.open(RouteRequest(DELETE_ACCOUNT, JsonObject(emptyMap()), RouteSource.IN_APP)) }
         settle()
-        assertEquals("不导航（不进升级页）", before, stack())
-        assertEquals(prompts + 1, routing.deletionPrompt.value)
-        assertTrue(has(DELETION_PROMPT_TAG) || announcedText(t("error.10007")))
+        idleUntil { top() == DELETE_ACCOUNT }
+        assertEquals("可用时直接进注销页、不弹 10007 提示", prompts, routing.deletionPrompt.value)
+        assertFalse(has(DELETION_PROMPT_TAG))
     }
 
+    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android=1.0.0，强更页不加覆盖也显示注销链接，ruling D10-1664
     @Test
-    fun g01_sinceNullForceUpdateShowsOnlyPrivacyPolicy() {
+    fun g01_since100ForceUpdateShowsPrivacyPolicyAndDeletionLink() {
         override = emptySet()
         launch(forced = true)
         idleUntil { top() == FORCE_UPDATE && has(FORCE_UPDATE_PRIVACY_TAG) }
-        assertFalse(has(FORCE_UPDATE_DELETE_TAG))
+        assertTrue("since=1.0.0 无覆盖也显示强更页注销链接（CT-17i）", has(FORCE_UPDATE_DELETE_TAG))
     }
 
     @Test

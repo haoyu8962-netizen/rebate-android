@@ -23,6 +23,7 @@ import com.couli.core.designsystem.CouliTheme
 import com.couli.core.designsystem.LocalCouliAnnouncer
 import com.couli.core.wallet.StepUpTokenCache
 import com.couli.core.wallet.WalletGates
+import com.couli.core.wallet.stepup.StepUpSummary
 import com.couli.feature.wallet.PageHooks
 import com.couli.feature.wallet.PayoutAccountScreen
 import com.couli.feature.wallet.PayoutAccountViewModel
@@ -93,6 +94,8 @@ internal class WithdrawVisualTestHost(
                 WithdrawVisualFixtures.now + 600_000,
                 env.epoch,
                 env.sessionScope(),
+                // modify_existing（#24）fixture ruling D10-1670：改收款预置令牌绑定与未决原体同一份业务摘要（产品函数 StepUpSummary，BR-ID-08 细则）
+                if (payout) StepUpSummary.key(StepUpSummary.payoutChange(WithdrawVisualFixtures.pending(true).body)) else null,
             )
         }
         val config = WalletPageConfig(deps, onBack = {}, hooks = PageHooks(bindLeave = { leave = it }))

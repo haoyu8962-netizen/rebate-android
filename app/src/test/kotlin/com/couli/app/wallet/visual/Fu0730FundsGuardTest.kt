@@ -27,8 +27,9 @@ class Fu0730FundsGuardTest {
                     "3a5186491f9da46544d25822ad36569bf389dfcaa0fa19cdcc3c321cf20e8661",
                 "core/wallet/src/main/kotlin/com/couli/core/wallet/WithdrawalText.kt" to
                     "d21a60f5a84c2757ddc8607db9e3fa376d16e476a7622fd5bfd0aea6aad88f7e",
+                // modify_existing（#24）re-pin ruling D10-1670：FU-AND-STEPUP-SUMMARY 改收款令牌按业务摘要绑定（提现回到改前行为，WithdrawController 未变）
                 "feature/wallet/src/main/kotlin/com/couli/feature/wallet/SensitiveFlow.kt" to
-                    "920ee6a46bdfaa31fb40b8dfc1348f70e03244e036223456f61d32fbfdcbac1d",
+                    "8d7ed05aef04bc24170a8dd79e93a5eb0c1e298ce361c2a0c1c99e94052ceb23",
                 "core/wallet/src/main/kotlin/com/couli/core/wallet/WalletTexts.kt" to
                     "acba4a6c6183795189f800f87c70ba46b0f2d903c195913f4079558db0c87cba",
             )

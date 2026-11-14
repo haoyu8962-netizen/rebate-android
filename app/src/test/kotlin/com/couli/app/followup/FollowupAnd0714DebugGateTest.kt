@@ -200,7 +200,11 @@ class FollowupAnd0714DebugGateTest {
             assertTrue(notify.put("account-A", false) { true } is ApiResult.TransportFailure)
         }
         assertNull("推送令牌同 Release（没有）", push.current())
-        assertNull("不编造二次验证号码", stepUp("account-A"))
+        // modify_existing（#24）rule_change BR-ID-08 ruling D10-1658 ①：prod 下也能发码（B1-02zzz：step_up 不带 phone，服务端发往绑定手机）；
+        // 给的只是发码槽位键，不是号码，不进请求体
+        val slot = stepUp("account-A")
+        assertNotNull("prod 下能发码", slot)
+        assertTrue("槽位键不是号码（请求体无 phone）", slot!!.none(Char::isDigit))
         assertEquals("安装状态按系统实现", "system", jump.installed("taobao"))
         assertNull(variantWechatInstalled(context))
         assertFalse(variantOpenExternalFails(context))

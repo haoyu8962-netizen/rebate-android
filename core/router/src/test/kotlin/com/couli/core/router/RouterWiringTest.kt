@@ -301,7 +301,8 @@ class RouterWiringTest {
 
     @Test
     fun unpublishedRouteIsTreatedAsUnknown() {
-        val decision = EntryGuard.decide(RouteRequest("DeleteAccount", empty, RouteSource.IN_APP), state(SessionState.LOGGED_IN))
+        // modify_existing：CT-17i 后 DeleteAccount since.android=1.0.0，未发布路由的例子换成 since.android=null 的 Favorites，ruling D10-1664
+        val decision = EntryGuard.decide(RouteRequest("Favorites", empty, RouteSource.IN_APP), state(SessionState.LOGGED_IN))
         assertEquals(GuardKind.UPGRADE, decision.kind)
         assertEquals(GuardReason.UNKNOWN_ROUTE, decision.reason)
     }
