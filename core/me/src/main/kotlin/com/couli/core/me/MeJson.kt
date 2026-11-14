@@ -83,6 +83,7 @@ object MeJson {
             inviteCode = r.string("invite_code"),
             inviterBound = r.bool("inviter_bound") == true,
             phoneBound = r.bool("phone_bound") == true,
+            maskedPhone = maskedPhone(value as JsonObject, r.bool("phone_bound") == true),
             withdrawableFen = balance.fen("withdrawable_fen") ?: 0L,
             estimatedTotalFen = balance.fen("estimated_total_fen") ?: 0L,
             riskState = risk.string("state").orEmpty(),
@@ -90,6 +91,22 @@ object MeJson {
             frozenUntil = risk.string("frozen_until"),
         )
     }
+
+    /**
+     * masked_phone（B1-02zzza，openapi Me.masked_phone）：服务端按 BR-TEXT-02 细则「手机号脱敏」给的「前 3 后 4」（138****8000），只用于展示，
+     * 本端不自己脱敏、不补全。phone_bound=false、字段缺失（旧服务端）、null、或不是「3 位数字 + 4 个 * + 4 位数字」时为 null（界面按「没有号码」的
+     * 文案显示，不显示任何号码，也不因此把整份 Me 当坏数据）。
+     */
+    fun maskedPhone(
+        data: JsonObject,
+        phoneBound: Boolean,
+    ): String? {
+        if (!phoneBound) return null
+        val text = data.string("masked_phone") ?: return null
+        return text.takeIf(MASKED_PHONE::matches)
+    }
+
+    private val MASKED_PHONE = Regex("^[0-9]{3}\\*{4}[0-9]{4}$")
 
     /** 一条申诉（openapi Appeal 七个必填字段）；坏数据为 null。status 只要求是字符串（不认识的按「处理中」显示）。 */
     @Suppress("ReturnCount", "ComplexCondition")
@@ -160,6 +177,8 @@ data class Me(
     val riskState: String,
     val reasonCategory: String?,
     val frozenUntil: String?,
+    /** 绑定手机号的脱敏展示（[MeJson.maskedPhone]；没有为 null）。不在 [raw] 的 13 个字段里。 */
+    val maskedPhone: String? = null,
 ) {
     val risk: JsonObject get() = raw.getValue("risk") as JsonObject
 }

@@ -464,6 +464,8 @@ class StepUpTokenCache {
         /** 取得时的登录世代与会话作用域（APP-13a）；APP-09 旧入口写入时为 null。 */
         val epoch: Long? = null,
         val scope: String? = null,
+        /** 取得时绑定的业务摘要（[com.couli.core.wallet.stepup.StepUpSummary.key]；只有收款账号变更有，提现等其余 action 为 null、按同 action 复用）。 */
+        val summary: String? = null,
     )
 
     private val entries = mutableMapOf<String, Entry>()
@@ -486,7 +488,10 @@ class StepUpTokenCache {
         entries[action] = Entry(account, token, expireAtMs)
     }
 
-    /** 带会话世代与作用域写入（APP-13a）：之后按同一账号、世代、作用域、action 才复用。 */
+    /**
+     * 带会话世代与作用域写入（APP-13a）：之后按同一账号、世代、作用域、action 才复用。[summary] 是这枚 token 绑定的业务摘要键（BR-ID-08 细则
+     * 「绑定业务摘要」）：复用时摘要也必须相同，摘要不同（改了金额、换了收款账号）不复用。
+     */
     @Suppress("LongParameterList") // 隔离维度逐项给
     @Synchronized
     fun put(
@@ -496,8 +501,9 @@ class StepUpTokenCache {
         expireAtMs: Long,
         epoch: Long,
         scope: String,
+        summary: String? = null,
     ) {
-        entries[action] = Entry(account, token, expireAtMs, epoch, scope)
+        entries[action] = Entry(account, token, expireAtMs, epoch, scope, summary)
     }
 
     /** APP-09 旧入口：按 action、账号与 expire_at。 */
@@ -508,7 +514,11 @@ class StepUpTokenCache {
         nowMs: Long,
     ): String? = entries[action]?.takeIf { it.account == account && nowMs < it.expireAtMs }?.token
 
-    /** 按账号、会话世代、作用域、action 与 expire_at（APP-13a StepUpTokenPolicy 同口径）：任一不符都不复用。 */
+    /**
+     * 按账号、会话世代、作用域、action、业务摘要与 expire_at（APP-13a StepUpTokenPolicy 同口径；摘要见 BR-ID-08 细则「绑定业务摘要」）：任一不符都不复用。
+     * 摘要不符时缓存里的 token 留着（同一摘要的请求仍可复用），由这次请求重新取 token 后覆盖。
+     */
+    @Suppress("LongParameterList") // 隔离维度逐项给
     @Synchronized
     fun take(
         action: String,
@@ -516,10 +526,12 @@ class StepUpTokenCache {
         nowMs: Long,
         epoch: Long,
         scope: String,
+        summary: String? = null,
     ): String? =
         entries[action]
-            ?.takeIf { it.account == account && it.epoch == epoch && it.scope == scope && nowMs < it.expireAtMs }
-            ?.token
+            ?.takeIf {
+                it.account == account && it.epoch == epoch && it.scope == scope && it.summary == summary && nowMs < it.expireAtMs
+            }?.token
 
     @Synchronized
     fun onSuccess(action: String) {

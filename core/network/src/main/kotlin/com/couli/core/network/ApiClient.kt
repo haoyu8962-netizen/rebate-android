@@ -793,10 +793,11 @@ class ApiClient(
      */
     private fun unsettledReject(
         operation: ApiOperation,
+        call: ApiCall,
         options: RunOptions,
     ): String {
         val owner = boundNow()
-        if (owner.unreadable && operation.auth != AUTH_NONE) return LocalRejectReason.SESSION_UNREADABLE
+        if (owner.unreadable && needsSession(operation, call)) return LocalRejectReason.SESSION_UNREADABLE
         if (options.pendingAccount != null && (owner.unreadable || owner.account != options.pendingAccount)) {
             return LocalRejectReason.ACCOUNT_MISMATCH
         }
@@ -845,15 +846,15 @@ class ApiClient(
         while (true) {
             // 单次发送（身份事件与【停止】的 cancel，APP-10b 鸿蒙 R1-02、G64）：刷新屏障在途就不等（等完会带新令牌），按没发出结束；也不由它触发屏障刷新
             if (call.singleShot) {
-                if (barrierPending(operation)) return ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED)
+                if (barrierPending(operation, call)) return ApiResult.LocalReject(LocalRejectReason.CALL_CANCELLED)
             } else {
-                passSessionBarrier(operation, logical.owner)?.let { return it }
+                passSessionBarrier(operation, call, logical.owner)?.let { return it }
             }
             val state = context()
             // 环境未就绪（F-X-03 ①④）：不读凭据，按已绑定的会话归属给出与读得到时相同的分类，其余一律 environment_unsettled
-            if (unsettledOnly(state)) return ApiResult.LocalReject(unsettledReject(operation, options))
+            if (unsettledOnly(state)) return ApiResult.LocalReject(unsettledReject(operation, call, options))
             val read = rawRead(state)
-            unreadableReject(operation, read)?.let { return ApiResult.LocalReject(it) }
+            unreadableReject(operation, call, read)?.let { return ApiResult.LocalReject(it) }
             val session = live(read)
             if (options.pendingAccount != null && session?.userId != options.pendingAccount) {
                 return ApiResult.LocalReject(LocalRejectReason.ACCOUNT_MISMATCH)
@@ -1323,7 +1324,7 @@ class ApiClient(
             val rejection =
                 when (
                     val again =
-                        unreadableReject(operation, read)?.let(Prepared::Rejected) ?: prepare(call, operation, state, live(read))
+                        unreadableReject(operation, call, read)?.let(Prepared::Rejected) ?: prepare(call, operation, state, live(read))
                 ) {
                     is Prepared.Rejected -> {
                         again.reason
@@ -1383,7 +1384,7 @@ class ApiClient(
     ): String? {
         if (entryBase(prepared.streamEntry) != prepared.base) return LocalRejectReason.ENVIRONMENT_UNSETTLED
         val read = rawRead(state)
-        unreadableReject(operation, read)?.let { return it }
+        unreadableReject(operation, call, read)?.let { return it }
         val decision = decide(call, operation, state, live(read))
         if (!decision.send) return decision.localRejectReason ?: LocalRejectReason.ENVIRONMENT_UNSETTLED
         if (prepared.carriesCredentials && !readable(state)) return LocalRejectReason.BASIC_MODE_DENIED
@@ -1586,18 +1587,37 @@ class ApiClient(
     /** 可读的会话；没有令牌（或读不出）为 null。 */
     private fun session(state: NetworkContext): SessionSnapshot? = live(rawRead(state))
 
-    /** 会话读不出时，x-auth 不是 none 的接口本地拒绝（session_unreadable，与 iOS 同一裁定）；不需要会话的照常不带令牌发出。 */
+    /** 会话读不出时，需要会话的调用（[needsSession]）本地拒绝（session_unreadable，与 iOS 同一裁定）；不需要会话的照常不带令牌发出。 */
     private fun unreadableReject(
         operation: ApiOperation,
+        call: ApiCall,
         read: RawRead,
-    ): String? = LocalRejectReason.SESSION_UNREADABLE.takeIf { read is RawRead.Unreadable && operation.auth != AUTH_NONE }
+    ): String? = LocalRejectReason.SESSION_UNREADABLE.takeIf { read is RawRead.Unreadable && needsSession(operation, call) }
+
+    /**
+     * 这一次调用要不要就绪的会话（会话读不出本地拒绝、等受限会话刷新屏障）：x-auth=none 不要；x-auth=optional 缺省不要——有令牌就带、从不等待
+     * 不拦截（D10-1658 ④：登录 / 绑手机发码在 Keystore 读不出、受限会话刷新在途时照常发出），只有调用方置了 [ApiCall.requiresSession]（二次验证
+     * 面板的 step_up 发码）才要；其余（login 等）都要。
+     */
+    private fun needsSession(
+        operation: ApiOperation,
+        call: ApiCall,
+    ): Boolean =
+        when (operation.auth) {
+            AUTH_NONE -> false
+            AUTH_OPTIONAL -> call.requiresSession
+            else -> true
+        }
 
     /** 会话作用域：凭据不可读或没有会话时按 full（不带令牌，接口照 full 判定）。 */
     private fun SessionSnapshot?.scopeOrFull(): String = this?.scope ?: SessionScopeRaw.FULL
 
-    /** 受限会话刷新屏障此刻在途（单次发送不等它，APP-10b G64）。x-auth=none 的接口不受屏障约束。 */
-    private fun barrierPending(operation: ApiOperation): Boolean =
-        operation.auth != AUTH_NONE &&
+    /** 受限会话刷新屏障此刻在途（单次发送不等它，APP-10b G64）。不需要会话的调用（[needsSession]：x-auth=none、未置 requiresSession 的 optional）不受屏障约束。 */
+    private fun barrierPending(
+        operation: ApiOperation,
+        call: ApiCall,
+    ): Boolean =
+        needsSession(operation, call) &&
             synchronized(barrierLock) {
                 settleBarrier()
                 barrier != null
@@ -1614,6 +1634,7 @@ class ApiClient(
 
     private fun passSessionBarrier(
         operation: ApiOperation,
+        call: ApiCall,
         owner: CallOwner,
     ): ApiResult? {
         val pending: CompletableFuture<WaitSignal>?
@@ -1623,7 +1644,7 @@ class ApiClient(
             armBarrier(state)
             pending = barrier
         }
-        if (pending == null || operation.auth == AUTH_NONE) return null
+        if (pending == null || !needsSession(operation, call)) return null
         return when (val signal = waitFor(pending) ?: WaitSignal.Transient(HttpTransport.KIND_TIMEOUT)) {
             is WaitSignal.Token -> {
                 ownerReject(owner, context())?.let { ApiResult.LocalReject(it) }
@@ -2449,6 +2470,7 @@ class ApiClient(
         private const val AGENT_PATH_PREFIX = "/v1/agent/"
         private const val FORCE_UPDATE = "ForceUpdate"
         private const val AUTH_NONE = "none"
+        private const val AUTH_OPTIONAL = "optional"
         private const val INVALID_SIGNATURE = 10401
         private const val DEVICE_REJECTED = 10402
         private const val MAX_SKEW_MILLIS = 300_000L

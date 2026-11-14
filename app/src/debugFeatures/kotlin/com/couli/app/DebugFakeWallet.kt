@@ -40,6 +40,9 @@ internal class DebugFakeWallet(
 ) {
     private val results = ConcurrentHashMap<String, Pair<Int, String>>()
     private val validTokens = ConcurrentHashMap.newKeySet<String>()
+
+    /** token → 签发时写入的业务摘要 claim（[DebugFakeStepUp]；只有收款账号变更有，提现不绑摘要）。 */
+    private val tokenClaims = ConcurrentHashMap<String, String>()
     private val created = mutableListOf<JsonObject>()
 
     @Volatile private var realnameVerified: Boolean? = null
@@ -363,7 +366,8 @@ internal class DebugFakeWallet(
     ): Triple<Int, String, Map<String, String>> {
         val key = header(headers, "Idempotency-Key") ?: return fail(20001)
         results[key]?.let { (code, data) -> return Triple(code, data, marker()) }
-        if (!stepUpPassed(headers, "payout_account_change", state)) return fail(10003)
+        // 摘要在保存的用户级锁内比对：请求体的账号字段规范化后与 claim 一致（BR-ID-08 细则「绑定业务摘要」），不符 10003、不核销
+        if (!stepUpPassed(headers, "payout_account_change", state, DebugFakeStepUp.payoutClaim(body))) return fail(10003)
         val method = (body["payout_method"] as? JsonPrimitive)?.content
         val account =
             if (method == "bank_card") {
@@ -402,9 +406,11 @@ internal class DebugFakeWallet(
         headers: Map<String, String>,
         action: String,
         state: Map<String, String>,
+        claim: String? = null,
     ): Boolean {
         val token = header(headers, "X-Step-Up-Token") ?: return false
-        val ok = token in validTokens && token.startsWith("fake-step-up-$action-")
+        // 摘要不符与其他 step-up 失败一样回 10003，不核销（token 留着，同一摘要仍可用）
+        val ok = token in validTokens && token.startsWith("fake-step-up-$action-") && tokenClaims[token] == claim
         // 一次性：成功提交后核销（step_up=always 时每次都要重新验证）
         if (ok && state["step_up"] == "always") validTokens.remove(token)
         return ok
@@ -412,11 +418,15 @@ internal class DebugFakeWallet(
 
     private fun stepUp(body: JsonObject): Triple<Int, String, Map<String, String>> {
         val action = (body["action"] as? JsonPrimitive)?.content.orEmpty()
+        // 业务摘要（CT-26c）：收款账号变更缺摘要或形状不配对、提现带了摘要 → 20001 data.fields=[summary]（D10-1667）
+        val (bad, claim) = DebugFakeStepUp.summaryClaim(action, body)
+        if (bad != null) return Triple(bad.first, bad.second, marker())
         return when ((body["code"] as? JsonPrimitive)?.content) {
             "123456" -> {
                 serial += 1
                 val token = "fake-step-up-$action-$serial"
                 validTokens += token
+                claim?.let { tokenClaims[token] = it }
                 ok("""{"step_up_token":"$token","expire_at":"2099-01-01T00:05:00+08:00"}""")
             }
 
@@ -568,6 +578,7 @@ internal class DebugFakeWallet(
     companion object {
         const val MARKER_HEADER = "X-Couli-Debug-Fake"
         private const val PAGE = 20
+
         private const val LABOR_VERSION = "v1"
 
         /** 协议正文（法务定稿前的演示文本，设计稿 LaborAgreement 的占位说明）。 */

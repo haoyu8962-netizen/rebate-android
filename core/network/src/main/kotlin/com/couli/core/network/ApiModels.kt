@@ -143,6 +143,11 @@ data class ApiCall(
     val singleShot: Boolean = false,
     /** 读接口超时 / 断连的自动重试（03 §4.2，缺省开）；APP-10b G35：断线类历史重载关掉（每次尝试只发一次）。 */
     val autoRetry: Boolean = true,
+    /**
+     * x-auth=optional 的接口这一次必须有就绪的会话（D10-1658 ④）：optional 接口缺省「有令牌就带、从不等待不拦截」（会话读不出、受限会话刷新在途都照常
+     * 发出）；二次验证面板的 step_up 发码由面板置 true，按需要会话的接口处理（读不出本地拒绝、等受限会话刷新）。x-auth 不是 optional 的接口不看它。
+     */
+    val requiresSession: Boolean = false,
 )
 
 /**

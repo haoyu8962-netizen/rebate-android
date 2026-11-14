@@ -353,6 +353,8 @@ internal class DebugFakeAccount(
             "42901" -> return rateLimited(state)
         }
         val action = body.text("action").orEmpty()
+        // 更换手机号与注销不绑业务摘要（BR-ID-08 细则「绑定业务摘要」）：带了 summary → 20001 data.fields=[summary]
+        DebugFakeStepUp.summaryClaim(action, body).first?.let { (code, data) -> return Triple(code, data, marker()) }
         return when (body.text("code")) {
             "123456" -> {
                 serial += 1

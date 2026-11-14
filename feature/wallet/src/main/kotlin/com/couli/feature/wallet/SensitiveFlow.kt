@@ -15,6 +15,7 @@ import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.SensitiveOutcome
 import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletRateGate
+import com.couli.core.wallet.stepup.StepUpSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -195,6 +196,11 @@ class SensitiveFlow(
     initialOwner: FormOwner,
     /** 同一表单重建时恢复的「本页结果未知的键」（[FlowHost.onUnknownChanged] 保存的那个）：重读记录时它已消失就保守锁住。 */
     initialUnknown: String? = null,
+    /**
+     * 按将要提交 / 重放的原请求体给出二次验证的业务摘要（BR-ID-08 细则「绑定业务摘要」，[com.couli.core.wallet.stepup.StepUpSummary]）：收款账号变更
+     * 按请求体的账号字段给出；提现不给（缺省 null，D10-1667：取令牌不带摘要，按同 action 复用）。token 缓存按它区分：摘要不同不复用。
+     */
+    private val stepUpSummary: (body: String) -> JsonObject? = { null },
 ) {
     /** 本表单所属的账号与登录世代（共性第 52、65 条）：构造时由发起页传入，只在会话换代通知（[onSessionChanged]）里随新表单一起换成发起页传入的新身份。 */
     private var formOwner = initialOwner
@@ -276,7 +282,7 @@ class SensitiveFlow(
         deferredStepUp = null
         if (deferred.form !== formOwner || !formOwner.current(deps.env)) return
         if (deferred.intent != null && s.pending?.key != deferred.intent.key) return
-        openStepUp(deferred.phase, deferred.intent)
+        stepUpOrGuide(deferred.phase, deferred.intent)
     }
 
     private val onScreen: Boolean get() = alive() && visible && viewGen == sentViewGen
@@ -331,7 +337,8 @@ class SensitiveFlow(
         val (key, sendBody, sendSummary) = nextRequest(body, summary)
         lastClick = click
         update { it.copy(phase = FlowState.SUBMITTING, error = null, fieldErrors = emptyList(), fieldErrorKey = null, guideRoute = null) }
-        val token = deps.tokens.take(action, account, deps.clock(), click.epoch, deps.env.sessionScope())
+        // 只复用与这次请求体同一业务摘要的 token（BR-ID-08 细则「绑定业务摘要」）：改了金额、换了收款账号的重新验证
+        val token = deps.tokens.take(action, account, deps.clock(), click.epoch, deps.env.sessionScope(), summaryKey(sendBody))
         send(click, key, sendBody, sendSummary, token, false)
     }
 
@@ -585,8 +592,27 @@ class SensitiveFlow(
             update { it.copy(pendingNotice = notice(SensitiveOutcome.RETRY_LATER_KEY)) }
             return
         }
-        runConfirm(intent, deps.tokens.take(action, intent.account, deps.clock(), intent.epoch, deps.env.sessionScope()))
+        val summary = summaryKey(pendingBody(intent))
+        runConfirm(intent, deps.tokens.take(action, intent.account, deps.clock(), intent.epoch, deps.env.sessionScope(), summary))
     }
+
+    /** 这次请求体的业务摘要键（缓存比较用）。 */
+    private fun summaryKey(body: String?): String? = body?.let(stepUpSummary)?.let(StepUpSummary::key)
+
+    /**
+     * 确认上一笔要原样重发的原请求体（本机未决记录里的那份；确认由网络层按记录原体重发）：记录不是这次点击的键、不是这个账号或读不出为 null。
+     */
+    private fun pendingBody(intent: Intent): String? =
+        try {
+            deps.api
+                .pendingFor(operationId)
+                ?.takeIf { it.key == intent.key && it.account == intent.account }
+                ?.body
+        } catch (
+            @Suppress("TooGenericExceptionCaught", "SwallowedException") error: Exception,
+        ) {
+            null
+        }
 
     private fun runConfirm(
         intent: Intent,
@@ -816,7 +842,7 @@ class SensitiveFlow(
                     }
 
                     else -> {
-                        openStepUp(phase, intent)
+                        stepUpOrGuide(phase, intent)
                     }
                 }
             }
@@ -965,6 +991,54 @@ class SensitiveFlow(
         return owner
     }
 
+    /** 之后要重放的原请求体：首次提交是沿用的原体，确认是未决记录的原体。 */
+    private fun replayBodyOf(
+        phase: String,
+        intent: Intent?,
+    ): String? = if (phase == SensitiveOutcome.SUBMIT) lastBody else intent?.let(::pendingBody)
+
+    /**
+     * 要二次验证时先本地判定（D10-1659 S2-4，D10-1667 收窄）：收款账号变更时账号未绑手机（Me.phone_bound=false）不发码，走「先绑定手机」引导；
+     * 提现不拦（D10-1667：提现路径照改前行为打开面板）。
+     */
+    private fun stepUpOrGuide(
+        phase: String,
+        intent: Intent?,
+    ) {
+        val account = intent?.account ?: lastClick?.account
+        if (action != WITHDRAW_ACTION && account != null && deps.env.stepUpPhoneBound(account) == false) {
+            guideInstead(phase, BIND_PHONE_KEY, com.couli.core.wallet.WalletRoutes.BIND_PHONE)
+            return
+        }
+        openStepUp(phase, intent)
+    }
+
+    /**
+     * 不打开二次验证面板、改给前置引导（与结局表的补办引导同一处理）：首次提交回到编辑态，这个键不再沿用（网络层已删记录，下次用新键）；
+     * 确认阶段保持待确认、给提示。引导导航只在页面可见时执行，否则留手动入口（共性第 37、51 条）。
+     */
+    private fun guideInstead(
+        phase: String,
+        textKey: String,
+        route: String,
+    ) {
+        if (!alive()) return
+        val message = notice(textKey)
+        if (phase == SensitiveOutcome.SUBMIT) {
+            reuseKey = null
+            update { it.copy(phase = FlowState.EDITING, error = message) }
+        } else {
+            update { it.copy(pendingNotice = message) }
+        }
+        refreshPending()
+        if (onScreen) {
+            host.onGuide(route)
+        } else {
+            guideOwner = formOwner
+            update { it.copy(guideRoute = route) }
+        }
+    }
+
     private fun openStepUp(
         phase: String,
         intent: Intent?,
@@ -974,6 +1048,8 @@ class SensitiveFlow(
         val panelKey = reuseKey.takeIf { phase == SensitiveOutcome.SUBMIT && it != ownUnknown }
         update { it.copy(phase = if (phase == SensitiveOutcome.SUBMIT) FlowState.SUBMITTING else it.phase) }
         stepUpIntent = intent
+        // 业务摘要按之后要重放的那份原请求体（首次提交沿用的原体；确认是未决记录的原体）
+        val replayBody = replayBodyOf(phase, intent)
         stepUp.open(
             action,
             panelOwner,
@@ -1009,6 +1085,7 @@ class SensitiveFlow(
                 }
                 refreshPending()
             },
+            summary = replayBody?.let(stepUpSummary),
         )
     }
 
@@ -1277,6 +1354,12 @@ class SensitiveFlow(
     companion object {
         const val COMPLETED = "completed"
         const val BUSY_KEY = "error.40901"
+
+        /** 未绑手机时的「先绑定手机」引导文案（与结局表 10005 同一键）。 */
+        const val BIND_PHONE_KEY = "error.10005"
+
+        /** 提现的 step-up action：phone_bound 本地拦不管它（D10-1667）。 */
+        private const val WITHDRAW_ACTION = "withdraw"
 
         /** 进入或保持待确认的结局（apply 的 else 分支）：首次提交收到它们，键结果未知。 */
         private val PENDING_ACTIONS =

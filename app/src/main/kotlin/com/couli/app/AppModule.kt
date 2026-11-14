@@ -923,6 +923,7 @@ object AppModule {
                     wallet = wallet,
                     login = login,
                     stepUpPhone = variantStepUpPhone(context),
+                    phoneBound = login::phoneBound,
                     updateCheck = { update.routerUpdate },
                     serverForced = { update.onServerForced() },
                 ).also { it.sync() }
@@ -1114,6 +1115,7 @@ object AppModule {
                 ),
             labor = variantLaborBackend(context),
             stepUpPhone = variantStepUpPhone(context),
+            phoneBound = { account -> login.get().phoneBound(account) },
             track = { event -> tracker.get().track(event) },
             onOverlay = clipboard::onSensitiveOverlay,
             // 实名查询的 getMe 与登录校验、「我的」、桥 auth.getUser 共用一份 Me 读取截止时间（APP-12 Android R3-01）

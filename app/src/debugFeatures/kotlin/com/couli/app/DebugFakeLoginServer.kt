@@ -121,6 +121,10 @@ internal class DebugFakeLoginServer(
         val (code, data, headers) =
             homeAnswer
                 ?: (if (me.blocks(path)) Triple(BANNED, "null", emptyMap()) else null)
+                // step_up 发码的契约前置（B1-02zzz）：带 phone → 20001 [phone]，没登录 → 10001，没绑手机 → 20001 [code]；通过后照原场景回答
+                ?: DebugFakeStepUp
+                    .smsCheck(path, body, loggedIn, account.phoneBoundOverride() ?: phoneBound)
+                    ?.let { (code, data) -> Triple(code, data, emptyMap()) }
                 ?: me.answer(request.method, path, body, wallet.realnameStatus(), account.phoneBoundOverride() ?: phoneBound)
                 ?: account.answer(
                     request.method,

@@ -14,13 +14,20 @@ internal fun variantRealNameBackend(context: Context): RealNameBackend? = fakeWa
 internal fun variantLaborBackend(context: Context): LaborBackend? = fakeWallet(context).laborBackend
 
 /**
- * debug / staging：二次验证发码用的测试号码（假登录服务接管时，按会话给样例号码 sample-data §12 的 138****5678 对应的测试号）。Release 取不到号码，
- * 不发码（Android 空白 A01）。
+ * debug / staging：二次验证发码槽位的键（B1-02zzz 起 purpose=step_up 不带 phone，服务端发往账号绑定的手机号，这里的值不上送、不显示）。
+ * 假服务接管时给样例号码 sample-data §12 的 138****5678 对应的测试号（与既有冒烟、单测同一把槽位键）；没接管（连真实环境）时与 Release 相同，
+ * 有账号就给固定的 [BOUND_PHONE_SLOT]。没有账号为 null（不发码）。
  */
 internal fun variantStepUpPhone(context: Context): (String) -> String? {
     val gate = DebugMockGate.of(context)
-    // 每次取号码时过统一闸门（F-X-02）：prod / 切换中取不到号码，不编造、不给测试号发码
-    return { account -> if (account.isNotEmpty() && gate()) TEST_PHONE else null }
+    // 每次取值时过统一闸门（F-X-02）：假服务接管才用测试号作槽位键
+    return { account ->
+        when {
+            account.isEmpty() -> null
+            gate() -> TEST_PHONE
+            else -> BOUND_PHONE_SLOT
+        }
+    }
 }
 
 /** 进程内唯一的假钱包服务；实名、劳务两个端口每次调用都过统一闸门（F-X-02：旧实例切到 prod 后按断网）。 */
@@ -28,3 +35,6 @@ private fun fakeWallet(context: Context): DebugFakeWallet =
     DebugFakeWallet.of(File(DebugMockGate.stateDir(context), FAKE_WALLET_STATE_FILE)).also { it.switchOn = DebugMockGate.of(context) }
 
 private const val TEST_PHONE = "13800005678"
+
+/** 发码槽位里代表「账号当前绑定的手机号」的占位（不含数字，不会被当成号码）。 */
+private const val BOUND_PHONE_SLOT = "bound"

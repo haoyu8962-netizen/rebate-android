@@ -47,8 +47,17 @@ interface SessionIdentitySource {
  * 二次验证面板要的环境（APP-13a §2 第 7 项、brief §3 Android：从钱包模块挪到 core 共用；钱包的 WalletEnv、「我的」的账号流程各自实现）。都在主线程调用。
  */
 interface StepUpEnv : SessionIdentitySource {
-    /** 二次验证发码用的手机号（APP-09 G31、APP-13a G02）：本机有当前账号、并且绑定了账号归属的号码才给；没有为 null（不编造，不让用户另填）。 */
+    /**
+     * 二次验证发码槽位的键（APP-09 G31、APP-13a G02 起的旧名）：B1-02zzz 起 step_up 不带 phone，这个值只作本机发码截止时间、限流与在途占用的键，
+     * 不上送、不显示。没有为 null。能否发码改按 [stepUpPhoneBound]。
+     */
     fun stepUpPhone(account: String): String?
+
+    /**
+     * 账号是否已绑手机（Me.phone_bound，D10-1659 S2-4 / S2-5）：true 已绑，可以发 step_up 码；false 未绑——本地先拦，不发码（钱包走「先绑定手机」引导）；
+     * null 未知（发码照常，服务端没绑手机回 20001 data.fields=[code]）。缺省按旧接线：有槽位键当作已绑，没有当作未知。
+     */
+    fun stepUpPhoneBound(account: String): Boolean? = if (stepUpPhone(account) != null) true else null
 
     /** 10405：强制进入已有的强更分流（服务端已判定）。 */
     fun forceUpdate()

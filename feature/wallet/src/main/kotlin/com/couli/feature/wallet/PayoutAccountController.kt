@@ -17,6 +17,7 @@ import com.couli.core.wallet.WalletError
 import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletJson
 import com.couli.core.wallet.WalletRoutes
+import com.couli.core.wallet.stepup.StepUpSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,6 +86,8 @@ class PayoutAccountController(
             host = this,
             alive = { !left },
             initialOwner = initialOwner,
+            // 收款账号变更的业务摘要：保存请求体里的方式与账号字段原样（BR-ID-08 细则「绑定业务摘要」，服务端规范化）
+            stepUpSummary = StepUpSummary::payoutChange,
         )
 
     val alive: Boolean get() = !left

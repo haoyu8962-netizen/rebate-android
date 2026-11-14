@@ -387,8 +387,8 @@
           "identity"
         ],
         "summary": "Send an SMS verification code",
-        "description": "Order of checks: signature 10401 / 10402 → 30414 (purpose=step_up, action=phone_change, phone\nchange switch off; no SMS, no limit counted) → 20001 → 44001 → 44003 → 42901 (BR-ID-05). Limits per\nphone: 1 per 60 s, 5 per natural hour (+08:00), 10 per natural day (+08:00); a code is 6 digits\nand valid 5 minutes.\n`phone` is normalised by the server (BR-ID-05 细则「手机号规范化」); when the result is not\na mainland mobile number the answer is 20001 with `data.fields=[phone]` and\n`data.reason=phone_invalid`, no SMS is sent and nothing counts towards the limits.\nVersion gate (conditional, the table of BR-ID-01 细则 rules): not applied when purpose=login,\nor purpose=step_up with action=account_deletion; applied otherwise (purpose=bind, or step_up\nwithout action or with another action). Session scopes: a deletion_only session is accepted\nonly for purpose=login and for purpose=step_up with action=account_deletion. Both conditions\nfollow BR-ID-01 细则, which wins on any difference.\n",
-        "x-auth": "none",
+        "description": "Order of checks: signature 10401 / 10402 → 30414 (purpose=step_up, action=phone_change, phone\nchange switch off; no SMS, no limit counted) → 20001 → 44001 → 44003 → 42901 (BR-ID-05). Limits per\nphone: 1 per 60 s, 5 per natural hour (+08:00), 10 per natural day (+08:00); a code is 6 digits\nand valid 5 minutes.\n`phone` is normalised by the server (BR-ID-05 细则「手机号规范化」); when the result is not\na mainland mobile number the answer is 20001 with `data.fields=[phone]` and\n`data.reason=phone_invalid`, no SMS is sent and nothing counts towards the limits.\nVersion gate (conditional, the table of BR-ID-01 细则 rules): not applied when purpose=login,\nor purpose=step_up with action=account_deletion; applied otherwise (purpose=bind, or step_up\nwithout action or with another action). Session scopes: a deletion_only session is accepted\nonly for purpose=login and for purpose=step_up with action=account_deletion. Both conditions\nfollow BR-ID-01 细则, which wins on any difference.\nLogin is optional (BR-ID-08, task B1-02zzz): purpose=login and purpose=bind work as before,\nanonymous or logged in, and always carry `phone` (the number the code goes to).\npurpose=step_up requires the caller's own access token (none → 10001; a token of another\napp → 10403) and carries no `phone`: the server sends the code to the phone currently bound\nto the token's account (read from the database, never from the request, the device or the\nsession), so the per-phone limits above count against that bound number. A step_up request\nthat contains a `phone` property (any value) → 20001 with `data.fields=[phone]`, no SMS,\nnothing counted. An account without a bound phone → 20001 with `data.fields=[code]` and no\nSMS, as `POST /v1/auth/step-up` answers it: such an account verifies by authorizing again\nwith a provider of its user_oauth (BR-ID-08, `POST /v1/auth/oauth-attempts`).\n",
+        "x-auth": "optional",
         "x-signed": true,
         "x-idempotent": false,
         "x-min-version-gate": "conditional",
@@ -397,6 +397,7 @@
           "deletion_only"
         ],
         "x-error-codes": [
+          10001,
           20001,
           44001,
           44003,
@@ -404,7 +405,12 @@
           10405,
           30414
         ],
-        "security": [],
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ],
         "parameters": [
           {
             "$ref": "#/components/parameters/AppId"
@@ -5418,6 +5424,7 @@
                     },
                     "identity_level": "phone",
                     "phone_bound": true,
+                    "masked_phone": "138****8000",
                     "balance": {
                       "available_fen": 1234,
                       "withdrawable_fen": 1000,
@@ -45439,11 +45446,33 @@
       },
       "SendSmsCodeRequest": {
         "type": "object",
+        "description": "`phone` is required for purpose=login and purpose=bind; purpose=step_up carries none (the\nserver uses the token account's bound phone, BR-ID-08; a step_up body with `phone` is\n20001 with `data.fields=[phone]`). The `if` / `then` pair only states that condition; their\n`additionalProperties: true` keeps them from closing the object, which stays closed by the\n`additionalProperties: false` here.\n",
         "additionalProperties": false,
         "required": [
-          "phone",
           "purpose"
         ],
+        "if": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "purpose": {
+              "enum": [
+                "login",
+                "bind"
+              ]
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "phone": true
+          },
+          "required": [
+            "phone"
+          ]
+        },
         "properties": {
           "phone": {
             "$ref": "#/components/schemas/Phone"
@@ -52407,6 +52436,7 @@
           "invite_backfill",
           "identity_level",
           "phone_bound",
+          "masked_phone",
           "balance",
           "union_bindings",
           "realname_status",
@@ -52460,6 +52490,13 @@
           "phone_bound": {
             "type": "boolean",
             "description": "Whether a phone number is bound (BR-ID-01)."
+          },
+          "masked_phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The bound phone number masked for display, so the step-up sheet can say where the code\ngoes (BR-ID-08: a phone-bound user's step_up code is sent to the bound number; B1-02zzza,\nD10-1598). Masked by BR-TEXT-02 细则 手机号脱敏: first 3 and last 4 digits (138****8000).\nNull when no phone is bound (phone_bound=false), and also null when the bound number\ncannot be read (D10-1610). The full number is never returned.\n"
           },
           "balance": {
             "$ref": "#/components/schemas/MeBalance"

@@ -110,6 +110,8 @@ internal class DebugFakeMe(
                     JsonObject(mapOf("eligible" to JsonPrimitive(false), "deadline_at" to kotlinx.serialization.json.JsonNull)),
                 "identity_level" to JsonPrimitive("normal"),
                 "phone_bound" to JsonPrimitive(phoneBound),
+                // B1-02zzza：绑定手机号的脱敏展示（样例号 138****5678），没绑为 null
+                "masked_phone" to if (phoneBound) JsonPrimitive("138****5678") else kotlinx.serialization.json.JsonNull,
                 "balance" to
                     JsonObject(
                         mapOf(

@@ -583,7 +583,7 @@ object Routes {
                     name = "DeleteAccount",
                     kind = RouteKind.NATIVE,
                     auth = "login",
-                    sinceAndroid = null,
+                    sinceAndroid = "1.0.0",
                     entries = listOf(RouteEntry.IN_APP, RouteEntry.PUSH),
                     h5Path = null,
                     debugOnly = false,

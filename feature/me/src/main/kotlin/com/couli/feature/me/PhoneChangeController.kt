@@ -156,16 +156,17 @@ class PhoneChangeController(
         formGen: Long,
     ): Boolean = bound(version) && s.formGen == formGen
 
-    /** 本机按账号归属给的号码（G02）；没有为 null。 */
-    private fun ownedPhone(): String? = identity.account?.let(deps.env::stepUpPhone)
+    /** 当前账号发 step_up 码用的槽位键（D10-1659 S2-5：按 phone_bound；未绑或旧接线下取不到为 null）。 */
+    private fun stepUpSlotPhone(): String? = identity.account?.let { StepUpController.slotPhone(deps.env, it) }
 
-    val phoneKnown: Boolean get() = ownedPhone() != null
+    /** 当前账号能收 step_up 码（原 phoneKnown「本机知道号码」，D10-1659 S2-5 改按 phone_bound）。 */
+    val stepUpReachable: Boolean get() = stepUpSlotPhone() != null
 
     // ---------------------------------------------------------------- 第 1 步
 
     private fun slot(): SmsDeadlines.Slot? {
         val account = identity.account ?: return null
-        val phone = ownedPhone() ?: return null
+        val phone = stepUpSlotPhone() ?: return null
         return SmsDeadlines.Slot(account, phone, AccountRaw.PHONE_CHANGE)
     }
 
@@ -200,10 +201,10 @@ class PhoneChangeController(
         if (sms.remaining(slot, deps.clock()) > 0) return
         val ticket = sms.acquire(slot) ?: return
         val epoch = identity.epoch
+        // B1-02zzz：step_up 发码不带 phone（服务端发往绑定手机号，带了回 20001），令牌由网络层按 x-auth=optional 带上；本机号码只作槽位键
         val body =
             JsonObject(
                 mapOf(
-                    "phone" to JsonPrimitive(slot.phone),
                     "purpose" to JsonPrimitive(StepUpController.PURPOSE),
                     "action" to JsonPrimitive(AccountRaw.PHONE_CHANGE),
                 ),
@@ -216,7 +217,9 @@ class PhoneChangeController(
             }
         deps.service.launch {
             try {
-                val result = deps.api.send(ApiCall(SEND_SMS, body = body, ownership = owner, expectedAccount = slot.account))
+                // step_up 发码要就绪的本人会话（D10-1658 ④）
+                val call = ApiCall(SEND_SMS, body = body, ownership = owner, expectedAccount = slot.account, requiresSession = true)
+                val result = deps.api.send(call)
                 val outcome = PhoneChangeStep1Policy.of(PhoneChangeStep1Policy.SEND_CODE, AccountResult.of(result), phoneKnown = true)
                 if (deps.env.sessionEpoch() == epoch && deps.env.account() == slot.account) {
                     if (result is ApiResult.Success) {
@@ -249,7 +252,7 @@ class PhoneChangeController(
     fun verify(version: Long) {
         if (!bound(version) || s.step != PhoneChangeState.STEP1 || s.verifying) return
         if (s.code1.length != CODE_LENGTH) return
-        if (!phoneKnown) {
+        if (!stepUpReachable) {
             update { it.copy(step1Notice = MeNotice(NO_PHONE_KEY, ++ids)) }
             return
         }

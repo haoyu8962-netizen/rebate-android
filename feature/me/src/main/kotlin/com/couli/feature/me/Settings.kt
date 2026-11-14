@@ -169,14 +169,19 @@ class SettingsController(
                 accountIdentity?.restricted == true -> AccountEntryPolicy.DELETION_ONLY
                 else -> AccountEntryPolicy.MEMBER
             }
-        val known = identity.account?.let(account.env::stepUpPhone) != null
+        // 能否收 step_up 码（D10-1659 S2-5）：按 phone_bound（StepUpEnv.stepUpPhoneBound），不再看本机是否知道号码
+        val reachable =
+            identity.account?.let {
+                com.couli.core.wallet.stepup.StepUpController
+                    .slotPhone(account.env, it)
+            } != null
         return AccountEntryPolicy.entries(
             session,
             deps.env.forceUpdateContext(),
             phoneBound,
             DELETE_ACCOUNT in account.env.availableRoutes(),
             null,
-            known,
+            reachable,
         )
     }
 

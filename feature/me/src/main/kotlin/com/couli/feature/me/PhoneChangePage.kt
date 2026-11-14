@@ -104,7 +104,8 @@ internal fun PhoneChangePage(
                         CouliButton(
                             text = texts.text("phone_change.next"),
                             onClick = { controller.verify(version) },
-                            enabled = controller.phoneKnown && state.code1.length == PhoneChangeController.CODE_LENGTH && !verifyBlocked,
+                            enabled =
+                                controller.stepUpReachable && state.code1.length == PhoneChangeController.CODE_LENGTH && !verifyBlocked,
                             loading = state.verifying,
                             modifier = Modifier.fillMaxWidth().testTag(AccountTags.PHONE_STEP1_NEXT),
                         )
@@ -290,7 +291,7 @@ private fun Step1(
                 .testTag(AccountTags.PHONE_STEP1),
         verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3),
     ) {
-        if (!controller.phoneKnown) {
+        if (!controller.stepUpReachable) {
             // G02：本机取不到号码 →「暂时无法发送验证码」，两个按钮置灰，不发请求
             Text(
                 text = texts.text("step_up.no_phone"),
@@ -312,7 +313,7 @@ private fun Step1(
                 value = state.code1,
                 onValueChange = { controller.onCode1(it, version) },
                 accessibilityLabel = texts.format("step_up.code_spoken", mapOf("n" to state.code1.length.toString())),
-                enabled = controller.phoneKnown,
+                enabled = controller.stepUpReachable,
                 submitting = state.verifying,
                 error = codeError != null,
                 inputModifier =
@@ -328,7 +329,7 @@ private fun Step1(
                     } else {
                         texts.text("phone_change.get_code")
                     },
-                enabled = controller.phoneKnown && resendLeft == 0L && !limited && !state.sending1,
+                enabled = controller.stepUpReachable && resendLeft == 0L && !limited && !state.sending1,
                 tag = AccountTags.PHONE_STEP1_SEND,
                 onClick = { controller.sendCode1(version) },
             )

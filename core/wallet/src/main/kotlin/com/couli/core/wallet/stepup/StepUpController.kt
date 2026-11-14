@@ -56,9 +56,11 @@ data class StepUpUiState(
 }
 
 /**
- * 二次验证执行器（短信方式；第三方方式只给注销，不在 APP-13a，G10）：打开即对当前 action 发码（sendSmsCode {phone, purpose: step_up, action}），号码由
- * App 按账号归属给（[StepUpEnv.stepUpPhone]，取不到不发码、不让用户另填）；倒计时按 resend_after_sec（未返回按 60 秒）；输满 6 位才能
- * 【验证并提交】→ stepUp {action, code}，成功把 token 交给发起方（发起方沿用原键重放）。20002 / 20003 清空输入并 assertive 播报。
+ * 二次验证执行器（短信方式；第三方方式只给注销，不在 APP-13a，G10）：打开即对当前 action 发码（sendSmsCode {purpose: step_up, action}，带本人令牌、
+ * 不带 phone，服务端发往账号当前绑定的手机号，B1-02zzz / BR-ID-08）。[StepUpEnv.stepUpPhone] 只用作本机发码槽位的键与「能否发码」的判定（取不到不发码、
+ * 不让用户另填），不再上送；倒计时按 resend_after_sec（未返回按 60 秒）；输满 6 位才能
+ * 【验证并提交】→ stepUp {action, code, summary?}（收款账号变更带业务摘要，BR-ID-08 细则「绑定业务摘要」；提现不带，D10-1667），成功把 token
+ * 交给发起方（发起方沿用原键重放）。20002 / 20003 清空输入并 assertive 播报。
  * 发码的 42901 按「账号 + 号码 + action」同一把键（[SmsDeadlines.rateLimit]）；APP-09 的两个钱包 action 另沿用会话级 [StepUpDeps.smsGate]
  * （既有口径与测试），APP-13a 的 phone_change / account_deletion 不写也不读这把全局闸门（共性第 15 条）。验证的 42901 用 [StepUpDeps.verifyGate]
  * （与发码分开，共性第 26 条）。受限会话下只允许 account_deletion（其他 action 本地拒绝，不发请求）。面板出现期间属于敏感浮层，关闭后迟到的结果只丢弃。
@@ -77,6 +79,9 @@ class StepUpController(
     private var noticeSerial = 0L
     private var onToken: ((String) -> Unit)? = null
     private var onClosed: (() -> Unit)? = null
+
+    /** 本次面板绑定的业务摘要（[open] 传入；验证请求原样带上，token 按它写缓存）。 */
+    private var summary: JsonObject? = null
     private var ticker: Job? = null
     private var limitTimer: Job? = null
     private var resendUntil = 0L
@@ -87,16 +92,19 @@ class StepUpController(
     /**
      * 打开面板并发码。[owner] 是打开它的提交 / 确认的身份（共性第 60 条）：面板之后的发码、验证都沿用它。[onToken] 拿到 token 后由发起方沿用原键重放；
      * [onClosed] 用户关闭面板。受限会话下 action 不是 account_deletion：面板显示「当前不能进行这项验证」，不发码、不验证。
+     * [summary] 是这次业务的摘要（[StepUpSummary]；收款账号变更由发起方按将要重放的原请求体给出，提现等其余 action 为 null）：验证请求原样带上。
      */
     fun open(
         action: String,
         owner: FormOwner,
         onToken: (String) -> Unit,
         onClosed: () -> Unit,
+        summary: JsonObject? = null,
     ) {
         generation += 1
         this.onToken = onToken
         this.onClosed = onClosed
+        this.summary = summary
         deps.env.sensitiveOverlay(true)
         if (!scopeAllows(action)) {
             mutable.value =
@@ -156,9 +164,9 @@ class StepUpController(
         // 按面板的身份读号码、占用槽位、发包（共性第 60 条）：会话已换（清空通知还没执行）的不读、不占、不发，等清空通知收起面板
         if (!current.owner.current(deps.env)) return
         val account = current.owner.account
-        val phone = account?.let(deps.env::stepUpPhone)
+        val phone = account?.let { slotPhone(deps.env, it, current.action) }
         if (account == null || phone == null) {
-            // 本机取不到当前账号的号码：不编造、不让用户另填，不发码（Android 空白 A01，G31；APP-13a G02）
+            // 账号未绑手机（Me.phone_bound=false，D10-1659 S2-4），或旧接线下本机取不到槽位键：不编造、不让用户另填，不发码（G31；APP-13a G02）
             mutable.value = current.copy(phase = StepUpUiState.NO_PHONE)
             return
         }
@@ -188,10 +196,10 @@ class StepUpController(
         val epoch = current.owner.epoch
         // 点击即进入 SENDING（【重新获取】置灰），结果回来之前不再受理
         mutable.value = current.copy(phase = StepUpUiState.SENDING, error = null)
+        // B1-02zzz：step_up 不带 phone（带了服务端回 20001 data.fields=[phone]），令牌由网络层按 x-auth=optional 带上；号码只留在本机作槽位键
         val body =
             JsonObject(
                 mapOf(
-                    "phone" to JsonPrimitive(phone),
                     "purpose" to JsonPrimitive(PURPOSE),
                     "action" to JsonPrimitive(current.action),
                 ),
@@ -223,7 +231,9 @@ class StepUpController(
         deps.service.launch {
             var deadline: Long? = null
             try {
-                val result = deps.api.send(ApiCall(SEND_OPERATION, body = body, ownership = owner, expectedAccount = slot.account))
+                // step_up 发码要就绪的本人会话（D10-1658 ④）：optional 接口缺省不等不拦，这里由面板要求网络层按需要会话处理
+                val call = ApiCall(SEND_OPERATION, body = body, ownership = owner, expectedAccount = slot.account, requiresSession = true)
+                val result = deps.api.send(call)
                 if (deps.env.ownedBy(slot.account, epoch)) {
                     // 有效发码结果更新共享倒计时与限流截止时间，面板已关闭、页面已出栈也不丢（共性第 6、17、40 条）
                     if (result is ApiResult.Success) {
@@ -328,7 +338,8 @@ class StepUpController(
         val gen = generation
         val epoch = current.owner.epoch
         mutable.value = current.copy(phase = StepUpUiState.VERIFYING, error = null)
-        val body = JsonObject(mapOf("action" to JsonPrimitive(current.action), "code" to JsonPrimitive(current.code))).toString()
+        val bound = summary
+        val body = verifyBody(current.action, current.code, bound)
         val probe = deps.verifyGate.probe()
         // R3-01、共性第 43 条：验证请求发起时记下 token 失效世代；回包写缓存、交付 onToken 之前复核
         val tokenGen = deps.tokenGeneration()
@@ -341,7 +352,7 @@ class StepUpController(
             // 42901 先按归属写入共享禁用期，再看面板是否有效（共性第 27、40 条）
             if (deps.env.ownedBy(account, epoch)) settleRetryAfter(result, deps.verifyGate)
             if (!valid(gen, epoch)) return@launch
-            onVerified(result, account, current.action, epoch, probe, tokenGen)
+            onVerified(result, account, current.action, epoch, probe, tokenGen, StepUpSummary.key(bound))
         }
     }
 
@@ -353,6 +364,7 @@ class StepUpController(
         epoch: Long,
         probe: SendProbe,
         tokenGen: Long,
+        summaryKey: String?,
     ) {
         val current = mutable.value ?: return
         val data = (result as? ApiResult.Success)?.let { WalletJson.stepUp(it.data) }
@@ -363,7 +375,8 @@ class StepUpController(
         }
         if (data != null) {
             // APP-13a：按账号、会话世代、作用域、action 隔离（StepUpTokenPolicy）；F-AND-37（FU-AND-0717）起钱包 action 同口径，不再走 APP-09 旧入口
-            deps.tokens.put(action, account, data.token, data.expireAtMillis, epoch, deps.env.sessionScope())
+            // token 与业务摘要绑定写缓存（BR-ID-08 细则「绑定业务摘要」）：摘要不同的请求不复用
+            deps.tokens.put(action, account, data.token, data.expireAtMillis, epoch, deps.env.sessionScope(), summaryKey)
             val deliver = onToken
             dismiss()
             deliver?.invoke(data.token)
@@ -400,6 +413,7 @@ class StepUpController(
         mutable.value = null
         onToken = null
         onClosed = null
+        summary = null
     }
 
     private fun failure(
@@ -466,6 +480,44 @@ class StepUpController(
     }
 
     companion object {
+        /** 发码槽位里代表「账号当前绑定的手机号」的占位（账号已绑、但接线没给槽位键时；不含数字，不上送）。 */
+        const val BOUND_SLOT = "bound"
+
+        /**
+         * 这个账号发 step_up 码用的槽位键（D10-1659 S2-5：能否发码按 phone_bound）：未绑（false）为 null（不发码）；已绑（true）用接线给的槽位键，
+         * 没给用 [BOUND_SLOT]；未知（null）沿用接线给的槽位键（没给为 null，旧口径）。提现（[action] = withdraw）不按 phone_bound 拦，照改前只看
+         * 接线给的槽位键（D10-1667）。
+         */
+        fun slotPhone(
+            env: StepUpEnv,
+            account: String,
+            action: String? = null,
+        ): String? {
+            if (action == WITHDRAW) return env.stepUpPhone(account)
+            return when (env.stepUpPhoneBound(account)) {
+                false -> null
+                true -> env.stepUpPhone(account) ?: BOUND_SLOT
+                null -> env.stepUpPhone(account)
+            }
+        }
+
+        private const val WITHDRAW = "withdraw"
+
+        /** stepUp 请求体：{action, code}，有摘要时加 summary（openapi StepUpBySmsRequest）。 */
+        fun verifyBody(
+            action: String,
+            code: String,
+            summary: JsonObject?,
+        ): String {
+            val fields =
+                linkedMapOf<String, kotlinx.serialization.json.JsonElement>(
+                    "action" to JsonPrimitive(action),
+                    "code" to JsonPrimitive(code),
+                )
+            if (summary != null) fields["summary"] = summary
+            return JsonObject(fields).toString()
+        }
+
         const val SEND_OPERATION = "sendSmsCode"
         const val VERIFY_OPERATION = "stepUp"
         const val PURPOSE = "step_up"

@@ -250,6 +250,13 @@ class AppLogin(
     }
 
     /**
+     * 这个账号是否已绑手机（Me.phone_bound：本次短信登录完成、getMe、绑定成功确认 true，查到未绑为 false，待查 / 冷启动没有记录为 null）；
+     * 不是当前会话的账号为 null。二次验证本地先拦用（D10-1659 S2-4 / S2-5）。
+     */
+    fun phoneBound(account: String): Boolean? =
+        if (account.isNotEmpty() && client.activeUserId() == account) phoneBinding.get(tokens.loginEpoch) else null
+
+    /**
      * 守卫用的会话状态：没有有效会话 → 游客；deletion_only → 受限；确认 phone_bound = true（本次短信登录完成、getMe、绑定成功）→ 已绑
      * 手机；其余（第三方未绑、待查、冷启动没有记录）→ 已登录未绑手机（APP-05b 共性第 13 条：未知不当已绑，主动打开与待办恢复同一口径）。
      */

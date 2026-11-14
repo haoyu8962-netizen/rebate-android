@@ -91,6 +91,11 @@ class AppWallet(
     realname: RealNameBackend?,
     labor: LaborBackend?,
     private val stepUpPhone: (String) -> String?,
+    /**
+     * 账号是否已绑手机（Me.phone_bound；AppModule 接 AppLogin.phoneBound，D10-1659 S2-4 / S2-5）：二次验证据此本地先拦（未绑不发码）。
+     * 没接（更早任务的单测）为未知，沿用槽位键的旧口径。
+     */
+    private val phoneBound: (String) -> Boolean? = { null },
     private val track: (ClientEvent) -> Unit = {},
     private val onOverlay: () -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
@@ -211,6 +216,8 @@ class AppWallet(
             override fun contactService(fromRoute: String) = customerService(fromRoute)
 
             override fun stepUpPhone(account: String): String? = this@AppWallet.stepUpPhone(account)
+
+            override fun stepUpPhoneBound(account: String): Boolean? = this@AppWallet.phoneBound(account) ?: super.stepUpPhoneBound(account)
 
             override fun realnameChanged() = refreshRealname()
 

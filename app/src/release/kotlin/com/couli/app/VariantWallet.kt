@@ -12,6 +12,13 @@ internal fun variantRealNameBackend(context: Context): RealNameBackend? = null
 @Suppress("UnusedParameter", "FunctionOnlyReturningConstant")
 internal fun variantLaborBackend(context: Context): LaborBackend? = null
 
-/** Release：本机没有保存当前账号的手机号（Android 空白 A01，G31）：不发码、不编造、不让用户另填。TODO(N-32) */
+/**
+ * Release：二次验证发码不再需要本机号码（B1-02zzz：purpose=step_up 不带 phone，带本人令牌，服务端发往账号绑定的手机号）。这里只给发码槽位的键：
+ * 有当前账号就给固定的 [BOUND_PHONE_SLOT]（不是号码，不上送、不显示），槽位按「账号 + action」隔离；没有账号为 null（不发码）。
+ * 未绑手机的账号由服务端回 20001（data.fields=[code]），本端不编造号码、不让用户另填。
+ */
 @Suppress("UnusedParameter")
-internal fun variantStepUpPhone(context: Context): (String) -> String? = { null }
+internal fun variantStepUpPhone(context: Context): (String) -> String? = { account -> BOUND_PHONE_SLOT.takeIf { account.isNotEmpty() } }
+
+/** 发码槽位里代表「账号当前绑定的手机号」的占位（不含数字，不会被当成号码）。 */
+private const val BOUND_PHONE_SLOT = "bound"
