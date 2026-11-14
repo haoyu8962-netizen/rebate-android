@@ -115,8 +115,6 @@ object OrderDraftTexts : OrderTexts {
             "order_list.end" to "没有更多了",
             "order_list.quantity" to "件数 {n}",
             "order_list.order_no" to "订单号 {no}",
-            "order_list.copy" to "复制",
-            "order_list.copy_label" to "复制订单号",
             // 读屏：分享单脱敏号里的「*」读作「星号」（adaptation-a11y-spec §9）
             "order_list.star_spoken" to "星号",
             "order_list.image_placeholder" to "商品图",

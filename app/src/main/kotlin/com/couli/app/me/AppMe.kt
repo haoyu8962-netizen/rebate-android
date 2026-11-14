@@ -581,7 +581,9 @@ class AppMe(
 
         override fun openNotificationSettings() = system.openNotificationSettings()
 
-        // G26：锁定契约的 system-permissions.json 没有 Android 条目，一节只显示标题与提示（TODO(N-33)：契约补条目后由生成物给，不手写清单）
+        // G26：锁定契约的 system-permissions.json 现有的 Android 条目（network、dynamic_receiver）都是安装即授予，按 PrivacyCenterView.USER_REQUESTED_TYPES
+        // 不进系统权限一节，所以一节只显示标题与提示。TODO(N-33)：契约出现向用户申请的 Android 条目时由生成物给条目（不手写清单），过滤仍在 PrivacyCenterView
+        // 一处
         override fun permissionEntries(): List<JsonObject> = emptyList()
 
         override fun permissionStatus(type: String): String = if (type == PUSH) system.pushStatus() else NOT_ASKED

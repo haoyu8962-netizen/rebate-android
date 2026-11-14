@@ -77,6 +77,51 @@ object LedgerTypeSerializer : KSerializer<LedgerType> {
 }
 
 /**
+ * 契约枚举 `ledger_sub_account`（contracts/enums/fund.yaml）。
+ * 用户余额账户的子户（ledger_entries / daily_balances 的 sub_account）
+ *
+ * 未知取值解码为 [LedgerSubAccount.UNKNOWN]，不抛错。
+ */
+@Serializable(with = LedgerSubAccountSerializer::class)
+enum class LedgerSubAccount(
+    val raw: kotlin.String,
+) {
+    AVAILABLE("available"),
+    FROZEN("frozen"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<LedgerSubAccount> =
+            listOf(
+                AVAILABLE,
+                FROZEN,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, LedgerSubAccount> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): LedgerSubAccount = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [LedgerSubAccount] 的序列化器：未知字符串得 [LedgerSubAccount.UNKNOWN]；序列化写 raw。 */
+object LedgerSubAccountSerializer : KSerializer<LedgerSubAccount> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.LedgerSubAccount", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): LedgerSubAccount = LedgerSubAccount.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: LedgerSubAccount,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
  * 契约枚举 `referral_credit_sub_type`（contracts/enums/fund.yaml）。
  * REFERRAL_CREDIT 的 sub_type；INDIRECT 只在间推开关开启的规则版本下产生
  *
@@ -1768,6 +1813,7 @@ enum class ReconDiffType(
     SETTLE_MISSING("settle_missing"),
     APPEAL_RESTORE("appeal_restore"),
     ESTIMATE_CHANGED_AFTER_CREDIT("estimate_changed_after_credit"),
+    BLACKLIST_AFTER_CREDIT("blacklist_after_credit"),
     PAY_MISMATCH("pay_mismatch"),
     PAY_ANOMALY("pay_anomaly"),
     UNKNOWN("__unknown__"),
@@ -1786,6 +1832,7 @@ enum class ReconDiffType(
                 SETTLE_MISSING,
                 APPEAL_RESTORE,
                 ESTIMATE_CHANGED_AFTER_CREDIT,
+                BLACKLIST_AFTER_CREDIT,
                 PAY_MISMATCH,
                 PAY_ANOMALY,
             )

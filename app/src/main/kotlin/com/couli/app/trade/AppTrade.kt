@@ -6,6 +6,7 @@ import com.couli.app.routing.AppRouting
 import com.couli.core.clientcore.BundledConfig
 import com.couli.core.clientcore.ClientEvents
 import com.couli.core.clientcore.ConfigStore
+import com.couli.core.clientcore.LinkJumpFailureReason
 import com.couli.core.clientcore.LinkJumpInstalled
 import com.couli.core.clientcore.LinkJumpPhase
 import com.couli.core.clientcore.LinkJumpResult
@@ -22,6 +23,7 @@ import com.couli.feature.trade.AuthManageController
 import com.couli.feature.trade.AuthSheetCounter
 import com.couli.feature.trade.JumpPorts
 import com.couli.feature.trade.JumpTipService
+import com.couli.feature.trade.JumpTypes
 import com.couli.feature.trade.LinkJumpSink
 import com.couli.feature.trade.OpenPurchaseController
 import com.couli.feature.trade.PlatformStatusOverrides
@@ -228,7 +230,7 @@ class AppTrade(
         val phase = LinkJumpPhase.entries.firstOrNull { it.raw == text("phase") } ?: return
         val platform = LinkJumpUnionPlatform.entries.firstOrNull { it.raw == text("union_platform") } ?: return
         val step = LinkJumpStep.entries.firstOrNull { it.raw == text("step") } ?: return
-        val result = LinkJumpResult.entries.firstOrNull { it.raw == text("result") } ?: return
+        val (result, failureReason) = linkJumpResult(text("result")) ?: return
         val installed = LinkJumpInstalled.entries.firstOrNull { it.raw == text("installed") }
         val duration = (fields["duration_ms"] as? JsonPrimitive)?.content?.toLongOrNull()
         val event =
@@ -241,12 +243,30 @@ class AppTrade(
                     result = result,
                     attemptId = text("attempt_id"),
                     linkId = text("link_id"),
+                    failureReason = failureReason,
                     durationMs = duration,
                     installed = installed,
                 )
             }.getOrNull() ?: return
         tracker.get().track(event)
     }
+
+    /**
+     * 外跳步骤结果 → events.yaml link_jump 的 result 与 failure_reason（events version 6，03 §4.5）。步骤执行器仍用自己的结果词
+     * （launched / copied / failed / sdk_init_failed，购买流程的判定靠它们），只在这里换成契约取值：拉起与已复制口令都记 requested；
+     * 已初始化但这一步明确失败记 failed + step_failed；百川初始化失败记 failed + sdk_init_failed。失败一律带 failure_reason、绝不记成 requested；
+     * 契约的 requested、unknown 原样认；其余取值不上报。
+     * TODO(N-20)：接上报 sink 时由交易模块直接产契约新取值（含 unknown），并删掉本映射。
+     */
+    private fun linkJumpResult(raw: String?): Pair<LinkJumpResult, LinkJumpFailureReason?>? =
+        when (raw) {
+            JumpTypes.LAUNCHED, JumpTypes.COPIED -> LinkJumpResult.REQUESTED to null
+            JumpTypes.FAILED -> LinkJumpResult.FAILED to LinkJumpFailureReason.STEP_FAILED
+            JumpTypes.SDK_INIT_FAILED -> LinkJumpResult.FAILED to LinkJumpFailureReason.SDK_INIT_FAILED
+            LinkJumpResult.REQUESTED.raw -> LinkJumpResult.REQUESTED to null
+            LinkJumpResult.UNKNOWN_VALUE.raw -> LinkJumpResult.UNKNOWN_VALUE to null
+            else -> null
+        }
 
     /** 购买 pending_action：Router 的同一份本地记录（BR-ID-10：只存 1 条、10 分钟、完成一步重新计时、退出登录清除）。 */
     private inner class RouterPurchasePending : PurchasePending {

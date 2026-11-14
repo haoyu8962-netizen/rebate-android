@@ -27,6 +27,7 @@ enum class AdminPermission(
     FUND_VIEW("fund.view"),
     AUDIT_VIEW_ALL("audit.view_all"),
     EXPORT("export"),
+    FEEDBACK_VIEW("feedback.view"),
     CONTENT_PAGE("content.page"),
     CONTENT_POOL("content.pool"),
     CONTENT_ARTICLE("content.article"),
@@ -60,6 +61,7 @@ enum class AdminPermission(
     ORDER_ASSIGN("order.assign"),
     ORDER_HOLD("order.hold"),
     ORDER_RESTORE("order.restore"),
+    ORDER_BLACKLIST_CLAWBACK("order.blacklist_clawback"),
     WITHDRAW_REVIEW("withdraw.review"),
     PAYOUT_EXECUTE("payout.execute"),
     PAY_VIEW("pay.view"),
@@ -91,6 +93,7 @@ enum class AdminPermission(
                 FUND_VIEW,
                 AUDIT_VIEW_ALL,
                 EXPORT,
+                FEEDBACK_VIEW,
                 CONTENT_PAGE,
                 CONTENT_POOL,
                 CONTENT_ARTICLE,
@@ -124,6 +127,7 @@ enum class AdminPermission(
                 ORDER_ASSIGN,
                 ORDER_HOLD,
                 ORDER_RESTORE,
+                ORDER_BLACKLIST_CLAWBACK,
                 WITHDRAW_REVIEW,
                 PAYOUT_EXECUTE,
                 PAY_VIEW,
@@ -609,6 +613,8 @@ enum class AuditSystemActor(
 ) {
     SYSTEM_RISK("system:risk"),
     SYSTEM_PAYOUT("system:payout"),
+    SYSTEM_LEDGER("system:ledger"),
+    SYSTEM_SETTLEMENT("system:settlement"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -618,6 +624,8 @@ enum class AuditSystemActor(
             listOf(
                 SYSTEM_RISK,
                 SYSTEM_PAYOUT,
+                SYSTEM_LEDGER,
+                SYSTEM_SETTLEMENT,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, AuditSystemActor> = known.associateBy { it.raw }

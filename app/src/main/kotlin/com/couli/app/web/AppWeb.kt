@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Log
 import com.couli.app.BuildConfig
 import com.couli.app.clientcore.AppConfig
+import com.couli.app.clientcore.EventDiagnostics
 import com.couli.app.clientcore.clientPrivacyRaw
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.login.AppLogin
@@ -364,7 +365,10 @@ class AppWeb(
             method: String,
             code: Int,
         ) {
-            tracker.get().track(ClientEvents.bridgeCall(PAGE, method, code.toLong()))
+            // 诊断字段（03 §4.7，D10-1612 ④ (i)）：schema_version 取本端打包的 contracts/bridge.schema.json 顶层 version；
+            // bridge_version 取桥版本（与上面 env() 的 bridge_version 同一来源 BridgeProtocol.contractVersion）；两者各有来源，
+            // 数值相同不要紧。H5 发布版本原生取不到（地址里不带版本号，TODO(N-31)），填 unknown。组装见 EventDiagnostics.bridgeCall
+            tracker.get().track(EventDiagnostics.bridgeCall(PAGE, method, code, data()))
         }
 
         private fun owned(validity: BridgeCallValidity): CallOwnership = bridgeOwnership(inFlight, validity)

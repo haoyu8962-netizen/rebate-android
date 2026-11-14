@@ -405,6 +405,77 @@ object OrderReasonSerializer : KSerializer<OrderReason> {
 }
 
 /**
+ * 契约枚举 `order_reason_sub`（contracts/enums/order.yaml）。
+ * orders.reason_sub，细分 orders.reason 的说明，不改金额、不改父编码的 kind 与状态迁移；每个值只属一个父编码（说明里写明），PUNISH 12 项、REFUND 2 项、RIGHTS 1 项，其余父编码没有子原因；「无」= 不写（null），「其他原因」= 父编码 OTHER，不另设子原因；用户文案取字典 order_reason_sub.<值>.desc；编码为凑狸自定
+ *
+ * 未知取值解码为 [OrderReasonSub.UNKNOWN]，不抛错。
+ */
+@Serializable(with = OrderReasonSubSerializer::class)
+enum class OrderReasonSub(
+    val raw: kotlin.String,
+) {
+    VIOLATION_PROMO("VIOLATION_PROMO"),
+    SHOP_TK("SHOP_TK"),
+    INSITE_PROMO("INSITE_PROMO"),
+    PROXY_BUY("PROXY_BUY"),
+    FAKE_TRADE("FAKE_TRADE"),
+    INSITE_RESALE("INSITE_RESALE"),
+    OVER_LIMIT("OVER_LIMIT"),
+    MARKET_DISRUPT("MARKET_DISRUPT"),
+    MULTI_TRADE_ABNORMAL("MULTI_TRADE_ABNORMAL"),
+    SINGLE_TRADE_ABNORMAL("SINGLE_TRADE_ABNORMAL"),
+    RISK_ORDER("RISK_ORDER"),
+    PUNISH_ORDER("PUNISH_ORDER"),
+    IN_SALE("IN_SALE"),
+    AFTER_SETTLE("AFTER_SETTLE"),
+    AFTER_SALE("AFTER_SALE"),
+    UNKNOWN("__unknown__"),
+    ;
+
+    companion object {
+        /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
+        val known: kotlin.collections.List<OrderReasonSub> =
+            listOf(
+                VIOLATION_PROMO,
+                SHOP_TK,
+                INSITE_PROMO,
+                PROXY_BUY,
+                FAKE_TRADE,
+                INSITE_RESALE,
+                OVER_LIMIT,
+                MARKET_DISRUPT,
+                MULTI_TRADE_ABNORMAL,
+                SINGLE_TRADE_ABNORMAL,
+                RISK_ORDER,
+                PUNISH_ORDER,
+                IN_SALE,
+                AFTER_SETTLE,
+                AFTER_SALE,
+            )
+
+        private val byRaw: kotlin.collections.Map<kotlin.String, OrderReasonSub> = known.associateBy { it.raw }
+
+        /** 未知取值返回 [UNKNOWN]。 */
+        fun fromRaw(raw: kotlin.String): OrderReasonSub = byRaw[raw] ?: UNKNOWN
+    }
+}
+
+/** [OrderReasonSub] 的序列化器：未知字符串得 [OrderReasonSub.UNKNOWN]；序列化写 raw。 */
+object OrderReasonSubSerializer : KSerializer<OrderReasonSub> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("com.couli.generated.OrderReasonSub", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): OrderReasonSub = OrderReasonSub.fromRaw(decoder.decodeString())
+
+    override fun serialize(
+        encoder: Encoder,
+        value: OrderReasonSub,
+    ) {
+        encoder.encodeString(value.raw)
+    }
+}
+
+/**
  * 契约枚举 `diff_reason`（contracts/enums/order.yaml）。
  * orders.diff_reason_code，差额原因只用这 4 个
  *

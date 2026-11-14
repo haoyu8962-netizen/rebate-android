@@ -615,7 +615,18 @@ object Routes {
                     debugOnly = false,
                     agentGuide = false,
                     agentGuideAccount = null,
-                    params = emptyList(),
+                    params =
+                        listOf(
+                            RouteParamSpec(
+                                name = "order_id",
+                                type = RouteParamType.STRING,
+                                required = false,
+                                enumValues = null,
+                                minLength = 1,
+                                maxLength = null,
+                                pattern = null,
+                            ),
+                        ),
                 ),
             "DataCopy" to
                 RouteSpec(

@@ -5,6 +5,7 @@ import android.os.Looper
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavGraph
+import com.couli.app.clientcore.EventDiagnostics
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
 import com.couli.app.routing.HomeDestination
@@ -321,7 +322,20 @@ class AppHome(
                 pageVersion: Int,
                 reason: String,
             ) {
-                track(ClientEvents.sduiCardError(PAGE, type, pageVersion.toLong(), reason, version?.toLong()))
+                // 诊断字段（03 §4.7）：schema_version 取卡片自带 version，取不到填 unknown；首页是原生页，没有桥与 H5
+                track(
+                    ClientEvents.sduiCardError(
+                        page = PAGE,
+                        type = type,
+                        reason = reason,
+                        schemaVersion = version?.toString() ?: EventDiagnostics.UNKNOWN,
+                        bridgeVersion = EventDiagnostics.UNKNOWN,
+                        configVersion = EventDiagnostics.configVersion(configData()),
+                        h5Release = EventDiagnostics.UNKNOWN,
+                        version = version?.toLong(),
+                        pageVersion = pageVersion.toLong(),
+                    ),
+                )
             }
         }
 

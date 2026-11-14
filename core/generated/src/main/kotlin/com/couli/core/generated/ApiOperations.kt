@@ -179,10 +179,10 @@ object ApiOperations {
                     signed = true,
                     idempotent = true,
                     stepUp = null,
-                    errorCodes = listOf(20001, 30411, 50001, 10405),
+                    errorCodes = listOf(20001, 30411, 50001, 10405, 10010),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "stepUp" to
                 ApiOperation(
@@ -504,6 +504,20 @@ object ApiOperations {
                     errorCodes = listOf(30701),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
+                    planned = false,
+                ),
+            "ingestEvents" to
+                ApiOperation(
+                    operationId = "ingestEvents",
+                    method = "POST",
+                    pathTemplate = "/v1/events",
+                    auth = "optional",
+                    signed = false,
+                    idempotent = false,
+                    stepUp = null,
+                    errorCodes = listOf(20001, 10405),
+                    sessionScopes = listOf("full"),
+                    minVersionGate = ApiMinVersionGate.GATED,
                     planned = false,
                 ),
             "listMessages" to
@@ -1190,7 +1204,7 @@ object ApiOperations {
                     errorCodes = listOf(30145, 20001, 30144, 42901, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "openProductShop" to
                 ApiOperation(
@@ -1201,10 +1215,10 @@ object ApiOperations {
                     signed = true,
                     idempotent = true,
                     stepUp = null,
-                    errorCodes = listOf(10001, 30101, 30102, 30111, 50301, 30146, 50303, 20001, 10405),
+                    errorCodes = listOf(10001, 30101, 30102, 30111, 30153, 50301, 30146, 50303, 20001, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "getHotRank" to
                 ApiOperation(
@@ -1428,7 +1442,7 @@ object ApiOperations {
                     errorCodes = listOf(30501, 10001, 10005, 10004, 30504),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.UNSPECIFIED,
-                    planned = true,
+                    planned = false,
                 ),
             "sendAgentMessage" to
                 ApiOperation(
@@ -1470,7 +1484,7 @@ object ApiOperations {
                     errorCodes = listOf(30501, 10001, 10005, 10004, 30504, 20001, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
             "reportAgentMessage" to
                 ApiOperation(
@@ -1484,7 +1498,7 @@ object ApiOperations {
                     errorCodes = listOf(30501, 10001, 10005, 10004, 30504, 20001, 10405),
                     sessionScopes = listOf("full"),
                     minVersionGate = ApiMinVersionGate.GATED,
-                    planned = true,
+                    planned = false,
                 ),
         )
 

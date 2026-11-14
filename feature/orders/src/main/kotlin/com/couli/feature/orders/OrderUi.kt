@@ -177,6 +177,15 @@ internal object OrderUi {
 }
 
 /**
+ * 【复制】的读屏名称（契约 order_list.copy_spoken「复制订单号 {no}」，{no} 填完整单号；可见文字是 order_list.copy_label。LOCK-android，D10-1609）。
+ * 只有自购单（完整单号）才有【复制】。
+ */
+internal fun orderCopySpoken(
+    texts: OrderTexts,
+    orderNo: String,
+): String = texts.format("order_list.copy_spoken", mapOf("no" to orderNo))
+
+/**
  * 状态胶囊（APP-08v O13）：最小高 22（随字号增高，文字可换行不裁切）、左右 8、圆角满、图标 14 + 12 字；中性为次要底 + 次文字，已结算为
  * `status.success` 底 + 字。图标装饰（读屏只读文字）。
  */
@@ -207,7 +216,7 @@ internal fun StatusPill(
 }
 
 /**
- * 订单号一行：自购单「订单号 {完整单号}」+【复制】（独立目标，命中区 48，读屏「复制订单号」）；分享单只有脱敏号，没有复制按钮、不可选中、
+ * 订单号一行：自购单「订单号 {完整单号}」+【复制】（独立目标，命中区 48，读屏 order_list.copy_spoken「复制订单号 {完整单号}」）；分享单只有脱敏号，没有复制按钮、不可选中、
  * 长按不出菜单（普通 Text，不包 SelectionContainer），读屏把「*」读成「星号」。坏数据（两个都有或都没有）不显示任何单号。
  */
 @Composable
@@ -243,11 +252,11 @@ internal fun OrderNumberRow(
         end = {
             if (number.copyable && onCopy != null) {
                 CouliButton(
-                    text = texts.text("order_list.copy"),
+                    text = texts.text("order_list.copy_label"),
                     onClick = onCopy,
                     variant = CouliButtonVariant.TEXT,
                     size = CouliButtonSize.COMPACT,
-                    accessibilityLabel = texts.text("order_list.copy_label"),
+                    accessibilityLabel = orderCopySpoken(texts, text),
                     modifier = Modifier.testTag(copyTag),
                 )
             }
@@ -295,9 +304,9 @@ internal fun OrderNumberInline(
                         ),
             )
             if (number.copyable && onCopy != null) {
-                val label = texts.text("order_list.copy_label")
+                val label = orderCopySpoken(texts, text)
                 Text(
-                    text = texts.text("order_list.copy"),
+                    text = texts.text("order_list.copy_label"),
                     style = CouliTypography.caption,
                     color = CouliColors.brandEmphasis,
                     softWrap = false,

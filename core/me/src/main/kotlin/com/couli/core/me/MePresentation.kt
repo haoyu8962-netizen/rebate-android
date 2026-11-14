@@ -3,6 +3,7 @@
 
 package com.couli.core.me
 
+import com.couli.core.clientcore.PermissionTypeRaw
 import com.couli.core.designsystem.CouliFormat
 import com.couli.core.me.MeJson.bool
 import com.couli.core.me.MeJson.fen
@@ -354,12 +355,32 @@ data class PrivacyCenterModel(
 
 /**
  * 隐私中心分节（brief §2.4，G26）：两份清单；basic 只读（无个性化开关、无【撤回同意】，原位显示【开启完整功能】）；「系统权限」一节的条目只来自锁定
- * 契约的 specs/system-permissions.json 里本端的条目（Android 目前为空）。[forceUpdate]（03 §4.1「强更页的次要入口」，鸿蒙 R2-05）：从强更页
- * 进入时只显示两份清单、协议与【撤回同意】（已同意才有），不显示个性化开关、系统权限一节与【开启完整功能】。
+ * 契约的 specs/system-permissions.json 里本端、且向用户申请的条目（[USER_REQUESTED_TYPES]；Android 现有条目都是安装即授予，一节为空）。
+ * [forceUpdate]（03 §4.1「强更页的次要入口」，鸿蒙 R2-05）：从强更页进入时只显示两份清单、协议与【撤回同意】（已同意才有），不显示个性化开关、系统权限一节与【开启完整功能】。
  */
 object PrivacyCenterView {
     const val LIST_COLLECT = "个人信息收集清单"
     const val LIST_SHARE = "第三方共享清单"
+
+    /** 权限清单条目类型的归类：向用户申请（运行时弹系统框）或安装即授予（不弹窗）。 */
+    enum class PermissionKind { USER_REQUESTED, INSTALL_GRANTED }
+
+    /**
+     * 「系统权限」一节的判据，只此一处（编排 D10-1606 ①、D10-1612 2）：权限清单（specs/system-permissions.yaml 快照）里每个 type 显式归类，
+     * 只列 [PermissionKind.USER_REQUESTED]。看类型、不看 purpose_key 是否为空。清单出现这里没有的类型时不列（保守），并由
+     * LockPermissionKindsTest 报红，要求在此补归类。
+     */
+    val PERMISSION_KINDS: Map<String, PermissionKind> =
+        mapOf(
+            PermissionTypeRaw.PUSH to PermissionKind.USER_REQUESTED,
+            PermissionTypeRaw.PHOTOS to PermissionKind.USER_REQUESTED,
+            "vibrate" to PermissionKind.INSTALL_GRANTED,
+            "network" to PermissionKind.INSTALL_GRANTED,
+            "dynamic_receiver" to PermissionKind.INSTALL_GRANTED,
+        )
+
+    /** [PERMISSION_KINDS] 里向用户申请的类型。 */
+    val USER_REQUESTED_TYPES: Set<String> = PERMISSION_KINDS.filterValues { it == PermissionKind.USER_REQUESTED }.keys
 
     /** PermissionRequester 的状态 → 系统权限一节的状态（granted / denied / not_asked）。 */
     fun statusOf(raw: String): String =
@@ -384,6 +405,7 @@ object PrivacyCenterView {
                 permissionEntries.mapNotNull { entry ->
                     val type = entry.string("type") ?: return@mapNotNull null
                     if (entry.string("platform") != platformRaw) return@mapNotNull null
+                    if (type !in USER_REQUESTED_TYPES) return@mapNotNull null
                     PermissionRow(
                         type,
                         entry.string("purpose_key"),
