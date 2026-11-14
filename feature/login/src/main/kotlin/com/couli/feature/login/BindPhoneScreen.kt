@@ -67,6 +67,7 @@ import com.couli.core.designsystem.CouliSpacing
 import com.couli.core.designsystem.CouliTextStyles
 import com.couli.core.designsystem.CouliToast
 import com.couli.core.designsystem.CouliTypography
+import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.designsystem.couliCard
 import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.Job
@@ -1273,7 +1274,7 @@ private fun MergeTarget(
         Icon(CouliIcons.merge, contentDescription = null, tint = CouliColors.textSecondary, modifier = Modifier.size(CouliSizes.iconMedium))
         Column {
             Text(text = texts.text("bind_phone.merge.into"), style = CouliTypography.caption, color = CouliColors.textSecondary)
-            Text(
+            WholeNumberText(
                 text = texts.format("bind_phone.merge.account", mapOf("phone" to masked)),
                 style = CouliTextStyles.bodyMedium,
                 color = CouliColors.textPrimary,

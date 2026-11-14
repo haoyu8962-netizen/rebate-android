@@ -478,12 +478,6 @@ internal object NumWrapSourceGuard {
     val EXEMPTIONS =
         listOf(
             Exemption(
-                DIRECT,
-                "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt",
-                "\"bind_phone.merge.account\"",
-                "并号确认 MergeTarget 的脱敏手机号：BindPhoneScreen.kt 受守卫逐字节冻结，本单不改；转收紧单 FU-AND-MERGE-TARGET-WHOLE-NUMBER（D10-1396）",
-            ),
-            Exemption(
                 SINGLE_LINE,
                 "feature/me/src/main/kotlin/com/couli/feature/me/PhoneChangeParts.kt",
                 "text = number.toString()",

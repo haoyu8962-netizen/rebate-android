@@ -2051,7 +2051,7 @@
   {"h": "6ad3fbca1015384dbcd63f904231a967f2818f0ce193d9e28ff0dce851f12e70", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletStaleCacheStoreTest.kt"},
   {"h": "bcd87b6ed7a7df14c45e0bd81d18d88847aa48534bdcf97b373f1b6e8a2faa7a", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletVectorTest.kt"},
   {"h": "2974b50230fa965ec01b15116e110a761fb3e70fd440be99e7cb92cc0435869c", "p": "feature/login/src/main/kotlin/com/couli/feature/login/AgreementSentence.kt"},
-  {"h": "b49cd26c4070fa5fc0c8a77488b82045ed0942d001f27a9c9357c784b93eed98", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
+  {"h": "462083d64df9e85710392385b7c8203e6491e2bf5ac473d5efa7577a2b8a6dfa", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
   {"h": "13a725dd266600bc89f36c5415ad4f33e5fa720d182b0658b487cc2b12cbbfc2", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneService.kt"},
   {"h": "c5530244314b903f1a6e9e1d13d1ed5476a3432b06f8b28677cb57e7e88273ed", "p": "feature/login/src/main/kotlin/com/couli/feature/login/InviteLinkDispatcher.kt"},
   {"h": "fc5e481a4866828380ab90f46b00ad2bdbfd7559c650ba24812a9e1f7aaa4f68", "p": "feature/login/src/main/kotlin/com/couli/feature/login/LastLoginMethod.kt"},

@@ -2644,7 +2644,7 @@
   {"h": "60fc111a4a279f90354d944ba8fcf24d493f1d9226f0f4b7b4c4424e8e30b45d", "p": "feature/login/build.gradle.kts"},
   {"h": "2974b50230fa965ec01b15116e110a761fb3e70fd440be99e7cb92cc0435869c", "p": "feature/login/src/main/kotlin/com/couli/feature/login/AgreementSentence.kt"},
   {"h": "c9c28b334b26a962eb22a333b9d7f8c855b14e2153360a7e818b341d66d0a692", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneParts.kt"},
-  {"h": "b49cd26c4070fa5fc0c8a77488b82045ed0942d001f27a9c9357c784b93eed98", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
+  {"h": "462083d64df9e85710392385b7c8203e6491e2bf5ac473d5efa7577a2b8a6dfa", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneScreen.kt"},
   {"h": "13a725dd266600bc89f36c5415ad4f33e5fa720d182b0658b487cc2b12cbbfc2", "p": "feature/login/src/main/kotlin/com/couli/feature/login/BindPhoneService.kt"},
   {"h": "c5530244314b903f1a6e9e1d13d1ed5476a3432b06f8b28677cb57e7e88273ed", "p": "feature/login/src/main/kotlin/com/couli/feature/login/InviteLinkDispatcher.kt"},
   {"h": "fc5e481a4866828380ab90f46b00ad2bdbfd7559c650ba24812a9e1f7aaa4f68", "p": "feature/login/src/main/kotlin/com/couli/feature/login/LastLoginMethod.kt"},
@@ -2991,12 +2991,12 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "84e8ceb6a70c5a6963bc5f963bc66ffe1a058ca592fe422243464551c6224612",
+   "h": "fb0ee7161be2ebe7a60f8c7e72d9b46615890a9d506ef2fa19c8a2903e50fa58",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "6491d203ede6edd23e3777521ac04ab794ad5c8089754abb98f227cf12a81324",
+   "h": "4135ea27e973eae31cb844d61fa995d72e7e80ddb43ff25043948037100cd43e",
    "swaps": 1
   }
  ],
