@@ -560,7 +560,21 @@ class AppHomeIntegrationTest {
         )
         assertEquals(5, errors.size)
         errors.forEach { event ->
-            assertTrue(event.fields.keys.all { it in setOf("type", "version", "page_version", "reason") })
+            assertTrue(
+                event.fields.keys.all {
+                    it in
+                        setOf(
+                            "type",
+                            "version",
+                            "page_version",
+                            "reason",
+                            "schema_version",
+                            "bridge_version",
+                            "config_version",
+                            "h5_release",
+                        )
+                },
+            )
             assertFalse(event.fields.values.any { it.content.contains("http") || it.content.contains("测试") })
         }
         // 同一进程内同一（page_version、section id、reason）只发一次

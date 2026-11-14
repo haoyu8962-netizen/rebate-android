@@ -147,7 +147,8 @@ class CtLock01LinkJumpWiringTest {
         assertEquals("true", (fields["installed"] as JsonPrimitive).content)
         assertEquals("attempt-1", (fields["attempt_id"] as JsonPrimitive).content)
         assertEquals("link-1", (fields["link_id"] as JsonPrimitive).content)
-        assertEquals("sdk_init_failed", (fields["result"] as JsonPrimitive).content)
+        assertEquals("failed", (fields["result"] as JsonPrimitive).content)
+        assertEquals("sdk_init_failed", (fields["failure_reason"] as JsonPrimitive).content)
         assertFalse("sdk_open_by not reported", "sdk_open_by" in fields)
         assertFalse("sdk_error_code not reported", "sdk_error_code" in fields)
     }

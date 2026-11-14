@@ -134,17 +134,17 @@ class CtLock01ContractUpgradeTest {
         val admin = ApiOperations.all.values.filter { it.pathTemplate.startsWith("/admin/") }
         assertTrue("admin operations generated for the App: ${admin.map { it.operationId }}", admin.isEmpty())
         assertTrue(ApiOperations.all.values.all { it.pathTemplate.startsWith("/v1/") || it.pathTemplate == "/healthz" })
-        // planned 照锁 00deded0ef6f 的 openapi.yaml x-implementation（#24）：4 个已实现（planned=false），
-        // listAgentSessionMessages / setAgentMessageFeedback / reportAgentMessage 仍标 planned（openapi.yaml:28020、28322、28389）
+        // planned 照锁 56c99d0 的 openapi.yaml x-implementation（#24，D10-1606）：7 个都已实现（planned=false），
+        // listAgentSessionMessages / setAgentMessageFeedback / reportAgentMessage 不再标 planned（openapi.yaml:29770、30099、30164）
         val agent =
             mapOf(
                 "createAgentSession" to Triple("POST", "/v1/agent/sessions", false),
                 "getCurrentAgentSession" to Triple("GET", "/v1/agent/sessions/current", false),
-                "listAgentSessionMessages" to Triple("GET", "/v1/agent/sessions/{id}/messages", true),
+                "listAgentSessionMessages" to Triple("GET", "/v1/agent/sessions/{id}/messages", false),
                 "sendAgentMessage" to Triple("POST", "/v1/agent/sessions/{id}/messages", false),
                 "cancelAgentRun" to Triple("POST", "/v1/agent/runs/{run_id}/cancel", false),
-                "setAgentMessageFeedback" to Triple("POST", "/v1/agent/messages/{message_id}/feedback", true),
-                "reportAgentMessage" to Triple("POST", "/v1/agent/messages/{message_id}/report", true),
+                "setAgentMessageFeedback" to Triple("POST", "/v1/agent/messages/{message_id}/feedback", false),
+                "reportAgentMessage" to Triple("POST", "/v1/agent/messages/{message_id}/report", false),
             )
         agent.forEach { (id, route) ->
             val operation = checkNotNull(ApiOperations.byId(id)) { "missing $id" }

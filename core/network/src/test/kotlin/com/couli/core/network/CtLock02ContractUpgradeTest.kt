@@ -121,7 +121,12 @@ class CtLock02ContractUpgradeTest {
                 .filter { ErrorCodes.info(it)?.isDeprecated == false }
                 .filter { map(it).kind == ErrorEffectKind.FALLBACK_MESSAGE }
                 .toSet()
-        assertEquals(setOf(10008, 10009) + NEW_ADMIN_ONLY + NEW_ADMIN_ONLY_00DEDED, fallback)
+        // 锁 56c99d0（LOCK-android，#24，D10-1606）再多 1 个同类后台专用码 30147（同一判据）
+        for (code in NEW_ADMIN_ONLY_56C99D0) {
+            assertNotNull("ErrorCodes[$code]", ErrorCodes.info(code))
+            assertNull("user dictionary has no error.$code", DefaultTexts.text("error.$code"))
+        }
+        assertEquals(setOf(10008, 10009) + NEW_ADMIN_ONLY + NEW_ADMIN_ONLY_00DEDED + NEW_ADMIN_ONLY_56C99D0, fallback)
     }
 
     @Test
@@ -163,13 +168,15 @@ class CtLock02ContractUpgradeTest {
         }
         // 锁 00deded0ef6f（FU-X-HOME-PAGE-API，#24）：客户端 operation 86 → 101，只新增 NEW_OPERATIONS_00DEDED 的 15 个，没有删除
         // 锁 a89c1ec3a（FU-X-CTA-KEY-DRIFT，#24，D10-857）：101 → 103，只新增 NEW_OPERATIONS_A89C1EC 的 2 个，没有删除
-        assertEquals(103, ApiOperations.all.size)
+        // 锁 56c99d0（LOCK-android，#24，D10-1606）：103 → 104，只新增 NEW_OPERATIONS_56C99D0 的 1 个，没有删除
+        assertEquals(104, ApiOperations.all.size)
         assertEquals(
-            OPERATIONS_BEFORE.size + NEW_OPERATIONS.size + NEW_OPERATIONS_00DEDED.size + NEW_OPERATIONS_A89C1EC.size,
+            OPERATIONS_BEFORE.size + NEW_OPERATIONS.size + NEW_OPERATIONS_00DEDED.size + NEW_OPERATIONS_A89C1EC.size +
+                NEW_OPERATIONS_56C99D0.size,
             ApiOperations.all.size,
         )
         assertEquals(
-            NEW_OPERATIONS + NEW_OPERATIONS_00DEDED + NEW_OPERATIONS_A89C1EC,
+            NEW_OPERATIONS + NEW_OPERATIONS_00DEDED + NEW_OPERATIONS_A89C1EC + NEW_OPERATIONS_56C99D0,
             ApiOperations.all.keys - OPERATIONS_BEFORE.map { it.substringBefore('|') }.toSet(),
         )
         assertTrue(ApiOperations.all.values.none { it.pathTemplate.startsWith("/admin/") })
@@ -203,6 +210,12 @@ class CtLock02ContractUpgradeTest {
 
         /** 锁 a89c1ec3a 新增的客户端 operation（openapi.yaml 中非 /admin/ 的 operationId，00deded0ef6f 没有；均 x-implementation planned）。 */
         val NEW_OPERATIONS_A89C1EC = setOf("submitProductFeedback", "openProductShop")
+
+        /** 锁 56c99d0 新增的客户端 operation（openapi.yaml:2701 POST /v1/events，a89c1ec 没有）。 */
+        val NEW_OPERATIONS_56C99D0 = setOf("ingestEvents")
+
+        /** 锁 56c99d0 新增、只出现在 /admin/v1 的码（error-codes.yaml:480 30147，action「后台只提示」）。 */
+        val NEW_ADMIN_ONLY_56C99D0 = setOf(30147)
 
         val NEW_OPERATIONS =
             setOf(
