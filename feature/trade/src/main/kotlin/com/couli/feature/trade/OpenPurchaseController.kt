@@ -161,6 +161,12 @@ interface PurchaseEnv {
     /** 有登录会话（游客 open 返回 10001）。 */
     fun loggedIn(): Boolean
 
+    /**
+     * 此刻的会员账号（与网络层同一次会话读取；游客、读不出为 null）：每次发出 open 时据此固定账号（03 §4.2 固定账号核对、D10-1709 ④），
+     * 网络层核对「实际带了这个账号的令牌」，对不上本地拒绝、不降成匿名。缺省 null（按游客，匿名照发）。
+     */
+    fun account(): String? = null
+
     /** 基本模式（没有同意完整隐私政策）：购买先走补同意，同意后按 pending_action 恢复一次（BR-ID-11、03 §4.1，A-R1-04）。 */
     fun basicMode(): Boolean = false
 
@@ -525,6 +531,8 @@ class OpenPurchaseController(
         invalidateAuth()
         cancelOwners()
         val owner = CallOwnership(api.epochs()) { !left && current === attempt && myRequest == request }
+        // 会员发出的 open 固定这一刻的账号（03 §4.2）；游客为 null
+        val account = env.account()
         owners += owner
         mutableState.value = mutableState.value.copy(phase = PurchasePhase.LOADING, dialog = null)
         timer?.cancel()
@@ -546,6 +554,7 @@ class OpenPurchaseController(
                         body = attempt.body,
                         idempotencyKey = attempt.key,
                         ownership = owner,
+                        expectedAccount = account,
                     ),
                 )
             // 等待之后复核归属：离开、再次点击、重发之后的旧响应只丢弃

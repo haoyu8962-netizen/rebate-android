@@ -443,7 +443,8 @@ class LoginService(
         sending = true
         val result =
             try {
-                client.send(ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner))
+                // 登录发码（purpose=login）不能被读不出的旧会话挡住：身份未知也不带令牌照发（03 §4.2 声明名单）
+                client.send(ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner, sendsWhenIdentityUnknown = true))
             } finally {
                 sending = false
                 release(owner)

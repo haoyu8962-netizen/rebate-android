@@ -27,7 +27,8 @@ class ApiConfigFetcher(
     @Suppress("TooGenericExceptionCaught", "SwallowedException") // 任何异常都按拉取失败（继续用 LKG）
     fun fetchNow(ifNoneMatch: String?): ConfigReply =
         try {
-            when (val result = client().execute(ApiCall(GET_CONFIG, ifNoneMatch = ifNoneMatch))) {
+            // 取配置是启动要用到的请求，身份未知也不带令牌照发（03 §4.2 声明名单）
+            when (val result = client().execute(ApiCall(GET_CONFIG, ifNoneMatch = ifNoneMatch, sendsWhenIdentityUnknown = true))) {
                 is ApiResult.Success -> {
                     (result.data as? JsonObject)?.let { ConfigReply(ConfigReply.OK, it.toString(), result.etag) } ?: failure()
                 }

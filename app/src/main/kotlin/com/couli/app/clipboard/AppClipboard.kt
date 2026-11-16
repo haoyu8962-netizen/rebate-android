@@ -228,6 +228,8 @@ class AppClipboard(
      */
     val pendingInvite: PendingInviteCode,
     private val sessionEpoch: () -> Long = { 0L },
+    /** 当前会员账号（与网络层同一次会话读取；游客、读不出为 null）：parse 发起时据此固定账号（03 §4.2、D10-1709 ④）。 */
+    private val sessionAccount: () -> String? = { null },
     private val clock: () -> Long = System::currentTimeMillis,
     /** 本机盐的随机源（FU-CLIP C3：生产为系统 CSPRNG；测试注入样例字节）。 */
     randomSalt: () -> ByteArray = ::secureSalt,
@@ -1139,12 +1141,14 @@ class AppClipboard(
     ) {
         val flight = Flight(origin, approved)
         val owner = CallOwnership(api.epochs()) { flight.live.get() }
+        // 会员发起的 parse 固定发起这一刻的账号（03 §4.2）；游客为 null，匿名照发
+        val account = sessionAccount()
         flight.owner = owner
         flights[key] = flight
         refreshBusy()
         parseCount += 1
         scope.launch {
-            val outcome = parser.parse(approved.upload, owner, approved.title)
+            val outcome = parser.parse(approved.upload, owner, approved.title, expectedAccount = account)
             // 已经收尾（撤销、过期）的任务：迟到的结果只丢弃
             if (flights[key] !== flight) return@launch
             flight.outcome = outcome
@@ -1250,12 +1254,14 @@ class AppClipboard(
         mutablePrompt.value = mutablePrompt.value?.copy(busy = true)
         publish()
         val owner = CallOwnership(api.epochs()) { validInBackground(t) }
+        // 会员点击时固定账号（03 §4.2）；游客为 null
+        val account = sessionAccount()
         owners += owner
         parseCount += 1
         scope.launch {
             val outcome =
                 try {
-                    parser.parse(upload, owner, t.title, t.scene)
+                    parser.parse(upload, owner, t.title, t.scene, expectedAccount = account)
                 } finally {
                     releaseShareBusy(busy)
                 }
@@ -1904,6 +1910,9 @@ class AppClipboard(
         val epochs = api.epochs()
         return { sessionEpoch() == session && api.epochs() == epochs && privacy() == PrivacyState.CONSENTED }
     }
+
+    /** 提交这一刻的会员账号（与 [searchSubmitIdentity] 同一主线程回合取定；游客、读不出为 null）：搜索框识别的 parse 固定它（03 §4.2）。 */
+    fun searchSubmitAccount(): String? = sessionAccount()
 
     /**
      * 识别提交 [id] 名下的一个请求归属（识别、回落、续搜）：归属 = [stillOwned] 且 [live]（搜索页这个请求自身的序号仍是当前、页面没离开）。

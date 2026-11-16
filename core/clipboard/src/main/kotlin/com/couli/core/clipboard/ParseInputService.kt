@@ -28,6 +28,9 @@ class ParseInputService(
      * [title]：请求前从原文本地抽出的「」标题片段（[ClipboardText.quotedTitle]），随这次请求绑定；整体 30132（data=null）时用它预填
      * 【用商品名搜索】，没有就留空（APP-07 共性第 30 条，BR-TEXT-14）。不依赖契约外的 data.raw，也不从上传片段里猜（标题本身可能以
      * http 开头）。原文不保存。
+     *
+     * [expectedAccount]：调用方是会员时，发起这一刻的账号（03 §4.2 固定账号：网络层每次发送前核对「实际带了这个账号的令牌」，对不上本地拒绝、
+     * 不降成匿名；D10-1709 ④）；游客为 null（匿名照发）。
      */
     suspend fun parse(
         uploadText: String,
@@ -35,13 +38,14 @@ class ParseInputService(
         title: String? = null,
         /** clipboard（剪贴板、手动粘贴）或 share_ext（系统分享导入，FU-CLIP K16）。 */
         scene: String = SCENE_CLIPBOARD,
+        expectedAccount: String? = null,
     ): ParseOutcome {
         val body =
             buildJsonObject {
                 put("text", uploadText.take(MAX_TEXT))
                 put("scene", scene)
             }.toString()
-        val result = api.send(ApiCall(OPERATION, body = body, ownership = owner))
+        val result = api.send(ApiCall(OPERATION, body = body, ownership = owner, expectedAccount = expectedAccount))
         if (!owner.stillOwned()) return ParseOutcome(null, dropped = true)
         return when (result) {
             is ApiResult.Success -> {

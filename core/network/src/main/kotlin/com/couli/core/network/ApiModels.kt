@@ -144,10 +144,17 @@ data class ApiCall(
     /** 读接口超时 / 断连的自动重试（03 §4.2，缺省开）；APP-10b G35：断线类历史重载关掉（每次尝试只发一次）。 */
     val autoRetry: Boolean = true,
     /**
-     * x-auth=optional 的接口这一次必须有就绪的会话（D10-1658 ④）：optional 接口缺省「有令牌就带、从不等待不拦截」（会话读不出、受限会话刷新在途都照常
-     * 发出）；二次验证面板的 step_up 发码由面板置 true，按需要会话的接口处理（读不出本地拒绝、等受限会话刷新）。x-auth 不是 optional 的接口不看它。
+     * x-auth=optional 的接口这一次必须有就绪的会话（D10-1658 ④）：optional 接口缺省不等受限会话刷新屏障（身份未知时是否发出见 [sendsWhenIdentityUnknown]）；
+     * 二次验证面板的 step_up 发码由面板置 true，按需要会话的接口处理（读不出本地拒绝、等受限会话刷新）。x-auth 不是 optional 的接口不看它。
      */
     val requiresSession: Boolean = false,
+    /**
+     * 身份未知也照发（03 §4.2「可选登录接口的发送口径」第一、二条）：x-auth=optional 的请求在身份未知（本机存着会话但这一刻读不出，或读得出却没有
+     * access_token）时缺省本地拒绝 session_unreadable、零发送；只有调用点按请求体条件显式置 true 的才不带令牌照发。名单只有五类：登录 / 绑手机发码
+     * （sendSmsCode，purpose=login / bind）、第三方登录取授权尝试（createOauthAttempt，purpose=login）、getConfig、ingestEvents、隐私中心撤回隐私同意
+     * （recordConsent，type=privacy 且 accepted=false）；其余（含 step_up 发码）都不置。有令牌照旧带上发、确认游客照旧不带令牌发，与它无关。
+     */
+    val sendsWhenIdentityUnknown: Boolean = false,
 )
 
 /**

@@ -1156,6 +1156,7 @@ object AppModule {
             browserNoticeMillis = variantBrowserNoticeMillis(),
             // 基本模式下点购买：弹补同意（与 Router 的补同意同一个弹窗，A-R1-04）
             consentPrompt = { privacy.get().requestFullFunction() },
+            sessionAccount = { client.activeUserId() },
         ).also { trade ->
             // AuthSheet 出现时同步作废剪贴板在途的 parse 与提示条（APP-07，A-R1-04）
             trade.onSensitiveOverlay = clipboard::onSensitiveOverlay
@@ -1278,6 +1279,7 @@ object AppModule {
             configData = { config.store.snapshots.value.data },
             prefs = ClipboardPreferences(context),
             sessionEpoch = { tokens.loginEpoch },
+            sessionAccount = { client.activeUserId() },
             pendingInvite = pendingInvite,
         ).also { board ->
             // 前台轮次只由进程级生命周期决定（FU-AND-0724，R12）：ON_START / ON_STOP 在观察者回调里同步转给协调器

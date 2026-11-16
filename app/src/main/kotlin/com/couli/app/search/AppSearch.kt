@@ -127,6 +127,8 @@ class AppSearch(
 
         override fun loggedIn(): Boolean = owner.loggedIn()
 
+        override fun account(): String? = owner.account()
+
         override fun basicMode(): Boolean = privacy() == PrivacyState.BASIC_MODE
 
         override fun requestConsent() = owner.requestConsent()
@@ -340,6 +342,9 @@ class AppSearch(
         /** 提交时的登录 / 隐私 / 环境身份（与发号同一主线程回合取定，评审 r1 S0-3）。 */
         private val identity = board.searchSubmitIdentity()
 
+        /** 提交时的会员账号（同一回合取定；游客为 null）：识别请求固定它（03 §4.2）。 */
+        private val account = board.searchSubmitAccount()
+
         override fun owned(): Boolean = held()
 
         override fun sameIdentity(): Boolean = identity()
@@ -354,7 +359,7 @@ class AppSearch(
         /** 识别 1 次并按剪贴板出口呈现；发送前（写出前守卫）与呈现前都只问 [owned]（失效即丢弃，[SearchLinkOutcome.Handled] 不回落、不预填）。 */
         override suspend fun recognize(): SearchLinkOutcome {
             if (!owned()) return SearchLinkOutcome.Handled
-            val outcome = parser.parse(candidate.upload, board.searchSubmitOwnership(id), candidate.title)
+            val outcome = parser.parse(candidate.upload, board.searchSubmitOwnership(id), candidate.title, expectedAccount = account)
             val action = outcome.action
             return when {
                 outcome.dropped || !owned() -> SearchLinkOutcome.Handled

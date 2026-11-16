@@ -184,7 +184,8 @@ class OAuthLoginService(
     ): OAuthLoginOutcome {
         // 1. 取一次性的授权尝试（BR-ID-04 细则「授权尝试」）
         val createBody = JsonObject(mapOf("provider" to JsonPrimitive(provider), "purpose" to JsonPrimitive("login"))).toString()
-        val created = client.send(ApiCall(CREATE_OPERATION, body = createBody, ownership = ticket.owner))
+        // 第三方登录取授权尝试（purpose=login）：身份未知也不带令牌照发（03 §4.2 声明名单）
+        val created = client.send(ApiCall(CREATE_OPERATION, body = createBody, ownership = ticket.owner, sendsWhenIdentityUnknown = true))
         if (!login.ticketValid(ticket) || !bound()) return OAuthLoginOutcome(LoginOutcome.STALE)
         if (created !is ApiResult.Success) return failure(created)
         val data = created.data as? JsonObject

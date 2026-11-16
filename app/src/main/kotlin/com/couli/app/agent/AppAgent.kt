@@ -524,6 +524,8 @@ class AppAgent(
 
         override fun loggedIn(): Boolean = owner.loggedIn()
 
+        override fun account(): String? = owner.account()
+
         override fun basicMode(): Boolean = privacy.conclusion == PrivacyState.BASIC_MODE
 
         override fun requestConsent() = owner.requestConsent()

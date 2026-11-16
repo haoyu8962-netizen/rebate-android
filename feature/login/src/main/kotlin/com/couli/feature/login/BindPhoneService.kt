@@ -220,10 +220,13 @@ class BindPhoneService(
         val body = JsonObject(mapOf("phone" to JsonPrimitive(phone), "purpose" to JsonPrimitive(PURPOSE_BIND))).toString()
         // 发码按会话归属结算（共性第 21 条、APP-09 第 40 条）：不随页面离开、换号取消
         val owner = CallOwnership(client.inFlight.epochs()) { tokens.loginEpoch == epoch }
+        // 绑手机发码（purpose=bind）：身份未知也不带令牌照发（03 §4.2 声明名单）；只固定会话世代、不固定账号（D10 待裁定：bind 发码不固定账号），
+        // 确认绑定那一步（bindPhone）照旧固定账号
+        val call = ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner, sendsWhenIdentityUnknown = true)
         sending = true
         return session {
             try {
-                sent(client.send(ApiCall(LoginErrorMapper.SEND_SMS_CODE, body = body, ownership = owner)), phone, issued, epoch, fixed)
+                sent(client.send(call), phone, issued, epoch, fixed)
             } finally {
                 sending = false
             }

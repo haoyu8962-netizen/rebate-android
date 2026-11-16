@@ -69,6 +69,8 @@ class AppTrade(
     private val browserNoticeMillis: Long = OpenPurchaseController.BROWSER_NOTICE_MILLIS,
     /** 弹补同意（首启弹窗的完整功能说明；App 给 AppPrivacy.requestFullFunction）。 */
     private val consentPrompt: () -> Unit = {},
+    /** 当前会员账号（App 给 ApiClient.activeUserId；游客、读不出为 null）：open 发出时固定它（03 §4.2）。 */
+    private val sessionAccount: () -> String? = { null },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -181,6 +183,9 @@ class AppTrade(
 
     /** 有登录会话（open 对游客返回 10001）。 */
     fun loggedIn(): Boolean = routing.session.value.loggedIn()
+
+    /** 此刻的会员账号（[PurchaseEnv.account]）。 */
+    fun account(): String? = sessionAccount()
 
     /** 此刻的平台购买状态：点击结果确认的 50301 优先，其次 features.platform_status（生效配置：当前 → LKG → 包内）。 */
     fun platformStatus(platform: String): String? = overrides.status(platform) ?: platformStatusIn(store, platform)

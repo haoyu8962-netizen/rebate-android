@@ -430,10 +430,16 @@ class AppMe(
             try {
                 agentCancel.awaitWritten()
                 if (body != null) {
-                    // 有令牌也是设备级（服务端处理）；结果不影响本地撤回（G24）。超时上限照网络层写接口默认，这里另设上限防止卡住撤回
-                    withTimeoutOrNull(WITHDRAW_TIMEOUT_MS) {
-                        api.send(ApiCall(RECORD_CONSENT, body = body.toString(), ownership = CallOwnership(epochs) { true }))
-                    }
+                    // 有令牌也是设备级（服务端处理）；结果不影响本地撤回（G24）。超时上限照网络层写接口默认，这里另设上限防止卡住撤回。
+                    // 撤回隐私同意（type=privacy 且 accepted=false）以设备为主体：身份未知也不带令牌照发（03 §4.2 声明名单，按请求体条件打开）
+                    val call =
+                        ApiCall(
+                            RECORD_CONSENT,
+                            body = body.toString(),
+                            ownership = CallOwnership(epochs) { true },
+                            sendsWhenIdentityUnknown = body.isPrivacyWithdrawal(),
+                        )
+                    withTimeoutOrNull(WITHDRAW_TIMEOUT_MS) { api.send(call) }
                 }
                 val failure = runCatching { privacy.withdraw() }.exceptionOrNull()
                 mutableWithdrawing.value = false
@@ -701,3 +707,8 @@ class AppMe(
         private const val WITHDRAW_TIMEOUT_MS = 15_000L
     }
 }
+
+/** 撤回隐私同意的请求体：type=privacy 且 accepted=false（03 §4.2「身份未知也照发」名单的条件，其余类型与同意都不照发）。 */
+private fun JsonObject.isPrivacyWithdrawal(): Boolean =
+    (get("type") as? JsonPrimitive)?.takeIf { it.isString }?.content == "privacy" &&
+        (get("accepted") as? JsonPrimitive)?.takeIf { !it.isString }?.content == "false"

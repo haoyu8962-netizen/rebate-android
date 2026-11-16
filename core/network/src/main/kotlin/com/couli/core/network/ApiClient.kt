@@ -801,6 +801,8 @@ class ApiClient(
         if (options.pendingAccount != null && (owner.unreadable || owner.account != options.pendingAccount)) {
             return LocalRejectReason.ACCOUNT_MISMATCH
         }
+        // 03 §4.2：已绑定的归属读不出 = 身份未知，未声明照发的 optional 请求与读得到时同一分类（只有 refresh 的情形绑定里不记，按环境未就绪）
+        if (owner.unreadable && rejectsUnknownIdentity(operation, call)) return LocalRejectReason.SESSION_UNREADABLE
         return LocalRejectReason.ENVIRONMENT_UNSETTLED
     }
 
@@ -854,16 +856,15 @@ class ApiClient(
             // 环境未就绪（F-X-03 ①④）：不读凭据，按已绑定的会话归属给出与读得到时相同的分类，其余一律 environment_unsettled
             if (unsettledOnly(state)) return ApiResult.LocalReject(unsettledReject(operation, call, options))
             val read = rawRead(state)
-            unreadableReject(operation, call, read)?.let { return ApiResult.LocalReject(it) }
+            // 每次发送（首次与 10002 刷新后、10402 重新注册后的重放、10401 重签）都重新核：读不出 → 固定账号（S3-4）→ 身份未知（03 §4.2）
+            sessionReject(operation, call, options.pendingAccount, read)?.let { return ApiResult.LocalReject(it) }
             val session = live(read)
-            if (options.pendingAccount != null && session?.userId != options.pendingAccount) {
-                return ApiResult.LocalReject(LocalRejectReason.ACCOUNT_MISMATCH)
-            }
             val prepared =
                 when (val outcome = prepare(current, operation, state, session, options.stream != null)) {
                     is Prepared.Rejected -> return ApiResult.LocalReject(outcome.reason)
                     is Prepared.Ready -> outcome
                 }
+            carriesReject(operation, options.pendingAccount, prepared)?.let { return ApiResult.LocalReject(it) }
             ownerReject(logical.owner, state)?.let { return ApiResult.LocalReject(it) }
             val key = prepared.idempotencyKey
             holdPending(operation, key, current, session, logical)?.let { return ApiResult.LocalReject(it) }
@@ -934,7 +935,7 @@ class ApiClient(
     ): Step {
         val key = prepared.idempotencyKey
         val sent =
-            when (val outcome = exchange(call, operation, prepared, logical, options.stream)) {
+            when (val outcome = exchange(call, operation, prepared, logical, options.pendingAccount, options.stream)) {
                 is Sent.Rejected -> return Step.Done(ApiResult.LocalReject(outcome.reason))
                 is Sent.Done -> outcome
             }
@@ -1282,12 +1283,13 @@ class ApiClient(
      * 发送；读接口超时 / 断连按退避自动重试。每次重试前核对调用归属（A-R2-04：退避期间换了账号或重新登录，结束旧调用），
      * 再重新取状态、重新判定放行、重新组头与签名（R1-01）。每次写出前网络拦截器再核对一次（[guardFor]，A-R2-01）。
      */
-    @Suppress("TooGenericExceptionCaught", "CyclomaticComplexMethod") // 发送中途的意外异常：键按结果未知处理后原样抛出
+    @Suppress("TooGenericExceptionCaught", "CyclomaticComplexMethod", "LongParameterList") // 发送中途的意外异常：键按结果未知处理后原样抛出
     private fun exchange(
         call: ApiCall,
         operation: ApiOperation,
         first: Prepared.Ready,
         logical: Logical,
+        pinned: String?,
         tap: StreamTap? = null,
     ): Sent {
         val policy = retryPolicy(operation)
@@ -1298,7 +1300,7 @@ class ApiClient(
         while (true) {
             val result =
                 try {
-                    transport.send(request.request, retry.timeoutMillis, guardFor(logical.owner, operation, call, request), tap)
+                    transport.send(request.request, retry.timeoutMillis, guardFor(logical.owner, operation, call, pinned, request), tap)
                 } catch (error: Exception) {
                     settle(logical, PendingKeyStore.NO_ENVELOPE)
                     throw error
@@ -1319,12 +1321,12 @@ class ApiClient(
             attempt += 1
             sleeper(retry.backoffMillis)
             val state = context()
-            // 先按当前状态重新判定放行（撤回、环境未就绪的原因优先），再核对调用归属
+            // 先按当前状态重新判定放行（撤回、环境未就绪的原因优先），再核对调用归属；固定账号与身份未知同首次发送一样重新核（S3-4、03 §4.2）
             val read = rawRead(state)
             val rejection =
                 when (
                     val again =
-                        unreadableReject(operation, call, read)?.let(Prepared::Rejected) ?: prepare(call, operation, state, live(read))
+                        sessionReject(operation, call, pinned, read)?.let(Prepared::Rejected) ?: prepare(call, operation, state, live(read))
                 ) {
                     is Prepared.Rejected -> {
                         again.reason
@@ -1332,7 +1334,7 @@ class ApiClient(
 
                     is Prepared.Ready -> {
                         request = again
-                        ownerReject(logical.owner, state)
+                        carriesReject(operation, pinned, again) ?: ownerReject(logical.owner, state)
                     }
                 }
             if (rejection != null) {
@@ -1358,6 +1360,7 @@ class ApiClient(
         owner: CallOwner,
         operation: ApiOperation,
         call: ApiCall,
+        pinned: String?,
         prepared: Prepared.Ready,
     ): SendGuard =
         // 调用方自带归属的（桥调用、设备注册）：写出之后归属失效（页面关闭、注册的最后一个调用方失效）同样取消在途请求（R3-03）
@@ -1369,26 +1372,28 @@ class ApiClient(
             onCommitted = owner.ownership?.onWritten?.let { written -> { written(true) } },
         ) {
             val now = context()
-            ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, prepared, now)
+            ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, pinned, prepared, now)
         }
 
     /** 调用方的发送前闸门（[CallOwnership.sendAllowed]，R3-01）：只在写出前核对，不进入归属（不取消已写出的请求、不丢弃响应）。 */
     private fun sendGateReject(owner: CallOwner): String? =
         LocalRejectReason.CALL_CANCELLED.takeIf { owner.ownership?.sendAllowed?.invoke() == false }
 
+    /** 写出前的放行（每次实际写出都过，含 GET 自动重试、刷新后的重放）：会话核对（[sessionReject]、[carriesReject]）与首次发送同一口径。 */
     private fun admission(
         operation: ApiOperation,
         call: ApiCall,
+        pinned: String?,
         prepared: Prepared.Ready,
         state: NetworkContext,
     ): String? {
         if (entryBase(prepared.streamEntry) != prepared.base) return LocalRejectReason.ENVIRONMENT_UNSETTLED
         val read = rawRead(state)
-        unreadableReject(operation, call, read)?.let { return it }
+        sessionReject(operation, call, pinned, read)?.let { return it }
         val decision = decide(call, operation, state, live(read))
         if (!decision.send) return decision.localRejectReason ?: LocalRejectReason.ENVIRONMENT_UNSETTLED
         if (prepared.carriesCredentials && !readable(state)) return LocalRejectReason.BASIC_MODE_DENIED
-        return null
+        return carriesReject(operation, pinned, prepared)
     }
 
     private sealed interface Prepared {
@@ -1587,7 +1592,24 @@ class ApiClient(
     /** 可读的会话；没有令牌（或读不出）为 null。 */
     private fun session(state: NetworkContext): SessionSnapshot? = live(rawRead(state))
 
-    /** 会话读不出时，需要会话的调用（[needsSession]）本地拒绝（session_unreadable，与 iOS 同一裁定）；不需要会话的照常不带令牌发出。 */
+    /**
+     * 每次发送前（首次、内部续发、GET 自动重试、写出前拦截器）共用的会话核对，依次：
+     * 1. 会话读不出、接口需要会话（[needsSession]）→ session_unreadable（与 iOS 同一裁定）；
+     * 2. 固定了账号（[pinned]，S3-4、03 §4.2 第五条）→ [pinnedReject]；
+     * 3. x-auth=optional、身份未知、没有声明照发（03 §4.2 第一、二条）→ session_unreadable。
+     * 固定账号排在身份未知之前：调用方固定了账号的，身份未知（含有 userId 无 access）一律按 account_mismatch。
+     */
+    private fun sessionReject(
+        operation: ApiOperation,
+        call: ApiCall,
+        pinned: String?,
+        read: RawRead,
+    ): String? =
+        unreadableReject(operation, call, read)
+            ?: pinnedReject(pinned, read)
+            ?: LocalRejectReason.SESSION_UNREADABLE.takeIf { identityUnknown(read) && rejectsUnknownIdentity(operation, call) }
+
+    /** 会话读不出时，需要会话的调用（[needsSession]）本地拒绝（session_unreadable，与 iOS 同一裁定）。 */
     private fun unreadableReject(
         operation: ApiOperation,
         call: ApiCall,
@@ -1595,9 +1617,50 @@ class ApiClient(
     ): String? = LocalRejectReason.SESSION_UNREADABLE.takeIf { read is RawRead.Unreadable && needsSession(operation, call) }
 
     /**
-     * 这一次调用要不要就绪的会话（会话读不出本地拒绝、等受限会话刷新屏障）：x-auth=none 不要；x-auth=optional 缺省不要——有令牌就带、从不等待
-     * 不拦截（D10-1658 ④：登录 / 绑手机发码在 Keystore 读不出、受限会话刷新在途时照常发出），只有调用方置了 [ApiCall.requiresSession]（二次验证
-     * 面板的 step_up 发码）才要；其余（login 等）都要。
+     * 身份未知（03 §4.2 第一条）：本机存着会话但这一刻读不出（[RawRead.Unreadable]），或读得出却没有 access_token（只有 refresh）。
+     * 确认游客（读到没有会话）与隔离中（[RawRead.Quarantined]：会话已按清除处理、界面已转未登录，只是删除未落盘）不算；凭据不可读
+     * （[RawRead.NotReadable]）由放行判定按匿名白名单处理，也不算。
+     */
+    private fun identityUnknown(read: RawRead): Boolean = read is RawRead.Unreadable || live(read)?.let { it.accessToken == null } == true
+
+    /** 身份未知时这次调用本地拒绝：x-auth=optional 且调用点没有声明照发（[ApiCall.sendsWhenIdentityUnknown]）。其余鉴权级别照旧（[needsSession]）。 */
+    private fun rejectsUnknownIdentity(
+        operation: ApiOperation,
+        call: ApiCall,
+    ): Boolean = operation.auth == AUTH_OPTIONAL && !call.sendsWhenIdentityUnknown
+
+    /**
+     * 固定账号核对之一（S3-4、03 §4.2 第五条，每次发送都核）：此刻会话可读、账号就是 [pinned]、并且有 access_token（拿得到这个账号的令牌），
+     * 否则 account_mismatch——读不出、游客、换了账号、有 userId 无 access 都不降成匿名发出。x-auth=none 的接口只核这一条；会带令牌的接口
+     * 另由 [carriesReject] 核这次请求确实带上了它。
+     */
+    private fun pinnedReject(
+        pinned: String?,
+        read: RawRead,
+    ): String? {
+        pinned ?: return null
+        val session = live(read)
+        return LocalRejectReason.ACCOUNT_MISMATCH.takeUnless { session?.userId == pinned && session.accessToken != null }
+    }
+
+    /**
+     * 固定账号核对之二（S3-4）：x-auth 不是 none 的接口，组好的这次请求必须确实带上了 Authorization（令牌取自 [pinnedReject] 核过的那份会话），
+     * 否则 account_mismatch。
+     */
+    private fun carriesReject(
+        operation: ApiOperation,
+        pinned: String?,
+        prepared: Prepared.Ready,
+    ): String? {
+        if (pinned == null || operation.auth == AUTH_NONE) return null
+        val carried = prepared.accessToken != null && HeaderNames.AUTHORIZATION in prepared.request.headers
+        return LocalRejectReason.ACCOUNT_MISMATCH.takeUnless { carried }
+    }
+
+    /**
+     * 这一次调用要不要就绪的会话（会话读不出本地拒绝、等受限会话刷新屏障）：x-auth=none 不要；x-auth=optional 缺省不要——不等受限会话刷新屏障
+     * （D10-1658 ④），身份未知时是否发出另按 [rejectsUnknownIdentity]（03 §4.2：只有声明照发的五类不带令牌发出）；调用方置了 [ApiCall.requiresSession]
+     * （二次验证面板的 step_up 发码）才要；其余（login 等）都要。
      */
     private fun needsSession(
         operation: ApiOperation,
