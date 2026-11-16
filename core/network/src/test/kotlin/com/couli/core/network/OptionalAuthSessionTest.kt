@@ -75,7 +75,8 @@ class OptionalAuthSessionTest {
 
     @Test
     fun unreadableSessionStillSendsTheLoginCodeImmediatelyWithoutToken() {
-        val result = client(unreadable()).execute(ApiCall("sendSmsCode", body = """{"phone":"13800005678","purpose":"login"}"""))
+        val call = ApiCall("sendSmsCode", body = """{"phone":"13800005678","purpose":"login"}""", sendsWhenIdentityUnknown = true)
+        val result = client(unreadable()).execute(call)
 
         assertTrue(result.toString(), result is ApiResult.Success)
         val sent = server.takeRequest(1, TimeUnit.SECONDS)!!
@@ -85,7 +86,8 @@ class OptionalAuthSessionTest {
 
     @Test
     fun unreadableSessionStillSendsTheBindCode() {
-        val result = client(unreadable()).execute(ApiCall("sendSmsCode", body = """{"phone":"13800005678","purpose":"bind"}"""))
+        val call = ApiCall("sendSmsCode", body = """{"phone":"13800005678","purpose":"bind"}""", sendsWhenIdentityUnknown = true)
+        val result = client(unreadable()).execute(call)
         assertTrue(result.toString(), result is ApiResult.Success)
         assertEquals(1, server.requestCount)
     }
