@@ -16,14 +16,15 @@ class AgentWithdrawOutcome(
 ) {
     companion object {
         /**
-         * - 成功 → 「已撤回 AI 服务同意」；本地没发出 → 静默；
+         * - 成功 → 「已撤回 AI 服务同意」；本地没发出（含身份未知被网络层本地拒绝，03 §4.2 第二条「同意记录不发时界面提示稍后重试」）→ 现有通用
+         *   错误文案 error.50001（无 trace），不当成已撤回、可重试（与 [AgentController] 本地没发出的提示同一口径）；
          * - 42901 → 本入口按 Retry-After 禁用（缺省 5 秒），提示 error.42901；10405 → ApiClient 已交强更分流，不再提示；
          * - 10001 / 10005 / 10004(labor_agreement、id_verification) → 统一前置路由（in_app、参数为空）；其余 → 统一文案（5xxxx 按 trace_id 追加 trace6）。
          */
         @Suppress("ReturnCount") // 按结果逐类返回
         fun of(r: AgentHttpResult): AgentWithdrawOutcome {
             if (r.ok) return AgentWithdrawOutcome(true, AgentDraftTexts.text("agent.draft.withdraw.done"), null, 0, r)
-            if (r.notSent) return AgentWithdrawOutcome(false, "", null, 0, r)
+            if (r.notSent) return AgentWithdrawOutcome(false, AgentController.errorText(AgentErrorCodes.GENERIC, ""), null, 0, r)
             if (r.code == AgentErrorCodes.RATE_LIMITED) {
                 return AgentWithdrawOutcome(
                     false,

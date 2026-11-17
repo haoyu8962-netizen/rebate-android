@@ -544,6 +544,13 @@ class KeystoreSessionTokens(
     @Volatile
     private var discardListener: (() -> Unit)? = null
 
+    /**
+     * 待送出的自己丢弃会话的通知个数（03 §4.2 第六条「通知不在持有会话读锁时回调界面」）：[discardLocked] 每份会话第一次丢弃时在锁里加 1，
+     * 读取入口（[readSession]、[persistedLoginEpoch]）释放锁之后整批取走、逐个回调 [discardListener]。用计数而不是布尔（r1 S2-1）：A 损坏的通知
+     * 还没送出时保存 B、B 再损坏，两次各通知一次，不合并。只在 [lock] 下读写。
+     */
+    private var discardNoticesDue = 0
+
     override fun guardLoginEpochReads(guard: (read: () -> String?) -> String?) {
         epochGuard = guard
     }
@@ -574,7 +581,20 @@ class KeystoreSessionTokens(
      * 落盘的撤销标记在先：同文件标记 [KEY_REVOKED] 存在（含损坏、空值）= 这份会话已被清除、只是删除没落盘（可能是上一个进程），按没有会话
      * 并重试删除（连同标记，成功即清干净）；读到令牌后再核对独立介质 [marks]（F-AND-32：令牌文件整体写不进时的撤销）。任一标记读取失败按读不出。
      */
-    override fun readSession(): SessionRead = synchronized(lock) { readLocked().read }
+    override fun readSession(): SessionRead = synchronized(lock) { readLocked().read }.also { deliverDiscardNotice() }
+
+    /**
+     * 送出待送的丢弃通知（[discardNoticesDue]）：在锁里整批取走计数，释放锁之后逐个回调——每份会话第一次丢弃恰好回调一次，与哪个线程、哪个读取入口
+     * 先发现、谁送出无关。本线程此刻仍持有会话锁（锁内嵌套调用）时不送，留给最外层入口释放锁之后送。
+     */
+    private fun deliverDiscardNotice() {
+        if (Thread.holdsLock(lock)) return
+        val due =
+            synchronized(lock) {
+                discardNoticesDue.also { discardNoticesDue = 0 }
+            }
+        repeat(due) { runCatching { discardListener?.invoke() } }
+    }
 
     /** 一次完整读取：[read] 给调用方；[epoch] 是会话可用时它的持久化登录世代（升级前登录为 null）。 */
     private class Loaded(
@@ -665,7 +685,8 @@ class KeystoreSessionTokens(
             ended = true
             counter += 1
             epoch += 1
-            runCatching { discardListener?.invoke() }
+            // 通知不在锁里回调（03 §4.2 第六条）：只记下待送一次，由读取入口释放锁之后送出
+            discardNoticesDue += 1
         }
         // 阻断这份会话的是同文件标记（任何内容、任何类型）：下面的整组删除会连它一起删，删除失败的回滚若没能原样写回它，令牌就失去撤销记录
         // （第 1 轮评审 R1-01）。所以在删除之前先在独立介质落一份「任何会话」标记（不读令牌）；删除确认成功后随之删掉
@@ -712,8 +733,10 @@ class KeystoreSessionTokens(
      * 接了凭据读取屏障时整个读取在屏障里（[guardLoginEpochReads]）。
      */
     override fun persistedLoginEpoch(): String? {
-        val guard = epochGuard ?: return epochNow()
-        return guard(::epochNow)
+        val guard = epochGuard
+        val persisted = if (guard == null) epochNow() else guard(::epochNow)
+        deliverDiscardNotice()
+        return persisted
     }
 
     @Suppress("ReturnCount") // 禁用、会话不可用、没有令牌逐项

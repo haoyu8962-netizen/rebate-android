@@ -91,8 +91,12 @@ class ApiClient(
         // 凭据此刻不可读一律按未知（不读、四类缓存不读）。会话隔离由令牌存储自己的禁用状态与撤销标记表达（清除失败时置上，新会话落盘才解除）
         (tokens as? PersistedLoginEpochs)?.guardLoginEpochReads { read -> readBarrier.read(::credentialsAllowedNow, { null }, read) }
         // 令牌存储自己发现会话不能用并丢弃（损坏、校验不通过、被撤销标记阻断）：它已推进会话世代，这里同步作废已绑定的会话归属（F-AND-33，
-        // 对照鸿蒙 FU-HM-0717 onSessionTokensCleared(discarded)）。通知发生在令牌读取过程中：只改内存，不再读令牌
-        (tokens as? SessionSelfDiscards)?.onSelfDiscarded { bound = null }
+        // 对照鸿蒙 FU-HM-0717 onSessionTokensCleared(discarded)），并与清会话同一口径经现有的 onSessionStored 通知界面转为未登录（03 §4.2 第六条）。
+        // 存储只在第一次丢弃时回调一次（删不掉时后续读取不再回调，下一次成功写入会话后复位），且在释放会话锁之后回调
+        (tokens as? SessionSelfDiscards)?.onSelfDiscarded {
+            bound = null
+            sessionStored()
+        }
     }
 
     private val refreshExecutor: ExecutorService =
@@ -1372,7 +1376,13 @@ class ApiClient(
             onCommitted = owner.ownership?.onWritten?.let { written -> { written(true) } },
         ) {
             val now = context()
+            // 核对过程本身的会话读取（归属、准入）可能第一次发现会话条目损坏而推进登录世代（03 §4.2 第六条，r1 S1-1）：带发送前闸门的调用，读取都
+            // 结束后登录世代若已变，再核一次闸门——按会话世代固定的调用方（隐私中心撤回）此时拒绝、不写出。
+            // 先判世代、变了才再调闸门（r2 S2-2：闸门可能有状态，世代不变时恰调一次，与之前一致）；只在会话存储可读的模式下取世代，与准入的会话读取
+            // 同一判断（r2 S2-3：基本模式、撤回清理未完成时不碰会话存储，此时准入也不读会话、不会换代）
+            val epochAtGuard = if (owner.ownership?.sendAllowed != null && credentialsAllowed(now)) tokens.loginEpoch else null
             ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, pinned, prepared, now)
+                ?: if (epochAtGuard != null && tokens.loginEpoch != epochAtGuard) sendGateReject(owner) else null
         }
 
     /** 调用方的发送前闸门（[CallOwnership.sendAllowed]，R3-01）：只在写出前核对，不进入归属（不取消已写出的请求、不丢弃响应）。 */

@@ -426,6 +426,10 @@ class AppMe(
                 .request(system.deviceId() != null && version != null, version ?: 0, clock())
                 ?.takeIf { !gates.consent.active }
         val epochs = client.inFlight.epochs()
+        // 03 §4.2 第五条：撤回不固定账号、只固定会话世代——确认这一刻的登录世代（[identity] 已核对仍是此刻身份）。之后换了人或已退出（含会话条目损坏换代）
+        // 的，网络层每次写出前核对发送前闸门不成立即本地拒绝，撤回请求不发；本地清理照常完成。用发送前闸门而不用归属：已写出的撤回不因之后的换号被取消
+        // （等服务端结果期间登录新会话，撤回停报闸门照旧保持到清理结束，Android R1-01）。读不出但世代未变（同一会话）照旧按声明不带令牌发
+        val sessionEpoch = identity.epoch
         scope.launch {
             try {
                 agentCancel.awaitWritten()
@@ -436,7 +440,7 @@ class AppMe(
                         ApiCall(
                             RECORD_CONSENT,
                             body = body.toString(),
-                            ownership = CallOwnership(epochs) { true },
+                            ownership = CallOwnership(epochs, sendAllowed = { tokens.loginEpoch == sessionEpoch }) { true },
                             sendsWhenIdentityUnknown = body.isPrivacyWithdrawal(),
                         )
                     withTimeoutOrNull(WITHDRAW_TIMEOUT_MS) { api.send(call) }

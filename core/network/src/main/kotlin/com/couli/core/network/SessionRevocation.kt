@@ -154,7 +154,8 @@ class FileRevocationMarks(
 
 /**
  * 令牌存储自己发现会话不能用并丢弃（内容损坏、校验不通过、被落盘的撤销标记阻断）时的同步通知（F-AND-33，对照鸿蒙 FU-HM-0717
- * `onSelfDiscarded`）。通知在令牌存储的锁里、在一次令牌读取过程中发出：监听方不得再读令牌（ApiClient 只作废已绑定的会话归属）。
+ * `onSelfDiscarded`）。每份会话只在第一次丢弃时通知一次；通知在发现它的那次令牌读取返回之前、**释放令牌存储的锁之后**发出
+ * （03 §4.2 第六条「通知不在持有会话读锁时回调界面」），监听方可以再读令牌（ApiClient 作废已绑定的会话归属并经 onSessionStored 通知界面）。
  */
 interface SessionSelfDiscards {
     fun onSelfDiscarded(listener: () -> Unit) = Unit
