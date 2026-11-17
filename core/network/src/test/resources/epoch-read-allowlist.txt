@@ -1,0 +1,10 @@
+# D10-1955：世代读取单入口的静态防回退白名单；由收口实现者填写，评审逐条核准。
+# 每行：相对路径|所在函数名|理由；空行及以 # 开头的行忽略。
+# 路径相对 core/network 模块根，例如 src/main/kotlin/com/couli/core/network/Example.kt。
+# 函数名取最外层具名函数；lambda / 局部函数归外层。属性访问器记作 get:属性名 / set:属性名。
+# 同文件同名函数（包括重载）合并为一条，理由必须覆盖其中每一处读取。
+# 只登记受屏障保护的统一入口、确需屏障外读取的写路径；每条都必须有非空理由。
+# 最多 12 条；文件 / 函数不存在或函数已无读取即失败，禁止通配符与无效占位条目。
+# 当前有意不放条目：现有直读必须先红；入口名不在测试里写死。
+src/main/kotlin/com/couli/core/network/ApiClient.kt|guardedEpoch|唯一受屏障保护的世代读取入口：会话世代 / 登录世代只在 CredentialReadBarrier.read 的放行分支里读；内部闸关着（撤回、切环境的发布前窗口）或 allowed 现判不成立时走 denied 交回 null、一次不读，调用方按未知 / 暂时失败处理
+src/main/kotlin/com/couli/core/network/ApiClient.kt|epochAfterLockedWrite|凭一次成功写入的凭证读写后世代：参数是 WriteProof，构造函数私有，只有 SessionStore 的 clearIf / replaceIf / saveIf 在写入返回成功时才发；失败、抛错（清除异常转隔离、刷新写盘失败）、屏障拒读的分支拿不到凭证，就编译不出这次读取。6 处调用都在 refreshLock 里、紧接那次成功写入，读的是写入成功之后、仍在写锁里的当前世代（交回保存后的登录世代、记下清除世代、刷新后改绑），不读令牌、不给请求带凭据；屏障只拦读取不拦写入，写入本身在窗口内也可能发生，这一读属于写入事务；函数内另核凭证出自本存储且持写锁

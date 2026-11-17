@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -59,7 +60,8 @@ class ApiClient(
     private val baseUrl: () -> String?,
     private val context: () -> NetworkContext,
     private val device: DeviceCredentials,
-    private val tokens: SessionTokens,
+    /** 只在构造时交给 [store]（及 init 里接屏障、丢弃通知）；成员函数拿不到它，会话存储一律经 [store]。 */
+    tokens: SessionTokens,
     private val pendingKeys: PendingKeyStore,
     private val hooks: NetworkHooks = NetworkHooks(),
     http: OkHttpClient = OkHttpClient(),
@@ -105,6 +107,12 @@ class ApiClient(
 
     /** 单飞刷新的同步区：令牌检查、复用已完成结果、等待者入队、窗口结算、刷新链记录都在这把锁下（R1-06）。 */
     private val refreshLock = Any()
+
+    /**
+     * 会话存储的唯一通道（D10-1955 / D10-1966 方案 A）：世代只能经 [WriteProof.SessionStore.guardedEpoch] /
+     * [WriteProof.SessionStore.epochAfterLockedWrite]（凭成功写入的凭证）读。
+     */
+    private val store = WriteProof.SessionStore(tokens, readBarrier, refreshLock)
 
     /**
      * 刷新链：刷新前的 access_token → 新令牌（被拒为 null）。同一旧令牌晚到的 10002 直接复用（R1-06）；调用归属核对沿它判断
@@ -178,10 +186,17 @@ class ApiClient(
 
     /**
      * 一次会话读取（APP-03b）：[NotReadable] 隐私或撤回清理不允许读凭据；[Quarantined] 隔离中（按没有会话，[generation] 为存储世代）；
-     * [Present] 读到了（可能没有令牌）；[Unreadable] 读取失败（可能有会话：x-auth 不是 none 的接口本地拒绝 session_unreadable）。
+     * [Present] 读到了（可能没有令牌）；[Unreadable] 读取失败（可能有会话：x-auth 不是 none 的接口本地拒绝 session_unreadable）；
+     * [Withheld] 调用方取到的状态允许读凭据、但凭据读取屏障此刻拒读（屏障未决：撤回、切环境已关内部闸，外部状态尚未发布）。
+     *
+     * [NotReadable] 与 [Withheld] 都没有读存储，区别在于前者是已发布的合法匿名状态（基本模式、撤回清理未完成、环境未就绪，按匿名白名单 /
+     * 环境未就绪处理），后者是暂时拒读：本机可能存着会话（冷启动尚未形成 [bound] 也一样），也可能读不出设备凭据——按身份未知处理（03 §4.2，
+     * D10-1940 (二)(三)），不按确认游客匿名发出。
      */
     private sealed interface RawRead {
         data object NotReadable : RawRead
+
+        data object Withheld : RawRead
 
         class Quarantined(
             val generation: Long,
@@ -462,10 +477,14 @@ class ApiClient(
         onEnded: () -> Unit = {},
     ): SessionEnd =
         synchronized(refreshLock) {
+            // 世代在凭据读取屏障里读（review-r2 S1-1）：内部闸关着（撤回、切环境的发布前窗口）时一次不读、不清、不做收尾，按「不清、不做原会话
+            // 收尾」交回（[SessionEnd.REPLACED] 的既有口径；登出方据此不报已退出），屏障解除后再登出即照常
+            val same = store.guardedEpoch(EpochKind.LOGIN)?.let { it == expectedLoginEpoch } ?: return@synchronized SessionEnd.REPLACED
             val outcome =
                 when {
-                    tokens.loginEpoch == expectedLoginEpoch -> {
-                        clearGenerationIf(tokens.generation)
+                    same -> {
+                        val generation = store.guardedEpoch(EpochKind.SESSION) ?: return@synchronized SessionEnd.REPLACED
+                        clearGenerationIf(generation)
                         SessionEnd.CLEARED
                     }
 
@@ -533,26 +552,28 @@ class ApiClient(
     /**
      * 一份固定的会话身份快照（[SessionIdentity]，F-X-17 / F-X-19 补充二、补充三，FU-AND-0717）：账号、登录世代、持久化登录世代与「是否已知」在同一次
      * 读取里取得——读取前后各取一次登录世代，期间有登录 / 清除（世代变了）就重读，重读几次仍在变按暂时未知。订单 / 钱包的归属与恢复决策只用这一份。
+     * 登录世代也在凭据读取屏障里读（review-r1 S1-1(c)）：屏障内部闸关着（撤回、切环境的窗口）时一次不读，按暂时未知交回（世代取本方法上次读到的值）。
      */
     @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount") // 状态取不到按未知
     fun sessionIdentity(): SessionIdentity {
         repeat(IDENTITY_READ_ATTEMPTS) {
-            val before = tokens.loginEpoch
+            val before = identityEpoch() ?: return SessionIdentity.unknown(lastIdentityEpoch)
             val state =
                 try {
                     context()
                 } catch (error: Exception) {
                     return SessionIdentity.unknown(before)
                 }
+            // 读取出错按暂时未知直接交回（review-r2 S1-1）：不为构造 Unreadable 再读会话世代——屏障的读取区此时已退出，另一线程可能已关闸
             val read =
                 try {
                     rawRead(state)
                 } catch (error: Exception) {
-                    RawRead.Unreadable(tokens.generation)
+                    return SessionIdentity.unknown(before)
                 }
             val identity =
                 when (read) {
-                    RawRead.NotReadable, is RawRead.Unreadable -> {
+                    RawRead.NotReadable, RawRead.Withheld, is RawRead.Unreadable -> {
                         SessionIdentity.unknown(before)
                     }
 
@@ -566,7 +587,7 @@ class ApiClient(
                         if (session == null) {
                             SessionIdentity(known = true, account = null, loginEpoch = before, partition = null)
                         } else {
-                            val partition = (tokens as? PersistedLoginEpochs)?.persistedLoginEpoch()?.takeIf { it.isNotEmpty() }
+                            val partition = store.persistedLoginEpoch()?.takeIf { it.isNotEmpty() }
                             // 有会话而账号读不出：身份未知。账号已确认、只是持久化世代缺失（升级前登录的合法旧会话、禁用中）：在线身份已知，
                             // 分区未知（partition = null，缓存与恢复记录不读不写；第 1 轮修复 R1-01）
                             if (account == null) {
@@ -577,10 +598,21 @@ class ApiClient(
                         }
                     }
                 }
-            if (tokens.loginEpoch == before) return identity
+            // 读完之后屏障关了、读不出世代：确认不了期间没换代，按暂时未知
+            if ((identityEpoch() ?: return SessionIdentity.unknown(before)) == before) return identity
         }
-        return SessionIdentity.unknown(tokens.loginEpoch)
+        return SessionIdentity.unknown(identityEpoch() ?: lastIdentityEpoch)
     }
+
+    /**
+     * [sessionIdentity] 上次读到的登录世代：屏障拒读、不读世代时交回的暂时未知快照用它。从没读到过为 [Long.MIN_VALUE]（不等于任何真实世代：
+     * 以它为归属的页面之后按已换代处理）。
+     */
+    @Volatile
+    private var lastIdentityEpoch = Long.MIN_VALUE
+
+    /** 登录世代（只看屏障内部闸：已发布的基本模式等照旧读，与之前一致）；内部闸关着为 null（不读）。 */
+    private fun identityEpoch(): Long? = store.guardedEpoch(EpochKind.LOGIN)?.also { lastIdentityEpoch = it }
 
     /**
      * 当前有效会话的账号（APP-03b R1-09，Tracker 的 user_id 来源）：经过与请求相同的会话读取——凭据不可读、会话隔离中（F-AND-10：
@@ -811,13 +843,14 @@ class ApiClient(
     }
 
     /** 存储里此刻没有 access_token（在读取屏障里现判可读才读；不可读按没有）。 */
-    private fun storedAccessAbsent(): Boolean = readBarrier.read(::credentialsAllowedNow, { true }) { tokens.accessToken == null }
+    private fun storedAccessAbsent(): Boolean = readBarrier.read(::credentialsAllowedNow, { true }) { store.accessToken == null }
 
     /** 点击时的归属与发送前闸门（APP-09 共性第 14、15 条）：会话世代已变或禁用期内 → call_cancelled，不读、不占用、不发。 */
     private fun targetReject(target: PendingTarget?): String? {
         val ownership = target?.ownership ?: return null
         if (inFlight.epochs() != ownership.epochs || ownership.expired() || !ownership.stillOwned()) return LocalRejectReason.CALL_CANCELLED
-        return LocalRejectReason.CALL_CANCELLED.takeIf { ownership.sendAllowed?.invoke() == false }
+        // 闸门在屏障里求值（D10-1971）：屏障拒读时不调闸门、不在这里拒，后续核对给出不看闸门时本来的结局，真要写出时由写出前核对拦下
+        return LocalRejectReason.CALL_CANCELLED.takeIf { gateOpen(ownership.sendAllowed) == false }
     }
 
     /**
@@ -1169,7 +1202,15 @@ class ApiClient(
             val now = context()
             val current = rawSession(now)?.takeIf(::hasTokens) ?: return null
             if (ownerReject(owner, now) != null) return null
-            if (clearGenerationIf(current.generation)) tokens.loginEpoch else null
+            when (val outcome = clearGenerationIf(current.generation)) {
+                // 本次清除写入成功：凭这次写入的凭证读清理之后的登录世代
+                is ClearOutcome.Cleared -> store.epochAfterLockedWrite(outcome.proof, EpochKind.LOGIN)
+
+                // 删除抛错转隔离（内存里按已清，lessons 38）：没有成功写入、拿不到凭证——经屏障入口读，窗口内拒读按未知（不带已清世代）
+                ClearOutcome.Quarantined -> store.guardedEpoch(EpochKind.LOGIN)
+
+                ClearOutcome.NotCleared -> null
+            }
         }
 
     private fun transportFailure(
@@ -1209,7 +1250,7 @@ class ApiClient(
         val read = rawRead(state)
         val generation =
             when (read) {
-                RawRead.NotReadable -> null
+                RawRead.NotReadable, RawRead.Withheld -> null
                 is RawRead.Quarantined -> read.generation
                 is RawRead.Present -> read.snapshot.generation
                 is RawRead.Unreadable -> read.generation
@@ -1379,15 +1420,42 @@ class ApiClient(
             // 核对过程本身的会话读取（归属、准入）可能第一次发现会话条目损坏而推进登录世代（03 §4.2 第六条，r1 S1-1）：带发送前闸门的调用，读取都
             // 结束后登录世代若已变，再核一次闸门——按会话世代固定的调用方（隐私中心撤回）此时拒绝、不写出。
             // 先判世代、变了才再调闸门（r2 S2-2：闸门可能有状态，世代不变时恰调一次，与之前一致）；只在会话存储可读的模式下取世代，与准入的会话读取
-            // 同一判断（r2 S2-3：基本模式、撤回清理未完成时不碰会话存储，此时准入也不读会话、不会换代）
-            val epochAtGuard = if (owner.ownership?.sendAllowed != null && credentialsAllowed(now)) tokens.loginEpoch else null
-            ownerReject(owner, now) ?: sendGateReject(owner) ?: admission(operation, call, pinned, prepared, now)
-                ?: if (epochAtGuard != null && tokens.loginEpoch != epochAtGuard) sendGateReject(owner) else null
+            // 同一判断（r2 S2-3：基本模式、撤回清理未完成时不碰会话存储，此时准入也不读会话、不会换代）。
+            // 世代也只在凭据读取屏障里读（review-r1 S1-1(a)）：屏障拒读时一次不读——这时准入的会话读取同样被拒（[RawRead.Withheld]），不会换代，
+            // 不必再核；屏障到发布前一直关着，发布前已作废网络世代，核对之后 [InFlightCalls.admit] 再看一次世代，拦下期间开闸的情形
+            val epochAtGuard = if (owner.ownership?.sendAllowed != null && credentialsAllowed(now)) guardedLoginEpoch() else null
+            // 发送前闸门在凭据读取屏障里求值（D10-1966 ③、D10-1971）：屏障拒读时闸门零调用——不看闸门本来就会被拒的照原拒绝码（签名类
+            // device_not_ready、未声明 optional 与必须登录接口 session_unreadable、events / consents 本地拒），本来会写出的因闸门无法求值
+            // call_cancelled；屏障解除后闸门照常调。闸开着时与之前同一顺序：归属 → 闸门 → 准入 → 准入后世代再核
+            ownerReject(owner, now) ?: when (gateOpen(owner.ownership?.sendAllowed)) {
+                false -> LocalRejectReason.CALL_CANCELLED
+                null -> admission(operation, call, pinned, prepared, now) ?: LocalRejectReason.CALL_CANCELLED
+                true -> admission(operation, call, pinned, prepared, now) ?: epochAtGuard?.let { epochRecheck(owner, it) }
+            }
         }
 
-    /** 调用方的发送前闸门（[CallOwnership.sendAllowed]，R3-01）：只在写出前核对，不进入归属（不取消已写出的请求、不丢弃响应）。 */
-    private fun sendGateReject(owner: CallOwner): String? =
-        LocalRejectReason.CALL_CANCELLED.takeIf { owner.ownership?.sendAllowed?.invoke() == false }
+    /**
+     * 准入读取之后再核登录世代（r1 S1-1 的保护）：世代没变放行（闸门不再调，r2 S2-2）；变了再核一次发送前闸门；此刻屏障拒读、读不出世代
+     * （准入读完之后才关闸，期间可能已换代）→ 按未知拒发（call_cancelled），不读、不写出。
+     */
+    private fun epochRecheck(
+        owner: CallOwner,
+        epochAtGuard: Long,
+    ): String? =
+        when (guardedLoginEpoch()) {
+            epochAtGuard -> null
+            null -> LocalRejectReason.CALL_CANCELLED
+            else -> LocalRejectReason.CALL_CANCELLED.takeUnless { gateOpen(owner.ownership?.sendAllowed) == true }
+        }
+
+    /** 在凭据读取屏障里现判可读才读登录世代；屏障拒读或此刻不可读为 null（不读）。 */
+    private fun guardedLoginEpoch(): Long? = store.guardedEpoch(EpochKind.LOGIN, ::credentialsAllowedNow)
+
+    /**
+     * 调用方的发送前闸门（[CallOwnership.sendAllowed]，R3-01）：只在写出前核对，不进入归属（不取消已写出的请求、不丢弃响应）。在凭据读取屏障里
+     * 求值（D10-1966 ③）：放行 true、拒绝 false；屏障内部闸关着时不调闸门，交回 null。没有闸门按放行。
+     */
+    private fun gateOpen(gate: (() -> Boolean)?): Boolean? = if (gate == null) true else readBarrier.read({ true }, { null }) { gate() }
 
     /** 写出前的放行（每次实际写出都过，含 GET 自动重试、刷新后的重放）：会话核对（[sessionReject]、[carriesReject]）与首次发送同一口径。 */
     private fun admission(
@@ -1542,12 +1610,15 @@ class ApiClient(
      */
     private fun rawRead(state: NetworkContext): RawRead {
         if (!credentialsAllowed(state)) return RawRead.NotReadable
-        return readBarrier.read(allowed = ::credentialsAllowedNow, denied = { RawRead.NotReadable }) {
+        // 状态允许读、屏障却拒读（内部闸已关、外部尚未发布；或屏障里现判已不可读）：暂时拒读，不是已发布的匿名状态（[RawRead.Withheld]）。
+        // 不另读任何东西判断「本机有没有会话」——不看上次绑定（冷启动未形成绑定也一样），也不读会话世代
+        return readBarrier.read(allowed = ::credentialsAllowedNow, denied = { RawRead.Withheld }) {
             val read =
                 if (sessionQuarantined && !retryQuarantineClear()) {
-                    RawRead.Quarantined(tokens.generation)
+                    // 世代同样经屏障入口读：此刻 raise 已关内部闸（正等本次读取结束）就按暂时拒读
+                    store.guardedEpoch(EpochKind.SESSION)?.let(RawRead::Quarantined) ?: RawRead.Withheld
                 } else {
-                    when (val stored = tokens.readSessionOf()) {
+                    when (val stored = store.readSession()) {
                         is SessionRead.Present -> RawRead.Present(stored.snapshot)
                         is SessionRead.Unreadable -> RawRead.Unreadable(stored.generation)
                     }
@@ -1561,7 +1632,7 @@ class ApiClient(
     private fun bind(read: RawRead) {
         bound =
             when (read) {
-                RawRead.NotReadable -> return
+                RawRead.NotReadable, RawRead.Withheld -> return
                 is RawRead.Quarantined -> BoundOwner(read.generation, null, unreadable = false)
                 is RawRead.Present -> BoundOwner(read.snapshot.generation, live(read)?.userId, unreadable = false)
                 is RawRead.Unreadable -> BoundOwner(read.generation, null, unreadable = true)
@@ -1573,21 +1644,25 @@ class ApiClient(
      * 写入之后、原请求重放之前切环境，确认 / 放弃仍按原账号给出 environment_unsettled）。只在绑定的正是刷新开始那一代、写入后世代恰好是下一代时
      * 跟过去（不读凭据）；其余（之后已重新读过、已被清除）不动。在 [refreshLock] 下调用。
      */
-    private fun rebindRefreshed(start: SessionSnapshot) {
+    private fun rebindRefreshed(
+        start: SessionSnapshot,
+        replaced: WriteProof,
+    ) {
         val known = bound ?: return
         if (known.generation != start.generation || known.unreadable) return
-        val now = tokens.generation
+        val now = store.epochAfterLockedWrite(replaced, EpochKind.SESSION)
         if (now != start.generation + 1) return
         bound = BoundOwner(now, known.account, unreadable = false)
     }
 
     /**
      * 环境未就绪窗口里的会话归属（不读凭据）：会话世代未变、没有进入隔离时沿用 [bound]；否则（令牌已清除 / 隔离 / 换代，或从没读到过）按游客
-     * （F-X-03 ⑤：令牌清除或隔离时同步改为游客）。
+     * （F-X-03 ⑤：令牌清除或隔离时同步改为游客）。世代经屏障入口读：屏障内部闸关着（环境未就绪时又遇上撤回 / 切环境的发布前窗口）时
+     * 不读，按读不出（身份未知）给分类——与会话读不出同一口径，不按游客。
      */
     private fun boundNow(): BoundOwner {
         val known = bound
-        val generation = tokens.generation
+        val generation = store.guardedEpoch(EpochKind.SESSION) ?: return BoundOwner(Long.MIN_VALUE, null, unreadable = true)
         return known?.takeIf { it.generation == generation && !sessionQuarantined } ?: BoundOwner(generation, null, unreadable = false)
     }
 
@@ -1606,7 +1681,8 @@ class ApiClient(
      * 每次发送前（首次、内部续发、GET 自动重试、写出前拦截器）共用的会话核对，依次：
      * 1. 会话读不出、接口需要会话（[needsSession]）→ session_unreadable（与 iOS 同一裁定）；
      * 2. 固定了账号（[pinned]，S3-4、03 §4.2 第五条）→ [pinnedReject]；
-     * 3. x-auth=optional、身份未知、没有声明照发（03 §4.2 第一、二条）→ session_unreadable。
+     * 3. 凭据读取屏障暂时拒读（[RawRead.Withheld]）→ [withheldReject]；
+     * 4. x-auth=optional、身份未知、没有声明照发（03 §4.2 第一、二条）→ session_unreadable。
      * 固定账号排在身份未知之前：调用方固定了账号的，身份未知（含有 userId 无 access）一律按 account_mismatch。
      */
     private fun sessionReject(
@@ -1617,7 +1693,31 @@ class ApiClient(
     ): String? =
         unreadableReject(operation, call, read)
             ?: pinnedReject(pinned, read)
+            ?: withheldReject(operation, call, read)
             ?: LocalRejectReason.SESSION_UNREADABLE.takeIf { identityUnknown(read) && rejectsUnknownIdentity(operation, call) }
+
+    /**
+     * 凭据读取屏障暂时拒读（[RawRead.Withheld]，D10-1940 三端口径）：会话与设备凭据此刻都读不出（同一屏障），按身份未知处理，且声明照发不越过
+     * 设备凭据屏障——
+     * - (二) 需签名的接口（登录 / 绑手机发码、登录授权尝试等）与以设备为主体的 [DEVICE_SUBJECT_OPERATIONS]（`POST /v1/events`、
+     *   `POST /v1/consents`，含隐私撤回）→ device_not_ready，零发送；调用方拿到的就是现有的本地未发出结果（[ApiResult.LocalReject]），
+     *   之后另一次调用照常，不在这里排队重试；
+     * - 需要会话的接口（[needsSession]）→ session_unreadable，与会话读不出同一口径；
+     * - 其余由下一步身份未知核对处理：(三) 未声明照发的 optional 一律 session_unreadable（确认游客在窗口里也分不清，同样拒），
+     *   声明照发且无须设备凭据的（`GET /v1/config`）不带令牌照发。
+     * 已发布的基本模式 / 撤回清理未完成是 [RawRead.NotReadable]，不经这里，照旧按匿名白名单发。
+     */
+    private fun withheldReject(
+        operation: ApiOperation,
+        call: ApiCall,
+        read: RawRead,
+    ): String? =
+        when {
+            read != RawRead.Withheld -> null
+            operation.signed || operation.operationId in DEVICE_SUBJECT_OPERATIONS -> LocalRejectReason.DEVICE_NOT_READY
+            needsSession(operation, call) -> LocalRejectReason.SESSION_UNREADABLE
+            else -> null
+        }
 
     /** 会话读不出时，需要会话的调用（[needsSession]）本地拒绝（session_unreadable，与 iOS 同一裁定）。 */
     private fun unreadableReject(
@@ -1627,11 +1727,13 @@ class ApiClient(
     ): String? = LocalRejectReason.SESSION_UNREADABLE.takeIf { read is RawRead.Unreadable && needsSession(operation, call) }
 
     /**
-     * 身份未知（03 §4.2 第一条）：本机存着会话但这一刻读不出（[RawRead.Unreadable]），或读得出却没有 access_token（只有 refresh）。
-     * 确认游客（读到没有会话）与隔离中（[RawRead.Quarantined]：会话已按清除处理、界面已转未登录，只是删除未落盘）不算；凭据不可读
-     * （[RawRead.NotReadable]）由放行判定按匿名白名单处理，也不算。
+     * 身份未知（03 §4.2 第一条）：本机存着会话但这一刻读不出（[RawRead.Unreadable]），或读得出却没有 access_token（只有 refresh），
+     * 或凭据读取屏障暂时拒读（[RawRead.Withheld]：分不清本机有没有会话，D10-1940 (三)、D10-1942 ③）。确认游客（读到没有会话）与隔离中
+     * （[RawRead.Quarantined]：会话已按清除处理、界面已转未登录，只是删除未落盘）不算；已发布的凭据不可读状态（[RawRead.NotReadable]：
+     * 基本模式、撤回清理未完成）由放行判定按匿名白名单处理，也不算。
      */
-    private fun identityUnknown(read: RawRead): Boolean = read is RawRead.Unreadable || live(read)?.let { it.accessToken == null } == true
+    private fun identityUnknown(read: RawRead): Boolean =
+        read is RawRead.Unreadable || read == RawRead.Withheld || live(read)?.let { it.accessToken == null } == true
 
     /** 身份未知时这次调用本地拒绝：x-auth=optional 且调用点没有声明照发（[ApiCall.sendsWhenIdentityUnknown]）。其余鉴权级别照旧（[needsSession]）。 */
     private fun rejectsUnknownIdentity(
@@ -1890,8 +1992,9 @@ class ApiClient(
         synchronized(refreshLock) {
             outcomeFor(usedToken)?.let { return it }
             val read = rawRead(context())
-            // 会话读不出（可能还在）：不刷新、不清会话，原调用按暂时失败结束（与 iOS 同一裁定）
-            if (read is RawRead.Unreadable) return RefreshResult.Transient(LocalRejectReason.SESSION_UNREADABLE)
+            // 会话读不出（可能还在）、或凭据读取屏障暂时拒读（[RawRead.Withheld]，review-r2 S2）：不刷新、不清会话，原调用按暂时失败结束
+            // （与 iOS 同一裁定）
+            if (read is RawRead.Unreadable || read == RawRead.Withheld) return RefreshResult.Transient(LocalRejectReason.SESSION_UNREADABLE)
             val snapshot = live(read) ?: return RefreshResult.Stale
             if (usedToken == null || snapshot.accessToken != usedToken) return RefreshResult.Stale
             val forceUpdate = context().update == UpdateRaw.BELOW
@@ -2028,21 +2131,52 @@ class ApiClient(
     private fun clearSettlingSession() {
         if (settlingTransient != null) return
         val generation = settlingGeneration ?: return
-        if (clearGenerationIf(generation)) {
-            val epoch = tokens.loginEpoch
-            settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true, clearedEpoch = epoch) }
-        }
+        val epoch =
+            when (val outcome = clearGenerationIf(generation)) {
+                is ClearOutcome.Cleared -> store.epochAfterLockedWrite(outcome.proof, EpochKind.LOGIN)
+
+                // 删除抛错转隔离：没有成功写入——经屏障入口读，窗口内拒读按未知，不记「本世代已清」
+                ClearOutcome.Quarantined -> store.guardedEpoch(EpochKind.LOGIN) ?: return
+
+                ClearOutcome.NotCleared -> return
+            }
+        settlingAccess?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true, clearedEpoch = epoch) }
     }
 
-    /** 按世代 CAS 清会话，返回是否清的是这一代。写盘失败：隔离会话（内存里继续阻断旧令牌），之后每次读会话前重试删除（lessons 38）。 */
+    /**
+     * 按世代 CAS 清会话（[ClearOutcome]）。写盘失败：隔离会话（内存里继续阻断旧令牌，之后每次读会话前重试删除，lessons 38），但这**不是成功写入**，
+     * 交回 [ClearOutcome.Quarantined]、不带写入凭证（D10-1978 ①）。清除成功按本次清除的世代通知；隔离只在屏障放行、读得到世代时通知，
+     * 窗口内不把失败的删除通知成已清。
+     */
     @Suppress("TooGenericExceptionCaught", "SwallowedException")
-    private fun clearGenerationIf(generation: Long): Boolean =
-        try {
-            tokens.clearIf(generation)
-        } catch (error: Exception) {
-            quarantine()
-            true
-        }.also { cleared -> if (cleared) sessionStored() }
+    private fun clearGenerationIf(generation: Long): ClearOutcome {
+        val outcome =
+            try {
+                store.clearIf(generation)?.let(ClearOutcome::Cleared) ?: ClearOutcome.NotCleared
+            } catch (error: Exception) {
+                quarantine()
+                ClearOutcome.Quarantined
+            }
+        when (outcome) {
+            is ClearOutcome.Cleared -> sessionStored(known = generation)
+            ClearOutcome.Quarantined -> sessionStored(skipWhenWithheld = true)
+            ClearOutcome.NotCleared -> Unit
+        }
+        return outcome
+    }
+
+    /** [clearGenerationIf] 的结果：只有 [Cleared] 带本次清除写入的凭证。 */
+    private sealed interface ClearOutcome {
+        class Cleared(
+            val proof: WriteProof,
+        ) : ClearOutcome
+
+        /** 删除抛错，已转隔离：内存里按已清，存储里旧会话可能还在；没有成功写入。 */
+        data object Quarantined : ClearOutcome
+
+        /** 世代已变，没有清。 */
+        data object NotCleared : ClearOutcome
+    }
 
     /**
      * 在 [refreshLock] 下隔离删除失败的会话（F-AND-10）：记下存储里此刻的会话身份（access / refresh）。存储里已没有会话（删除其实已落盘）
@@ -2051,12 +2185,13 @@ class ApiClient(
     @Suppress("TooGenericExceptionCaught", "SwallowedException") // 读不出按身份未知隔离
     private fun quarantine() {
         if (sessionQuarantined && revokedSession != null) return
-        // 凭据此刻不可读（F-X-03）：不读，身份未知（存储里的任何会话都按被隔离的处理，之后可读时再重试删除）
+        // 凭据此刻不可读（F-X-03）或屏障拒读：不读（连会话世代也不读，review-r1 S1-1(b)），身份未知（存储里的任何会话都按被隔离的处理，
+        // 之后可读时再重试删除）。读取出错同样按身份未知；这里用不到世代
         val read =
             try {
-                readBarrier.read(::credentialsAllowedNow, { SessionRead.Unreadable(tokens.generation) }) { tokens.readSessionOf() }
+                readBarrier.read(::credentialsAllowedNow, { null }) { store.readSession() }
             } catch (error: Exception) {
-                SessionRead.Unreadable(tokens.generation)
+                null
             }
         revokedSession =
             when (read) {
@@ -2064,7 +2199,7 @@ class ApiClient(
                     read.snapshot.takeIf(::hasTokens)?.let { RevokedSession(it.accessToken, it.refreshToken, identityKnown = true) }
                 }
 
-                is SessionRead.Unreadable -> {
+                is SessionRead.Unreadable, null -> {
                     RevokedSession(null, null, identityKnown = false)
                 }
             }
@@ -2087,27 +2222,40 @@ class ApiClient(
      * 这次读取同样包在凭据读取屏障里现判（FU-AND-0714 第 2 轮评审 R2-01）：它有锁外的直接入口（刷新写入失败后的 [refreshTokens]），不能只靠
      * [rawRead] 外层的判定。凭据此刻不可读（撤回清理中、切换环境、环境未就绪）→ 一次都不读、不删，保持隔离（清理器会清掉整个会话）。
      */
+    private fun retryQuarantineClear(): Boolean = retryQuarantine() != QuarantineRetry.Held
+
+    /** [retryQuarantine] 的结果：解除了隔离（[Lifted.proof] 只在本次确实删除成功时带写入凭证）或仍在隔离。 */
+    private sealed interface QuarantineRetry {
+        class Lifted(
+            val proof: WriteProof?,
+        ) : QuarantineRetry
+
+        data object Held : QuarantineRetry
+    }
+
+    /** 同 [retryQuarantineClear]，并交回本次删除写入的凭证（刷新写盘失败分支据此判断会话是否真的清掉了，D10-1978 ①）。 */
     @Suppress("TooGenericExceptionCaught", "SwallowedException", "ReturnCount")
-    private fun retryQuarantineClear(): Boolean {
+    private fun retryQuarantine(): QuarantineRetry {
         beforeQuarantineRetry()
         synchronized(refreshLock) {
-            if (!sessionQuarantined) return true
+            if (!sessionQuarantined) return QuarantineRetry.Lifted(null)
             val revoked = revokedSession
             val read =
                 readBarrier.read(::credentialsAllowedNow, { null }) {
                     try {
-                        tokens.readSessionOf()
+                        store.readSession()
                     } catch (error: Exception) {
-                        SessionRead.Unreadable(tokens.generation)
+                        // 读取出错：世代也经屏障入口读，此刻内部闸已关（raise 正等本次读取结束）就不读、保持隔离
+                        store.guardedEpoch(EpochKind.SESSION)?.let(SessionRead::Unreadable)
                     }
-                } ?: return false
+                } ?: return QuarantineRetry.Held
             val generation =
                 when (read) {
                     is SessionRead.Present -> {
                         val stored = read.snapshot
                         if (!hasTokens(stored) || (revoked != null && !revoked.matches(stored))) {
                             liftQuarantine()
-                            return true
+                            return QuarantineRetry.Lifted(null)
                         }
                         stored.generation
                     }
@@ -2116,11 +2264,14 @@ class ApiClient(
                         read.generation
                     }
                 }
-            return try {
-                tokens.clearIf(generation).also { cleared -> if (cleared) liftQuarantine() }
-            } catch (error: Exception) {
-                false
-            }
+            val proof =
+                try {
+                    store.clearIf(generation)
+                } catch (error: Exception) {
+                    null
+                } ?: return QuarantineRetry.Held
+            liftQuarantine()
+            return QuarantineRetry.Lifted(proof)
         }
     }
 
@@ -2146,8 +2297,19 @@ class ApiClient(
             // 每次发送（含校时重签、重新注册后的重放）之前确认仍有有效的调用方（第 41 条）；没有就停止续发
             if (!refreshHasLiveCaller()) return RefreshAttempt.Transient(HttpTransport.KIND_CANCELLED)
             // 每次发送（含校时重签）都重新组头、重新签名；刷新对象始终是入队时的快照 start
+            // 组头 / 签名被拒（review-r2 S2）：设备凭据此刻读不出（凭据读取屏障未决、设备未就绪）是暂时的，保留原因按暂时失败结束——不是会话被拒，
+            // 不清刷新开始那一代、不跳登录（与 10402 重新注册失败同一口径）；其余组头拒绝照旧按被拒
             prepared =
-                prepare(ApiCall(REFRESH, body = body), operation, context(), start) as? Prepared.Ready ?: return RefreshAttempt.Rejected
+                when (val outcome = prepare(ApiCall(REFRESH, body = body), operation, context(), start)) {
+                    is Prepared.Ready -> {
+                        outcome
+                    }
+
+                    is Prepared.Rejected -> {
+                        val transient = outcome.reason == LocalRejectReason.DEVICE_NOT_READY
+                        return if (transient) RefreshAttempt.Transient(outcome.reason) else RefreshAttempt.Rejected
+                    }
+                }
             envelope =
                 when (
                     val exchange =
@@ -2212,17 +2374,18 @@ class ApiClient(
         synchronized(refreshLock) {
             val saved =
                 try {
-                    tokens.replaceIf(start.generation, pair.access, pair.refresh, pair.scope)
+                    store.replaceIf(start.generation, pair.access, pair.refresh, pair.scope)
                 } catch (error: Exception) {
-                    // 写盘失败：隔离并清掉这一代会话（内存里继续阻断旧令牌，lessons 38），结论是「本世代因刷新失败被清除」
+                    // 写盘失败：隔离并清掉这一代会话（内存里继续阻断旧令牌，lessons 38），结论是「本世代因刷新失败被清除」。替换没有成功，不读登录世代；
+                    // 只有隔离重试确实删掉了旧会话，才凭那次删除的凭证读清理之后的登录世代，否则（删不掉、屏障拒读）已清世代按未知（D10-1978 ①）
                     quarantine()
-                    retryQuarantineClear()
-                    val epoch = tokens.loginEpoch
+                    val epoch =
+                        (retryQuarantine() as? QuarantineRetry.Lifted)?.proof?.let { store.epochAfterLockedWrite(it, EpochKind.LOGIN) }
                     start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(null, cleared = true, clearedEpoch = epoch) }
                     return RefreshAttempt.Rejected
                 }
-            if (!saved) return RefreshAttempt.Rejected
-            rebindRefreshed(start)
+                    ?: return RefreshAttempt.Rejected
+            rebindRefreshed(start, saved)
             start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(pair.access) }
         }
         afterSessionSaved(pair.scope)
@@ -2271,8 +2434,9 @@ class ApiClient(
 
                 else -> {
                     when (val read = rawRead(now)) {
-                        // 会话此刻读不出：不发刷新，按暂时失败结算（不清会话）
-                        is RawRead.Unreadable -> LocalRejectReason.SESSION_UNREADABLE
+                        // 会话此刻读不出、或凭据读取屏障暂时拒读（[RawRead.Withheld]，不是换了会话）：不发刷新，按暂时失败结算（不清会话，
+                        // review-r1 S2-1）；屏障解除后会话仍在，下一次请求照常刷新
+                        is RawRead.Unreadable, RawRead.Withheld -> LocalRejectReason.SESSION_UNREADABLE
 
                         is RawRead.Present -> LocalRejectReason.SESSION_CHANGED.takeIf { read.snapshot.generation != start.generation }
 
@@ -2330,8 +2494,8 @@ class ApiClient(
             if (!stillOwned(owner.epochs, prepared)) return null
             val start = owner.session ?: return null
             synchronized(refreshLock) {
-                if (!tokens.replaceIf(start.generation, pair.access, pair.refresh, pair.scope)) return null
-                rebindRefreshed(start)
+                val replaced = store.replaceIf(start.generation, pair.access, pair.refresh, pair.scope) ?: return null
+                rebindRefreshed(start, replaced)
                 start.accessToken?.let { refreshOutcomes[it] = RefreshOutcome(pair.access) }
             }
             afterSessionSaved(pair.scope)
@@ -2371,12 +2535,21 @@ class ApiClient(
     ): SavedLogin =
         try {
             synchronized(refreshLock) {
-                val target = if (sessionQuarantined && owner.session == null) tokens.generation else generation
+                // 隔离中按此刻世代覆盖：这一次世代读取在写入之前，经屏障入口读——内部闸关着（撤回、切环境的发布前窗口）时不读、不保存，
+                // 交回 session_save_failed（D10-1975 / D10-1978 ②：不是会话已变；登录页走现有的通用失败提示、留在当前页，重试即成功）
+                val target =
+                    if (sessionQuarantined && owner.session == null) {
+                        store.guardedEpoch(EpochKind.SESSION)
+                            ?: return@synchronized SavedLogin.Rejected(LocalRejectReason.SESSION_SAVE_FAILED)
+                    } else {
+                        generation
+                    }
                 // F-X-25 S1-01：写新令牌之前先让可信 Web 协调器持久登记待清（账号变了时），再保存新会话
                 hooks.beforeSessionSave(userId)
-                if (tokens.saveIf(target, pair.access, pair.refresh, pair.scope, userId)) {
+                val saved = store.saveIf(target, pair.access, pair.refresh, pair.scope, userId)
+                if (saved != null) {
                     liftQuarantine()
-                    SavedLogin.Saved(tokens.loginEpoch)
+                    SavedLogin.Saved(store.epochAfterLockedWrite(saved, EpochKind.LOGIN))
                 } else {
                     SavedLogin.Rejected(LocalRejectReason.SESSION_CHANGED)
                 }
@@ -2424,8 +2597,27 @@ class ApiClient(
         if (checked != null) checked(min, stillValid) else hooks.onForceUpdate(min)
     }
 
-    /** 会话保存、刷新或清理完成：带世代通知（APP-05a 共性第 14 条，App 在主线程据此同步 Router 的会话状态）。 */
-    private fun sessionStored() = hooks.onSessionStored(tokens.generation)
+    /**
+     * 会话保存、刷新、清理完成或存储自己丢弃会话之后：带世代通知（APP-05a 共性第 14 条，App 在主线程据此同步 Router 的会话状态）。
+     * 世代经屏障入口读（review-r1 S1-1(b)、D10-1966）；屏障内部闸关着（撤回、切环境的发布前窗口）时不读，用 [known]（清会话时本次清除针对的
+     * 世代），且不低于上一次通知出去的世代——接收方只丢弃更旧的通知，同一代照常处理并自行按当前会话同步，界面照样转为未登录。
+     * [skipWhenWithheld]：清除失败转隔离时用——屏障拒读就不通知，不把失败的删除通知成已清。
+     * 通知缓存原子单调（review-r3 S2-3、D10-1978 ③）：并发通知不会把它写回更小的值，之后拒读时的通知不会落后于接收方已处理的世代。
+     */
+    private fun sessionStored(
+        known: Long? = null,
+        skipWhenWithheld: Boolean = false,
+    ) {
+        val read = store.guardedEpoch(EpochKind.SESSION)
+        if (read == null && skipWhenWithheld) return
+        val last = lastNotifiedGeneration.get()
+        val generation = read ?: maxOf(known ?: last, last)
+        lastNotifiedGeneration.accumulateAndGet(generation) { current, next -> maxOf(current, next) }
+        hooks.onSessionStored(generation)
+    }
+
+    /** 已通知出去的最大世代（屏障拒读时的通知用它，不读存储；只增不减）。 */
+    private val lastNotifiedGeneration = AtomicLong(0L)
 
     /** 10401：响应头 Date 与本机时钟相差超过 300 秒时校正偏移（BR-ID-09）。 */
     private fun correctClock(headers: Map<String, String>): Boolean {
@@ -2525,6 +2717,79 @@ class ApiClient(
     private fun JsonObject.text(key: String): String? =
         (get(key)?.takeIf { it != JsonNull } as? JsonPrimitive)?.takeIf { it.isString }?.content
 
+    /** [SessionStore] 能读的两种世代：会话世代（[SessionTokens.generation]）与登录世代（[SessionTokens.loginEpoch]）。 */
+    private enum class EpochKind { SESSION, LOGIN }
+
+    /**
+     * 一次成功写入会话存储的凭证（D10-1978 ①）：构造函数私有，只有嵌在它里面的 [SessionStore] 在写入（保存 / 替换 / 清除）**返回成功**时才发；
+     * ApiClient 的其余代码造不出它，失败、抛错、被屏障拒的分支也拿不到它。[SessionStore.epochAfterLockedWrite] 必须凭它读——没有成功写入，
+     * 那次写后读取就编译不出来。凭证只在拿到它的那个同步区里当场使用，不存下来。
+     */
+    private class WriteProof private constructor(
+        private val issuer: SessionStore,
+    ) {
+        /**
+         * ApiClient 访问会话存储的唯一通道（D10-1955 / D10-1966 方案 A）：[SessionTokens] 只交给它，ApiClient 的成员函数拿不到原对象，直接读
+         * 会话世代 / 登录世代编译不过。世代只有两个读取口，都登记在 epoch-read-allowlist.txt：
+         * - [guardedEpoch]：唯一能被凭据读取屏障拒的入口——内部闸关着（撤回、切环境的发布前窗口）或 [allowed] 现判不成立时一次不读，交回 null；
+         * - [epochAfterLockedWrite]：凭一次成功写入的 [WriteProof] 读那次写入之后的世代；另核凭证出自本存储、调用方持 [writeLock]（refreshLock）。
+         * 写入（[clearIf]、[replaceIf]、[saveIf]）成功交回凭证，未成功交回 null；存储抛错原样抛给调用方（调用方按失败处理，拿不到凭证）。
+         * 会话本身的读取（[readSession]、[accessToken]、[persistedLoginEpoch]）由调用方包在屏障里（rawRead 等）或由存储自己接屏障，与之前一致。
+         */
+        class SessionStore(
+            private val tokens: SessionTokens,
+            private val barrier: CredentialReadBarrier,
+            private val writeLock: Any,
+        ) {
+            fun guardedEpoch(
+                kind: EpochKind,
+                allowed: () -> Boolean = { true },
+            ): Long? =
+                barrier.read(allowed, { null }) {
+                    when (kind) {
+                        EpochKind.SESSION -> tokens.generation
+                        EpochKind.LOGIN -> tokens.loginEpoch
+                    }
+                }
+
+            fun epochAfterLockedWrite(
+                proof: WriteProof,
+                kind: EpochKind,
+            ): Long {
+                check(proof.issuer === this && Thread.holdsLock(writeLock)) { "epochAfterLockedWrite 只凭本存储一次成功写入的凭证、在写锁里用" }
+                return when (kind) {
+                    EpochKind.SESSION -> tokens.generation
+                    EpochKind.LOGIN -> tokens.loginEpoch
+                }
+            }
+
+            fun readSession(): SessionRead = tokens.readSessionOf()
+
+            val accessToken: String? get() = tokens.accessToken
+
+            fun persistedLoginEpoch(): String? = (tokens as? PersistedLoginEpochs)?.persistedLoginEpoch()
+
+            fun clearIf(expectedGeneration: Long): WriteProof? = issued(tokens.clearIf(expectedGeneration))
+
+            fun replaceIf(
+                expectedGeneration: Long,
+                accessToken: String,
+                refreshToken: String,
+                scope: String,
+            ): WriteProof? = issued(tokens.replaceIf(expectedGeneration, accessToken, refreshToken, scope))
+
+            fun saveIf(
+                expectedGeneration: Long,
+                accessToken: String,
+                refreshToken: String,
+                scope: String,
+                userId: String?,
+            ): WriteProof? = issued(tokens.saveIf(expectedGeneration, accessToken, refreshToken, scope, userId))
+
+            private fun issued(written: Boolean): WriteProof? = if (written) WriteProof(this) else null
+        }
+    }
+
     companion object {
         /** [sessionIdentity] 读取期间登录世代在变时最多重读几次。 */
         private const val IDENTITY_READ_ATTEMPTS = 3
@@ -2549,6 +2814,12 @@ class ApiClient(
         private const val MAX_SKEW_MILLIS = 300_000L
         private const val REFRESH_WAIT_MILLIS = 30_000L
         private const val OUTCOME_MEMORY = 8
+
+        /**
+         * 以设备为主体、无须签名的写接口（D10-1940 (二)）：`POST /v1/events`、`POST /v1/consents`（含隐私撤回，BR-ID-13）。凭据读取屏障暂时拒读、
+         * 拿不到设备标识时不发（[withheldReject]），不发出没有 X-Device-Id 的记录。
+         */
+        private val DEVICE_SUBJECT_OPERATIONS = setOf("ingestEvents", "recordConsent")
 
         /** 共享刷新窗口里已离开（等待超时）的调用方占位：永远无效（R2-02）。 */
         private val ABANDONED_CALLER: () -> Boolean = { false }
