@@ -558,10 +558,10 @@
   {"h": "76732bedcee0ccd5254a316bacffae524ebd34a1e2e8ceb87f7766c81857425e", "p": "app/src/test/kotlin/com/couli/app/web/H5RouteUrlTest.kt"},
   {"h": "8b7695c112b98d0ddda97a036b881dcf6b93f17b1f8b9b8d4d6501aa41da8f79", "p": "app/src/test/kotlin/com/couli/app/web/TrustedWebRetryFreshConfigTest.kt"},
   {"h": "359f252405984237374f5db017c16f4fb4f258125043579d2deef8d3f726b5db", "p": "app/src/test/resources/ds02-inventory.tsv"},
-  {"h": "52879629e2305d76905fdc4cd3bd6f6f4f57850b7c1f3f8a17e2503eb77457c2", "p": "app/src/test/resources/payout-identity-visual/funds-baseline.json"},
+  {"h": "6102017e48b7f73ea0280930a16995c47d0c5af6690c99207bbb5cbded1bb74c", "p": "app/src/test/resources/payout-identity-visual/funds-baseline.json"},
   {"h": "697b737da06639e3b9413852475d93af84619d603d98b2e7a57402a54a85b572", "p": "app/src/test/resources/payout-identity-visual/old-groups.json"},
-  {"h": "c8e1c6b1a773e27f3a5aaf3105426b917dc6bec09b0f3cc79db77cede5129fa8", "p": "app/src/test/resources/stepup-visual/funds-baseline.json"},
-  {"h": "0214fe71631b4b78b6357b2eeef2743a8a10f0dd23752ec4d4492d1ada446c79", "p": "app/src/test/resources/withdraw-visual/funds-baseline.json"},
+  {"h": "22a8d8cd272f1314d696e551856dec7ff3b23340e05aafdd490386a2eff3ac87", "p": "app/src/test/resources/stepup-visual/funds-baseline.json"},
+  {"h": "8b74776110b4459a615cf8040382f466e994e799797ac0a02cb542c3e88bfe42", "p": "app/src/test/resources/withdraw-visual/funds-baseline.json"},
   {"h": "ab660741c51b97c0f84a7bde7b5a83f97805798b45e75adeccf31b2d214311a9", "p": "app/src/test/resources/withdraw-visual/old-groups.json"},
   {"h": "4cc3151a6ee919490f9da86aef0a8d483e85cdfd338a79823a4d1c704a320b92", "p": "app/src/test/snapshots/account-v/BindPhone-v2-font200-w320-light.png"},
   {"h": "abe28347c700b033051241e407c423b7b767a079cb2be0a24e5e377c0b7137c5", "p": "app/src/test/snapshots/account-v/BindPhone-v2-font200-w390-light.png"},
@@ -2505,9 +2505,9 @@
   {"h": "acba4a6c6183795189f800f87c70ba46b0f2d903c195913f4079558db0c87cba", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/WalletTexts.kt"},
   {"h": "633e202fb0f5b0a60ef41b70eeb266dd99a34e11da11dca45c1496fa4a14bb8d", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/WithdrawLogic.kt"},
   {"h": "d21a60f5a84c2757ddc8607db9e3fa376d16e476a7622fd5bfd0aea6aad88f7e", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/WithdrawalText.kt"},
-  {"h": "6376775f085c13554768aa5e48a8810a21132cdc0cd1cdb83fb8cadaa8f761f6", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpController.kt"},
+  {"h": "55277b4e43d44175d1afda175228ca3778ac5c2f90b117df5573a741d0ff0dc0", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpController.kt"},
   {"h": "44e6c6e928394361df3b9e64474ded14195cd44734336c894022f17ae7d8897c", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpPorts.kt"},
-  {"h": "68eb2984455ce5c5e70ed730bf17c3dd4733b8b375c8693e4305b9ad5fa55f89", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
+  {"h": "6446311a6a155cae96c0318519238407f5469ec4fc03a7a2303aa37627d3f85c", "p": "core/wallet/src/main/kotlin/com/couli/core/wallet/stepup/StepUpSheet.kt"},
   {"h": "9fdaeab5eccadd78fe950ffec551b3477bf3444c66280874e60581ce6d5e9e18", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/FollowupAnd0714WalletBindingTest.kt"},
   {"h": "46368ce812a6e3d07690d3d9bcf6fd3287b91b3d788979b561086d06f4a9d867", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletLogicTest.kt"},
   {"h": "6ad3fbca1015384dbcd63f904231a967f2818f0ce193d9e28ff0dce851f12e70", "p": "core/wallet/src/test/kotlin/com/couli/core/wallet/WalletStaleCacheStoreTest.kt"},
@@ -2986,17 +2986,17 @@
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "3f92b71d8dd38861a02f3594ed3c0a04da77290a38bf98d75fceffc9126e1418",
+   "h": "b769836451513ac9d6ea785934b9bb49a1cbadcaeab5b201b5b1db84377f9400",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "72a61ddfe93ffdcda2978d1bf7f1b12af8aca03b5031fd306b9121eefb448d9e",
+   "h": "18153f57688e0b54cd0eeb01da8bc21c02dd24e1314f89ed5a6c4e3a8627e86c",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "1eaff99069b290497914a2ac99a50095a7c33d9f6b17b1a78ee323b1c7575e10",
+   "h": "74991bbd728cbc51c4a46fba008b5473a1e00aefc0635acbebfcd9f82a6cf273",
    "swaps": 1
   }
  ],
