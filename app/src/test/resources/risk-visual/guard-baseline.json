@@ -2,7 +2,7 @@
  "base": "e9fdd94ce114ab8e670cea731accb3e6d4e2170c",
  "files": [
   {"h": "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d", "p": "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt"},
-  {"h": "f21305b0c06a62d2881b4071b04ab7e2875e708d0412048d467704677eafd21f", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
+  {"h": "a03c825f8beb6f0704433813c904eacd6a5d52b3c966b075f6ef1d586469db4d", "p": "app/src/main/kotlin/com/couli/app/me/AppMe.kt"},
   {"h": "b49f72964fd4e27a8a6ff3fab7dc578b65ecd0a9909cb2bbde88db25e6b0029b", "p": "app/src/main/kotlin/com/couli/app/me/AppMeTexts.kt"},
   {"h": "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2", "p": "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt"},
   {"h": "61f2e13dbf517c79e781908d2b23c571429e7d2b3249fb3ca6b430488215d4af", "p": "app/src/main/kotlin/com/couli/app/shell/AppShell.kt"},
@@ -1189,7 +1189,7 @@
   {"h": "2da459b309d1372b94de7792d406cf19c8a898819af2d49feee8addf488245fe", "p": "core/me/src/test/kotlin/com/couli/core/me/account/AccountVectorTest.kt"},
   {"h": "6a3898eee9e917c50f3da0dd892873679b8543e775e35f6d2edaf080e60e2a49", "p": "core/network/build.gradle.kts"},
   {"h": "4cd0890a63dabc133db39c1e2ce73318e247805783346238b8ba06b6434aad1c", "p": "core/network/src/main/kotlin/com/couli/core/network/AndroidDeviceIdReader.kt"},
-  {"h": "0e28c4d9c77917c8c68124a4cfc10c6f7c5b9aab445cc49241b7c266d22c8796", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
+  {"h": "81eb064523c04216cae6fb4fd0752afb654bec4fc7caf9d20388ef4870433b9f", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiClient.kt"},
   {"h": "1bf041fa1632163b10c57c5b5483b046479671fcdacd3ae376479df9ca1ab2f0", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiConfigFetcher.kt"},
   {"h": "9f64bc6ec01cb13bcbdddedd1cdf093fb3882c3069ab4467e7bd2105695e39a9", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiModels.kt"},
   {"h": "a4e39b11c86e33c7ef6fe8665c6ed1ab03876ea3661f6dad680663dcd902fcee", "p": "core/network/src/main/kotlin/com/couli/core/network/ApiStream.kt"},
@@ -1206,8 +1206,8 @@
   {"h": "3f6f6b5a03cecb8cbc5358032d3234b01247120c41dc952f423281b4dbd06633", "p": "core/network/src/main/kotlin/com/couli/core/network/RequestHeaderPolicy.kt"},
   {"h": "bed88ac0bda2e1e765e47dc8c9ace0288d52f400ef440801851cf141bef386a3", "p": "core/network/src/main/kotlin/com/couli/core/network/RequestSigner.kt"},
   {"h": "45bacf65f6bb99dcb8e7908e4c5e8b66c1d942b1fad9b542d08f06556ba91282", "p": "core/network/src/main/kotlin/com/couli/core/network/RetryAfterGate.kt"},
-  {"h": "21bf59c130efcb5f19581ad3258bb273073cd4295feafe5c006834094daa63b6", "p": "core/network/src/main/kotlin/com/couli/core/network/SecureStorage.kt"},
-  {"h": "5cf9f4862af862c306e9e92033c673898ac10f82a8f1a2a30aae07cdd3cff9f5", "p": "core/network/src/main/kotlin/com/couli/core/network/SessionRevocation.kt"},
+  {"h": "bb0c1036afbdbc251aba4b12e45c1d8cf08985ddb7e2d419c7d29f9f0a81fefd", "p": "core/network/src/main/kotlin/com/couli/core/network/SecureStorage.kt"},
+  {"h": "d821116ea48a0d3e83d4cd7447d9e7716940c3fe37f34ce36c8db235aa7d2550", "p": "core/network/src/main/kotlin/com/couli/core/network/SessionRevocation.kt"},
   {"h": "31cfb94f1d20f8f9916930dd8f988d86b55255962918506876683359cc205b0e", "p": "core/network/src/test/kotlin/com/couli/core/network/ApiClientCrossPlatformLessonsTest.kt"},
   {"h": "1225e43106cb411beb0b156167bfb6dfa5dc8394d6acbcf18d093adaf1483b38", "p": "core/network/src/test/kotlin/com/couli/core/network/ApiClientIntegrationTest.kt"},
   {"h": "c4bdf6cf9fa8fceb6d224e02d05bbe5656463800b352a973e177beaf00c96a0a", "p": "core/network/src/test/kotlin/com/couli/core/network/ApiClientPendingTargetTest.kt"},
@@ -1708,6 +1708,6 @@
   "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt",
   "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"
  ],
- "settingsGuardNormalized": "4870a0603df4080ada1200927e7d4d7453a4c68f231cb89b4c4f175a19699cdd",
- "privacyGuardNormalized": "726989ee8b97cae5adf9783a54ce7228d9d4103318f7d219eb1157e63f52985e"
+ "settingsGuardNormalized": "407de8cd4f2fbd30f07b3a365ad171cef907e9b80979f47a5438ac4fae2f0c41",
+ "privacyGuardNormalized": "6c837799747e67ebeefa6c0db0a4c4d66e3197c69a0f062e86f8aa576431e298"
 }

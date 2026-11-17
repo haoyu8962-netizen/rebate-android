@@ -49,7 +49,7 @@ class MeVisualFixtureTest {
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
                     "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b",
                 // modify_existing（#24）re-pin ruling D10-1709：FU-AND-STEPUP-SUMMARY 身份未知补单，隐私撤回按请求体声明照发（03 §4.2）
-                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "f21305b0c06a62d2881b4071b04ab7e2875e708d0412048d467704677eafd21f",
+                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "a03c825f8beb6f0704433813c904eacd6a5d52b3c966b075f6ef1d586469db4d",
                 "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt" to "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2",
                 "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt" to
                     "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d",
