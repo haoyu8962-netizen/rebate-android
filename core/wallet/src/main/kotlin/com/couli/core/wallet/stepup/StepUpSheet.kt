@@ -100,7 +100,7 @@ fun StepUpSheet(
         // 格下一行【重新获取】的 48 命中区向下扩出的半截要落在中段裁切区内（评审 r1 S2-1）
         bodyBottomInset = CouliSpacing.space4,
         // W65：说明 / 状态句挪到标题区（标题下 8），不随中段滚动
-        subtitle = { StepUpNotice(state.phase, texts) },
+        subtitle = { StepUpNotice(state.phase, state.sendFailed, texts) },
         // 【验证并提交】在底部操作区，键盘弹起时固定可见，只有中段滚动（APP-09 共性第 11 条）
         actions = {
             CouliButton(
@@ -138,10 +138,14 @@ fun StepUpSheet(
     }
 }
 
-/** 标题下一行（W65）：已发送说明（不含号码，G16）；发送中、无号码、受限会话拒绝时换成对应状态句（文案与播报方式不变）。 */
+/**
+ * 标题下一行（W65）：已发送说明（不含号码，G16）；发送中、无号码、受限会话拒绝时换成对应状态句（文案与播报方式不变）。
+ * [sendFailed]（stale / 本地拒的发送失败态，D10-1792）时不说「已发送」，这一行隐藏；普通发码失败、验证码输错不受影响。
+ */
 @Composable
 private fun StepUpNotice(
     phase: String,
+    sendFailed: Boolean,
     texts: WalletTexts,
 ) {
     when (phase) {
@@ -169,7 +173,9 @@ private fun StepUpNotice(
         }
 
         else -> {
-            Text(text = texts.text("step_up.sent"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+            if (!sendFailed) {
+                Text(text = texts.text("step_up.sent"), style = CouliTypography.footnote, color = CouliColors.textSecondary)
+            }
         }
     }
 }

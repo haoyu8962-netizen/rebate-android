@@ -6,6 +6,7 @@ package com.couli.core.wallet.stepup
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.LocalRejectReason
 import com.couli.core.network.ResultSignals
 import com.couli.core.wallet.SendProbe
 import com.couli.core.wallet.SensitiveOutcome
@@ -42,6 +43,11 @@ data class StepUpUiState(
      */
     val owner: FormOwner = FormOwner(null, Long.MIN_VALUE),
     val smsLimited: Boolean = false,
+    /**
+     * 本次发码落在「发送失败、可重新获取」（D10-1790 / 1792）：结果回来时身份核对判不过（stale，结果不消费）、打开即判不过、等到的结果判不过，
+     * 或网络边界本地拒绝（一条没发，call_cancelled 除外）。只用于隐藏标题下「验证码已发送至…」说明位；普通发码失败、验证码输错不置它。
+     */
+    val sendFailed: Boolean = false,
 ) {
     val canVerify: Boolean get() = phase == READY && code.length == CODE_LENGTH
 
@@ -160,9 +166,15 @@ class StepUpController(
 
     @Suppress("ReturnCount") // 没有面板、没有账号、没有号码、限流逐项
     private fun send() {
-        val current = mutable.value ?: return
-        // 按面板的身份读号码、占用槽位、发包（共性第 60 条）：会话已换（清空通知还没执行）的不读、不占、不发，等清空通知收起面板
-        if (!current.owner.current(deps.env)) return
+        val shown = mutable.value ?: return
+        // 按面板的身份读号码、占用槽位、发包（共性第 60 条）：会话已换（清空通知还没执行）、或此刻身份确认不了的不读、不占、不发；
+        // 不放宽判定，面板落「发送失败、可重新获取」（打开即 stale，D10-1792），会话真换了的随后由清空通知收起
+        if (!shown.owner.current(deps.env)) {
+            failSend()
+            return
+        }
+        // 新的一次发码：上一次的发送失败标记作废（说明位按这次结果重新决定）
+        val current = shown.copy(sendFailed = false)
         val account = current.owner.account
         val phone = account?.let { slotPhone(deps.env, it, current.action) }
         if (account == null || phone == null) {
@@ -234,7 +246,10 @@ class StepUpController(
                 // step_up 发码要就绪的本人会话（D10-1658 ④）：optional 接口缺省不等不拦，这里由面板要求网络层按需要会话处理
                 val call = ApiCall(SEND_OPERATION, body = body, ownership = owner, expectedAccount = slot.account, requiresSession = true)
                 val result = deps.api.send(call)
-                if (deps.env.ownedBy(slot.account, epoch)) {
+                // 结果归属只按一份身份快照判一次（共性第 60 条）：判不过（换代、登出，或同账号同世代此刻没有可用 access / 身份确认不了）即 stale，
+                // 不放宽判定；stale 时结果体一个字段都不读、不写共享截止时间与限流、不落盘、不进日志（D10-1790）
+                val fresh = deps.env.ownedBy(slot.account, epoch)
+                if (fresh) {
                     // 有效发码结果更新共享倒计时与限流截止时间，面板已关闭、页面已出栈也不丢（共性第 6、17、40 条）
                     if (result is ApiResult.Success) {
                         val seconds = WalletJson.sendSmsCode(result.data)?.resendAfterSec?.takeIf { it > 0 } ?: DEFAULT_RESEND_SEC
@@ -243,7 +258,13 @@ class StepUpController(
                         settleSmsLimit(result, slot)
                     }
                 }
-                if (!valid(gen, epoch)) return@launch
+                // 面板已收起、已重开或页面已不在：迟到的结果只丢弃（共享结果上面已按归属处理）
+                if (!live(gen)) return@launch
+                if (!fresh || deps.env.sessionEpoch() != epoch) {
+                    // stale：面板落「发送失败、可重新获取」，不显示已发送、不起倒计时；槽位只在 finally 释放本次票据（D10-1790 / 1792）
+                    failSend()
+                    return@launch
+                }
                 onSent(result, deadline, probe, slot)
             } finally {
                 deps.sms.release(slot, ticket)
@@ -295,8 +316,13 @@ class StepUpController(
         val epoch = mutable.value?.owner?.epoch ?: return
         scope.launch {
             deps.sms.changes.first { !deps.sms.busy(slot) }
-            if (!valid(gen, epoch)) return@launch
+            if (!live(gen)) return@launch
             val current = mutable.value ?: return@launch
+            if (deps.env.sessionEpoch() != epoch || !current.owner.current(deps.env)) {
+                // 等到的结果按本面板身份判 stale（D10-1792）：落发送失败，不按共享截止时间起倒计时，不自动再发
+                failSend()
+                return@launch
+            }
             val left = deps.sms.remaining(slot, deps.clock())
             val limited = deps.sms.limitedLeft(slot, deps.clock()) > 0
             mutable.value = current.copy(phase = StepUpUiState.READY, smsLimited = limited)
@@ -318,8 +344,35 @@ class StepUpController(
             return
         }
         val limited = deps.sms.limitedLeft(slot, deps.clock()) > 0
-        mutable.value = current.copy(phase = StepUpUiState.READY, error = failure(result, probe), smsLimited = limited)
+        if (rejectedLocally(result)) {
+            // 网络边界本地拒绝、一条没发（account_mismatch、session_unreadable 等）：落发送失败态（D10-1792）；共用分类器 WalletErrors.of 不动
+            failSend(smsLimited = limited)
+        } else {
+            mutable.value = current.copy(phase = StepUpUiState.READY, error = failure(result, probe), smsLimited = limited)
+        }
         if (limited) watchLimit(slot)
+    }
+
+    /** 本地拒绝且一条没发；call_cancelled（发送前限流闸门、调用作废）照旧走 [failure]（共性第 62 条）。 */
+    private fun rejectedLocally(result: ApiResult): Boolean =
+        result is ApiResult.LocalReject && result.reason != LocalRejectReason.CALL_CANCELLED
+
+    /**
+     * 「发送失败、可重新获取」（D10-1790 / 1792）：READY、提示 [SEND_FAILED_KEY]、不起倒计时（[StepUpUiState.resendLeftSec] = 0）、说明位隐藏
+     * （[StepUpUiState.sendFailed]）。不读结果、不写共享截止时间与限流，也不碰别的面板与槽位。
+     */
+    private fun failSend(smsLimited: Boolean = false) {
+        val current = mutable.value ?: return
+        ticker?.cancel()
+        ticker = null
+        mutable.value =
+            current.copy(
+                phase = StepUpUiState.READY,
+                resendLeftSec = 0,
+                error = notice(SEND_FAILED_KEY),
+                smsLimited = smsLimited,
+                sendFailed = true,
+            )
     }
 
     /** 【验证并提交】。 */
@@ -462,7 +515,10 @@ class StepUpController(
     private fun valid(
         gen: Long,
         epoch: Long,
-    ): Boolean = alive() && gen == generation && deps.env.sessionEpoch() == epoch && mutable.value != null
+    ): Boolean = live(gen) && deps.env.sessionEpoch() == epoch
+
+    /** 发起时的那个面板还在（页面在、没收起也没重开）；不看会话（会话判不过的另落发送失败态）。 */
+    private fun live(gen: Long): Boolean = alive() && gen == generation && mutable.value != null
 
     private fun ownership(
         gen: Long,
@@ -525,6 +581,9 @@ class StepUpController(
         const val ACCOUNT_DELETION = "account_deletion"
         const val DEFAULT_RESEND_SEC = 60L
         const val RATE_KEY = "error.42901"
+
+        /** 二次验证发码失败态的提示（stale / 本地拒）。D10-1792：暂用 wallet.network_error，待换专用键 step_up.sms.send_failed。 */
+        const val SEND_FAILED_KEY = WalletErrors.NETWORK_KEY
 
         /** 迟到的验证成功因 token 已整体失效被丢弃时的提示（G94：复用 10003「请先完成短信验证」）。 */
         const val STALE_TOKEN_KEY = "error.10003"
