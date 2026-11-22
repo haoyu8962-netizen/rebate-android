@@ -1,6 +1,9 @@
 package com.couli.app.clientcore
 
+import android.util.Log
 import com.couli.app.BuildConfig
+import com.couli.core.bridge.BridgeOriginsVerdict
+import com.couli.core.bridge.BridgeOriginsVerifier
 import com.couli.core.bridge.ConfigSignKeys
 import com.couli.core.clientcore.BridgeOriginsLastGood
 import com.couli.core.clientcore.ConfigStore
@@ -9,6 +12,7 @@ import com.couli.core.clientcore.UploadTicket
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -60,12 +64,44 @@ class AppConfig(
          * BridgeOriginsVerifier.verify(config = …) 判定；通过返回白名单，不通过返回 null 并记一条 warn（reason + kid + env，同一版只记一次）。
          * 测试注入测试钥时传 [keys]。
          */
-        @Suppress("UnusedParameter") // N-22 接口桩：第 2 段实现
         fun bridgeOriginsVerifier(
             environmentId: () -> String,
             keys: ConfigSignKeys = bundledSignKeys,
             appId: String = APP_ID,
-        ): (config: JsonObject, lastGoodVersion: Long?) -> BridgeOriginsLastGood? = { _, _ -> null } // TODO(N-22 第 2 段)
+        ): (config: JsonObject, lastGoodVersion: Long?) -> BridgeOriginsLastGood? {
+            val warnedFor = AtomicReference<String?>(null)
+            return { config, lastGoodVersion ->
+                val env = environmentId()
+                when (val verdict = BridgeOriginsVerifier.verify(config, appId, env, lastGoodVersion, keys)) {
+                    is BridgeOriginsVerdict.Accepted -> BridgeOriginsLastGood(verdict.allowlist.version, verdict.allowlist.origins)
+                    is BridgeOriginsVerdict.Rejected -> {
+                        warnRejected(warnedFor, config, verdict.reason, env)
+                        null
+                    }
+                }
+            }
+        }
+
+        private const val BRIDGE_ORIGINS_TAG = "CouliConfig"
+        private const val KID_LOG_MAX = 64
+        private val KID_LOG_UNSAFE = Regex("[^A-Za-z0-9._-]")
+
+        /**
+         * 验签失败的系统日志：只写 reason、header.kid（未验签原值，只留 `A-Za-z0-9._-` 并截断）与运行环境 id，不写 jws 与 origins。
+         * 同一版只记一次：按 (env, reason, 这份 bridge_origins 原值) 去重，同一份坏文档每次 200 都来也只记一条；换了文档或环境再记。
+         * Release 照写（与 AppWeb「invalid config key」、CtaKeyLog 同一出口）；纯 JVM 单测里 android.util.Log 不可用，静默跳过。
+         */
+        private fun warnRejected(
+            warnedFor: AtomicReference<String?>,
+            config: JsonObject,
+            reason: String,
+            env: String,
+        ) {
+            val key = env + "\n" + reason + "\n" + config["bridge_origins"]
+            if (warnedFor.getAndSet(key) == key) return
+            val kid = BridgeOriginsVerifier.headerKidIn(config)?.replace(KID_LOG_UNSAFE, "")?.take(KID_LOG_MAX) ?: "-"
+            runCatching { Log.w(BRIDGE_ORIGINS_TAG, "bridge_origins rejected: reason=$reason kid=$kid env=$env") }
+        }
     }
 }
 

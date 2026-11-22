@@ -4,6 +4,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -74,10 +75,7 @@ data class BridgeOriginsLastGood(
  *
  * 「清除缓存」不清这里（03 §4.3）；切换环境时由清理入口调 [clearForEnvironmentSwitch]（03 §3.6）。线程安全。
  */
-@Suppress(
-    "TooManyFunctions", // 冷启动、回前台、结果处理、按层取值与环境清理逐项一个入口
-    "UnusedPrivateProperty", // N-22 接口桩：verifyBridgeOrigins 在第 2 段实现时使用
-)
+@Suppress("TooManyFunctions") // 冷启动、回前台、结果处理、按层取值与环境清理逐项一个入口
 class ConfigStore(
     private val readFile: () -> String?,
     private val writeFile: (String?) -> Unit,
@@ -103,6 +101,9 @@ class ConfigStore(
      * 缺平台的沿用更早一次成功里的值；随 LKG 文件一起保存。冷启动从文件读（旧格式没有它时取 LKG data 里的）。
      */
     private var lastSearch: Map<String, String> = emptyMap()
+
+    /** 上次可用白名单（N-22）：只放验签通过的值；没有为 null。随 LKG 文件保存（bridge_origins_last_good）。 */
+    private var lastGoodOrigins: BridgeOriginsLastGood? = null
 
     /** 在途拉取的编号；没有为 null。 */
     private var inFlight: Long? = null
@@ -138,10 +139,10 @@ class ConfigStore(
     val sourceRaw: String get() = synchronized(lock) { sourceLocked() }
 
     /** 可信 H5 源（N-22）：上次可用白名单的 origins；没有为空（WebPage 不打开）。 */
-    val trustedOrigins: List<String> get() = emptyList() // TODO(N-22 第 2 段)
+    val trustedOrigins: List<String> get() = synchronized(lock) { lastGoodOrigins?.origins.orEmpty() }
 
     /** 上次可用白名单的 version；没有为 null。 */
-    val trustedOriginsVersion: Long? get() = null // TODO(N-22 第 2 段)
+    val trustedOriginsVersion: Long? get() = synchronized(lock) { lastGoodOrigins?.version }
 
     /** 冷启动：同步读 LKG，再开始后台拉取（不带 If-None-Match）。 */
     fun onColdStart() {
@@ -150,6 +151,8 @@ class ConfigStore(
             lkg = stored?.data
             lastPatterns = stored?.patterns ?: stored?.data?.let(ConfigResolver::linkPatternsIn)
             lastSearch = stored?.let { it.search ?: searchIn(it.data) }.orEmpty()
+            // 带字段的 LKG 是本 App 验过后才写的，直接用；升级前的旧 LKG（没有该字段）用它的 data 现验一次
+            lastGoodOrigins = stored?.let { it.bridgeOrigins ?: verifyLocked(it.data, null) }
             publishLocked()
         }
         notifyListeners()
@@ -262,6 +265,7 @@ class ConfigStore(
                 lkg = null
                 lastPatterns = null
                 lastSearch = emptyMap()
+                lastGoodOrigins = null
                 publishLocked()
             }
         }
@@ -337,13 +341,17 @@ class ConfigStore(
         val patterns = ConfigResolver.linkPatternsIn(body) ?: lastPatterns
         // 每次成功都推进「上一次成功」这一层（R1-07）：带了取值的平台更新，缺的沿用更早一次成功的
         val search = lastSearch + searchIn(body)
+        // 上次可用白名单（N-22）：每次 200 都用当前上次可用的 version 验新文档（缺字段、旧数组形状也交给验签方判拒）；
+        // 通过才替换，不通过保留原值——LKG 里照旧写原值，失败值不写成上次可用（AC-S1-180 ②）
+        val bridgeOrigins = verifyLocked(body, lastGoodOrigins?.version) ?: lastGoodOrigins
         // 先写 LKG 再换内存。写盘失败时文件仍是上一份成功配置；本次响应本身有效，照样作为当前配置与最近一次成功配置使用
-        runCatching { writeFile(encode(body, patterns, search)) }
+        runCatching { writeFile(encode(body, patterns, search, bridgeOrigins)) }
         current = body
         lkg = body
         etag = reply.etag
         lastPatterns = patterns
         lastSearch = search
+        lastGoodOrigins = bridgeOrigins
         appliedId = id
         publishLocked()
         return true
@@ -371,10 +379,23 @@ class ConfigStore(
         }
     }
 
+    /**
+     * 调注入的验签闭包（在锁内）：通过且 version 不低于 [lastGoodVersion]、origins 非空才算数（闭包自身已判，这里兜底不让回退或空表
+     * 顶掉上次可用）；闭包抛错按不通过。
+     */
+    private fun verifyLocked(
+        data: JsonObject,
+        lastGoodVersion: Long?,
+    ): BridgeOriginsLastGood? =
+        runCatching { verifyBridgeOrigins(data, lastGoodVersion) }
+            .getOrNull()
+            ?.takeIf { it.origins.isNotEmpty() && it.version >= (lastGoodVersion ?: 0L) }
+
     private class Stored(
         val data: JsonObject,
         val patterns: JsonObject?,
         val search: Map<String, String>?,
+        val bridgeOrigins: BridgeOriginsLastGood?,
     )
 
     /** 一层里 features.search_status 的有效取值（只认 on / off）。 */
@@ -387,6 +408,7 @@ class ConfigStore(
         data: JsonObject,
         patterns: JsonObject?,
         search: Map<String, String>,
+        bridgeOrigins: BridgeOriginsLastGood?,
     ): String {
         val fields =
             linkedMapOf(
@@ -396,6 +418,10 @@ class ConfigStore(
             )
         patterns?.let { fields[KEY_PATTERNS] = it }
         fields[KEY_SEARCH] = JsonObject(search.mapValues { JsonPrimitive(it.value) })
+        bridgeOrigins?.let {
+            fields[KEY_BRIDGE_ORIGINS] =
+                JsonObject(mapOf(KEY_VERSION to JsonPrimitive(it.version), KEY_ORIGINS to JsonArray(it.origins.map(::JsonPrimitive))))
+        }
         return JsonObject(fields).toString()
     }
 
@@ -409,7 +435,18 @@ class ConfigStore(
             (root[KEY_SEARCH] as? JsonObject)?.let { stored ->
                 searchIn(JsonObject(mapOf("features" to JsonObject(mapOf("search_status" to stored)))))
             }
-        return Stored(data, patterns, search)
+        return Stored(data, patterns, search, (root[KEY_BRIDGE_ORIGINS] as? JsonObject)?.let(::decodeLastGood))
+    }
+
+    /** LKG 里的上次可用白名单：version 为非负整数、origins 为非空字符串数组才算形状完整，否则按没有（冷启动改用 data 现验）。 */
+    private fun decodeLastGood(stored: JsonObject): BridgeOriginsLastGood? {
+        val version = (stored[KEY_VERSION] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()?.takeIf { it >= 0 }
+        val items = stored[KEY_ORIGINS] as? JsonArray
+        val origins =
+            items
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+                ?.takeIf { it.isNotEmpty() && it.size == items.size }
+        return if (version != null && origins != null) BridgeOriginsLastGood(version, origins) else null
     }
 
     private companion object {
@@ -419,6 +456,9 @@ class ConfigStore(
         const val KEY_DATA = "data"
         const val KEY_PATTERNS = "link_patterns"
         const val KEY_SEARCH = "search_status"
+        const val KEY_BRIDGE_ORIGINS = "bridge_origins_last_good"
+        const val KEY_VERSION = "version"
+        const val KEY_ORIGINS = "origins"
         const val LAYER_CURRENT = "current"
         const val LAYER_LKG = "lkg"
         const val LAYER_BUNDLED = "bundled"
