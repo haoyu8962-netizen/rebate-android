@@ -59,6 +59,8 @@ import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
 import com.couli.app.update.variantUpdateStore
 import com.couli.app.wallet.AppWallet
+import com.couli.app.wallet.LaborTextFetcher
+import com.couli.app.wallet.chooseLaborBackend
 import com.couli.app.wallet.chooseRealNameBackend
 import com.couli.app.web.AppWeb
 import com.couli.app.web.BridgeHostRegistry
@@ -128,6 +130,7 @@ import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.wallet.ApiClientWalletApi
+import com.couli.feature.wallet.RemoteLaborBackend
 import com.couli.feature.wallet.RemoteRealNameBackend
 import com.couli.feature.web.AndroidTrustedWebStore
 import com.couli.feature.web.TrustedWebViewFactory
@@ -1073,7 +1076,8 @@ object AppModule {
      * 钱包、提现、提现记录、收款账号、实名、劳务协议（APP-09）：读请求经 ApiClient（带页面归属与会话世代）；提交、确认、放弃经未决键管线
      * （SecurePendingKeyBackend）；交易流水号复制经剪贴板唯一写入口（APP-07）；10405 强制进入强更；断网缓存在 noBackupFilesDir 下按账号隔离（撤回、
      * 切换环境、登出、换账号时删除）；实名后端 staging / release 用真实实现（RemoteRealNameBackend，D10-887），debug 仍由进程内假服务实现；
-     * 劳务协议的待定接口只在 debug / staging 有假服务（G02），release 为空（页面置灰）；
+     * 劳务协议同法（FU-AND-LABOR-AGREEMENT-API，D10-2634）：staging / release 用真实实现（RemoteLaborBackend 经 ApiClient 调 getLaborAgreement /
+     * signLaborAgreement，全文由 LaborTextFetcher 按 text_url 取回并核对 text_sha256），debug 仍由进程内假服务实现；
      * route_params_dropped 进 Tracker 本地队列。
      */
     @Provides
@@ -1113,7 +1117,16 @@ object AppModule {
                         consentedVersion = { privacy?.consentedVersion()?.toIntOrNull() },
                     ),
                 ),
-            labor = variantLaborBackend(context),
+            labor =
+                chooseLaborBackend(
+                    BuildConfig.BUILD_KIND,
+                    variantLaborBackend(context),
+                    RemoteLaborBackend(
+                        api = ApiClientWalletApi(client),
+                        fetchText = LaborTextFetcher(base = { variantHttpClient(context) })::fetch,
+                        account = { client.activeUserId() },
+                    ),
+                ),
             stepUpPhone = variantStepUpPhone(context),
             phoneBound = { account -> login.get().phoneBound(account) },
             track = { event -> tracker.get().track(event) },

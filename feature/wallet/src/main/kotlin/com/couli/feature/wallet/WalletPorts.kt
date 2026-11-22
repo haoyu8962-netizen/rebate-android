@@ -98,9 +98,15 @@ interface RealNameBackend {
     ): ApiResult = submit(name, idNo, idempotencyKey)
 }
 
-/** 劳务协议（G02）：取协议与签署走手写的待定 operation，只由 Debug 假服务实现；Release 为 null（全文区「协议正文暂未提供」，【同意并签署】置灰）。 */
+/**
+ * 劳务协议（BR-WDR-31）：读取与签署走契约 getLaborAgreement / signLaborAgreement。staging / release 的生产实现是 [RemoteLaborBackend]（经 ApiClient，
+ * FU-AND-LABOR-AGREEMENT-API），debug 仍由进程内假服务实现；没有后端（null）时全文区「协议正文暂未提供」，【同意并签署】置灰。
+ */
 interface LaborBackend {
-    /** data：{version, text, text_sha256, need_sign}（形状照 04 §6.1；全文按「地址或文本」，假服务给文本）。 */
+    /**
+     * data：{version, text, text_sha256, need_sign}（控制器口径：version 为版本文字、text 为全文）。[RemoteLaborBackend] 把契约的整数 version 转成文字、
+     * 按 text_url 取回全文（摘要与 text_sha256 相符才交出）放进 text；假服务直接给文本。
+     */
     suspend fun current(): ApiResult
 
     /** data：{}；sha256 取服务端返回的值原样回传。 */
