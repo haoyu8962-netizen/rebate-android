@@ -40,6 +40,7 @@ class LaborRemoteHttpTest {
     private val tokens = MemorySessionTokens("access-one", "refresh-one", "full", "user-one")
     private val requests = CopyOnWriteArrayList<Seen>()
     private val fetched = CopyOnWriteArrayList<String>()
+    private val expectedShas = CopyOnWriteArrayList<String>()
     private val issued = CopyOnWriteArrayList<String>()
 
     /** 第 n 次（从 0 起）签署的回答；缺省 code 0、data {}。 */
@@ -114,8 +115,9 @@ class LaborRemoteHttpTest {
         )
 
     private fun backend(): LaborBackend {
-        val fetch: suspend (String) -> String? = { url ->
+        val fetch: suspend (String, String) -> String? = { url, expectedSha256 ->
             fetched += url
+            expectedShas += expectedSha256
             LaborContract.TEXT
         }
         val newKey: () -> String = { "labor-key-%04d".format(issued.size + 1).also { issued += it } }
@@ -137,6 +139,7 @@ class LaborRemoteHttpTest {
         assertNull("没有查询串", get.query)
         assertTrue("没有请求体", get.body.isEmpty())
         assertEquals("全文按 text_url 取", listOf(LaborContract.textUrl), fetched.toList())
+        assertEquals("取文时显式带上服务端给的 text_sha256", listOf(LaborContract.sha), expectedShas.toList())
         assertTrue("读取成功", result is ApiResult.Success)
     }
 

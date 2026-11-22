@@ -48,11 +48,16 @@ class LaborRemoteBackendTest {
     private val api = LaborRemoteApi()
     private val gates = WalletGates(scope) { now }
 
-    /** fetchText 收到的地址；[fetchReply] 决定全文（null = 取不到）。 */
+    /**
+     * fetchText 收到的地址与期望摘要；[fetchReply] 决定全文（null = 取不到，含生产实现里摘要不符）。摘要核对本身由生产取文函数做
+     * （LaborTextFetcherTest），这里的替身只核对后端把服务端给的 text_sha256 显式交给了取文函数。
+     */
     private val fetched = mutableListOf<String>()
+    private val expectedShas = mutableListOf<String>()
     private var fetchReply: (String) -> String? = { LaborContract.TEXT }
-    private val fetch: suspend (String) -> String? = { url ->
+    private val fetch: suspend (String, String) -> String? = { url, expectedSha256 ->
         fetched += url
+        expectedShas += expectedSha256
         fetchReply(url)
     }
 
@@ -118,6 +123,7 @@ class LaborRemoteBackendTest {
         assertEquals(LaborContract.GET_PATH, operation.pathTemplate)
         assertEquals("x-auth realname", "realname", operation.auth)
         assertEquals("全文按契约 text_url 取，只取一次", listOf(LaborContract.textUrl), fetched)
+        assertEquals("取文时显式带上服务端给的 text_sha256 供核对", listOf(LaborContract.sha), expectedShas)
         assertTrue("读取成功交给控制器的是 Success", result is ApiResult.Success)
     }
 
@@ -142,12 +148,14 @@ class LaborRemoteBackendTest {
         assertEquals(LaborContract.signed.text("version"), state.version)
         assertEquals(LaborContract.TEXT, state.text)
         assertEquals(LaborContract.signed.text("text_sha256"), state.sha256)
+        assertEquals("取文核对的是这次响应给的摘要", listOf(LaborContract.signed.text("text_sha256")), expectedShas)
         controller.toggle()
         assertTrue(controller.signEnabled)
         assertTrue("need_sign=false 不自动签署", signs().isEmpty())
     }
 
     @Test fun textUnavailableIsNotContentAndRetryLoads() {
+        // 取不到或摘要不符（生产取文函数都返回 null）
         fetchReply = { null }
         val controller = controller(backend())
         assertEquals("全文取不到：不进 CONTENT（不展示空协议给人签）", LaborSnapshot.ERROR, controller.state.value.phase)

@@ -27,8 +27,9 @@ import org.junit.Assert.assertTrue
  *
  * 接口约定（实现照此写；HEAD 9f015b2 上都不存在，所以一律按名反射取，取不到由断言判红，不让编译失败）：
  * - `com.couli.feature.wallet.RemoteLaborBackend`（文件 feature/wallet/.../LaborRemote.kt，照 RealNameRemote.kt 命名，避开 key / api 字样）：
- *   `class RemoteLaborBackend(api: WalletApi, fetchText: suspend (String) -> String?, account: () -> String?, newKey: () -> String) : LaborBackend`
- *   （参数顺序固定；newKey 可带缺省值 UUID）。
+ *   `class RemoteLaborBackend(api: WalletApi, fetchText: suspend (url: String, expectedSha256: String) -> String?, account: () -> String?,
+ *   newKey: () -> String) : LaborBackend`（参数顺序固定；newKey 可带缺省值 UUID）。fetchText 的第二个参数是服务端给的 text_sha256：生产实现按
+ *   原始字节核对摘要，相符才交出正文，否则返回 null（改口 r1：摘要核对显式化，不再经协程上下文隐式传）。
  * - `com.couli.app.wallet.chooseLaborBackend`（文件 app/src/main/.../wallet/LaborWiring.kt → 门面类 LaborWiringKt）：
  *   `internal fun chooseLaborBackend(kind: String, fake: LaborBackend?, real: LaborBackend): LaborBackend`。
  */
@@ -41,7 +42,7 @@ internal object LaborRemoteReflect {
 
     fun backend(
         api: WalletApi,
-        fetchText: suspend (String) -> String?,
+        fetchText: suspend (url: String, expectedSha256: String) -> String?,
         account: () -> String?,
         newKey: () -> String,
     ): LaborBackend {
@@ -49,9 +50,15 @@ internal object LaborRemoteReflect {
         assertNotNull("需要 feature/wallet 的 RemoteLaborBackend（经 WalletApi 调 getLaborAgreement / signLaborAgreement）", type)
         val constructor =
             checkNotNull(type).constructors.firstOrNull { c ->
-                c.parameterTypes.size == BACKEND_ARITY && c.parameterTypes[0] == WalletApi::class.java
+                c.parameterTypes.size == BACKEND_ARITY &&
+                    c.parameterTypes[0] == WalletApi::class.java &&
+                    // suspend (url, expectedSha256) -> String? 在 JVM 上是 Function3（两个参数 + Continuation）
+                    c.parameterTypes[1] == Function3::class.java
             }
-        assertNotNull("RemoteLaborBackend 构造参数应为 (api: WalletApi, fetchText, account, newKey)", constructor)
+        assertNotNull(
+            "RemoteLaborBackend 构造参数应为 (api: WalletApi, fetchText: suspend (url, expectedSha256) -> String?, account, newKey)",
+            constructor,
+        )
         val instance = unwrap { checkNotNull(constructor).newInstance(api, fetchText, account, newKey) }
         assertTrue("RemoteLaborBackend 实现 LaborBackend", instance is LaborBackend)
         return instance as LaborBackend
