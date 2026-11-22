@@ -95,6 +95,12 @@ class AppWeb(
     private fun data(): JsonObject = config.store.snapshots.value.data
 
     /**
+     * 生产可信源（N-22，D10-2539）：只取验签通过的上次可用白名单（ConfigStore.trustedOrigins）；没有为空（WebPage 不打开）。
+     * 不再读生效配置里的 bridge_origins 原值。
+     */
+    private fun trustedOrigins(): Set<String> = config.store.trustedOrigins.toSet()
+
+    /**
      * 当前链接形态表：current → 上一次成功 → 包内，取第一张完整有效的（坏表整表跳过，APP-04 三端共性第 18 条）；都不可用为 null
      * （ExternalNavPolicy 再回落到包内快照，仍不可用时拒绝加载）。
      */
@@ -110,7 +116,7 @@ class AppWeb(
      * 除 debug 以外的构建一律丢弃（APP-04 三端共性第 2 条：回环支持不进 Release；R8 会把这条分支整个删掉）。
      */
     fun trustedConfig(loopbackOrigins: Set<String> = emptySet()): TrustedWebConfig =
-        TrustedWebConfig(WebConfigReader.trustedOrigins(data()), loopbackOrigins.onlyInDebug(), appVersion)
+        TrustedWebConfig(trustedOrigins(), loopbackOrigins.onlyInDebug(), appVersion)
 
     /**
      * 可信容器的切号协调器（F-X-25）：App 唯一的一份；取的时候按此刻的会话身份快照与持久归属比对一次（一致、同一身份都不触发任何动作）。
@@ -169,7 +175,7 @@ class AppWeb(
         val protocol = {
             val current = data()
             BridgeProtocol(
-                trustedOrigins = WebConfigReader.trustedOrigins(current),
+                trustedOrigins = trustedOrigins(),
                 linkPatterns = patterns ?: linkPatterns() ?: JsonObject(emptyMap()),
                 shareDomains = shareDomains ?: WebConfigReader.shareDomains(current),
                 loopbackOrigins = loopback,

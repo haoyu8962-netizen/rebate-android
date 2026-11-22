@@ -33,11 +33,24 @@ android {
         }
     }
 
+    // N-22（D10-2539）：bridge_origins 验签的随包公钥表 BuildConfig.CONFIG_SIGN_KEYS，空白分隔的若干项 `env:kid:<SPKI DER 十六进制>`
+    // （AppConfig.bundledSignKeys 经 ConfigSignKeys.parse 读）。staging 钥只进 debug / staging；release 只放生产钥。
+    // 生产 kid 与公钥由负责人与 ops 提供，格式 `prod:<kid>:<SPKI DER hex>`，每 env 随包 current + next 两把（契约 Key rotation）；
+    // 给到之前为空 → Release 生产可信白名单为空（WebPage 不开），这是正确的保守状态。
+    val configSignKeysProd = ""
+    // staging：kid config-staging-2026-11b，couli-runs/NATIVE/N22-VECTORS/es256.pub.pem 的 SPKI DER（sha256 前 16 位 07ba14efc5908e5c；只是公钥）
+    val configSignKeysStaging =
+        "staging:config-staging-2026-11b:" +
+            "3059301306072a8648ce3d020106082a8648ce3d03010703420004ae883f464888bece2a33c015a42e897e07672c37b43a244f556678f595417dbc" +
+            "f359128f1ee420e841b4b286d06e487882b7d4a1a92abd5e7e81db5715462af0"
+    val configSignKeysNonRelease = listOf(configSignKeysStaging, configSignKeysProd).filter { it.isNotBlank() }.joinToString(" ")
+
     buildTypes {
         getByName("debug") {
             buildConfigField("String", "BUILD_KIND", "\"debug\"")
             buildConfigField("String", "DEFAULT_ENVIRONMENT", "\"test\"")
             buildConfigField("boolean", "DEBUG_FEATURES", "true")
+            buildConfigField("String", "CONFIG_SIGN_KEYS", "\"$configSignKeysNonRelease\"")
         }
         getByName("staging") {
             // 构建号带可识别的测试标记；应用名资源「凑狸测试」在 src/staging/res（03 §3.6）。
@@ -45,11 +58,14 @@ android {
             buildConfigField("String", "BUILD_KIND", "\"staging\"")
             buildConfigField("String", "DEFAULT_ENVIRONMENT", "\"staging\"")
             buildConfigField("boolean", "DEBUG_FEATURES", "true")
+            buildConfigField("String", "CONFIG_SIGN_KEYS", "\"$configSignKeysNonRelease\"")
         }
         getByName("release") {
             buildConfigField("String", "BUILD_KIND", "\"release\"")
             buildConfigField("String", "DEFAULT_ENVIRONMENT", "\"prod\"")
             buildConfigField("boolean", "DEBUG_FEATURES", "false")
+            // 只放生产钥；不得出现任何非 prod 的 kid / 公钥（release-scan 口径）
+            buildConfigField("String", "CONFIG_SIGN_KEYS", "\"$configSignKeysProd\"")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

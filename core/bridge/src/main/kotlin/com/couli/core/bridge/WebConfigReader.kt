@@ -8,19 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
  * 从生效配置（/v1/config 的 data：current → LKG → 包内）里取两类容器与桥要用的取值。纯函数，缺字段一律按最保守的取值。
  */
 object WebConfigReader {
-    /**
-     * 可信 H5 源（TrustedWebView 只加载它们、桥只认它们）：**只取** bridge_origins 里的完整 https origin（APP-04 三端共性第 3 条）。
-     * h5_base_url 只是页面地址的前缀，不当白名单用。[config] 是 ConfigStore 的生效配置，层级依次为本次成功拉取的当前版本 →
-     * 上一次成功拉取后写进 App 私有目录的 LKG → 包内版本（包内没有 bridge_origins，所以没有服务端配置时白名单为空，WebPage 不打开）。
-     * TODO(N-22)：契约没有给 /v1/config 定义签名，无从「验签」；契约补上签名后，LKG 与当前版本验签失败时这里应得到空集。
-     * bridge_origins 在 openapi 里是 FreeForm、示例为 {}，形状未定；这里只接受「完整 origin 字符串的数组」，其他形状一律为空（不放行）。
-     */
-    fun trustedOrigins(config: JsonObject): Set<String> =
-        (config["bridge_origins"] as? JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
-            ?.mapNotNull { BridgeProtocol.normalizeOriginForRules(it, allowHttp = false) }
-            .orEmpty()
-            .toSet()
+    // 可信 H5 源不在这里取（N-22，D10-2539）：bridge_origins 是签名白名单 {"jws": …}，只认验签通过的「上次可用白名单」
+    // （BridgeOriginsVerifier → ConfigStore.trustedOrigins）。原先「只读字符串数组、不验签」的 trustedOrigins 已删。
 
     /** 自有分享域（share.open 的第 ② 步，整主机相等）。 */
     fun shareDomains(config: JsonObject): Set<String> = config.strings("share_domains").map { it.lowercase().trimEnd('.') }.toSet()

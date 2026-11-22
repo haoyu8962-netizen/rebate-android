@@ -40,6 +40,15 @@ data class ConfigSnapshot(
 )
 
 /**
+ * 验签通过的可信 H5 源白名单（N-22「上次可用白名单」，bridge_origins 的 payload.version 与 payload.origins）。
+ * ConfigStore 不依赖 core:bridge：验签由 App 注入的闭包做（BridgeOriginsVerifier），这里只存结果。
+ */
+data class BridgeOriginsLastGood(
+    val version: Long,
+    val origins: List<String>,
+)
+
+/**
  * 配置与 LKG（03 §4.3）：
  * - 冷启动（[onColdStart]）：同步读 LKG 文件（最近一次成功的 /v1/config data），再后台拉取；没有 LKG 用包内配置 [bundled]。
  * - 回前台（[onForeground]）：带 If-None-Match（本进程最近一次成功响应的 ETag）拉取；304 时内容不变。
@@ -48,21 +57,38 @@ data class ConfigSnapshot(
  * - 可观察流 [snapshots]；按层取值见 [searchStatus]、[linkPatterns]（[ConfigResolver]）。
  *
  * LKG 文件内容（[readFile] / [writeFile] 存取的字节对调用方不透明）：
- * `{"format":1,"saved_at":…,"data":{…},"link_patterns":{…},"search_status":{…}}`，link_patterns 是上一次成功的完整链接形态表
- * （某次成功响应缺它时沿用，03 §4.3「当前版本、上一次成功的版本、包内」）；search_status 是逐平台最近一次成功的取值。
+ * `{"format":1,"saved_at":…,"data":{…},"link_patterns":{…},"search_status":{…},"bridge_origins_last_good":{"version":n,"origins":[…]}}`，
+ * link_patterns 是上一次成功的完整链接形态表（某次成功响应缺它时沿用，03 §4.3「当前版本、上一次成功的版本、包内」）；search_status 是
+ * 逐平台最近一次成功的取值；bridge_origins_last_good 是上次可用白名单（N-22，只写验签通过的值，没有就不写这个键）。
+ *
+ * 上次可用白名单（N-22，D10-2539；契约 ConfigBridgeOrigins「Client」段）：
+ * - 200 新配置：用当前上次可用的 version 调 [verifyBridgeOrigins] 验新文档；通过 → 成为上次可用并随 LKG 落盘；不通过 → 保留原值，
+ *   LKG 文件照旧写原上次可用（失败值不写成上次可用，AC-S1-180 ②）。
+ * - 冷启动：LKG 文件带 bridge_origins_last_good 且形状完整 → 直接用；没有该字段（旧 LKG）→ 用 LKG 的 data 现验一次（lastGoodVersion
+ *   = null），通过才用，否则为空。
+ * - 304 不变；[clearForEnvironmentSwitch] 清空。包内默认配置的 jws 是占位串、必然验不过 → 没有服务端配置时白名单为空。
+ * - [verifyBridgeOrigins] 由 App 注入，每次调用现取运行环境 id（切环境后用新环境）；缺省一律拒。
  * 文件读不出或内容损坏：本次冷启动按没有 LKG（包内配置），下一次成功拉取覆盖它。
  * TODO(N-21): getConfig 在契约里还没有声明 ETag / If-None-Match / 304；ETag 不跨进程保存（冷启动一律完整拉取），
  * 没有缓存时收到的 304 不改任何内容（rule-gaps 第 3 条）。
  *
  * 「清除缓存」不清这里（03 §4.3）；切换环境时由清理入口调 [clearForEnvironmentSwitch]（03 §3.6）。线程安全。
  */
-@Suppress("TooManyFunctions") // 冷启动、回前台、结果处理、按层取值与环境清理逐项一个入口
+@Suppress(
+    "TooManyFunctions", // 冷启动、回前台、结果处理、按层取值与环境清理逐项一个入口
+    "UnusedPrivateProperty", // N-22 接口桩：verifyBridgeOrigins 在第 2 段实现时使用
+)
 class ConfigStore(
     private val readFile: () -> String?,
     private val writeFile: (String?) -> Unit,
     private val fetcher: (String?, (ConfigReply) -> Unit) -> Unit,
     private val clock: () -> Long,
     private val bundled: String,
+    /**
+     * bridge_origins 验签（N-22）：入参为配置文档（/v1/config 的 data）与上次可用白名单的 version（没有为 null），通过返回白名单，
+     * 不通过返回 null。缺省一律拒（白名单恒空）。
+     */
+    private val verifyBridgeOrigins: (config: JsonObject, lastGoodVersion: Long?) -> BridgeOriginsLastGood? = { _, _ -> null },
 ) {
     private val lock = Any()
     private val bundledObject: JsonObject = ConfigResolver.parseObject(bundled) ?: JsonObject(emptyMap())
@@ -110,6 +136,12 @@ class ConfigStore(
 
     /** 当前生效的配置来自哪一层：current / lkg / bundled。 */
     val sourceRaw: String get() = synchronized(lock) { sourceLocked() }
+
+    /** 可信 H5 源（N-22）：上次可用白名单的 origins；没有为空（WebPage 不打开）。 */
+    val trustedOrigins: List<String> get() = emptyList() // TODO(N-22 第 2 段)
+
+    /** 上次可用白名单的 version；没有为 null。 */
+    val trustedOriginsVersion: Long? get() = null // TODO(N-22 第 2 段)
 
     /** 冷启动：同步读 LKG，再开始后台拉取（不带 If-None-Match）。 */
     fun onColdStart() {

@@ -1,11 +1,15 @@
 package com.couli.app.clientcore
 
+import com.couli.app.BuildConfig
+import com.couli.core.bridge.ConfigSignKeys
+import com.couli.core.clientcore.BridgeOriginsLastGood
 import com.couli.core.clientcore.ConfigStore
 import com.couli.core.clientcore.PrivacyStateRaw
 import com.couli.core.clientcore.UploadTicket
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.UpdateCheck
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 配置的启动接线（03 §4.1 F、§4.3）：环境闸门就绪后冷启动一次（读 LKG → 后台拉 /v1/config，基本模式也拉：getConfig 在白名单内）；
@@ -39,6 +43,29 @@ class AppConfig(
     fun onForeground() {
         if (!environmentSettled()) return
         if (started.compareAndSet(false, true)) store.onColdStart() else store.onForeground()
+    }
+
+    companion object {
+        /** 本应用的 app_id（X-App-Id 与 bridge_origins payload.app_id 同源；TODO(N-19) 契约未登记取值，先用占位 couli）。 */
+        const val APP_ID: String = "couli"
+
+        /**
+         * 随包的配置签名公钥表（N-22，D10-2539）：构建配置 BuildConfig.CONFIG_SIGN_KEYS（app/build.gradle.kts）经 [ConfigSignKeys.parse]。
+         * debug / staging 内置 staging 钥；release 只有生产钥（目前为空 → 生产可信白名单为空，WebPage 不开）。
+         */
+        val bundledSignKeys: ConfigSignKeys by lazy { ConfigSignKeys.parse(BuildConfig.CONFIG_SIGN_KEYS) }
+
+        /**
+         * ConfigStore 的 bridge_origins 验签闭包（N-22）：每次调用现取 [environmentId]（切换环境后用新环境），用 [keys] 与 [appId] 经
+         * BridgeOriginsVerifier.verify(config = …) 判定；通过返回白名单，不通过返回 null 并记一条 warn（reason + kid + env，同一版只记一次）。
+         * 测试注入测试钥时传 [keys]。
+         */
+        @Suppress("UnusedParameter") // N-22 接口桩：第 2 段实现
+        fun bridgeOriginsVerifier(
+            environmentId: () -> String,
+            keys: ConfigSignKeys = bundledSignKeys,
+            appId: String = APP_ID,
+        ): (config: JsonObject, lastGoodVersion: Long?) -> BridgeOriginsLastGood? = { _, _ -> null } // TODO(N-22 第 2 段)
     }
 }
 

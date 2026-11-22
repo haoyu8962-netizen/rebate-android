@@ -301,7 +301,7 @@ object AppModule {
         return ApiClient(
             identity =
                 ClientIdentity(
-                    appId = "couli",
+                    appId = AppConfig.APP_ID,
                     platform = ClientPlatform.ANDROID.raw,
                     appVersion = BuildConfig.VERSION_NAME.substringBefore('-'),
                     build = BuildConfig.VERSION_CODE.toString(),
@@ -521,6 +521,7 @@ object AppModule {
     /**
      * 配置与 LKG（APP-03b，03 §4.3）：LKG 存 filesDir（不在 cacheDir：「清除缓存」不清）；拉取经网络核心（getConfig，基本模式白名单内）；
      * 没有 LKG 用包内 default_config.json。切换环境由清理入口删 LKG。
+     * bridge_origins 验签（N-22）：公钥表取构建配置 [AppConfig.bundledSignKeys]，运行环境 id 每次现取 [variantEnvironmentKey]。
      */
     @Provides
     @Singleton
@@ -538,6 +539,7 @@ object AppModule {
                 fetcher = fetcher::fetch,
                 clock = System::currentTimeMillis,
                 bundled = BundledConfig.dataJson,
+                verifyBridgeOrigins = AppConfig.bridgeOriginsVerifier(environmentId = { variantEnvironmentKey(context) }),
             )
         return AppConfig(store, environmentSettled = { environmentGate.isSettled })
     }
@@ -709,7 +711,8 @@ object AppModule {
             // 目标网页白名单（APP-04）：external_hosts 与可信 H5 源取生效配置（current → LKG → 包内）
             routing.webTargets = {
                 val data = config.store.snapshots.value.data
-                WebTargets(WebConfigReader.externalHosts(data), WebConfigReader.trustedOrigins(data).toList())
+                // 可信 H5 源只取验签通过的上次可用白名单（N-22，D10-2539），不再读 bridge_origins 原值
+                WebTargets(WebConfigReader.externalHosts(data), config.store.trustedOrigins)
             }
             // 强更结论每次变化：写入 Router 的 update 状态源（重排 pending_action 恢复并 drain；below_min 时守卫删待办，F-AND-07）
             update.onRouterUpdate { routing.update.value = it }
