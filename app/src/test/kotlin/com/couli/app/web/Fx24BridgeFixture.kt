@@ -3,6 +3,7 @@ package com.couli.app.web
 import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import com.couli.app.N22TestSigning
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ClipboardPreferences
@@ -183,6 +184,7 @@ internal class Fx24BridgeFixture : AutoCloseable {
                 fetcher = { _, done -> done(nextReply) },
                 clock = { now },
                 bundled = BASE_CONFIG,
+                verifyBridgeOrigins = N22TestSigning.verifier(),
             )
         val clipboard =
             AppClipboard(
@@ -415,8 +417,8 @@ internal class Fx24BridgeFixture : AutoCloseable {
         const val WAIT_S = 5L
         private const val ORIGIN = "https://h5.example.test"
         private const val KEY = "bridge_disabled_methods"
-        private const val BASE_CONFIG =
-            """{"bridge_origins":["https://h5.example.test"],"share_domains":["share.example.test"],"features":{"flags":{}}}"""
+        private val BASE_CONFIG =
+            """{"bridge_origins":${N22TestSigning.h5BridgeOrigins},"share_domains":["share.example.test"],"features":{"flags":{}}}"""
         private const val POLL_MS = 10L
 
         // CreateOrderClaimRequest 的全部必填字段（platform / order_no / paid_date），不是只带订单号的残缺请求。

@@ -42,6 +42,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.AppModule
 import com.couli.app.FlowLedger
 import com.couli.app.FlowWait
+import com.couli.app.N22TestSigning
 import com.couli.app.login.AppLogin
 import com.couli.app.orderCacheStore
 import com.couli.app.orderRestorePendingFlag
@@ -342,6 +343,7 @@ class AppOrdersIntegrationTest {
                 fetcher = configFetcher ?: { _, done -> done(ConfigReply(ConfigReply.OK, config, null)) },
                 clock = { now },
                 bundled = config,
+                verifyBridgeOrigins = N22TestSigning.verifier(),
             )
         val permissionSystem =
             AndroidPermissionSystem(
@@ -3643,9 +3645,9 @@ class AppOrdersIntegrationTest {
             ""","product_key":"tb:sampleE","reason_action":[],"timeline":[],"expected_credit_period":null,"credit_overdue":false,""" +
                 """"actual_fen":null,"clawback_fen":null,"appeal_pending":false,"is_price_compare":false}"""
         const val CONFIG = """{"features":{"flags":{},"platform_status":{"taobao":"on"}}}"""
-        const val CONFIG_H5 =
+        val CONFIG_H5 =
             """{"features":{"flags":{},"platform_status":{"taobao":"on"}},""" +
-                """"h5_base_url":"https://h5.example.test/","bridge_origins":["https://h5.example.test"],""" +
+                """"h5_base_url":"https://h5.example.test/","bridge_origins":${N22TestSigning.h5BridgeOrigins},""" +
                 """"help_links":{"price_compare":{"route":"Help","params":{"article_id":"price-compare"}}}}"""
         const val CONFIG_WITH_HELP =
             """{"features":{"flags":{},"platform_status":{"taobao":"on"}},""" +

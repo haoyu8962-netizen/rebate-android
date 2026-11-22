@@ -1,10 +1,14 @@
 package com.couli.app
 
+import com.couli.app.clientcore.AppConfig
+import com.couli.core.bridge.BridgeOriginsVerdict
+import com.couli.core.bridge.BridgeOriginsVerifier
 import com.couli.core.bridge.WebConfigReader
 import com.couli.core.config.AppEnvironment
 import com.couli.core.config.EnvironmentEndpointsCatalog
 import com.couli.core.router.DeepLinkParser
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -17,13 +21,14 @@ import org.junit.Test
  *   清单不手写 https intent-filter（CSB-11，由 StagingHostsSourceScanTest.x03Manifests… 守），所以系统不会自动把网页链接交给 App；
  *   联调用 `adb shell am start -n <包名>/.MainActivity -d https://l-stg.couliapp.cn/r/<路由名>` 显式拉起。
  * - 桥白名单 h5-stg、分享 s-stg：客户端没有配置点，由 staging 服务端 /v1/config 的 bridge_origins / share_domains 下发
- *   （WebConfigReader）。这里钉住：staging 形状的下发能被读出，且 catalog 的 h5 基址的 origin 正是要下发的那一个。
+ *   （WebConfigReader；N-22 起 bridge_origins 是签名白名单 {"jws": …}，经 BridgeOriginsVerifier 用构建配置的 staging 钥验过才认）。
+ *   这里钉住：staging 实测下发（三端共用向量 stg_live_ok 的 jws）能验出，且 catalog 的 h5 基址的 origin 正是要下发的那一个。
  */
 class StagingHostsWiringTest {
     private val stagingConfig =
         Json
             .parseToJsonElement(
-                """{"bridge_origins":["https://h5-stg.couliapp.cn"],"share_domains":["s-stg.couliapp.cn"]}""",
+                """{"bridge_origins":{"jws":"${N22TestSigning.vectorJws("stg_live_ok")}"},"share_domains":["s-stg.couliapp.cn"]}""",
             ).jsonObject
 
     @Test fun d01DebugFeaturesDeepLinkConfigAcceptsTheStagingLinkHost() {
@@ -55,15 +60,29 @@ class StagingHostsWiringTest {
 
     @Test fun b01StagingH5BaseOriginIsTheBridgeOriginToBeDelivered() {
         val h5 = EnvironmentEndpointsCatalog.endpoints(AppEnvironment.STAGING).h5BaseUrl
-        val trusted = WebConfigReader.trustedOrigins(stagingConfig)
-        assertEquals(setOf("https://h5-stg.couliapp.cn"), trusted)
+        val verdict = stagingVerdict(stagingConfig)
+        assertTrue("staging 实测下发须验过：$verdict", verdict is BridgeOriginsVerdict.Accepted)
+        val trusted = (verdict as BridgeOriginsVerdict.Accepted).allowlist.origins
+        assertEquals(listOf("https://h5-stg.couliapp.cn"), trusted)
         assertTrue("STAGING h5 基址（$h5）的 origin 必须在 staging 下发的 bridge_origins 里", h5.trimEnd('/') in trusted)
     }
 
-    @Test fun b02BridgeOriginsMustBeAnArrayOfOrigins() {
+    @Test fun b02BridgeOriginsMustBeASignedJws() {
         val objectShape = Json.parseToJsonElement("""{"bridge_origins":{"h5":"https://h5-stg.couliapp.cn"}}""").jsonObject
-        assertEquals("对象形状不放行（staging 须下发 origin 数组，handback §2 C6）", emptySet<String>(), WebConfigReader.trustedOrigins(objectShape))
+        assertEquals("对象形状不放行（N-22：须下发签名的 jws）", BridgeOriginsVerdict.Rejected("malformed"), stagingVerdict(objectShape))
+        val arrayShape = Json.parseToJsonElement("""{"bridge_origins":["https://h5-stg.couliapp.cn"]}""").jsonObject
+        assertEquals("旧的 origin 数组不再放行（N-22）", BridgeOriginsVerdict.Rejected("malformed"), stagingVerdict(arrayShape))
     }
+
+    /** 构建配置的公钥表（debug 带 staging 钥）、运行环境 staging。 */
+    private fun stagingVerdict(config: JsonObject) =
+        BridgeOriginsVerifier.verify(
+            config = config,
+            appId = AppConfig.APP_ID,
+            env = "staging",
+            lastGoodVersion = null,
+            keys = AppConfig.bundledSignKeys,
+        )
 
     @Test fun s01StagingShareDomainIsReadFromConfig() {
         assertEquals(setOf("s-stg.couliapp.cn"), WebConfigReader.shareDomains(stagingConfig))

@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.N22TestSigning
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -197,6 +198,7 @@ class ClipboardBridgeReadTest {
                 fetcher = { _, done -> done(ConfigReply(ConfigReply.OK, CONFIG, null)) },
                 clock = { now },
                 bundled = CONFIG,
+                verifyBridgeOrigins = N22TestSigning.verifier(),
             )
         clipboard =
             AppClipboard(
@@ -389,8 +391,8 @@ class ClipboardBridgeReadTest {
 
     private companion object {
         const val ORIGIN = "https://h5.example.test"
-        const val CONFIG =
-            """{"bridge_origins":["https://h5.example.test"],"share_domains":["share.example.test"],"features":{"flags":{}}}"""
+        val CONFIG =
+            """{"bridge_origins":${N22TestSigning.h5BridgeOrigins},"share_domains":["share.example.test"],"features":{"flags":{}}}"""
         const val WAIT_S = 5L
         const val POLL_MS = 10L
     }

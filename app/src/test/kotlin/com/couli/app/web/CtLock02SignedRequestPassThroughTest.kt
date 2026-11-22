@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.couli.app.N22TestSigning
 import com.couli.app.clientcore.AppConfig
 import com.couli.app.privacy.AppPrivacy
 import com.couli.app.routing.AppRouting
@@ -176,6 +177,7 @@ class CtLock02SignedRequestPassThroughTest {
                 fetcher = { _, done -> done(ConfigReply(ConfigReply.OK, CONFIG, null)) },
                 clock = { now },
                 bundled = CONFIG,
+                verifyBridgeOrigins = N22TestSigning.verifier(),
             )
         // 本进程一次成功检查（最低版本 1.0.0）：强更状态为 OK，桥的强更守卫不拦写操作（否则一律 90500，测不到代发这一步）
         val updateStore = MemoryUpdateStore()
@@ -345,7 +347,7 @@ class CtLock02SignedRequestPassThroughTest {
 
     private companion object {
         const val ORIGIN = "https://h5.example.test"
-        const val CONFIG = """{"bridge_origins":["https://h5.example.test"],"features":{"flags":{}}}"""
+        val CONFIG = """{"bridge_origins":${N22TestSigning.h5BridgeOrigins},"features":{"flags":{}}}"""
         const val OK = 0
         const val NOT_ALLOWED = 90403
         const val WAIT_S = 5L
