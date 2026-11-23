@@ -91,7 +91,11 @@ class ConfigSignKeys(
         }
 
         private fun sha256Prefix16(der: ByteArray): String =
-            MessageDigest.getInstance("SHA-256").digest(der).joinToString("") { "%02x".format(it) }.take(SHA_PREFIX_CHARS)
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest(der)
+                .joinToString("") { "%02x".format(it) }
+                .take(SHA_PREFIX_CHARS)
 
         /** SPKI DER → P-256 公钥；解析不了或不是 P-256 为 null。 */
         private fun p256PublicKey(der: ByteArray): PublicKey? {

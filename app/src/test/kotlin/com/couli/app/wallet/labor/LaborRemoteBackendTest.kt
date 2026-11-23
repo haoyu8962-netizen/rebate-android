@@ -180,7 +180,12 @@ class LaborRemoteBackendTest {
             assertTrue("$code 不取全文", fetched.isEmpty())
             val controller = controller(backend)
             assertEquals("$code 进控制器的错误态", LaborSnapshot.ERROR, controller.state.value.phase)
-            assertEquals("$code 按既有错误处理取文案", WalletErrors.of(failure).textKey, controller.state.value.error?.key)
+            assertEquals(
+                "$code 按既有错误处理取文案",
+                WalletErrors.of(failure).textKey,
+                controller.state.value.error
+                    ?.key,
+            )
         }
     }
 

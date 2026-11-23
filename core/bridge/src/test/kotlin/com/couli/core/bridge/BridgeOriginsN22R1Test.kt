@@ -51,7 +51,12 @@ class BridgeOriginsN22R1Test {
         val label = "origin ${JsonPrimitive(origin)}"
         listOf(listOf(origin), listOf(good, origin)).forEach { items ->
             val payload = signer.payload(origins = originsJson(*items.toTypedArray()))
-            val signed = N22Vectors.payloadOf(signer.sign(payload)).getValue("origins").jsonArray.map { it.jsonPrimitive.content }
+            val signed =
+                N22Vectors
+                    .payloadOf(signer.sign(payload))
+                    .getValue("origins")
+                    .jsonArray
+                    .map { it.jsonPrimitive.content }
             assertEquals("$label：签进 payload 的原文", items, signed)
             assertRejected("$label（${if (items.size == 1) "单项" else "好项 + 坏项"}）", payload, BridgeOriginsVerifier.REASON_BAD_ORIGIN)
         }

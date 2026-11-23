@@ -47,6 +47,7 @@ import org.robolectric.annotation.Config
 @Suppress("TooManyFunctions")
 class LaborTextFetcherTest {
     /** 取文发出的一次请求，连同这次调用生效的客户端配置。 */
+    @Suppress("LongParameterList") // 一次请求的全部可观察配置，逐项断言
     private class Seen(
         val url: HttpUrl,
         val method: String,

@@ -440,7 +440,12 @@ class ConfigStore(
 
     /** LKG 里的上次可用白名单：version 为非负整数、origins 为非空字符串数组才算形状完整，否则按没有（冷启动改用 data 现验）。 */
     private fun decodeLastGood(stored: JsonObject): BridgeOriginsLastGood? {
-        val version = (stored[KEY_VERSION] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()?.takeIf { it >= 0 }
+        val version =
+            (stored[KEY_VERSION] as? JsonPrimitive)
+                ?.takeIf { !it.isString }
+                ?.content
+                ?.toLongOrNull()
+                ?.takeIf { it >= 0 }
         val items = stored[KEY_ORIGINS] as? JsonArray
         val origins =
             items

@@ -73,7 +73,10 @@ class AppConfig(
             return { config, lastGoodVersion ->
                 val env = environmentId()
                 when (val verdict = BridgeOriginsVerifier.verify(config, appId, env, lastGoodVersion, keys)) {
-                    is BridgeOriginsVerdict.Accepted -> BridgeOriginsLastGood(verdict.allowlist.version, verdict.allowlist.origins)
+                    is BridgeOriginsVerdict.Accepted -> {
+                        BridgeOriginsLastGood(verdict.allowlist.version, verdict.allowlist.origins)
+                    }
+
                     is BridgeOriginsVerdict.Rejected -> {
                         warnRejected(warnedFor, config, verdict.reason, env)
                         null

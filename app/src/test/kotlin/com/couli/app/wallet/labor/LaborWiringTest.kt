@@ -43,9 +43,9 @@ class LaborWiringTest {
         assertFalse("不再把 variantLaborBackend 直接当生产后端", source.contains("labor=variantLaborBackend(context),"))
     }
 
-    @Test fun remoteBackendLivesInLaborRemoteAndCallsBothContractOperations() {
+    @Test fun remoteBackendLivesInItsOwnFileAndCallsBothContractOperations() {
         val remote = File(WithdrawVisualFixtures.root, REMOTE_FILE)
-        assertTrue("真实后端落在 LaborRemote.kt（照 RealNameRemote.kt，文件名避开 key / api 字样）", remote.isFile)
+        assertTrue("真实后端落在 RemoteLaborBackend.kt（单类文件按类名命名，ktlint filename / detekt MatchingDeclarationName；文件名避开 key / api 字样）", remote.isFile)
         val source = remote.readText()
         assertTrue("调 getLaborAgreement", source.contains("\"getLaborAgreement\""))
         assertTrue("调 signLaborAgreement", source.contains("\"signLaborAgreement\""))
@@ -78,7 +78,7 @@ class LaborWiringTest {
     private fun squash(text: String): String = text.replace(Regex("\\s+"), "")
 
     private companion object {
-        const val REMOTE_FILE = "feature/wallet/src/main/kotlin/com/couli/feature/wallet/LaborRemote.kt"
+        const val REMOTE_FILE = "feature/wallet/src/main/kotlin/com/couli/feature/wallet/RemoteLaborBackend.kt"
         const val WIRING_FILE = "app/src/main/kotlin/com/couli/app/wallet/LaborWiring.kt"
     }
 }

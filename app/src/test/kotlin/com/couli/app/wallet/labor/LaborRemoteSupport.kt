@@ -26,7 +26,7 @@ import org.junit.Assert.assertTrue
  * FU-AND-LABOR-AGREEMENT-API 写测的公共底座。
  *
  * 接口约定（实现照此写；HEAD 9f015b2 上都不存在，所以一律按名反射取，取不到由断言判红，不让编译失败）：
- * - `com.couli.feature.wallet.RemoteLaborBackend`（文件 feature/wallet/.../LaborRemote.kt，照 RealNameRemote.kt 命名，避开 key / api 字样）：
+ * - `com.couli.feature.wallet.RemoteLaborBackend`（文件 feature/wallet/.../RemoteLaborBackend.kt，单类文件按类名命名，避开 key / api 字样）：
  *   `class RemoteLaborBackend(api: WalletApi, fetchText: suspend (url: String, expectedSha256: String) -> String?, account: () -> String?,
  *   newKey: () -> String) : LaborBackend`（参数顺序固定；newKey 可带缺省值 UUID）。fetchText 的第二个参数是服务端给的 text_sha256：生产实现按
  *   原始字节核对摘要，相符才交出正文，否则返回 null（改口 r1：摘要核对显式化，不再经协程上下文隐式传）。

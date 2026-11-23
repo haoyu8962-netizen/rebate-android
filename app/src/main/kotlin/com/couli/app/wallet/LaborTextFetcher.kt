@@ -99,6 +99,7 @@ internal class LaborTextFetcher(
     }
 
     /** 只收 200；声明长度或实际读到的超过上限按取不到（最多读上限 + 1 字节）。 */
+    @Suppress("ReturnCount") // 非 200、声明超长、实读超长三个出口
     private fun read(response: Response): Raw? {
         if (response.code != HTTP_OK) return null
         val body = response.body

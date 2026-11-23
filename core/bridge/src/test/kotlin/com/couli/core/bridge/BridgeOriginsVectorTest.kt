@@ -45,7 +45,11 @@ class BridgeOriginsVectorTest(
             assertTrue("$name：应通过（向量 reason=$wantReason），实得 $got", verdict is BridgeOriginsVerdict.Accepted)
             val allowlist = (verdict as BridgeOriginsVerdict.Accepted).allowlist
             assertEquals("$name：origins 与向量完全相等，实得 $got", origins, allowlist.origins)
-            val version = N22Vectors.payloadOf(jws).getValue("version").jsonPrimitive.long
+            val version =
+                N22Vectors
+                    .payloadOf(jws)
+                    .getValue("version")
+                    .jsonPrimitive.long
             assertEquals("$name：version = payload.version，实得 $got", version, allowlist.version)
         } else {
             assertTrue("$name：应拒绝（向量 reason=$wantReason），实得 $got", verdict is BridgeOriginsVerdict.Rejected)
@@ -69,7 +73,14 @@ class BridgeOriginsVectorFileTest {
         val cases = N22Vectors.cases
         assertEquals("向量总数", 33, cases.size)
         assertEquals("向量名不重复", 33, cases.map { it.getValue("name").jsonPrimitive.content }.toSet().size)
-        val accepted = cases.filter { it.getValue("expect").jsonObject.getValue("accept").jsonPrimitive.boolean }
+        val accepted =
+            cases.filter {
+                it
+                    .getValue("expect")
+                    .jsonObject
+                    .getValue("accept")
+                    .jsonPrimitive.boolean
+            }
         assertEquals(
             "应通过的 4 条",
             listOf("stg_live_ok", "stg_live_ok_last_good_equal", "t_ok", "t_ok_two_origins_port"),
@@ -81,7 +92,11 @@ class BridgeOriginsVectorFileTest {
     fun publicKeysMatchTheVectorKeys() {
         assertEquals("staging 钥 SPKI DER sha256-16", N22Vectors.STAGING_SHA16, N22Vectors.sha256Hex(N22Vectors.stagingDer).take(16))
         assertEquals("测试钥 SPKI DER sha256-16", N22Vectors.TEST_SHA16, N22Vectors.sha256Hex(N22Vectors.testDer).take(16))
-        val keys = N22Vectors.vectors.getValue("keys").jsonArray.map { it.jsonObject }
+        val keys =
+            N22Vectors.vectors
+                .getValue("keys")
+                .jsonArray
+                .map { it.jsonObject }
         val described =
             keys.map {
                 Triple(

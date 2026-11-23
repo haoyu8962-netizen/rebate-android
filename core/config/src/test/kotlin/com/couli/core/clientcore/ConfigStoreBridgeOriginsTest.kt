@@ -230,6 +230,7 @@ class ConfigStoreBridgeOriginsTest {
     private class FakeVerifier {
         val calls = mutableListOf<Pair<JsonObject, Long?>>()
 
+        @Suppress("ReturnCount") // 桩：按输入形状逐类返回
         fun verify(
             config: JsonObject,
             lastGoodVersion: Long?,

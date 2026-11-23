@@ -58,8 +58,7 @@ internal object N22Vectors {
     fun jws(name: String): String = case(name).getValue("jws").jsonPrimitive.content
 
     /** PEM（SPKI）→ DER。 */
-    fun pemToDer(pem: String): ByteArray =
-        Base64.getMimeDecoder().decode(pem.lines().filterNot { it.startsWith("-----") }.joinToString(""))
+    fun pemToDer(pem: String): ByteArray = Base64.getMimeDecoder().decode(pem.lines().filterNot { it.startsWith("-----") }.joinToString(""))
 
     val stagingDer: ByteArray by lazy { pemToDer(resource("es256.pub.pem").decodeToString()) }
     val testDer: ByteArray by lazy { pemToDer(resource("n22-vector-test-key-1.pub.pem").decodeToString()) }
