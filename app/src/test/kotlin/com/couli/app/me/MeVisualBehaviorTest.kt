@@ -38,10 +38,11 @@ class MeVisualBehaviorTest {
         host.assertReads(1)
     }
 
-    @Test fun m10FrozenStillNavigatesToWalletOnceAndNeverFetchesRules() {
+    // modify_existing（#24）FU-AND-WITHDRAW-DIRECT（D10-2714 ①）：【提现】直达 Withdraw，冻结仍可点、交给提现页 rules
+    @Test fun m10FrozenStillNavigatesToWithdrawOnceAndNeverFetchesRules() {
         host.launch("me_frozen")
         rule.meTag(MeTags.ME_WITHDRAW).assertIsEnabled().performClick()
-        assertEquals(listOf("Wallet"), host.env.opened.map { it.first })
+        assertEquals(listOf("Withdraw"), host.env.opened.map { it.first })
         assertTrue(
             host.env.opened
                 .single()
@@ -51,16 +52,12 @@ class MeVisualBehaviorTest {
         host.assertReads(1)
     }
 
-    @Test fun m10NegativeAvailableDoesNotDisableOrInventWarning() {
+    // modify_existing（#24）FU-AND-WITHDRAW-DIRECT（D10-2714 ① / brief §2.2）：负余额照钱包 G11 不动作（或置灰），仍不自造待抵扣提示
+    @Test fun m10NegativeAvailableDoesNotNavigateOrInventWarning() {
         host.launch("me_negative")
-        rule.meTag(MeTags.ME_WITHDRAW).assertIsEnabled().performClick()
+        rule.meTag(MeTags.ME_WITHDRAW).performClick()
         rule.onNodeWithText("待抵扣", substring = true).assertDoesNotExist()
-        assertEquals(
-            "Wallet",
-            host.env.opened
-                .single()
-                .first,
-        )
+        assertTrue(host.env.opened.isEmpty())
         host.assertReads(1)
     }
 
