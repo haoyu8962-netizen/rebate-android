@@ -410,7 +410,12 @@ class MeWithdrawDirectAppTest {
             composeRule
                 .onAllNodes(inGuide, useUnmergedTree = true)
                 .fetchSemanticsNodes()
-                .flatMap { node -> node.config.getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } }
+                .flatMap { node ->
+                    node.config
+                        .getOrNull(SemanticsProperties.Text)
+                        .orEmpty()
+                        .map { it.text }
+                }
         val submit = composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).fetchSemanticsNode()
         return guide + "submit_enabled=${SemanticsProperties.Disabled !in submit.config}"
     }

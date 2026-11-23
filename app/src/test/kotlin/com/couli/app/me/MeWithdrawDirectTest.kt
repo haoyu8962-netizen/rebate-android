@@ -59,7 +59,13 @@ class MeWithdrawDirectTest {
         host.launch()
         tapWithdraw()
         assertEquals("「我的」【提现】直达提现申请页", listOf(WalletRoutes.WITHDRAW), routes())
-        assertTrue("不带参数（与钱包【提现】同一打开方式）", host.env.opened.single().second.isEmpty())
+        assertTrue(
+            "不带参数（与钱包【提现】同一打开方式）",
+            host.env.opened
+                .single()
+                .second
+                .isEmpty(),
+        )
         assertTrue("不经钱包", MeView.WALLET !in routes())
         // 只读一次 Me；「我的」不预取 rules / 钱包摘要（PageApi 只记到 getMe）
         host.assertReads(1)
