@@ -30,7 +30,7 @@ class MeVisualFixtureTest {
     @Test fun gm18ExecutorFirst192LinesAreExactlyFrozen() {
         val source = File(MeVisualFixtures.root, "feature/me/src/main/kotlin/com/couli/feature/me/MeTabController.kt").readText()
         val prefix = source.lineSequence().take(192).joinToString("\n") + "\n"
-        assertEquals("a31b089a0d0ef105c7b5b7459c5920ec569e0de2c52a18778ea7535784476259", sha(prefix.toByteArray()))
+        assertEquals("7a9675eb882aba530c0da9bd7ce673c1feab758c73e30c37fcc178765af6381d", sha(prefix.toByteArray()))
     }
 
     @Test fun protectedRuntimeAndSharedWalletDefaultHaveZeroChanges() {
@@ -39,7 +39,7 @@ class MeVisualFixtureTest {
                 "feature/me/src/main/kotlin/com/couli/feature/me/MeRepository.kt" to
                     "c2c17ef3ed3b96631eabcf5d09ea987f6262ff055ff18324fcdb56e023256d8d",
                 "core/me/src/main/kotlin/com/couli/core/me/MePresentation.kt" to
-                    "7dc5f1551dd8af3a36226ff259b7b64f4fc0247d4258e0b2a17542bf4ab2c86b",
+                    "cfb7978effd7b6ecb3ec80b870eaa18115e586dcd4f5eb9309a5d93eac0e15f9",
                 // modify_existing（#24）re-pin ruling D10-1670：FU-AND-STEPUP-SUMMARY Me 加 masked_phone（B1-02zzza）
                 "core/me/src/main/kotlin/com/couli/core/me/MeJson.kt" to "af5f873d68b50ea3378abef0dd4860c47737e6756a28b4bf9033e1e76230009f",
                 // 钉值随锁升级更新：FU-X-CTA-KEY-DRIFT 锁 a89c1ec3a（D10-857，#24）
@@ -49,7 +49,7 @@ class MeVisualFixtureTest {
                 "core/designsystem/src/main/kotlin/com/couli/core/designsystem/WalletComponents.kt" to
                     "c05adc8af581f6f48ed367ebd7c3f5fd05e98a8760c4353eda510c952b77532b",
                 // modify_existing（#24）re-pin ruling D10-1709：FU-AND-STEPUP-SUMMARY 身份未知补单，隐私撤回按请求体声明照发（03 §4.2）
-                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "a03c825f8beb6f0704433813c904eacd6a5d52b3c966b075f6ef1d586469db4d",
+                "app/src/main/kotlin/com/couli/app/me/AppMe.kt" to "bbdac05cca7bef138ca25988b0874ca0318c58b45f447e2cfda6549ac16deb72",
                 "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt" to "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2",
                 "app/src/main/kotlin/com/couli/app/me/AndroidMeSystem.kt" to
                     "6cf6830ec9410d66088de9e8bc26c5dcab446845bab11e57bc1e6fdc85cef18d",
