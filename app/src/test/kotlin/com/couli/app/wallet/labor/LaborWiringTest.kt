@@ -45,7 +45,10 @@ class LaborWiringTest {
 
     @Test fun remoteBackendLivesInItsOwnFileAndCallsBothContractOperations() {
         val remote = File(WithdrawVisualFixtures.root, REMOTE_FILE)
-        assertTrue("真实后端落在 RemoteLaborBackend.kt（单类文件按类名命名，ktlint filename / detekt MatchingDeclarationName；文件名避开 key / api 字样）", remote.isFile)
+        assertTrue(
+            "真实后端落在 RemoteLaborBackend.kt（单类文件按类名命名；文件名避开 key / api 字样）",
+            remote.isFile,
+        )
         val source = remote.readText()
         assertTrue("调 getLaborAgreement", source.contains("\"getLaborAgreement\""))
         assertTrue("调 signLaborAgreement", source.contains("\"signLaborAgreement\""))
