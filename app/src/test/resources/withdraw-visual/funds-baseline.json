@@ -42,7 +42,7 @@
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/IdentityControllers.kt": "4034b3f9d7568ddc8587ad1957b2488d6b8eac0d0a535fb48382e1662cd073fc",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/PayoutAccountController.kt": "2f14b3f164cf7465b46b8ee63829c0712c3e4fd29458b8c4f26542f404016870",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/SensitiveFlow.kt": "8d7ed05aef04bc24170a8dd79e93a5eb0c1e298ce361c2a0c1c99e94052ceb23",
-    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletPorts.kt": "c06ae708204f7047e47976361dd9d3810386818463ee0a9c77d8b41902d57035",
+    "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WalletPorts.kt": "4c7e2c0edfe03367ca1cbccd7a368bbf89b47a92f1207ce13d53813957a1eb5b",
     "feature/wallet/src/main/kotlin/com/couli/feature/wallet/WithdrawController.kt": "e54e41fb030260c1dea3ad7799a9ddf937c65ac25817f1cf45ef7f7da01230ae"
   },
   "prefix": {
