@@ -86,7 +86,7 @@ class MeVisualHitTest {
             Offset(b.right - d, b.center.y),
         ).withIndex()) {
             rule.meTouch(point)
-            assertEquals(List(index + 1) { "Wallet" }, host.env.opened.map { it.first })
+            assertEquals(List(index + 1) { "Withdraw" }, host.env.opened.map { it.first })
             assertEquals(false, host.mask.hidden.value)
             host.assertReads(1)
         }

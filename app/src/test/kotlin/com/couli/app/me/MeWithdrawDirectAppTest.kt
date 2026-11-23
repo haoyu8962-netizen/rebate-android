@@ -434,7 +434,7 @@ class MeWithdrawDirectAppTest {
         idleUntil { top() == WalletRoutes.WITHDRAW }
         assertEquals(WalletRoutes.WITHDRAW, outcome()?.request?.route)
         assertEquals("经 Router 以 App 内来源打开、守卫放行", GuardKind.OPEN, outcome()?.decision?.kind)
-        assertEquals(RouteSource.IN_APP, outcome()?.request?.source)
+        assertEquals(RouteSource.IN_APP.raw, outcome()?.request?.source)
         assertFalse(intoWallet())
         composeRule.runOnUiThread { assertTrue("查到的实名结论记入本会话", wallet.realnameVerified()) }
     }
