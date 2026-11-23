@@ -11,6 +11,7 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.HomeDestination
 import com.couli.app.routing.NavTickets
 import com.couli.app.routing.RouteDestination
+import com.couli.app.wallet.AppWallet
 import com.couli.core.agent.AgentCancelDispatch
 import com.couli.core.agent.AgentOwnershipEvent
 import com.couli.core.clientcore.AmountMaskStore
@@ -40,11 +41,14 @@ import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
 import com.couli.core.router.SessionState
 import com.couli.core.router.UpdateCheck
+import com.couli.core.wallet.WalletErrors
 import com.couli.core.wallet.WalletRateGate
+import com.couli.core.wallet.WalletRoutes
 import com.couli.feature.me.MeDeps
 import com.couli.feature.me.MeEnv
 import com.couli.feature.me.MeGates
 import com.couli.feature.me.MeIdentity
+import com.couli.feature.me.MeNotice
 import com.couli.feature.me.NicknameBackend
 import com.couli.feature.me.NotifyBackend
 import kotlinx.coroutines.CoroutineScope
@@ -170,6 +174,12 @@ class AppMe(
 
     /** 注销与换号（APP-13a，AppModule 接线后设置；只测「我的」的单测为 null）。 */
     var account: com.couli.app.account.AppAccount? = null
+
+    /** 钱包的打开路径（D10-2714 ①，[connectWallet]；只测「我的」的单测没接，按原样经 Router 打开）。 */
+    private var wallet: AppWallet? = null
+
+    /** 「我的」经钱包打开路径发起、可能还在等实名查询的那一次打开的发起页条目（查询失败时在「我的」上轻提示）。 */
+    private var walletOrigin: String? = null
 
     /** 退出登录进行中（同一时刻一次）。 */
     private var loggingOut = false
@@ -368,10 +378,41 @@ class AppMe(
 
     private fun topRoute(): String? = navController?.currentBackStackEntry?.let(::routeName)
 
+    /**
+     * 接钱包（FU-AND-WITHDRAW-DIRECT，D10-2714 ①；AppModule 接线）：「我的」【提现】打开 Withdraw 走和钱包【提现】同一条打开路径（[AppWallet.open]：
+     * 本会话没查过实名先取 GET /v1/me，再经 Router 以 App 内来源打开，守卫与提现页 rules 照常生效），不另写前置判断。实名查询失败时 AppWallet 不导航、
+     * 把错误挂在发起页条目上；「我的」不挂钱包的错误条，改由「我的」执行器的轻提示显示一次（统一错误文案，5xxxx 带 trace6），不静默。
+     */
+    fun connectWallet(wallet: AppWallet) {
+        if (this.wallet === wallet) return
+        this.wallet = wallet
+        scope.launch { wallet.openErrors.collect { errors -> relayOpenError(wallet, errors) } }
+    }
+
+    /** 本页经钱包打开路径发起的那次打开查询失败：转成「我的」轻提示（执行器已失效则丢弃），并收掉钱包侧挂在该条目上的错误。 */
+    private fun relayOpenError(
+        wallet: AppWallet,
+        errors: Map<String, AppWallet.OpenError>,
+    ) {
+        val origin = walletOrigin ?: return
+        val notice = errors[origin]?.notice ?: return
+        walletOrigin = null
+        wallet.dismissOpenError(origin)
+        // 网络错误换成「我的」的键（同 MeErrors.of）；其余键（error.*、5xxxx 的 trace6）原样复用
+        val key = if (notice.key == WalletErrors.NETWORK_KEY) MeDraftTexts.NETWORK_KEY else notice.key
+        deps.tab.bound?.openFailed(MeNotice(key, notice.id, notice.traceId, notice.showTrace6))
+    }
+
     private fun open(
         route: String,
         params: JsonObject = JsonObject(emptyMap()),
     ) {
+        val funds = wallet
+        if (funds != null && route == WalletRoutes.WITHDRAW) {
+            walletOrigin = navController?.currentBackStackEntry?.id
+            funds.open(route, params)
+            return
+        }
         val request = RouteRequest(route, params, RouteSource.IN_APP)
         // 强更受限上下文（从强更页进入的隐私中心）：协议、清单按「从强更页进入」打开（03 §4.1，鸿蒙 R2-05）
         val state: GuardState = routing.guardState()

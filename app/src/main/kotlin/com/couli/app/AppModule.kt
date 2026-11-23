@@ -919,6 +919,8 @@ object AppModule {
             trade.customerService = me.cs::open
             wallet.customerService = me.cs::open
             orders.customerService = me.cs::open
+            // 「我的」【提现】直达提现申请页，走钱包【提现】同一条打开路径（实名预取 + Router；FU-AND-WITHDRAW-DIRECT，D10-2714 ①）
+            me.connectWallet(wallet)
             // 注销与换号（APP-13a）：共享状态交给 BindPhone 与「我的」；二次验证共用钱包的发码截止时间与 token 缓存
             me.account =
                 AppAccount(

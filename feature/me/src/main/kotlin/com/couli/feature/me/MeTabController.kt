@@ -62,9 +62,13 @@ import com.couli.core.me.MeDraftTexts
 import com.couli.core.me.MeView
 import com.couli.core.me.MeViewModel
 import com.couli.core.me.NotifyGuideBar
+import com.couli.core.wallet.WalletRoutes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * 「我的」Tab 的执行器（brief §2.2；G04、G05、G06、G28、G31、G36）。构造时固定身份（[identity]，APP-09 第 65 条）；身份变了页面重建本执行器，旧执行器的
@@ -78,7 +82,7 @@ class MeTabController(
     private var toastIds = 0L
     private val mutableToast = MutableStateFlow<MeNotice?>(null)
 
-    /** 一次性的复制结果提示（polite 播报一次）。 */
+    /** 一次性的本页轻提示（polite 播报一次）：复制结果；本页发起的打开动作前置查询失败（[openFailed]）。 */
     val toast: StateFlow<MeNotice?> = mutableToast.asStateFlow()
 
     /** 本执行器仍有效：没离开、身份仍是当前身份。 */
@@ -131,6 +135,14 @@ class MeTabController(
         if (mutableToast.value?.id == id) mutableToast.value = null
     }
 
+    /**
+     * 本页发起的打开动作没走成（FU-AND-WITHDRAW-DIRECT，D10-2714 ①：【提现】经 App 的资金页打开路径先查实名，查询失败时不导航）：在本页轻提示一次
+     * （统一错误文案，5xxxx 带 trace6），不静默；执行器已失效（离开、身份变了）时丢弃。
+     */
+    fun openFailed(notice: MeNotice) {
+        if (alive()) mutableToast.value = notice.copy(id = ++toastIds)
+    }
+
     /** 宫格一格（G31）：渲染时的格；执行时核对身份与格仍在当前规则里。 */
     fun tap(cell: GridCell) {
         if (!alive()) return
@@ -142,11 +154,16 @@ class MeTabController(
         deps.env.open(route)
     }
 
-    /** 【提现】→ Wallet（G06）：只在渲染时的快照仍是当前快照时打开。 */
+    /**
+     * 【提现】→ Withdraw（G06 按 D10-2714 ① 更正：「我的」【提现】直达提现申请页，宫格「钱包」仍进 Wallet）：只在渲染时的快照仍是当前快照时打开。
+     * 拦截照钱包【提现】（G11），以 Me 快照实有的字段为准：负余额（balance.available_fen < 0，对应钱包摘要 negative_fen > 0）不动作；余额为 0、冻结
+     * 照常打开，能不能提由提现页 rules 决定。App 侧与钱包【提现】同一条打开路径（实名预取 + Router），这里不另写前置判断。
+     */
     fun withdraw(version: Long) {
         val snapshot = deps.repo.state.value
-        if (!alive() || snapshot.version != version || snapshot.identity != identity || snapshot.me == null) return
-        deps.env.open(MeView.WALLET)
+        val me = snapshot.me
+        if (!alive() || snapshot.version != version || snapshot.identity != identity || me == null || negative(me)) return
+        deps.env.open(WalletRoutes.WITHDRAW)
     }
 
     /** 铃铛 → Messages（G04，h5；无红点）。 */
@@ -188,6 +205,14 @@ class MeTabController(
         const val COPIED = "invite.copy_code.done"
         const val COPY_FAILED = "me.copy_failed"
         const val DELETION_ONLY = "deletion_only"
+        private const val BALANCE = "balance"
+        private const val AVAILABLE_FEN = "available_fen"
+
+        /** 负余额（D10-2714 ①）：Me 强类型视图没有 available_fen，从已校验的 raw 取（MeJson 已保证是整数分）。 */
+        private fun negative(me: com.couli.core.me.Me): Boolean {
+            val available = ((me.raw[BALANCE] as? JsonObject)?.get(AVAILABLE_FEN) as? JsonPrimitive)?.longOrNull
+            return available != null && available < 0L
+        }
     }
 }
 

@@ -8,6 +8,7 @@ import com.couli.core.designsystem.CouliFormat
 import com.couli.core.me.MeJson.bool
 import com.couli.core.me.MeJson.fen
 import com.couli.core.me.MeJson.string
+import com.couli.core.wallet.WalletRoutes
 import com.couli.generated.DefaultTexts
 import java.text.BreakIterator
 import java.time.Instant
@@ -171,7 +172,8 @@ object MeView {
                 obj(
                     "withdrawable" to amount(m.withdrawableFen),
                     "estimated" to amount(m.estimatedFen),
-                    "withdrawRoute" to JsonPrimitive(WALLET),
+                    // D10-2714 ①：余额卡【提现】直达提现申请页（宫格「钱包」仍是 Wallet）
+                    "withdrawRoute" to JsonPrimitive(WalletRoutes.WITHDRAW),
                 )
             }
         return obj(
