@@ -58,7 +58,7 @@
   {"h": "b791a64321e5dacbe2fe36db803113a2fc8704234ab6f4c56b4630c8a5990544", "p": "app/src/main/kotlin/com/couli/app/account/AppAccount.kt"},
   {"h": "b5033db6a49073a7f6d44d6cbe569fdb74ef0dcd05828c1600f9b4b07dae4600", "p": "app/src/main/kotlin/com/couli/app/agent/AgentRoute.kt"},
   {"h": "f1c509bfde83ce49c4ddb54889c05e59edf2cc2e83e999e68da6726e22f5d42b", "p": "app/src/main/kotlin/com/couli/app/agent/AppAgent.kt"},
-  {"h": "871ce2226b595d15e55b029888bc5bf001a72b3d8b2e6aeb017e1f7a01177df5", "p": "app/src/main/kotlin/com/couli/app/clientcore/AppConfig.kt"},
+  {"h": "563b460cabc4a6809de404aab6610e50a2e8738bbcd07c6a9c5ad76f7aa700af", "p": "app/src/main/kotlin/com/couli/app/clientcore/AppConfig.kt"},
   {"h": "f44648867fbe913883f95016ff596821cea5e48aadcd5f78ef967c07c2dc3700", "p": "app/src/main/kotlin/com/couli/app/clientcore/AppTracker.kt"},
   {"h": "93dbec0eed47fc27fd48662bc668f4b9f65ec55a05d30758e734271f50bb2378", "p": "app/src/main/kotlin/com/couli/app/clientcore/PermissionHost.kt"},
   {"h": "df8f89a2e85685e2b4bef086f523ed409ed9c7fc4ebaa29e4ece83523c2f272c", "p": "app/src/main/kotlin/com/couli/app/clipboard/AppClipboard.kt"},
@@ -2180,7 +2180,7 @@
   {"h": "6b703e246cdf1c40227d6ec7511f33e254c23d99c560b1532d1174c208cd2bc8", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/AmountMaskStore.kt"},
   {"h": "a43c6ded932d149f4af093db0f2d939eedd49316e079046402742d603d407e57", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/AtomicTextFile.kt"},
   {"h": "a3280f875a73e895552c6132323fd36d35c930075fe5524b1e4716b071de6fd8", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/ConfigResolver.kt"},
-  {"h": "72ec1854d020a84b8a684760697cf8e5ebb76b3c7898556f371a92aa1487b35a", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/ConfigStore.kt"},
+  {"h": "19a07cc089b9cea0f3be19b556116e84a776ab2aaf07e47d997b06a9713258ce", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/ConfigStore.kt"},
   {"h": "56f725fae710b77c45e44abc541feb606756a6370a0600683306131c384d9384", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/DeviceIdPolicy.kt"},
   {"h": "bb8778d16e8a540c14e852f1b722c9e3f384912e4e3f402167077357ff612f77", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/PermissionRequester.kt"},
   {"h": "5128aac8a25488289617d5ba43b786c5dc43bbf8eb9852df494c031c7d274bce", "p": "core/config/src/main/kotlin/com/couli/core/clientcore/TrackerQueue.kt"},
@@ -2991,12 +2991,12 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "aeb5cdcf3f516120424968e83a2efdb8fee1ab1de650ec96d3c0c8fe94a2bf4a",
+   "h": "8446ed29575c82d6ae60c1bbaa552e6fa2af1449635b1e2bef4dc71750646ec0",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "df3abad7af72409d58801ee73b46eed300b19ff86ce62a18d025172a742f0653",
+   "h": "45cfc93d908e80a9b3c4f0853695c00bfe65bf60625f0ba96816c47425fed3d3",
    "swaps": 1
   }
  ],
