@@ -41,6 +41,16 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - name: add swap and start memory log
+        # 第二次实跑在单元测试编译时整步被外部终止（无报错、无汇总），疑似内存耗尽：模拟器 + 两个 Xmx4g 的 Gradle 守护进程 + 并行测试进程。
+        # 加 8G 交换区缓冲，并每 15 秒记一次内存，失败与否都在最后打印内核 OOM 记录、上传内存日志。
+        run: |
+          sudo fallocate -l 8G /mnt/ci-extra.swap
+          sudo chmod 600 /mnt/ci-extra.swap
+          sudo mkswap /mnt/ci-extra.swap >/dev/null
+          sudo swapon /mnt/ci-extra.swap
+          free -m
+          nohup sh -c 'while true; do date -u +%H:%M:%S; free -m | sed -n 2,3p; sleep 15; done' > "${RUNNER_TEMP}/mem.log" 2>&1 &
       - name: enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -55,13 +65,22 @@ jobs:
           api-level: 36
           target: google_apis
           arch: x86_64
+          ram-size: 2048M
           working-directory: rebate-android
           script: tools/ci/verify.sh
+      - name: memory and OOM diagnostics
+        if: always()
+        run: |
+          free -m
+          sudo dmesg -T | grep -i -E "out of memory|killed process|oom" | tail -20 || true
+          tail -n 400 "${RUNNER_TEMP}/mem.log" || true
+          cp "${RUNNER_TEMP}/mem.log" rebate-android/mem.log 2>/dev/null || true
       - name: upload reports
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verify-reports
           path: |
+            rebate-android/mem.log
             rebate-android/build/verify/
             rebate-android/**/build/reports/
