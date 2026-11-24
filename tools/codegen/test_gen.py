@@ -1069,6 +1069,87 @@ class TokensPipeTestSupportTest(unittest.TestCase):
         self.assertTrue(token_literal_offenders("CouliInputs.kt", pending + "\n" + pending))
 
 
+class SensitiveOperationTableTest(SnapshotCase):
+    """FU-AND-CONTRACT-LOCK-6c97062（D10-2888）：x-sensitive-operation 与 gen.py 内置放弃动作表的核对（防回退，非先红）。
+
+    改坏的输入只用临时快照副本（SnapshotCase）或 patch.dict 临时改内置表，不动真实契约与 gen.py。
+    """
+
+    WITHDRAW = ("POST", "/v1/withdrawals")
+    APPEAL = ("POST", "/v1/me/appeals")  # 契约里存在、不带 x-sensitive-operation 的客户端写操作
+
+    def edit_openapi(self, mutate):
+        path = os.path.join(self.snapshot, "contracts", "openapi.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        mutate(data)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    def operation(self, data, key):
+        method, path = key
+        return data["paths"][path][method.lower()]
+
+    def assert_gen_fails(self, *fragments):
+        with self.assertRaises(gen.GenError) as caught:
+            self.generate()
+        for fragment in fragments:
+            self.assertIn(fragment, str(caught.exception))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.out, gen.API_KOTLIN, "ApiOperations.kt")),
+            "核对失败时不产出 ApiOperations.kt",
+        )
+
+    def test_sensitive_real_snapshot_generates_withdraw_without_step_up(self):
+        self.generate()
+        source = self.read(f"{gen.API_KOTLIN}/ApiOperations.kt")
+        start = source.index('"createWithdrawal" to')
+        entry = source[start:source.index("),", start)]
+        self.assertIn("stepUp = null,", entry)
+        self.assertIn("sensitiveOperation = true,", entry)
+        self.assertIn('abandonAction = "withdraw",', entry)
+        self.assertEqual(len(gen.SENSITIVE_ABANDON_ACTIONS), source.count("sensitiveOperation = true,"))
+
+    def test_sensitive_table_missing_an_operation_fails(self):
+        trimmed = {k: v for k, v in gen.SENSITIVE_ABANDON_ACTIONS.items() if k != self.WITHDRAW}
+        with patch.dict(gen.SENSITIVE_ABANDON_ACTIONS, trimmed, clear=True):
+            self.assert_gen_fails("POST /v1/withdrawals", "SENSITIVE_ABANDON_ACTIONS 没有它")
+
+    def test_sensitive_contract_marking_an_extra_operation_fails(self):
+        self.edit_openapi(lambda data: self.operation(data, self.APPEAL).__setitem__("x-sensitive-operation", True))
+        self.assert_gen_fails("POST /v1/me/appeals", "SENSITIVE_ABANDON_ACTIONS 没有它")
+
+    def test_sensitive_table_with_an_unmarked_operation_fails(self):
+        with patch.dict(gen.SENSITIVE_ABANDON_ACTIONS, {self.APPEAL: "withdraw"}):
+            self.assert_gen_fails("POST /v1/me/appeals", "不带 x-sensitive-operation")
+
+    def test_sensitive_contract_unmarking_a_table_operation_fails(self):
+        self.edit_openapi(lambda data: self.operation(data, self.WITHDRAW).pop("x-sensitive-operation"))
+        self.assert_gen_fails("POST /v1/withdrawals", "不带 x-sensitive-operation")
+
+    def test_sensitive_table_with_a_missing_or_admin_operation_fails(self):
+        for key in (("POST", "/v1/withdrawals-typo"), ("POST", "/admin/v1/withdrawals")):
+            with self.subTest(operation=key), patch.dict(gen.SENSITIVE_ABANDON_ACTIONS, {key: "withdraw"}):
+                self.assert_gen_fails(f"{key[0]} {key[1]}")
+
+    def test_sensitive_action_outside_the_abandon_enum_fails(self):
+        with patch.dict(gen.SENSITIVE_ABANDON_ACTIONS, {self.WITHDRAW: "withdrawal"}):
+            self.assert_gen_fails("'withdrawal'", "IdempotencyAbandonAction")
+
+    def test_sensitive_contract_enum_dropping_an_action_fails(self):
+        def mutate(data):
+            schema = data["components"]["schemas"]["IdempotencyAbandonAction"]
+            schema["enum"] = [v for v in schema["enum"] if v != "withdraw"]
+        self.edit_openapi(mutate)
+        self.assert_gen_fails("'withdraw'", "IdempotencyAbandonAction")
+
+    def test_sensitive_marker_only_accepts_true(self):
+        for value in (False, "true", 1):
+            with self.subTest(value=value):
+                self.edit_openapi(lambda data, v=value: self.operation(data, self.WITHDRAW).__setitem__("x-sensitive-operation", v))
+                self.assert_gen_fails("x-sensitive-operation 只接受 true")
+
+
 def find_jar(gradle_home: str, group: str, artifact: str, version: str | None):
     base = os.path.join(gradle_home, "caches", "modules-2", "files-2.1", group, artifact)
     versions = [version] if version else sorted(os.listdir(base)) if os.path.isdir(base) else []
