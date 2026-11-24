@@ -4,6 +4,9 @@
 # 用法：
 #   tools/ci/verify.sh          全部步骤
 #   tools/ci/verify.sh --fast   只跑到生成物检查与一次 assembleDebug
+#   tools/ci/verify.sh --ci-part=main | --ci-part=device
+#                               只给 GitHub Actions 的两个配对作业用（D10-2857；本机拒绝）：device 只跑第 6b 步仪器测试，
+#                               main 跑其余全部步骤、第 6b 步记「委托」；两个作业合起来覆盖全部步骤，对照表见 .github/workflows/ci.yml
 #
 # 步骤：
 #   1. 快照与 contract.lock 一致：按锁定提交重建逐字节比较 + lock files 哈希（tools/contracts/sync.sh --check；
@@ -33,15 +36,26 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT" || exit 1
 
 FAST=0
+CI_PART=""
 for arg in "$@"; do
   case "$arg" in
     --fast) FAST=1 ;;
+    --ci-part=main | --ci-part=device) CI_PART="${arg#--ci-part=}" ;;
     *)
       echo "verify.sh: 未知参数 ${arg}" >&2
       exit 2
       ;;
   esac
 done
+
+if [ -n "$CI_PART" ] && [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+  echo "verify.sh: --ci-part 只给 GitHub Actions 的两个配对作业用，本机请跑全部步骤" >&2
+  exit 2
+fi
+if [ -n "$CI_PART" ] && [ "$FAST" -eq 1 ]; then
+  echo "verify.sh: --ci-part 不能和 --fast 同用" >&2
+  exit 2
+fi
 
 # 本机默认工具位置（已设置则沿用）
 if [ -z "${JAVA_HOME:-}" ] && [ -d "/Applications/Android Studio.app/Contents/jbr/Contents/Home" ]; then
@@ -170,6 +184,12 @@ check_lock() {
   echo "锁定提交 $(lock_field rebate_platform.commit | cut -c1-12) 重建逐字节相同、files 哈希相同"
 }
 
+# D10-2857：CI device 作业只跑第 6b 步（与下方同名步骤同一条命令）。这里的 step 行缩进，不计入本机分段工具的步骤名单。
+if [ "$CI_PART" = "device" ]; then
+  step "真实 WebView 仪器测试与一致性页（tools/ci/ui-tests.sh）" tools/ci/ui-tests.sh
+  finish
+fi
+
 step "快照与 contract.lock 一致（按锁定提交重建核对）" check_lock
 step "生成物无漂移（gen.py --check）" python3 tools/codegen/gen.py --check
 
@@ -259,7 +279,11 @@ step "授权管理视觉浅 / 深快照（APP-06w：AuthManage-v2 / Blocked-v2 /
 # APP-04（Android 第 2 轮评审 R2-05、共性第 44、55 条）：真实系统 WebView 仪器测试，含加载锁定 H5 一致性页、逐项断言
 # window.__RESULT__ 的 ConformancePageTest。以 am instrument 输出的「OK (N tests)」为唯一成功判据；任何失败、没有在线的设备
 # 或模拟器都让本步失败（不跳过）
+if [ "$CI_PART" = "main" ]; then
+  record "  委托  真实 WebView 仪器测试与一致性页（由 CI device 作业跑，本作业不判定）"
+else
 step "真实 WebView 仪器测试与一致性页（tools/ci/ui-tests.sh）" tools/ci/ui-tests.sh
+fi
 
 step "生成器命名规则测试（test_gen.py，含探针编译）" env COULI_GEN_REQUIRE_KOTLINC=1 python3 tools/codegen/test_gen.py -v
 
