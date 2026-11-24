@@ -747,14 +747,45 @@ class AppWalletIntegrationTest {
         walletCallsSettled()
         assertFalse(has(WalletTags.WITHDRAW_ESTIMATE))
         assertEquals(afterEstimate, all("GET", RULES_PATH).size)
-        // 提交：第一次 10003 → 二次验证面板（发码带 purpose=step_up、action=withdraw），通过后沿用原键、原体重放
+        // 提交（D10-2902，提现免二次验证）：不再 10003 → 面板 → 原键重放；首发即成功，只发一次，键与请求体就是首次那份。
+        // 原「10003 之后沿用原键、原体、带 token 重放」与面板发码 / 不显示号码挪到收款账号：见下一条 ac_s2_80_..._movedFromWithdrawToPayout
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        val submits = all("POST", WITHDRAW_PATH)
+        assertEquals("只发一次（没有 10003 之后的原键重放）", 1, submits.size)
+        assertNotNull("首发即带幂等键", header(submits[0], "Idempotency-Key"))
+        assertEquals("请求体就是首次那份", """{"amount_fen":1000}""", submits[0].body)
+        assertNull(header(submits[0], "X-Step-Up-Token"))
+        assertEquals("X-Step-Up-Token 不进请求体", false, submits[0].body.contains("token"))
+        assertWithdrawWithoutStepUp()
+        // 成功：以 WithdrawRecords {withdrawal_id} 替换提现页（返回时回到钱包），这一单在最前并展开
+        assertEquals("""{"withdrawal_id":"W2026101200101"}""", top()?.paramsJson)
+        assertFalse("Withdraw 已被替换", stack().contains("Withdraw"))
+        idleUntil { has(WalletTags.RECORD_DETAIL_PREFIX + "W2026101200101") }
+        assertTrue(pendingBackend.list("user-one").isEmpty())
+    }
+
+    /**
+     * 原在提现上（ac_s2_80_estimateOnlyAfterPauseAndSubmitWithStepUpReplaysSameKey 的提交段），提现免二次验证后挪至收款账号（D10-2902，B1-02zzzc）：
+     * savePayoutAccount 仍带二次验证。第一次保存 10003 → 二次验证面板（发码带 purpose=step_up、action=payout_account_change，面板不显示号码），通过后
+     * 沿用原键、原请求体、带 token 重放，只多发一次；token 不进请求体；成功后没有未决键。
+     */
+    @Test
+    fun ac_s2_80_saveWithStepUpReplaysSameKeyAndBody_movedFromWithdrawToPayout() {
+        payoutBound = false
+        launch()
+        open("PayoutAccount")
+        idleUntil { has(WalletTags.PAYOUT_LOGON) }
+        input(WalletTags.PAYOUT_LOGON, PAYOUT_LOGON_FIXTURE)
+        input(WalletTags.PAYOUT_PAYEE, PAYOUT_PAYEE_FIXTURE)
+        click(WalletTags.PAYOUT_SAVE)
         idleUntil { stepUpReady() }
         val sms = body(last("POST", SMS_PATH))
         assertEquals("step_up", sms["purpose"]?.jsonPrimitive?.content)
-        assertEquals("withdraw", sms["action"]?.jsonPrimitive?.content)
-        assertTrue(texts("验证码已发送至你绑定的手机号") > 0)
+        assertEquals(com.couli.feature.wallet.PayoutAccountController.ACTION, sms["action"]?.jsonPrimitive?.content)
+        assertTrue(texts(wallet.deps.texts.text("step_up.sent")) > 0)
         assertEquals(
             "面板不显示号码",
             0,
@@ -772,19 +803,17 @@ class AppWalletIntegrationTest {
                 .size,
         )
         passStepUp()
-        idleUntil { top()?.name == "WithdrawRecords" }
-        val submits = all("POST", WITHDRAW_PATH)
-        assertEquals(2, submits.size)
-        assertEquals("沿用原键", header(submits[0], "Idempotency-Key"), header(submits[1], "Idempotency-Key"))
-        assertEquals("原请求体", submits[0].body, submits[1].body)
-        assertEquals("""{"amount_fen":1000}""", submits[1].body)
-        assertNull(header(submits[0], "X-Step-Up-Token"))
-        assertNotNull(header(submits[1], "X-Step-Up-Token"))
-        assertEquals("X-Step-Up-Token 不进请求体", false, submits[1].body.contains("token"))
-        // 成功：以 WithdrawRecords {withdrawal_id} 替换提现页（返回时回到钱包），这一单在最前并展开
-        assertEquals("""{"withdrawal_id":"W2026101200101"}""", top()?.paramsJson)
-        assertFalse("Withdraw 已被替换", stack().contains("Withdraw"))
-        idleUntil { has(WalletTags.RECORD_DETAIL_PREFIX + "W2026101200101") }
+        idleUntil { has(WalletTags.PAYOUT_BOUND) }
+        walletCallsSettled()
+        val saves = all("PUT", PAYOUT_PATH)
+        assertEquals("只多发一次：首发 + 二次验证后的重放", 2, saves.size)
+        assertNotNull(header(saves[0], "Idempotency-Key"))
+        assertEquals("沿用原键", header(saves[0], "Idempotency-Key"), header(saves[1], "Idempotency-Key"))
+        assertEquals("原请求体", saves[0].body, saves[1].body)
+        assertEquals(PAYOUT_LOGON_FIXTURE, body(saves[1])["alipay_logon_id"]?.jsonPrimitive?.content)
+        assertNull(header(saves[0], "X-Step-Up-Token"))
+        assertNotNull(header(saves[1], "X-Step-Up-Token"))
+        assertEquals("X-Step-Up-Token 不进请求体", false, saves[1].body.contains("token"))
         assertTrue(pendingBackend.list("user-one").isEmpty())
     }
 
@@ -793,7 +822,7 @@ class AppWalletIntegrationTest {
         launch()
         openWithdraw()
         typeAmount("10")
-        // 有效 token（先走一次面板），第一次提交断连（结果未知）
+        // 第一次提交断连（结果未知）。D10-2902：提现免二次验证，不再先走一次面板
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
         idleUntil { has(WalletTags.PENDING_CARD) }
@@ -805,17 +834,19 @@ class AppWalletIntegrationTest {
         advance(TimeUnit.HOURS.toMillis(25))
         assertEquals(1, all("POST", WITHDRAW_PATH).size)
         assertTrue(has(WalletTags.PENDING_CARD))
-        // 确认：原键、原体重发（这次 10003 → 面板 → 带 token 再确认）
+        // 确认：原键、原体重发（D10-2902：提现免二次验证，确认直接成功，不再经 10003 → 面板）
         synchronized(answers) { answers.remove(WITHDRAW_PATH) }
         click(WalletTags.PENDING_CONFIRM)
-        passStepUp()
         idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
         val confirms = all("POST", WITHDRAW_PATH).drop(1)
         assertTrue(confirms.isNotEmpty())
         confirms.forEach {
             assertEquals(header(first, "Idempotency-Key"), header(it, "Idempotency-Key"))
             assertEquals(first?.body, it.body)
         }
+        assertEquals("确认只发一次", 1, confirms.size)
+        assertWithdrawWithoutStepUp(posts = 2)
     }
 
     @Test
@@ -825,7 +856,7 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         synchronized(answers) { answers[WITHDRAW_PATH] = { MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) } }
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { has(WalletTags.PENDING_CARD) }
+        // D10-2902：提现免二次验证，不再过面板
         idleUntil { has(WalletTags.PENDING_CARD) }
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
         click(WalletTags.PENDING_ABANDON)
@@ -842,9 +873,10 @@ class AppWalletIntegrationTest {
         synchronized(answers) { answers.remove(WITHDRAW_PATH) }
         typeAmount("5")
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
         idleUntil { top()?.name == "WithdrawRecords" }
         assertTrue(header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp(posts = 2)
     }
 
     @Test
@@ -914,15 +946,18 @@ class AppWalletIntegrationTest {
         assertEquals("补办完不自动提交", 1, count("POST", WITHDRAW_PATH))
         assertEquals("10", fieldText(WalletTags.WITHDRAW_INPUT))
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
+        // D10-2902：提现免二次验证，再点直接成功，不再过面板
         idleUntil { top()?.name == "WithdrawRecords" }
         assertTrue("再点用新键", header(all("POST", WITHDRAW_PATH)[1], "Idempotency-Key") != firstKey)
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp(posts = 2)
     }
 
     /**
-     * FU-AND-0716 R2-01：提交的 10003 响应被服务端挂住、晚于「点击 + 固定 5 轮空转」才到达时，[passStepUpWhenShown] 仍等到面板出现并通过它，
-     * 不靠轮次。显式握手：先确认挂住期间固定空转之后面板确实还没出现（旧的 passStepUpIfShown 在这里检查不到面板就返回），再在等待已开始轮询
-     * （[done] 第一次被调用）时放行响应。时间上限（CEILING_MS）只用于失败退出。
+     * 随 FU-AND-WITHDRAW-STEPUP-PANEL-CLEANUP 退役（D10-2902）。原 FU-AND-0716 R2-01：提交的 10003 响应被挂住、晚于「点击 + 固定 5 轮空转」才到达时，
+     * [passStepUpWhenShown] 仍等到面板出现并通过它。提现免二次验证后（B1-02zzzc）改测新行为：提交的成功响应被服务端挂住、晚于固定轮次才到达时，
+     * 等待仍等到它（不靠轮次）；挂住期间不进提现记录、不出面板，在等待已开始轮询时放行，之后直接进提现记录；POST 恰好 1 次、不带 X-Step-Up-Token、
+     * 不发验证码。时间上限（CEILING_MS）只用于失败退出。
      */
     @Test
     fun fuand0716_r2_01_aStepUpAnswerHeldPastTheFixedRoundsIsStillHandled() {
@@ -933,11 +968,9 @@ class AppWalletIntegrationTest {
         val held = CountDownLatch(1)
         synchronized(answers) {
             answers[WITHDRAW_PATH] = { req ->
-                if (req.method == "POST" && req.getHeader("X-Step-Up-Token") == null) {
+                if (req.method == "POST") {
                     arrived.countDown()
                     held.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS)
-                    envelope("null", code = 10003)
-                } else if (req.method == "POST") {
                     submitAnswer(last("POST", WITHDRAW_PATH)!!)
                 } else {
                     defaultAnswer(last(req.method.orEmpty(), WITHDRAW_PATH)!!)
@@ -948,21 +981,19 @@ class AppWalletIntegrationTest {
             click(WalletTags.WITHDRAW_SUBMIT)
             assertTrue("提交已到服务端、响应挂住", arrived.await(FlowWait.CEILING_MS, TimeUnit.MILLISECONDS))
             settle()
-            assertFalse("挂住期间固定空转之后面板还没出现", has(WalletTags.STEP_UP_CODE))
+            assertFalse("挂住期间固定空转之后没有面板", has(WalletTags.STEP_UP_CODE))
+            assertEquals("挂住期间不进提现记录", "Withdraw", top()?.name)
             var released = false
-            passStepUpWhenShown {
+            idleUntil {
                 if (!released) {
                     released = true
                     held.countDown()
                 }
                 top()?.name == "WithdrawRecords"
             }
-            idleUntil { top()?.name == "WithdrawRecords" }
             assertTrue("等待开始轮询后才放行", released)
-            val posts = all("POST", WITHDRAW_PATH)
-            assertEquals("一次无 token、一次带 token", 2, posts.size)
-            assertNull(header(posts[0], "X-Step-Up-Token"))
-            assertNotNull("面板已被通过、带 token 重发", header(posts[1], "X-Step-Up-Token"))
+            walletCallsSettled()
+            assertWithdrawWithoutStepUp()
         } finally {
             held.countDown()
         }
@@ -1183,40 +1214,30 @@ class AppWalletIntegrationTest {
         assertFalse(has(WalletTags.WITHDRAW_ESTIMATE))
     }
 
+    /**
+     * D10-2902 改判 b 类。原测提现面板：不满 6 位不能验证、输错码提示并清空、输错码不提交（POST 仍 1 次）、关闭面板结束本次键（下次新键）。提现免二次验证后
+     * （B1-02zzzc）提现没有面板这一步，只换掉「过面板」的前置，保留资金事实：一次提交只发一次写；本次键结束后，下一次提交用新键。
+     */
     @Test
     fun stepUpWrongCodeClearsInputAndClosingEndsKeyWithoutSubmitting() {
         launch()
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
-        // 不满 6 位不能验证
-        input(WalletTags.STEP_UP_CODE, "12345")
-        composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).assertIsNotEnabled()
-        input(WalletTags.STEP_UP_CODE, "000000")
-        click(WalletTags.STEP_UP_SUBMIT)
-        idleUntil { has(WalletTags.STEP_UP_ERROR) }
-        assertTrue(texts("验证码错误，请重新输入") > 0)
-        assertEquals("清空输入", "", fieldText(WalletTags.STEP_UP_CODE))
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
         assertEquals(1, count("POST", WITHDRAW_PATH))
-        // 关闭面板：回到编辑态，键不用了（下次新键）
-        composeRule
-            .onNode(
-                androidx.compose.ui.test
-                    .hasContentDescription("关闭") and
-                    androidx.compose.ui.test
-                        .hasAnyAncestor(
-                            androidx.compose.ui.test
-                                .hasTestTag(WalletTags.STEP_UP_SHEET),
-                        ),
-                useUnmergedTree = true,
-            ).performClick()
-        settle()
-        assertFalse(has(WalletTags.STEP_UP_SHEET))
+        assertWithdrawWithoutStepUp()
+        // 本次键已结束（成功）：再开提现页提交，用新键
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
+        assertNotNull(key)
+        openWithdraw()
+        typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
+        idleUntil { count("POST", WITHDRAW_PATH) == 2 && top()?.name == "WithdrawRecords" }
         assertTrue(header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp(posts = 2)
     }
 
     /** 共性第 50 条：成功后的出栈 / 替换只作用于发起页的那一个导航实例（回退栈条目），不按路由名。 */
@@ -1245,6 +1266,8 @@ class AppWalletIntegrationTest {
     /**
      * Android 第 2 轮 R2-11（共性第 48 条，AdaptSheetRules、A11yFocusStepUp）：资金半屏禁止遮罩与下滑关闭，但系统返回关闭最上层半屏，走与关闭按钮
      * 相同的出口（首次提交回到编辑态、本次键不用了）。
+     * D10-2902 改判 b 类：提现免二次验证后（B1-02zzzc）提现没有面板可关，只换掉「过面板、系统返回关面板」的前置，保留资金事实：一次提交只发一次写；
+     * 本次键结束后提交按钮可用，下一次提交用新键。
      */
     @Test
     fun r2_11_systemBackClosesStepUpSheetThroughCloseExit() {
@@ -1252,21 +1275,20 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
         val key = header(last("POST", WITHDRAW_PATH), "Idempotency-Key")
-        composeRule.runOnUiThread {
-            val dialog =
-                org.robolectric.shadows.ShadowDialog
-                    .getLatestDialog() as androidx.activity.ComponentDialog
-            dialog.onBackPressedDispatcher.onBackPressed()
-        }
-        settle()
-        idleUntil { !has(WalletTags.STEP_UP_SHEET) }
-        assertEquals("关闭不发请求", 1, count("POST", WITHDRAW_PATH))
+        assertNotNull(key)
+        assertEquals("提交只发一次（原「关闭不发请求」）", 1, count("POST", WITHDRAW_PATH))
+        assertWithdrawWithoutStepUp()
+        openWithdraw()
+        typeAmount("10")
         composeRule.onNodeWithTag(WalletTags.WITHDRAW_SUBMIT, useUnmergedTree = true).assertIsEnabled()
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
+        idleUntil { count("POST", WITHDRAW_PATH) == 2 && top()?.name == "WithdrawRecords" }
         assertTrue("与关闭按钮同一出口：下次用新键", header(last("POST", WITHDRAW_PATH), "Idempotency-Key") != key)
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp(posts = 2)
     }
 
     @Test
@@ -1348,18 +1370,15 @@ class AppWalletIntegrationTest {
         launch()
         openWithdraw()
         typeAmount("10")
-        // 提交先过二次验证；重放的那次延迟后回网关错误页（结果未知）
-        click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
+        // 提交延迟后回网关错误页（结果未知）。D10-2902：提现免二次验证，不再先过面板；在途的那一笔从「面板后的原键重放」变成首发
         synchronized(answers) {
             answers[WITHDRAW_PATH] = {
                 MockResponse().setResponseCode(502).setBody("<html>bad gateway</html>").setBodyDelay(LATE_MS, TimeUnit.MILLISECONDS)
             }
         }
-        input(WalletTags.STEP_UP_CODE, "123456")
-        click(WalletTags.STEP_UP_SUBMIT)
-        // FU-AND-0716 窄修二：验证在后台，通过后才发原键重放；原写法点完固定轮次就离页，验证晚到时重放根本没发出。等重放已经发起（在途）再离开
-        idleUntil { flows.started(::isSubmit) >= 2 }
+        click(WalletTags.WITHDRAW_SUBMIT)
+        // 等提交已经发起（在途）再离开
+        idleUntil { flows.started(::isSubmit) >= 1 }
         // 在途时离开提现页，再进一个新的提现页
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
@@ -1375,6 +1394,7 @@ class AppWalletIntegrationTest {
                     .getOrNull(SemanticsProperties.Disabled) == null
         }
         composeRule.onNodeWithTag(WalletTags.PENDING_CONFIRM, useUnmergedTree = true).assertIsEnabled()
+        assertWithdrawWithoutStepUp()
     }
 
     @Test
@@ -1421,32 +1441,19 @@ class AppWalletIntegrationTest {
         composeRule.runOnUiThread { assertTrue(wallet.gates.read.active) }
     }
 
+    /**
+     * 随 FU-AND-WITHDRAW-STEPUP-PANEL-CLEANUP 退役（D10-2902）。原测重开提现面板时不再发码、共用倒计时；提现免二次验证后（B1-02zzzc）改测新行为：
+     * 提交直接成功进提现记录，不出面板、不发验证码，POST 恰好 1 次、不带 X-Step-Up-Token。
+     */
     @Test
     fun lesson6_smsCountdownIsSharedAcrossReopenedPanels() {
         launch()
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
-        assertEquals(1, count("POST", SMS_PATH))
-        composeRule
-            .onNode(
-                androidx.compose.ui.test
-                    .hasContentDescription("关闭") and
-                    androidx.compose.ui.test
-                        .hasAnyAncestor(
-                            androidx.compose.ui.test
-                                .hasTestTag(WalletTags.STEP_UP_SHEET),
-                        ),
-                useUnmergedTree = true,
-            ).performClick()
-        settle()
-        // 重开面板：同一账号、号码、action 的截止时间没到，不再发码，恢复倒计时
-        click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
-        assertEquals(1, count("POST", SMS_PATH))
-        // test-change APP-09v-d（W67 / G-W19 / G-W26）：半屏倒计时改取 login.code.countdown「{n} 秒后可重新获取」
-        assertTrue(texts("秒后可重新获取") > 0)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp()
     }
 
     @Test
@@ -1872,20 +1879,27 @@ class AppWalletIntegrationTest {
         composeRule.runOnUiThread { assertTrue(wallet.realnameVerified()) }
     }
 
-    /** 共性第 11、33 条：常规高度时三段布局（中段滚动、底部操作区固定），不降级。 */
+    /**
+     * 共性第 11、33 条：常规高度时三段布局（中段滚动、底部操作区固定），不降级。
+     * 随 FU-AND-WITHDRAW-STEPUP-PANEL-CLEANUP 退役（D10-2902）：提现免二次验证后（B1-02zzzc）提现不再出面板，改测新行为——提交直接成功进提现记录，
+     * 不出面板、不发验证码，POST 恰好 1 次、不带 X-Step-Up-Token。半屏布局在 StepUpVisual* 端口级测试里另有覆盖。
+     */
     @Test
     fun lesson33_stepUpSheetKeepsThreePartsWhenItFits() {
         launch()
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
-        assertTrue(has(WalletTags.SHEET_MIDDLE))
-        assertFalse(has(WalletTags.SHEET_FALLBACK))
-        composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).assertIsDisplayed()
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp()
     }
 
-    /** 共性第 33 条：短窗口 + 200% 字号，三段最小高放不下 → 整块滚动降级，标题、关闭与【验证并提交】都可达。 */
+    /**
+     * 共性第 33 条：短窗口 + 200% 字号，三段最小高放不下 → 整块滚动降级，标题、关闭与【验证并提交】都可达。
+     * 随 FU-AND-WITHDRAW-STEPUP-PANEL-CLEANUP 退役（D10-2902）：提现免二次验证后（B1-02zzzc）改测新行为——短窗口 + 200% 字号下提交直接成功进提现记录，
+     * 不出面板、不发验证码，POST 恰好 1 次、不带 X-Step-Up-Token。
+     */
     @Test
     @Config(qualifiers = "w320dp-h360dp-xxhdpi", fontScale = 2.0f)
     fun lesson33_stepUpSheetFallsBackToWholeScrollOnShortWindowLargeText() {
@@ -1893,13 +1907,9 @@ class AppWalletIntegrationTest {
         openWithdraw()
         typeAmount("10")
         click(WalletTags.WITHDRAW_SUBMIT)
-        idleUntil { stepUpReady() }
-        idleUntil { has(WalletTags.SHEET_FALLBACK) }
-        composeRule.onNodeWithTag(WalletTags.STEP_UP_CLOSE, useUnmergedTree = true).assertExists()
-        composeRule.onNodeWithTag(WalletTags.STEP_UP_SUBMIT, useUnmergedTree = true).performScrollTo().assertIsDisplayed()
-        input(WalletTags.STEP_UP_CODE, "123456")
-        click(WalletTags.STEP_UP_SUBMIT)
         idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        assertWithdrawWithoutStepUp()
     }
 
     // ---------------------------------------------------------------- Android 第 3 轮（共性第 53、55–57 条）的 App 接线
@@ -1915,10 +1925,11 @@ class AppWalletIntegrationTest {
         typeAmount("10")
         val before = count("GET", SUMMARY_PATH)
         click(WalletTags.WITHDRAW_SUBMIT)
-        passStepUpWhenShown { top()?.name == "WithdrawRecords" }
+        // D10-2902：提现免二次验证，不再过面板
         idleUntil { top()?.name == "WithdrawRecords" }
         idleUntil { count("GET", SUMMARY_PATH) > before }
         assertEquals("钱包页不在栈顶也已重取", "WithdrawRecords", top()?.name)
+        assertWithdrawWithoutStepUp()
     }
 
     /** R3-04（共性第 55 条）：记录页经真实 OnReturn 回流时共享限流中，保留列表并显示 42901 错误条，【重试】置灰。 */
@@ -2061,8 +2072,13 @@ class AppWalletIntegrationTest {
         settle()
     }
 
-    /** F-AND-41 的钱包端口包装：createWithdrawal 在入口同步记下幂等键（写请求计数）；[hold] 非空时响应拿到之后先挂住（迟到的成功）。 */
-    private class WithdrawWrites {
+    /**
+     * F-AND-41 的钱包端口包装：[operation]（缺省 createWithdrawal）在入口同步记下幂等键（写请求计数）；[hold] 非空时响应拿到之后先挂住（迟到的成功）。
+     * D10-2902：挪到收款账号上的用例传 savePayoutAccount。
+     */
+    private class WithdrawWrites(
+        private val operation: String = WITHDRAW_OPERATION,
+    ) {
         val keys = mutableListOf<String?>()
 
         @Volatile var hold: kotlinx.coroutines.CompletableDeferred<Unit>? = null
@@ -2072,7 +2088,7 @@ class AppWalletIntegrationTest {
         fun wrap(inner: WalletApi): WalletApi =
             object : WalletApi by inner {
                 override suspend fun send(call: ApiCall): ApiResult {
-                    if (call.operationId != WITHDRAW_OPERATION) return inner.send(call)
+                    if (call.operationId != operation) return inner.send(call)
                     synchronized(keys) { keys += call.idempotencyKey }
                     val result = inner.send(call)
                     hold?.await()
@@ -2182,6 +2198,40 @@ class AppWalletIntegrationTest {
         typeAndSubmit(model, "10")
         walletCallsSettled()
     }
+
+    /** D10-2902：收款账号页这一回退栈条目上的 ViewModel（页面组合时建好的那一个，这里只取不建；同 [withdrawModel]）。 */
+    private fun payoutModel(entry: androidx.navigation.NavBackStackEntry): com.couli.feature.wallet.PayoutAccountViewModel =
+        androidx.lifecycle
+            .ViewModelProvider(
+                entry,
+                object : androidx.lifecycle.ViewModelProvider.Factory {
+                    override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = error("收款账号页的 ViewModel 应已由页面建好")
+                },
+            )[com.couli.feature.wallet.PayoutAccountViewModel::class.java]
+
+    /** 收款账号页此刻是可填写、可保存的表单（未绑定：读取完成即进表单）。 */
+    private fun payoutEditable(entry: androidx.navigation.NavBackStackEntry): Boolean =
+        runCatching {
+            val controller = payoutModel(entry).controller
+            val state = controller.state.value
+            state.phase == com.couli.feature.wallet.PayoutSnapshot.CONTENT &&
+                state.editing &&
+                controller.flow.state.value.canSubmit
+        }.getOrDefault(false)
+
+    /** 经页面控件同一回调入口填支付宝账号与收款人并点【保存】（宿主 STARTED 时节点查找不可用；回调带此刻的表单身份）。 */
+    private fun fillAndSavePayout(model: com.couli.feature.wallet.PayoutAccountViewModel) {
+        composeRule.runOnUiThread {
+            val controller = model.controller
+            controller.onLogonChange(PAYOUT_LOGON_FIXTURE, controller.flow.owner)
+            controller.onPayeeChange(PAYOUT_PAYEE_FIXTURE, controller.flow.owner)
+        }
+        settle()
+        composeRule.runOnUiThread { model.controller.save(model.controller.flow.owner) }
+        settle()
+    }
+
+    private fun isPayoutSave(call: ApiCall): Boolean = call.operationId == PAYOUT_SAVE_OPERATION
 
     @SuppressLint("RestrictedApi")
     private fun recordsParams(): String? =
@@ -2437,8 +2487,8 @@ class AppWalletIntegrationTest {
     /**
      * F-AND-42 ①（FU-AND-0718 评审 r1 R1-03）：提现页在入场转场里（宿主 STARTED，页面从未 ON_RESUME）提交，服务端回 10003。首次 ON_RESUME 之后应当弹出
      * 二次验证面板，不得静默要求用户再点一次【提交】。之后走完面板：沿用原键、原体重放 1 次后成功进提现记录。
-     * - 面板弹出本身不发写请求：通过面板之前 createWithdrawal 仍为 1；
-     * - 写请求总数恰好 2（原键首发 + 二次验证后的原键重放），两次幂等键相同，不出现第三次。
+     * D10-2902（提现免二次验证，B1-02zzzc）：提现不再回 10003，本例改为——入场转场里提交、成功先到，首次 ON_RESUME 后进提现记录；写请求只发一次，
+     * 键与请求体就是首次那份（金额 1000 分），不出面板。原「10003 → 首次 ON_RESUME 弹面板 → 原键原体重放」挪到收款账号：见下一条 _movedFromWithdrawToPayout。
      */
     @Test
     @SuppressLint("RestrictedApi")
@@ -2455,30 +2505,70 @@ class AppWalletIntegrationTest {
         typeAndSubmit(model, "10")
         lateResponsesSettled(1, ::isSubmit)
         assertEquals("前提：端口收到 1 次提交", 1, writes.count())
-        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
+        assertEquals("前提：服务端收到 1 次提交（不带 token，直接成功）", 1, count("POST", WITHDRAW_PATH))
         assertEquals("前提：仍在 STARTED", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
         hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
         assertEquals("前提：提现页已 ON_RESUME", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
-        assertTrue("首次 ON_RESUME 后弹出二次验证面板（不要求用户再点【提交】）", appears { has(WalletTags.STEP_UP_CODE) })
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        val keys = synchronized(writes.keys) { writes.keys.toList() }
+        assertEquals("写请求只发一次（没有二次验证后的重放）", 1, keys.size)
+        val submits = all("POST", WITHDRAW_PATH)
+        assertEquals("键就是首发那份", keys[0], header(submits[0], "Idempotency-Key"))
+        assertNull(header(submits[0], "X-Step-Up-Token"))
+        // 第 2 版（评审 T-04）：金额是最初提交的 1000 分（请求体就是首次那份）
+        assertEquals("1000", body(submits[0])["amount_fen"]?.jsonPrimitive?.content)
+        assertWithdrawWithoutStepUp()
+    }
+
+    /**
+     * 原在提现上（fand42_aStepUpAnsweredDuringTheEntryTransitionOpensThePanelOnTheFirstResume），提现免二次验证后挪至收款账号（D10-2902，B1-02zzzc）：
+     * 收款账号页在入场转场里（宿主 STARTED，页面从未 ON_RESUME）保存，服务端回 10003。首次 ON_RESUME 之后弹出二次验证面板，不要求用户再点【保存】。
+     * 走完面板：沿用原键、原体、带 token 重放 1 次后成功。
+     * - 面板弹出本身不发写请求：通过面板之前 savePayoutAccount 仍为 1；
+     * - 写请求总数恰好 2（原键首发 + 二次验证后的原键重放），两次幂等键相同，不出现第三次。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand42_aStepUpAnsweredDuringTheEntryTransitionOpensThePanelOnTheFirstResume_movedFromWithdrawToPayout() {
+        val writes = WithdrawWrites(PAYOUT_SAVE_OPERATION)
+        payoutBound = false
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("PayoutAccount")
+        idleUntil { top()?.name == "PayoutAccount" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { payoutEditable(entry) }
+        assertEquals("前提：收款账号页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        fillAndSavePayout(payoutModel(entry))
+        lateResponsesSettled(1, ::isPayoutSave)
+        assertEquals("前提：端口收到 1 次保存", 1, writes.count())
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("PUT", PAYOUT_PATH))
+        assertEquals("前提：仍在 STARTED", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：收款账号页已 ON_RESUME", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        assertTrue("首次 ON_RESUME 后弹出二次验证面板（不要求用户再点【保存】）", appears { has(WalletTags.STEP_UP_CODE) })
         walletCallsSettled()
         assertEquals("面板弹出本身不发写请求", 1, writes.count())
         passStepUp()
-        idleUntil { top()?.name == "WithdrawRecords" }
+        idleUntil { has(WalletTags.PAYOUT_BOUND) }
         walletCallsSettled()
         val keys = synchronized(writes.keys) { writes.keys.toList() }
         assertEquals("写请求恰好 2：首发 + 二次验证后的重放", 2, keys.size)
         assertEquals("重放沿用原键", keys[0], keys[1])
-        val submits = all("POST", WITHDRAW_PATH)
-        assertNull(header(submits[0], "X-Step-Up-Token"))
-        assertNotNull(header(submits[1], "X-Step-Up-Token"))
-        // 第 2 版（评审 T-04）：续发沿用原请求体，金额是最初提交的 1000 分
-        assertEquals("续发沿用原请求体", submits[0].body, submits[1].body)
-        assertEquals("1000", body(submits[1])["amount_fen"]?.jsonPrimitive?.content)
+        val saves = all("PUT", PAYOUT_PATH)
+        assertNull(header(saves[0], "X-Step-Up-Token"))
+        assertNotNull(header(saves[1], "X-Step-Up-Token"))
+        assertEquals("续发沿用原请求体", saves[0].body, saves[1].body)
+        assertEquals(PAYOUT_LOGON_FIXTURE, body(saves[1])["alipay_logon_id"]?.jsonPrimitive?.content)
     }
 
     /**
      * 第 2 版（评审 T-03）对照：提现页曾经 RESUMED（可见过），之后宿主到 STARTED（ON_PAUSE）时提交、收到 10003；宿主回到 RESUMED 后**不**自动弹二次验证
      * 面板、**不**自动续发（既有 lesson37 口径：只有入场转场里、页面从未可见时发出的才在首次 ON_RESUME 弹）。用户再点【提交】才继续：沿用原键，出现面板。
+     * D10-2902（提现免二次验证，B1-02zzzc）：提现不再回 10003，本例改为——暂停时提交、成功在暂停时到达，回来不自动续发，进这一笔的提现记录；暂停期间
+     * 本页再点不发，写请求始终只发一次，键与请求体就是首次那份，不出面板。原「暂停时收到 10003、用户再点沿用原键」挪到收款账号：见下一条
+     * _movedFromWithdrawToPayout。
      */
     @Test
     @SuppressLint("RestrictedApi")
@@ -2495,22 +2585,65 @@ class AppWalletIntegrationTest {
         typeAndSubmit(model, "10")
         lateResponsesSettled(1, ::isSubmit)
         assertEquals("前提：端口收到 1 次提交", 1, writes.count())
+        assertEquals("暂停时成功到达：先不导航", "Withdraw", top()?.name)
+        tryResubmit(model)
+        assertEquals("成功之后本页再点不发", 1, writes.count())
         hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
         assertEquals("前提：提现页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        assertEquals("回来不自动续发", 1, writes.count())
+        assertFalse("发起页已移除", stack().contains("Withdraw"))
+        val submits = all("POST", WITHDRAW_PATH)
+        val firstKey = synchronized(writes.keys) { writes.keys.first() }
+        assertEquals("键就是首发那份", firstKey, header(submits[0], "Idempotency-Key"))
+        assertEquals("请求体就是首次那份", """{"amount_fen":1000}""", submits[0].body)
+        assertWithdrawWithoutStepUp()
+    }
+
+    /**
+     * 原在提现上（fand42_t03_aStepUpAnsweredWhilePausedAfterBeingVisibleWaitsForTheUserOnReturn），提现免二次验证后挪至收款账号（D10-2902，B1-02zzzc）：
+     * 收款账号页曾经 RESUMED（可见过），之后宿主到 STARTED（ON_PAUSE）时保存、收到 10003；宿主回到 RESUMED 后**不**自动弹二次验证面板、**不**自动续发，
+     * 仍在收款账号页。用户再点【保存】才继续：沿用原键、原请求体，出现面板。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand42_t03_aStepUpAnsweredWhilePausedAfterBeingVisibleWaitsForTheUserOnReturn_movedFromWithdrawToPayout() {
+        val writes = WithdrawWrites(PAYOUT_SAVE_OPERATION)
+        payoutBound = false
+        launch(wrapApi = writes::wrap)
+        open("PayoutAccount")
+        idleUntil { top()?.name == "PayoutAccount" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { payoutEditable(entry) && entry.lifecycle.currentState == androidx.lifecycle.Lifecycle.State.RESUMED }
+        val model = payoutModel(entry)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        assertEquals("前提：收款账号页已 ON_PAUSE（STARTED）", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        fillAndSavePayout(model)
+        lateResponsesSettled(1, ::isPayoutSave)
+        assertEquals("前提：端口收到 1 次保存", 1, writes.count())
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("PUT", PAYOUT_PATH))
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：收款账号页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
         walletCallsSettled()
         assertFalse("曾可见、暂停时收到的 10003：回来不自动弹面板", has(WalletTags.STEP_UP_CODE))
         assertEquals("回来不自动续发", 1, writes.count())
-        assertEquals("仍在提现页", "Withdraw", top()?.name)
-        click(WalletTags.WITHDRAW_SUBMIT)
-        assertTrue("用户再点【提交】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
+        assertEquals("仍在收款账号页", "PayoutAccount", top()?.name)
+        click(WalletTags.PAYOUT_SAVE)
+        assertTrue("用户再点【保存】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
         val keys = synchronized(writes.keys) { writes.keys.toList() }
         assertTrue("用户再点才发、沿用原键：$keys", keys.size >= 2 && keys.distinct().size == 1)
+        val saves = all("PUT", PAYOUT_PATH)
+        assertEquals("用户再点沿用原请求体", saves[0].body, saves[1].body)
     }
 
     /**
      * FU-AND-0720 / F-AND-45 R1-02：提现页在入场转场里（宿主 STARTED，页面从未 ON_RESUME）提交，响应挂住；页面随后首次 ON_RESUME（可见过），再被覆盖
      * （宿主到 STARTED，页面 ON_PAUSE）；这时 10003 才到达；宿主回到 RESUMED。「发出时从未可见」的标记应在首次可见后失效，所以回来时**不**自动弹二次验证
      * 面板、不自动续发、仍在提现页（与 T-03 / lesson37 同一口径：可见过之后被覆盖时收到的 10003 等用户再点）。用户再点【提交】才出现面板，沿用原键。
+     * D10-2902（提现免二次验证，B1-02zzzc）：提现不再回 10003，本例改为——入场发出 → 已可见 → 被覆盖 → 这时成功才到：被覆盖期间不导航、本页再点不发；
+     * 回来不自动续发，进这一笔的提现记录；写请求始终只发一次，键与请求体就是首次那份，不出面板。原「被覆盖时收到 10003、用户再点恰好第 2 次且沿用原键」
+     * 挪到收款账号：见下一条 _movedFromWithdrawToPayout。
      */
     @Test
     @SuppressLint("RestrictedApi")
@@ -2536,25 +2669,75 @@ class AppWalletIntegrationTest {
         gate.complete(Unit)
         lateResponsesSettled(1, ::isSubmit)
         assertEquals("前提：端口收到 1 次提交", 1, writes.count())
-        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
+        assertEquals("前提：服务端收到 1 次提交（不带 token，直接成功）", 1, count("POST", WITHDRAW_PATH))
+        assertEquals("被覆盖时成功到达：先不导航", "Withdraw", top()?.name)
+        tryResubmit(model)
+        assertEquals("成功之后本页再点不发", 1, writes.count())
         hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
         assertEquals("前提：提现页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        idleUntil { top()?.name == "WithdrawRecords" }
+        walletCallsSettled()
+        assertEquals("回来不自动续发", 1, writes.count())
+        assertFalse("发起页已移除", stack().contains("Withdraw"))
+        val submits = all("POST", WITHDRAW_PATH)
+        val firstKey = synchronized(writes.keys) { writes.keys.first() }
+        assertEquals("键就是首发那份", firstKey, header(submits[0], "Idempotency-Key"))
+        assertEquals("请求体就是首次那份", """{"amount_fen":1000}""", submits[0].body)
+        assertWithdrawWithoutStepUp()
+    }
+
+    /**
+     * 原在提现上（fand45_r102_aStepUpSentDuringTheEntryTransitionButAnsweredAfterTheFirstResumeAndACoverWaitsForTheUser），提现免二次验证后挪至收款账号
+     * （D10-2902，B1-02zzzc）：收款账号页在入场转场里（宿主 STARTED）保存，响应挂住；页面随后首次 ON_RESUME（可见过），再被覆盖（ON_PAUSE）；这时 10003
+     * 才到达；宿主回到 RESUMED。回来时**不**自动弹二次验证面板、不自动续发、仍在收款账号页。用户再点【保存】才出现面板：恰好第 2 次，沿用原键、原请求体。
+     */
+    @Test
+    @SuppressLint("RestrictedApi")
+    fun fand45_r102_aStepUpSentDuringTheEntryTransitionButAnsweredAfterTheFirstResumeAndACoverWaitsForTheUser_movedFromWithdrawToPayout() {
+        val writes = WithdrawWrites(PAYOUT_SAVE_OPERATION)
+        payoutBound = false
+        launch(wrapApi = writes::wrap)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        open("PayoutAccount")
+        idleUntil { top()?.name == "PayoutAccount" }
+        val entry = navController.currentBackStackEntry!!
+        idleUntil { payoutEditable(entry) }
+        assertEquals("前提：收款账号页还没有 ON_RESUME", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        val model = payoutModel(entry)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        writes.hold = gate
+        fillAndSavePayout(model)
+        idleUntil { writes.count() == 1 }
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：收款账号页首次 ON_RESUME（可见过）", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
+        hostTo(androidx.lifecycle.Lifecycle.State.STARTED)
+        assertEquals("前提：收款账号页被覆盖（ON_PAUSE）", androidx.lifecycle.Lifecycle.State.STARTED, entry.lifecycle.currentState)
+        writes.hold = null
+        gate.complete(Unit)
+        lateResponsesSettled(1, ::isPayoutSave)
+        assertEquals("前提：端口收到 1 次保存", 1, writes.count())
+        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("PUT", PAYOUT_PATH))
+        hostTo(androidx.lifecycle.Lifecycle.State.RESUMED)
+        assertEquals("前提：收款账号页回到 RESUMED", androidx.lifecycle.Lifecycle.State.RESUMED, entry.lifecycle.currentState)
         walletCallsSettled()
         assertFalse("入场发出→已可见→被覆盖→10003 到达：回来不自动弹二次验证面板", has(WalletTags.STEP_UP_CODE))
         assertEquals("回来不自动续发", 1, writes.count())
-        assertEquals("仍在提现页", "Withdraw", top()?.name)
-        click(WalletTags.WITHDRAW_SUBMIT)
-        assertTrue("用户再点【提交】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
-        // 第 2 版（评审 T-04）：等这一阶段的调用全部结算后取快照：恰好 2 次（首发 + 用户再点），沿用原键
+        assertEquals("仍在收款账号页", "PayoutAccount", top()?.name)
+        click(WalletTags.PAYOUT_SAVE)
+        assertTrue("用户再点【保存】后出现二次验证面板", appears { has(WalletTags.STEP_UP_CODE) })
+        // 等这一阶段的调用全部结算后取快照：恰好 2 次（首发 + 用户再点），沿用原键、原请求体
         walletCallsSettled()
         val keys = synchronized(writes.keys) { writes.keys.toList() }
         assertEquals("用户再点恰好发出第 2 次：$keys", 2, keys.size)
         assertEquals("用户再点沿用原键", keys[0], keys[1])
+        val saves = all("PUT", PAYOUT_PATH)
+        assertEquals("用户再点沿用原请求体", saves[0].body, saves[1].body)
     }
 
     /**
      * R1-02 对照（不得因清标记退化 F-AND-42 ①）：同样在入场转场里提交、响应挂住；页面首次 ON_RESUME 之后**一直可见**，10003 在可见期间到达——不要求
      * 用户再点【提交】，二次验证面板出现；面板弹出本身不发写请求。
+     * D10-2902（提现免二次验证，B1-02zzzc）：提现不再回 10003，本例改为——可见期间成功到达，不要求用户再点，直接进这一笔的提现记录；不出面板；写请求 1 次。
      */
     @Test
     @SuppressLint("RestrictedApi")
@@ -2577,10 +2760,12 @@ class AppWalletIntegrationTest {
         writes.hold = null
         gate.complete(Unit)
         lateResponsesSettled(1, ::isSubmit)
-        assertEquals("前提：服务端回 10003（还没有 token）", 1, count("POST", WITHDRAW_PATH))
-        assertTrue("入场发出、可见期间收到 10003：弹出二次验证面板（不要求用户再点【提交】）", appears { has(WalletTags.STEP_UP_CODE) })
+        assertEquals("前提：服务端收到 1 次提交（不带 token，直接成功）", 1, count("POST", WITHDRAW_PATH))
+        idleUntil { top()?.name == "WithdrawRecords" }
+        assertTrue("入场发出、可见期间成功到达：进这一笔的提现记录（不要求用户再点【提交】）", recordsParams().orEmpty().contains("W2026101200101"))
         walletCallsSettled()
-        assertEquals("面板弹出本身不发写请求", 1, writes.count())
+        assertEquals("写请求只发一次", 1, writes.count())
+        assertWithdrawWithoutStepUp()
     }
 
     /**
@@ -2657,6 +2842,19 @@ class AppWalletIntegrationTest {
     private fun passStepUpWhenShown(done: () -> Boolean) {
         idleUntil { has(WalletTags.STEP_UP_CODE) || done() }
         if (has(WalletTags.STEP_UP_CODE)) passStepUp()
+    }
+
+    /**
+     * D10-2902（提现免二次验证，B1-02zzzc）：到此为止提现写请求恰好 [posts] 次、每次都不带 X-Step-Up-Token；从没出过二次验证面板（不发验证码、不调
+     * step-up，此刻也没有面板）。只核这几条新契约事实，各用例的资金断言仍在用例里逐条写。
+     */
+    private fun assertWithdrawWithoutStepUp(posts: Int = 1) {
+        val submits = all("POST", WITHDRAW_PATH)
+        assertEquals("提现写请求次数", posts, submits.size)
+        submits.forEach { assertNull("提现不带 X-Step-Up-Token", header(it, "X-Step-Up-Token")) }
+        assertEquals("不发二次验证码", 0, count("POST", SMS_PATH))
+        assertEquals("不调 step-up", 0, count("POST", STEP_UP_PATH))
+        assertFalse("不出二次验证面板", has(WalletTags.STEP_UP_SHEET))
     }
 
     private fun switchSession(user: String?) {
@@ -2794,8 +2992,8 @@ class AppWalletIntegrationTest {
             }
         }
 
+    /** 提现提交（D10-2902，B1-02zzzc）：提现免二次验证，服务端不再对提现回 10003，带不带 X-Step-Up-Token 都按原逻辑回结果；带不带由各用例自己断言。 */
     private fun submitAnswer(request: Recorded): MockResponse {
-        if (header(request, "X-Step-Up-Token") == null) return envelope("null", code = 10003)
         val data = RECORDS.first().replace("W2026101200001", "W2026101200101")
         header(request, "Idempotency-Key")?.let { issued[it] = data }
         return envelope(data)
@@ -2863,6 +3061,11 @@ class AppWalletIntegrationTest {
         const val GET_ME_OPERATION = "getMe"
         const val RULES_OPERATION = "getWithdrawRules"
         const val WITHDRAW_OPERATION = "createWithdrawal"
+
+        /** D10-2902：「10003 之后原键、原体重放」挪到收款账号保存上（savePayoutAccount 仍带二次验证）。 */
+        const val PAYOUT_SAVE_OPERATION = com.couli.feature.wallet.PayoutAccountController.OPERATION
+        const val PAYOUT_LOGON_FIXTURE = "fixture@example.com"
+        const val PAYOUT_PAYEE_FIXTURE = "测试三"
         const val LATE_MS = 800L
         const val FOCUS_WAIT_MS = 300L
 
