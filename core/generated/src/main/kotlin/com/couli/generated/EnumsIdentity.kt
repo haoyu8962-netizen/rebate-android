@@ -398,7 +398,6 @@ object SmsPurposeSerializer : KSerializer<SmsPurpose> {
 enum class StepUpAction(
     val raw: kotlin.String,
 ) {
-    WITHDRAW("withdraw"),
     PAYOUT_ACCOUNT_CHANGE("payout_account_change"),
     PHONE_CHANGE("phone_change"),
     ACCOUNT_DELETION("account_deletion"),
@@ -409,7 +408,6 @@ enum class StepUpAction(
         /** 契约顺序的全部已知取值，不含 [UNKNOWN]。 */
         val known: kotlin.collections.List<StepUpAction> =
             listOf(
-                WITHDRAW,
                 PAYOUT_ACCOUNT_CHANGE,
                 PHONE_CHANGE,
                 ACCOUNT_DELETION,

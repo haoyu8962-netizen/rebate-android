@@ -1262,10 +1262,50 @@ HTTP_METHODS = ["get", "post", "put", "patch", "delete"]
 MIN_VERSION_GATES = {True: "GATED", False: "EXEMPT", "conditional": "CONDITIONAL", None: "UNSPECIFIED"}
 OPERATION_EXTENSIONS = {
     "x-auth", "x-signed", "x-idempotent", "x-step-up", "x-error-codes", "x-session-scopes",
-    "x-min-version-gate", "x-implementation",
+    "x-min-version-gate", "x-implementation", "x-sensitive-operation",
 }
 # CT-LOCK-01：后台接口（/admin/v1/*，x-auth admin / super）不给 App 生成，登记表只收客户端路径（与鸿蒙同口径）。
 EXCLUDED_PATH_PREFIXES = ("/admin/",)
+# FU-AND-CONTRACT-LOCK-6c97062：敏感操作（x-sensitive-operation: true）→ 放弃上一笔用的 action
+# （POST /v1/idempotency-keys/abandon 的 AbandonIdempotencyKeyRequest.action）。
+# 出处：openapi.yaml abandonIdempotencyKey 的 description（"action (IdempotencyAbandonAction: withdraw → POST
+# /v1/withdrawals, …)"）与 components.schemas.IdempotencyAbandonAction（"one per x-sensitive-operation operation"）。
+# 契约没有机器可读的对照字段，只好内置；生成时与契约核对（check_sensitive_abandon_actions），对不上就 GenError。
+# FU-CT-SENSITIVE-ABANDON-ACTION：契约改成机器可读字段后删表。
+SENSITIVE_ABANDON_ACTIONS = {
+    ("POST", "/v1/withdrawals"): "withdraw",
+    ("PUT", "/v1/me/payout-account"): "payout_account_change",
+    ("POST", "/v1/me/phone"): "phone_change",
+    ("POST", "/v1/me/deletion"): "account_deletion",
+}
+
+
+def check_sensitive_abandon_actions(data: dict, sensitive_ops: set) -> None:
+    """表与契约逐项核对（fail-closed）：带 x-sensitive-operation 的操作在表里恰好一项；表里不得有契约里
+    不存在或不带 x-sensitive-operation 的操作；action 互不相同、都在 IdempotencyAbandonAction 枚举里，
+    且枚举的每个取值都有对应操作（枚举说明：one per x-sensitive-operation operation）。"""
+    schema = data.get("components", {}).get("schemas", {}).get("IdempotencyAbandonAction")
+    if not isinstance(schema, dict):
+        raise GenError("openapi.json 缺 components.schemas.IdempotencyAbandonAction（放弃动作表无从核对）")
+    allowed = schema.get("enum")
+    if not isinstance(allowed, list) or not allowed or not all(isinstance(v, str) for v in allowed):
+        raise GenError(f"openapi.json IdempotencyAbandonAction.enum 不是非空字符串数组：{allowed!r}")
+    table = set(SENSITIVE_ABANDON_ACTIONS)
+    for method, path in sorted(sensitive_ops - table):
+        raise GenError(f"openapi.json {method} {path} 带 x-sensitive-operation，但 gen.py SENSITIVE_ABANDON_ACTIONS 没有它")
+    for method, path in sorted(table - sensitive_ops):
+        raise GenError(
+            f"gen.py SENSITIVE_ABANDON_ACTIONS 有 {method} {path}，但契约里没有这个客户端操作或它不带 x-sensitive-operation"
+        )
+    actions = list(SENSITIVE_ABANDON_ACTIONS.values())
+    for (method, path), action in SENSITIVE_ABANDON_ACTIONS.items():
+        if action not in allowed:
+            raise GenError(f"gen.py SENSITIVE_ABANDON_ACTIONS 的 {method} {path} → {action!r} 不在 IdempotencyAbandonAction 枚举 {allowed}")
+        if actions.count(action) != 1:
+            raise GenError(f"gen.py SENSITIVE_ABANDON_ACTIONS 的 action {action!r} 对应了不止一个操作")
+    missing = [v for v in allowed if v not in actions]
+    if missing:
+        raise GenError(f"IdempotencyAbandonAction 枚举的 {missing} 在 gen.py SENSITIVE_ABANDON_ACTIONS 里没有对应操作")
 
 
 def gen_api_operations(out_root: str):
@@ -1275,6 +1315,7 @@ def gen_api_operations(out_root: str):
         raise GenError("openapi.json 没有 paths")
     entries = []
     seen = set()
+    sensitive_ops = set()
     for path, item in paths.items():
         if not isinstance(item, dict):
             raise GenError(f"openapi.json paths[{path!r}] 不是对象")
@@ -1307,6 +1348,14 @@ def gen_api_operations(out_root: str):
             step_up = op.get("x-step-up")
             if step_up is not None and not isinstance(step_up, str):
                 raise GenError(f"{where} 的 x-step-up 不是字符串：{step_up!r}")
+            # 契约只写 x-sensitive-operation: true（缺省即非敏感）；写 false 或非布尔都报错，口径变了不悄悄吞掉。
+            sensitive = op.get("x-sensitive-operation", None)
+            if sensitive is not None and sensitive is not True:
+                raise GenError(f"{where} 的 x-sensitive-operation 只接受 true（缺省为非敏感）：{sensitive!r}")
+            abandon_action = None
+            if sensitive:
+                sensitive_ops.add((method.upper(), path))
+                abandon_action = SENSITIVE_ABANDON_ACTIONS.get((method.upper(), path))
             codes = op.get("x-error-codes", [])
             if not isinstance(codes, list) or not all(isinstance(c, int) and not isinstance(c, bool) for c in codes):
                 raise GenError(f"{where} 的 x-error-codes 不是整数列表")
@@ -1332,6 +1381,8 @@ def gen_api_operations(out_root: str):
                     f"                    signed = {kbool(flags['x-signed'])},",
                     f"                    idempotent = {kbool(flags['x-idempotent'])},",
                     f"                    stepUp = {knullable_str(step_up)},",
+                    f"                    sensitiveOperation = {kbool(sensitive)},",
+                    f"                    abandonAction = {knullable_str(abandon_action)},",
                     "                    errorCodes = listOf(" + ", ".join(str(c) for c in codes) + "),",
                     "                    sessionScopes = listOf(" + ", ".join(kstr(v) for v in scopes) + "),",
                     f"                    minVersionGate = ApiMinVersionGate.{MIN_VERSION_GATES[gate_key]},",
@@ -1339,6 +1390,7 @@ def gen_api_operations(out_root: str):
                     "                ),",
                 ]
             )
+    check_sensitive_abandon_actions(data, sensitive_ops)
     lines = [
         "/** openapi 的 x-min-version-gate（BR-ID-01 细则「最低支持版本的接口层拦截」）。 */",
         "enum class ApiMinVersionGate {",
@@ -1370,6 +1422,10 @@ def gen_api_operations(out_root: str):
         "    val idempotent: kotlin.Boolean,",
         "    /** x-step-up 的 action；不需要二次验证为 null。 */",
         "    val stepUp: kotlin.String?,",
+        "    /** x-sensitive-operation: true（敏感操作：幂等键结果未知时不换键、可放弃上一笔）；未标注为 false。 */",
+        "    val sensitiveOperation: kotlin.Boolean,",
+        "    /** 敏感操作放弃上一笔用的 IdempotencyAbandonAction（gen.py 内置表，与契约核对过）；非敏感操作为 null。 */",
+        "    val abandonAction: kotlin.String?,",
         "    val errorCodes: kotlin.collections.List<kotlin.Int>,",
         "    val sessionScopes: kotlin.collections.List<kotlin.String>,",
         "    val minVersionGate: ApiMinVersionGate,",

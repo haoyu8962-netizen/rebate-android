@@ -522,6 +522,8 @@ enum class ExportResource(
     USERS("users"),
     AUDIT_LOGS("audit_logs"),
     TAX_WITHDRAWALS("tax_withdrawals"),
+    LEDGER("ledger"),
+    ORDERS("orders"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -532,6 +534,8 @@ enum class ExportResource(
                 USERS,
                 AUDIT_LOGS,
                 TAX_WITHDRAWALS,
+                LEDGER,
+                ORDERS,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, ExportResource> = known.associateBy { it.raw }
@@ -615,6 +619,7 @@ enum class AuditSystemActor(
     SYSTEM_PAYOUT("system:payout"),
     SYSTEM_LEDGER("system:ledger"),
     SYSTEM_SETTLEMENT("system:settlement"),
+    SYSTEM_SELF_SERVICE("system:self_service"),
     UNKNOWN("__unknown__"),
     ;
 
@@ -626,6 +631,7 @@ enum class AuditSystemActor(
                 SYSTEM_PAYOUT,
                 SYSTEM_LEDGER,
                 SYSTEM_SETTLEMENT,
+                SYSTEM_SELF_SERVICE,
             )
 
         private val byRaw: kotlin.collections.Map<kotlin.String, AuditSystemActor> = known.associateBy { it.raw }
