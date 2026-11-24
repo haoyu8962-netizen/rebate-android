@@ -73,17 +73,36 @@ class CtLock6c97062GeneratedFactsTest {
 
     @Test
     fun abandonActionsCoverTheEnumOneToOneAndMatchTheAbandonDescription() {
-        val schemas = openapi.getValue("components").jsonObject.getValue("schemas").jsonObject
-        val abandonEnum = schemas.getValue("IdempotencyAbandonAction").jsonObject.getValue("enum").jsonArray
+        val schemas =
+            openapi
+                .getValue("components")
+                .jsonObject
+                .getValue("schemas")
+                .jsonObject
+        val abandonEnum =
+            schemas
+                .getValue("IdempotencyAbandonAction")
+                .jsonObject
+                .getValue("enum")
+                .jsonArray
         val enum = abandonEnum.map { it.jsonPrimitive.content }
         val actions = sensitive.map { checkNotNull(it.abandonAction) { "${it.operationId} 缺 abandonAction" } }
         assertEquals("一对一", actions.size, actions.toSet().size)
         assertEquals(enum.toSet(), actions.toSet())
-        assertTrue("非敏感操作没有 abandonAction", ApiOperations.all.values.filterNot { it.sensitiveOperation }.all { it.abandonAction == null })
+        assertTrue(
+            "非敏感操作没有 abandonAction",
+            ApiOperations.all.values
+                .filterNot { it.sensitiveOperation }
+                .all { it.abandonAction == null },
+        )
 
         // abandonIdempotencyKey 说明里写的对照：「withdraw → POST /v1/withdrawals, …」
         val abandon = snapshotOperations().getValue(ABANDON).third
-        val description = abandon.getValue("description").jsonPrimitive.content.replace(Regex("\\s+"), " ")
+        val description =
+            abandon
+                .getValue("description")
+                .jsonPrimitive.content
+                .replace(Regex("\\s+"), " ")
         val described =
             MAPPING.findAll(description).associate { it.groupValues[1] to (it.groupValues[2] to it.groupValues[3]) }
         val generated = sensitive.associate { checkNotNull(it.abandonAction) to (it.method to it.pathTemplate) }
