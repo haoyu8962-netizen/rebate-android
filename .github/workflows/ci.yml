@@ -45,6 +45,14 @@ jobs:
           # D10-2863 ①：PR 分支也写 Gradle 缓存，减少从 Maven Central 下载（托管机 IP 被限流 429）。
           # GitHub 的缓存按分支隔离：PR 写的缓存只有这个 PR 能读，主干读不到。
           cache-read-only: false
+      # D10-2857 / 2863 第 2 次：不起模拟器的 main 作业也让托管机失联。单测并行时每个 Robolectric 测试 JVM 最多 3g
+      # （ROBOLECTRIC_MAX_HEAP），4 核默认 4 个 worker → 12g + Gradle 守护进程 4g + Kotlin 守护进程，超过 16G。
+      # 只在 CI 用用户级 gradle.properties 把 worker 收到 2（仓库里的 gradle.properties 不动；不跳过、不放宽任何检查）。
+      - name: limit Gradle workers on CI
+        run: |
+          mkdir -p ~/.gradle
+          echo "org.gradle.workers.max=2" >> ~/.gradle/gradle.properties
+          cat ~/.gradle/gradle.properties
       - name: add swap and start memory log
         run: |
           sudo fallocate -l 8G /mnt/ci-extra.swap

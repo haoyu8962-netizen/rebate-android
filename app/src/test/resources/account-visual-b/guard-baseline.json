@@ -3,7 +3,7 @@
  "files": [
   {"h": "9f909df3e9a55ac146c2c0d50fd09c4af91d76567fe6a9b4a87f32723e978f6e", "p": ".editorconfig"},
   {"h": "81cee1a70f1b977aec489d5e81d54fab2e436509a37bc0adc94d6d6c50da14e9", "p": ".githooks/pre-commit"},
-  {"h": "bb984d60240c2b51e1e3ae4684d75856a1dc5de4dc008eae84ecd289753d31c5", "p": ".github/workflows/ci.yml"},
+  {"h": "07859d273a97c289e717e12725b703816c8490ac571273f2403e65ad17c2d321", "p": ".github/workflows/ci.yml"},
   {"h": "1f764306288378116bd9c5c4ef9f4ff090b6815b554179b8a07122fe8f40d393", "p": ".gitignore"},
   {"h": "07cfc41593b71228422a6df639931ddd86a4b8f48c275eebd12c4e37e3b57747", "p": ".gitleaks.toml"},
   {"h": "0b90091eb938bc46d04689a93b12b9a35ec8ac0cdcc06229f2404d356fca5152", "p": "AGENTS.md"},
