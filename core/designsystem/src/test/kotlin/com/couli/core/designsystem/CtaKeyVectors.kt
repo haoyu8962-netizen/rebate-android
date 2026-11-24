@@ -24,15 +24,17 @@ internal object CtaKeyVectors {
      * D10-857：三端统一锁到 rebate-platform a89c1ec3a（CT-26t #2450）。
      *
      * modify_existing：锁换 d47f660e5（FU-AND-STEPUP-SUMMARY，三端同步换向量 contractCommit），ruling D10-1664
+     * modify_existing：锁换 6c97062570（FU-AND-CONTRACT-LOCK-6c97062，安卓起头换向量 contractCommit，其余内容不变），ruling D10-2897 ②
      */
-    const val LOCK_COMMIT = "d47f660e5d42729899ade06298ddf5457791ff3d"
+    const val LOCK_COMMIT = "6c97062570dadce304821b905e5a31a5c40acbe2"
 
     /**
      * iOS 原件 worktrees/native/FU-X-CTA-KEY-DRIFT-ios/specs/cta-key-vectors.json 的 sha256（tests-ios-v1.sha256 末行）。
      *
      * modify_existing：向量 contractCommit 换 d47f660e5 后的新字节（旧 15d59b80…e7ff），iOS / 鸿蒙照同一份字节跟，ruling D10-1664
+     * modify_existing：向量 contractCommit 换 6c97062570 后的新字节（旧 84b2897e…3ffa），iOS / 鸿蒙在各自升锁单照同一份字节跟，ruling D10-2897 ②
      */
-    const val SHARED_SHA256 = "84b2897e7ed523e835395e0cc073dc206620bab8e9b43f6a9c4596f6c3de3ffa"
+    const val SHARED_SHA256 = "f73c28e5dd03656062ea7e2d8d2a70652428f3cda579c7d64e63f1999bd50f72"
 
     val root: File =
         generateSequence(File(System.getProperty("user.dir") ?: ".").canonicalFile) { it.parentFile }

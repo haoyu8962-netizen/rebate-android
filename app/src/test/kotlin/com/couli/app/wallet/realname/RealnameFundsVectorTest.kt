@@ -269,7 +269,8 @@ class RealnameFundsVectorTest : RealnameFundsHarness() {
 
     private companion object {
         // modify_existing：向量只改 contractCommit 一行（56c99d0b… → d47f660e5…，三端同步），新字节 sha（旧 5d374630…82a5），ruling D10-1664
-        const val VECTORS_SHA256 = "762989b80ab8bd1a1bbefe01236d2675cb6246408272152c7e5e5f796bb4d048"
+        // modify_existing：向量只改 contractCommit 一行（d47f660e5… → 6c97062570…，安卓起头），新字节 sha（旧 762989b8…d048），ruling D10-2897 ②
+        const val VECTORS_SHA256 = "c5e10cc2393f438e37011a3798af492a75c4b0504387831e070e84c1765071f1"
         const val CASE_COUNT = 25
         const val RECOVER_WINDOW_MS = 1_500L
         const val TRACE6 = "zz9876"
