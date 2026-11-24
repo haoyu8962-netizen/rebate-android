@@ -2905,7 +2905,7 @@
   {"h": "b9601cc554b402f3d7c7644bf0528343a83f44477b45659186bd8b1479a48d30", "p": "tools/ci/ui-tests.sh"},
   {"h": "b77270537b76a16cba0225d05e55adb209ee26205b8a552a644ad171d85cf54e", "p": "tools/codegen/gen.py"},
   {"h": "1b07d55d85a76a16191aff5f0faa839a38199f74b119f3c602cd1df79ae9de57", "p": "tools/codegen/test_gen.py"},
-  {"h": "da2d10ef4e6ef52a70b85129284a59ff75c9d286638b70e52b82d3853a9f06b5", "p": "tools/contracts/sync.sh"},
+  {"h": "4c40e05c651de52f07c7d7650e5560073634277251b62dbc9eb5ce047ff6622b", "p": "tools/contracts/sync.sh"},
   {"h": "4002a1b5a3d412d2c03003a049da3a59eb8685dd8c60d8c2c76d2bec0e9ea04f", "p": "tools/tests/login_17a_guard.py"},
   {"h": "480652649b7b618fb15e01b5cac01c3ecfeb53e953cea7966c060ad92aa02322", "p": "tools/tests/test_login_17a.py"},
   {"h": "dea10a5d144d02045c09ce389b245c6e6bfecd34a34431cd57dcb6ebe03c9161", "p": "tools/tests/test_login_17a_guard.py"}
@@ -2996,7 +2996,7 @@
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "38b11c726a0e8cfe16dce9b864befe1ab47b2a6913c8a55ca0a18352638cae8e",
+   "h": "497014e1226b1aad0997254abf1ceab0eb63fed921b18faad48699fffaac367c",
    "swaps": 1
   }
  ],
