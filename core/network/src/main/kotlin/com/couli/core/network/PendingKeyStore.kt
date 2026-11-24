@@ -3,7 +3,7 @@ package com.couli.core.network
 import com.couli.core.generated.ApiOperations
 
 /**
- * 一条未决记录（BR-ID-10 细则「敏感操作的幂等键」）：四个 step-up 操作首次发送前写入，按账号隔离。
+ * 一条未决记录（BR-ID-10 细则「敏感操作的幂等键」）：四个敏感操作（x-sensitive-operation）首次发送前写入，按账号隔离。
  * [body] 为原请求体的原始文本（含账号或手机号，生产后端放 Keystore 加密的存储）；[summary] 为发起页展示的摘要。
  * [stateRaw]：in_flight（在途）或 unknown（结果未知）；[everUnknown] = 这个键出现过结果未知。
  */
@@ -71,7 +71,7 @@ data class PendingKeyState(
 /**
  * 未决键的状态与存储（BR-ID-10 细则「敏感操作的幂等键」；03 §4.2「未决键」）。只做存储与状态，页面在 APP-09。
  *
- * - [beforeSend]：四个 step-up 操作首次发送前写入 in_flight 记录；当前账号同一操作已有在途或结果未知的键时拒绝新的提交
+ * - [beforeSend]：四个敏感操作首次发送前写入 in_flight 记录；当前账号同一操作已有在途或结果未知的键时拒绝新的提交
  *   （不得换新键）。其他操作不建记录，直接放行。
  * - [onResponse]：没有统一外壳（超时、断连、网关错误页）→ unknown；拿到业务结果（成功、3xxxx，含作废接口带回的原结果）
  *   或已作废（abandoned、20903）→ 结束并删除记录；其余（10001/10004/10005、20903 以外的 2xxxx、10405、40901、42901、
@@ -444,8 +444,11 @@ class PendingKeyStore(
         /** 不区分调用的占用（三端测试接线直接调用 Store 时）。 */
         const val ANONYMOUS_HOLDER = ""
 
-        /** 四个需要二次验证的操作（operation 的 x-step-up）。 */
-        fun isSensitive(operationId: String): Boolean = ApiOperations.byId(operationId)?.stepUp != null
+        /**
+         * 四个敏感操作（契约 x-sensitive-operation，生成物 [com.couli.core.generated.ApiOperation.sensitiveOperation]）。不看 stepUp：
+         * 提现不要二次验证但仍是敏感操作（FU-AND-CONTRACT-LOCK-6c97062，D10-2892）。
+         */
+        fun isSensitive(operationId: String): Boolean = ApiOperations.byId(operationId)?.sensitiveOperation == true
 
         /** 响应 → kind：有外壳时 envelope_success / envelope_<code>。 */
         fun envelopeKind(code: Int): String = if (code == 0) ENVELOPE_SUCCESS else "$ENVELOPE_PREFIX$code"

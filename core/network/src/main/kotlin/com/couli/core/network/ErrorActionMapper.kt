@@ -105,7 +105,7 @@ data class ErrorActionInput(
  * @property disableMillis 按钮禁用时长；null = 不限时（由页面按状态恢复）。
  * @property includeTrace6 通用错误态附 trace_id 后 6 位。
  * @property consentType 10004 的 data.consent_type。
- * @property pendingKeyUnknown 四个 step-up 操作的键已结果未知：发起页进入待确认，不换新键（BR-ID-10）。
+ * @property pendingKeyUnknown 四个敏感操作的键已结果未知：发起页进入待确认，不换新键（BR-ID-10）。
  */
 data class ErrorEffect(
     val code: Int,
@@ -135,8 +135,9 @@ data class ErrorEffect(
  * 错误码 → Effect（03 §4.2「ErrorActionMapper 实现要点」；动作以 error-codes.yaml / 08 §13.11 为准）。
  *
  * - 1xxxx 前置（登录、同意、绑手机）完成后沿用原键并登记 pending_action；3xxxx 前置（平台授权）用新键；
- *   四个 step-up 操作（operation 的 x-step-up）被 10001、10004（任何 consent_type）、10005 或 3xxxx 前置码拦下时只引导，
- *   不重放、不登记 pending；10003 沿用原键；10002、10402 自动沿用原键重放 1 次（再失败走通用错误态）。
+ *   四个敏感操作（operation 的 x-sensitive-operation，不是 x-step-up：提现不要二次验证也算，D10-2892）被 10001、10004（任何
+ *   consent_type）、10005 或 3xxxx 前置码拦下时只引导，不重放、不登记 pending；10003 沿用原键；10002、10402 自动沿用原键
+ *   重放 1 次（再失败走通用错误态）。
  * - 10405 进强更不重放；本机版本不低于 data.min_supported_version（或它为空）而会话是 deletion_only 时只刷新令牌；
  *   reason=no_account 提示先更新、回强更。42901 按 Retry-After（缺省 5 秒）禁用按钮。
  * - 带 data.reason 的取 error.<code>.<reason>，字典没有回落 error.<code>；表外码与废弃码：5xxxx 通用错误态附 trace6，
@@ -250,7 +251,8 @@ object ErrorActionMapper {
     ): ErrorEffect {
         val code = input.code
         val info = ErrorCodes.info(code)
-        val stepUpOperation = input.operation.stepUp != null
+        // 「补完前置条件后不自动重放」按契约 x-sensitive-operation（生成物 sensitiveOperation），不看 stepUp（D10-2892）
+        val sensitiveOperation = input.operation.sensitiveOperation
         val reason = input.data.text("reason")
         val context = Context(code, resolveTextKey(code, reason, hasText))
         val serverError = code in SERVER_ERROR_MIN..SERVER_ERROR_MAX
@@ -264,20 +266,20 @@ object ErrorActionMapper {
         }
         return when (code) {
             10001 -> {
-                context.prerequisite(stepUpOperation, ErrorEffectKind.LOGIN, LOGIN)
+                context.prerequisite(sensitiveOperation, ErrorEffectKind.LOGIN, LOGIN)
             }
 
             10004 -> {
                 context
                     .prerequisite(
-                        stepUpOperation,
+                        sensitiveOperation,
                         ErrorEffectKind.CONSENT,
                         null,
                     ).copy(consentType = input.data.text("consent_type"))
             }
 
             10005 -> {
-                context.prerequisite(stepUpOperation, ErrorEffectKind.BIND_PHONE, BIND_PHONE)
+                context.prerequisite(sensitiveOperation, ErrorEffectKind.BIND_PHONE, BIND_PHONE)
             }
 
             10002 -> {
@@ -347,7 +349,7 @@ object ErrorActionMapper {
             }
 
             in AUTHORIZE_CODES -> {
-                context.authorize(stepUpOperation, reason, promptOnlyReason(code, reason))
+                context.authorize(sensitiveOperation, reason, promptOnlyReason(code, reason))
             }
 
             in GUIDE_CODES -> {
@@ -422,13 +424,13 @@ object ErrorActionMapper {
         return seconds?.times(MILLIS_PER_SECOND) ?: DEFAULT_RETRY_AFTER_MILLIS
     }
 
-    /** 1xxxx 前置：普通操作沿用原键并登记 pending；四个 step-up 操作只引导。 */
+    /** 1xxxx 前置：普通操作沿用原键并登记 pending；四个敏感操作只引导。 */
     private fun Context.prerequisite(
-        stepUpOperation: Boolean,
+        sensitiveOperation: Boolean,
         kind: ErrorEffectKind,
         route: String?,
     ): ErrorEffect =
-        if (stepUpOperation) {
+        if (sensitiveOperation) {
             effect(ErrorEffectKind.GUIDE_ONLY, route = route)
         } else {
             effect(kind, replay = ReplayMode.SAME_KEY, pending = true, route = route)
@@ -450,18 +452,18 @@ object ErrorActionMapper {
         if (stage == "processing") effect(ErrorEffectKind.TOAST) else effect(ErrorEffectKind.NAVIGATE, route = "DeleteAccount")
 
     /**
-     * 30101 / 30102 / 30111：AuthSheet 后用新键；auth_unavailable 只提示；step-up 操作只引导。
+     * 30101 / 30102 / 30111：AuthSheet 后用新键；auth_unavailable 只提示；敏感操作只引导。
      * [promptOnly]：生成表按 data.reason 给的重试类别不是 after_action（如 sharer_auth_invalid=never，CT-LOCK-01）→ 只提示，
      * 不弹授权、不登记待办、不重放（契约数据驱动，与鸿蒙同口径）。
      */
     private fun Context.authorize(
-        stepUpOperation: Boolean,
+        sensitiveOperation: Boolean,
         reason: String?,
         promptOnly: Boolean,
     ): ErrorEffect =
         when {
             reason == AUTH_UNAVAILABLE || promptOnly -> effect(ErrorEffectKind.TOAST)
-            stepUpOperation -> effect(ErrorEffectKind.GUIDE_ONLY, route = AUTH_SHEET)
+            sensitiveOperation -> effect(ErrorEffectKind.GUIDE_ONLY, route = AUTH_SHEET)
             else -> effect(ErrorEffectKind.AUTHORIZE, replay = ReplayMode.NEW_KEY, pending = true, route = AUTH_SHEET)
         }
 

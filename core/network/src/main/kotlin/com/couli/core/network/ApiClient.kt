@@ -48,7 +48,7 @@ import okhttp3.OkHttpClient
  *   计数，不占业务重放（R3-06）；单飞刷新请求自身遇到也校时重签 1 次，仍在同一个窗口里（R3-07）。
  * - 失败响应的 Effect 都经统一出口 [deliver]：调用归属已失效的旧响应不交付会话类副作用、不登记 pending_action（R3-03）。
  * - 登录：令牌保存成功才算登录成功，否则 [ApiResult.SessionNotSaved]（lessons 40）。
- * - 四个 step-up 操作：账号取自会话，取不到本地拒绝；未决记录写入成功才发送（R1-11）。未决键由整次逻辑调用占用（绑定调用标识），
+ * - 四个敏感操作（x-sensitive-operation，与要不要二次验证无关）：账号取自会话，取不到本地拒绝；未决记录写入成功才发送（R1-11）。未决键由整次逻辑调用占用（绑定调用标识），
  *   内部续发期间不释放，整次调用结束才结算（A-R2-05）。[confirmPending] / [abandonPending] 由用户点击触发；作废接口返回
  *   completed 时按原操作的结果给出业务结果与 Effect，abandoned 给 [ApiResult.Abandoned]（A-R2-06）。
  *
@@ -294,7 +294,7 @@ class ApiClient(
     }
 
     /**
-     * 一次逻辑调用：[owner] 归属；[holder] 占用未决键的调用标识；[pendingKey] 已登记的未决键（四个 step-up 操作）。
+     * 一次逻辑调用：[owner] 归属；[holder] 占用未决键的调用标识；[pendingKey] 已登记的未决键（四个敏感操作）。
      */
     private class Logical(
         val owner: CallOwner,
@@ -627,7 +627,7 @@ class ApiClient(
         }
 
     /**
-     * 当前会话账号某个 step-up 操作的未决记录（发起页据此进入待确认）。账号取自可信会话、在读取之前确定，只读这个账号的记录
+     * 当前会话账号某个敏感操作的未决记录（发起页据此进入待确认）。账号取自可信会话、在读取之前确定，只读这个账号的记录
      * （R3-04、lessons 15）；没有会话为 null。存储读不出（解不开、损坏）或会话读不出抛 [UnreadableRecordException]，不当成没有记录
      * （lessons 38、APP-03b session_unreadable）。
      */
@@ -717,7 +717,8 @@ class ApiClient(
                 is Owned.Rejected -> return ApiResult.LocalReject(owned.reason)
             }
         val original = ApiOperations.byId(operationId) ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
-        val action = original.stepUp ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
+        // action 取生成物 abandonAction（契约 IdempotencyAbandonAction，四个 x-sensitive-operation 各一个；提现不要二次验证也有，D10-2892）
+        val action = original.abandonAction ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
         val abandon = ApiOperations.byId(ABANDON) ?: return ApiResult.LocalReject(LocalRejectReason.PENDING_KEY_UNRESOLVED)
         targetReject(target)?.let { return ApiResult.LocalReject(it) }
         val holder = newId()
@@ -812,7 +813,10 @@ class ApiClient(
             } ?: return LocalRejectReason.PENDING_KEY_UNRESOLVED
         if (target != null && record.key != target.key) return LocalRejectReason.PENDING_KEY_UNRESOLVED
         val operation = ApiOperations.byId(operationId) ?: return LocalRejectReason.PENDING_KEY_UNRESOLVED
-        if (abandon && (operation.stepUp == null || ApiOperations.byId(ABANDON) == null)) return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        // 与 [abandonPending] 同一判定：能否放弃看生成物 abandonAction，不看 stepUp（D10-2892）
+        if (abandon && (operation.abandonAction == null || ApiOperations.byId(ABANDON) == null)) {
+            return LocalRejectReason.PENDING_KEY_UNRESOLVED
+        }
         targetReject(target)?.let { return it }
         val startable =
             try {
@@ -915,8 +919,8 @@ class ApiClient(
     }
 
     /**
-     * 四个 step-up 操作的未决键（BR-ID-10）：账号只取自会话；写入成功才发送（R1-11）；整次逻辑调用只登记一次，由本调用占用
-     * （A-R2-05）。返回本地拒绝原因或 null（可发）。
+     * 四个敏感操作的未决键（BR-ID-10；契约 x-sensitive-operation「结果未知的键不换」，按生成物 sensitiveOperation 判定、不看 stepUp，
+     * D10-2892）：账号只取自会话；写入成功才发送（R1-11）；整次逻辑调用只登记一次，由本调用占用（A-R2-05）。返回本地拒绝原因或 null（可发）。
      */
     private fun holdPending(
         operation: ApiOperation,
@@ -925,7 +929,7 @@ class ApiClient(
         session: SessionSnapshot?,
         logical: Logical,
     ): String? {
-        if (logical.pendingKey != null || key == null || operation.stepUp == null) return null
+        if (logical.pendingKey != null || key == null || !operation.sensitiveOperation) return null
         val account = session?.userId ?: return LocalRejectReason.ACCOUNT_UNKNOWN
         return when (registerPending(operation, key, call, account, logical.holder)) {
             false -> {
@@ -1547,6 +1551,7 @@ class ApiClient(
         if (decision.includeDeviceId && deviceId != null) headers[HeaderNames.DEVICE_ID] = deviceId
         val key = if (decision.includeIdempotencyKey) call.idempotencyKey ?: newId() else null
         key?.let { headers[HeaderNames.IDEMPOTENCY_KEY] = it }
+        // 二次验证令牌只给带 x-step-up 的操作（按 stepUp，不按 sensitiveOperation：提现是敏感操作但不带令牌，D10-2892）
         if (readable && operation.stepUp != null) call.stepUpToken?.let { headers[HeaderNames.STEP_UP_TOKEN] = it }
         if (operation.isRead) call.ifNoneMatch?.let { headers[HeaderNames.IF_NONE_MATCH] = it }
         // APP-10b G17、G18：流式请求带 Accept: text/event-stream 与 Accept-Encoding: identity

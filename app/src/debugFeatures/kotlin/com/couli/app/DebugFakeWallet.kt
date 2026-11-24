@@ -24,8 +24,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * sample-data §12（可提现 ¥12.34、已提现 ¥5、预估 ¥56.78、已收货 ¥34.56、暂缓 ¥4.56、最早 10 月；提现记录 10 月 ¥10 审核中、¥8 打款未成功，9 月
  * ¥5 已到账、¥6 未通过；收款账号支付宝 138****5678、收款人 **三）。姓名、身份证号、卡号、登录号一律不落盘、不打印。
  *
- * - 签名、step-up、幂等走网络层真实管线，只把传输层换成本服务：createWithdrawal / savePayoutAccount 没带有效 X-Step-Up-Token 回 10003；同一
- *   Idempotency-Key 回同一结果；作废接口按键回 abandoned 或 completed（原结果）；二次验证码 123456 通过，200030 → 20003，其余 → 20002。
+ * - 签名、step-up、幂等走网络层真实管线，只把传输层换成本服务：savePayoutAccount 没带有效 X-Step-Up-Token 回 10003；createWithdrawal 不要
+ *   二次验证、不读 X-Step-Up-Token（契约 6c97062 去掉了提现的 x-step-up，仍是 x-sensitive-operation，D10-2892）；同一 Idempotency-Key 回同一
+ *   结果；作废接口按键回 abandoned 或 completed（原结果）；二次验证码 123456 通过，200030 → 20003，其余 → 20002。
  * - 实名与劳务协议（契约没有接口，G01 / G02）：只由本服务在进程内实现（[realname]、[labor]），不经网络管线。
  *
  * 状态开关文件 files/[FAKE_WALLET_STATE_FILE]（每行 key=value）：
@@ -202,7 +203,7 @@ internal class DebugFakeWallet(
     ): Triple<Int, String, Map<String, String>> {
         val key = header(headers, "Idempotency-Key") ?: return fail(20001)
         results[key]?.let { (code, data) -> return Triple(code, data, marker()) }
-        if (!stepUpPassed(headers, "withdraw", state)) return fail(10003)
+        // 提现不要二次验证（契约 createWithdrawal 无 x-step-up、无 10003；服务端不读 X-Step-Up-Token，带了也忽略，D10-2892）
         val amount = (body["amount_fen"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return fail(20001)
         val outcome: Pair<Int, String> =
             when (state["submit"]) {
