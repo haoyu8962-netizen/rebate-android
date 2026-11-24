@@ -700,31 +700,33 @@ class ApiClientReviewR1Test {
 
     // ---------- R1-12 ----------
 
+    // modify_existing（#24）：锁 6c97062（B1-02zzzc）提现去掉 x-step-up，不带 X-Step-Up-Token、不回 10003（BR-ID-08、D10-1665）；R1-12 的
+    // 「结果未知后 10003 沿用原键、确认带新令牌」改用仍有 x-step-up 的 savePayoutAccount 复现，断言不变。FU-AND-CONTRACT-LOCK-6c97062 D10-2888
     @Test
     fun r112_stepUpRequiredAfterUnknownKeepsSameKeyReplayAndConfirmCarriesNewToken() {
         val pending = PendingKeyStore(MemoryPendingKeyBackend()) { 0L }
         val api = client(pending = pending)
-        val body = """{"amount_cent":1000}"""
+        val body = """{"payout_method":"alipay","account":"fixture-account"}"""
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         val key =
             checkNotNull(
                 (
                     api.execute(
-                        ApiCall("createWithdrawal", body = body, stepUpToken = "expired"),
+                        ApiCall("savePayoutAccount", body = body, stepUpToken = "expired"),
                     ) as ApiResult.TransportFailure
                 ).idempotencyKey,
             )
 
         server.enqueue(envelope(10003))
-        val stepUp = api.confirmPending("createWithdrawal") as ApiResult.Failure
+        val stepUp = api.confirmPending("savePayoutAccount") as ApiResult.Failure
         assertEquals(ErrorEffectKind.STEP_UP, stepUp.effect.kind)
         assertEquals(ReplayMode.SAME_KEY, stepUp.effect.replay)
         assertTrue(stepUp.effect.pendingKeyUnknown)
         assertFalse(stepUp.effect.registerPending)
         assertEquals(PendingKeyStore.UNKNOWN, pending.state(key).stateRaw)
 
-        server.enqueue(envelope(0, """{"withdrawal_id":"w1"}"""))
-        assertTrue(api.confirmPending("createWithdrawal", stepUpToken = "fresh-token") is ApiResult.Success)
+        server.enqueue(envelope(0, """{"payout_method":"alipay"}"""))
+        assertTrue(api.confirmPending("savePayoutAccount", stepUpToken = "fresh-token") is ApiResult.Success)
         assertEquals(PendingKeyStore.DONE, pending.state(key).stateRaw)
         server.takeRequest()
         server.takeRequest()

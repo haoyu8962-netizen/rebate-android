@@ -261,12 +261,14 @@ class CtaKeyVectorTest {
         val SECRETS = listOf("张三", "13800001111", "tb:cta", "ref-cta", "0199a3b4", "某某旗舰店", "2990", "29.9")
 
         // modify_existing：锁 d47f660e5 的快照实测值（旧 TEXTS 5cdeb62c…776c、openapi b8d2295f…607d；admin、error-codes 未变），ruling D10-1664
-        const val TEXTS_SHA256 = "9892db319fa5d29da786d5feaf1ffd1fd1e61f97ff2ecbfa3d72bcf33d322a2e"
+        // modify_existing（#24）：锁 6c97062 的快照实测值（旧 TEXTS 9892db31…2a2e、openapi 4815635c…1295、admin b2f84f6c…0db2；error-codes 未变），
+        // FU-AND-CONTRACT-LOCK-6c97062 D10-2888
+        const val TEXTS_SHA256 = "78530d1abc70e17b771e4bde9a627f01d5032856c7ed3ad8eee9f94daadb269b"
         val SAME_NAME_SHA256 =
             listOf(
-                "contracts/snapshot/contracts/enums/admin.json" to "b2f84f6c3749f43793c11fbbaf58b3035752f2e8eab200d2857e6f745b1e0db2",
+                "contracts/snapshot/contracts/enums/admin.json" to "0c77839beff58843dde1d2b73e152a9daa041ec97d521d9ba550d1ab35cf0bd9",
                 "contracts/snapshot/contracts/error-codes.json" to "a312384e185aefcc1db7f0538ac98b63082b064a3c9fe77f19a0a889b6a398db",
-                "contracts/snapshot/contracts/openapi.json" to "4815635c38d6c2d90af40304a8e87cfff65834e78a8fdf7f7590b4e2163e1295",
+                "contracts/snapshot/contracts/openapi.json" to "7be6e8303ebd7531fbe70138d9f1f6768321f9e42115a46f24a99e3aefc11863",
                 "contracts/snapshot/contracts/texts.default.json" to TEXTS_SHA256,
                 "core/generated/src/main/resources/texts.default.json" to TEXTS_SHA256,
             )

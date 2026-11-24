@@ -280,7 +280,9 @@ class CtLock02ContractUpgradeTest {
                 "listWalletLedger|GET|/v1/wallet/ledger|login|false|false|-|UNSPECIFIED",
                 "getWithdrawRules|GET|/v1/withdrawals/rules|login|false|false|-|UNSPECIFIED",
                 "listWithdrawals|GET|/v1/withdrawals|login|false|false|-|UNSPECIFIED",
-                "createWithdrawal|POST|/v1/withdrawals|realname|true|true|withdraw|GATED",
+                // modify_existing（#24）：锁 6c97062（B1-02zzzc）createWithdrawal 去掉 x-step-up（提现不做二次验证），stepUp withdraw→-，
+                // 敏感操作改按 x-sensitive-operation 判定（CtLock6c97062*Test），FU-AND-CONTRACT-LOCK-6c97062 D10-2888
+                "createWithdrawal|POST|/v1/withdrawals|realname|true|true|-|GATED",
                 "getWithdrawal|GET|/v1/withdrawals/{withdrawal_id}|login|false|false|-|UNSPECIFIED",
                 "getMe|GET|/v1/me|login|false|false|-|UNSPECIFIED",
                 "bindPhone|POST|/v1/me/phone|login|true|true|phone_change|GATED",
