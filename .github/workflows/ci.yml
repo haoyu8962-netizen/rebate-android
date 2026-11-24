@@ -41,6 +41,10 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          # D10-2863 ①：PR 分支也写 Gradle 缓存，减少从 Maven Central 下载（托管机 IP 被限流 429）。
+          # GitHub 的缓存按分支隔离：PR 写的缓存只有这个 PR 能读，主干读不到。
+          cache-read-only: false
       - name: add swap and start memory log
         run: |
           sudo fallocate -l 8G /mnt/ci-extra.swap
@@ -49,12 +53,25 @@ jobs:
           sudo swapon /mnt/ci-extra.swap
           free -m
           nohup sh -c 'while true; do date -u +%H:%M:%S; free -m | sed -n 2,3p; sleep 15; done' > "${RUNNER_TEMP}/mem.log" 2>&1 &
+      # D10-2863 ③：Robolectric 运行时下载 android-all jar 到 ~/.m2（不在 Gradle 缓存里），单独缓存。
+      # 键带依赖声明文件（libs.versions.toml 与全部 *.gradle.kts）的哈希；save 用 always()，测试失败也留住已下载的 jar。
+      - name: restore Robolectric jars
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ runner.os }}-${{ hashFiles('rebate-android/gradle/libs.versions.toml', 'rebate-android/**/*.gradle.kts') }}
       - name: verify (all steps except 6b)
         working-directory: rebate-android
         env:
           REBATE_PLATFORM_DIR: ${{ github.workspace }}/rebate-platform
           COULI_DIR: ${{ github.workspace }}/couli
         run: tools/ci/verify.sh --ci-part=main
+      - name: save Robolectric jars
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ runner.os }}-${{ hashFiles('rebate-android/gradle/libs.versions.toml', 'rebate-android/**/*.gradle.kts') }}
       - name: memory and OOM diagnostics
         if: always()
         run: |
@@ -84,9 +101,24 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          # D10-2863 ①：PR 分支也写 Gradle 缓存，减少从 Maven Central 下载（托管机 IP 被限流 429）。
+          # GitHub 的缓存按分支隔离：PR 写的缓存只有这个 PR 能读，主干读不到。
+          cache-read-only: false
       - name: start memory log
         run: |
           nohup sh -c 'while true; do date -u +%H:%M:%S; free -m | sed -n 2,3p; sleep 15; done' > "${RUNNER_TEMP}/mem.log" 2>&1 &
+      # D10-2863 ②：起模拟器前先预构建测试包（下载依赖），下载失败隔 60 秒重试，最多 3 次。
+      # 只是预构建；第 6b 步的判据不变，仪器测试本身不重试。
+      - name: pre-build web test package (retry on download errors)
+        working-directory: rebate-android
+        run: |
+          for i in 1 2 3; do
+            if ./gradlew --console=plain :feature:web:assembleDebugAndroidTest; then exit 0; fi
+            echo "预构建第 ${i} 次失败"
+            if [ "${i}" -lt 3 ]; then sleep 60; fi
+          done
+          exit 1
       - name: enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
