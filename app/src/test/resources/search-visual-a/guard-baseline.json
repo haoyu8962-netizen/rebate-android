@@ -31,7 +31,7 @@
     },
     {
       "p": "contract.lock",
-      "h": "0ef8f287fee288204af64118d18491848ee977225ab798a9965a28acfd082b75"
+      "h": "cce3b365592c6e26ab2632315b9ee1b2a50ca68808b77de98bde50f2fd8b427c"
     },
     {
       "p": "contracts/snapshot/contracts/agent-stream.schema.json",
@@ -39,7 +39,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/apps.json",
-      "h": "755f083b1ab1c58eeb7e80b1d1db8158e6118b0ecfbc8f1d07557a0b46105dc8"
+      "h": "921470f2784b2eb41496e3ee890a51a454ddc27ae7e869587062a9e063a0e167"
     },
     {
       "p": "contracts/snapshot/contracts/bridge.schema.json",
@@ -47,7 +47,7 @@
     },
     {
       "p": "contracts/snapshot/contracts/enums/admin.json",
-      "h": "b2f84f6c3749f43793c11fbbaf58b3035752f2e8eab200d2857e6f745b1e0db2"
+      "h": "0c77839beff58843dde1d2b73e152a9daa041ec97d521d9ba550d1ab35cf0bd9"
     },
     {
       "p": "contracts/snapshot/contracts/enums/fund.json",
@@ -55,11 +55,11 @@
     },
     {
       "p": "contracts/snapshot/contracts/enums/identity.json",
-      "h": "1fc21235dbe4c642da2bb698ca03a100828dba5366184fd5ec2e1bf92da45a19"
+      "h": "299bfc28454fb752059aede6c648decfdb8dc83b36b7cc85625f04ef7bb363ce"
     },
     {
       "p": "contracts/snapshot/contracts/enums/ops.json",
-      "h": "e999d6072cd5d22dfec81526a65f72e01ab52d7cea1cfdb1e71d207c073b0b23"
+      "h": "de06744044d913f62403fbaf4cbfa9ebc26630740fe46c645bfa03a0c8ea02ac"
     },
     {
       "p": "contracts/snapshot/contracts/enums/order.json",
@@ -143,15 +143,15 @@
     },
     {
       "p": "contracts/snapshot/contracts/openapi.json",
-      "h": "4815635c38d6c2d90af40304a8e87cfff65834e78a8fdf7f7590b4e2163e1295"
+      "h": "7be6e8303ebd7531fbe70138d9f1f6768321f9e42115a46f24a99e3aefc11863"
     },
     {
       "p": "contracts/snapshot/contracts/routes.json",
-      "h": "0afda43347552bb3f875fe2b76c6ab9e30d37ec22dedc77fd5a1fe88c376522b"
+      "h": "4e578baef05df6ae9da7eb4576a2c00ef5b9b7e34f802f33ec6eabfbd5c7e2d8"
     },
     {
       "p": "contracts/snapshot/contracts/texts.default.json",
-      "h": "9892db319fa5d29da786d5feaf1ffd1fd1e61f97ff2ecbfa3d72bcf33d322a2e"
+      "h": "78530d1abc70e17b771e4bde9a627f01d5032856c7ed3ad8eee9f94daadb269b"
     },
     {
       "p": "contracts/snapshot/design/design-tokens.json",
