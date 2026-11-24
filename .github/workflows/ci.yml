@@ -68,6 +68,46 @@ jobs:
         with:
           path: ~/.m2/repository/org/robolectric
           key: robolectric-${{ runner.os }}-${{ hashFiles('rebate-android/gradle/libs.versions.toml', 'rebate-android/**/*.gradle.kts') }}
+      # D10-2870：verify 前预取全部依赖（CI 专用 init 脚本，只下载、不跑任何检查）。逐个解析各项目可解析的配置；
+      # 下载类失败（429 / GET 失败 / 超时等）算失败，隔 60 秒重试最多 3 次；其他解析问题（如安卓变体歧义）只记录不算失败。
+      # verify 里的检查一条都不重试。
+      - name: prefetch all dependencies (download only, retry on download errors)
+        working-directory: rebate-android
+        run: |
+          cat > "${RUNNER_TEMP}/ci-prefetch.init.gradle" <<'GRADLE'
+          allprojects {
+              tasks.register("ciPrefetchDependencies") {
+                  doLast {
+                      def net = []
+                      def other = 0
+                      def ok = 0
+                      project.configurations.findAll { it.canBeResolved }.each { c ->
+                          try {
+                              c.resolve()
+                              ok++
+                          } catch (Throwable t) {
+                              def msgs = []
+                              for (def e = t; e != null; e = e.cause) { msgs << String.valueOf(e.message) }
+                              def all = msgs.join(" | ")
+                              if (all =~ /Could not (GET|HEAD)|status code (429|5[0-9][0-9])|Too Many Requests|timed out|Connection reset|UnknownHost|SocketException/) {
+                                  net << "${project.path}:${c.name}"
+                              } else {
+                                  other++
+                              }
+                          }
+                      }
+                      println "ciPrefetch ${project.path}: resolved=${ok} non-network-skipped=${other} network-failed=${net.size()}"
+                      if (!net.isEmpty()) { throw new GradleException("download failures: " + net.join(", ")) }
+                  }
+              }
+          }
+          GRADLE
+          for i in 1 2 3; do
+            if ./gradlew --console=plain --init-script "${RUNNER_TEMP}/ci-prefetch.init.gradle" ciPrefetchDependencies; then exit 0; fi
+            echo "预取第 ${i} 次失败"
+            if [ "${i}" -lt 3 ]; then sleep 60; fi
+          done
+          exit 1
       - name: verify (all steps except 6b)
         working-directory: rebate-android
         env:
