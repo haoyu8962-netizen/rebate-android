@@ -170,7 +170,7 @@ yaml_to_json() {
         node.each_with_index { |value, index| check(value, "#{path}[#{index}]") }
       end
     end
-    data = YAML.safe_load(File.read(ARGV[0], encoding: "UTF-8"), [], [], false, ARGV[0])
+    data = YAML.safe_load(File.read(ARGV[0], encoding: "UTF-8"), permitted_classes: [], permitted_symbols: [], aliases: false, filename: ARGV[0])
     check(data, "$")
     File.write(ARGV[1], JSON.generate(data))
   ' "$1" "$2"
