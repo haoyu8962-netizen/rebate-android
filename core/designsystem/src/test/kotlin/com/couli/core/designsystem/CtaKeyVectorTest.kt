@@ -242,7 +242,8 @@ class CtaKeyVectorTest {
     private companion object {
         val MODES = listOf("contract", "echo", "none")
         val CONTEXTS = setOf(BuyButtonModel.CONTEXT_LIST, BuyButtonModel.CONTEXT_DETAIL, BuyButtonModel.CONTEXT_AGENT)
-        const val DESIGN_LOCK_COMMIT = "f088f0473230d1e70232b8a246b92ef53d723929"
+        // modify_existing（#24）re-pin：令牌锁随 FU-ANDROID-TOKENS-V053 升到 c404003（v0.5.3，D10-3141 / D10-3147；旧 f088f04…3929）
+        const val DESIGN_LOCK_COMMIT = "c404003bbecdff2c67f3e744d81a5ee92e5043ce"
 
         val UNKNOWN_KEYS =
             listOf(

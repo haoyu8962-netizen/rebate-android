@@ -33,7 +33,8 @@ class CouliTokensTest {
         rule.waitForIdle()
         // 恢复原被测对象：四个语义 getter；不能用 all 源表代替属性接线。
         assertEquals(Color(0xFFC44820), actual[0])
-        assertEquals(Color(0xFFF2EEE6), actual[1])
+        // modify_existing（#24）re-pin：令牌锁 c404003（v0.5.3，FU-ANDROID-TOKENS-V053，D10-3141 / D10-3147）浅色 canvas #F2EEE6 → #F6F5F3
+        assertEquals(Color(0xFFF6F5F3), actual[1])
         assertEquals(Color(0xFFFFFFFF), actual[2])
         assertEquals(Color(0xFFB42345), actual[3])
     }

@@ -508,10 +508,15 @@ class TokensPipeGeneratorTest(SnapshotCase):
 
     def test_v051_every_leaf_matches_checked_in_generated_constants(self):
         data = json.loads(Path(self.snapshot, "design/design-tokens.json").read_text(encoding="utf-8"))
-        self.assertEqual("0.5.1", data["metadata"]["version"], "本用例须在 f088f04 升锁副本跑")
+        self.assertEqual("0.5.3", data["metadata"]["version"], "本用例须在 c404003 升锁副本跑")
         leaves = dict(token_nodes(data["tokens"]))
-        self.assertEqual(116, len(leaves), "v0.5.1 含 font.family、空阴影和 component，不能默默排除")
+        # v0.5.3 全部 131 叶子 = 生成的 116（含 font.family、空阴影和 component，不能默默排除）+ 跳过的顶层 motion 15。
+        self.assertEqual(131, len(leaves), "v0.5.3 全部叶子数变了：先核新增的是哪段，不能默默排除")
+        skipped = {path for path in leaves if path.startswith("motion.")}
+        self.assertEqual(V053_MOTION_LEAVES, skipped, "跳过只限顶层 motion 下这 15 个叶子（D10-3147）")
         source = Path(gen.ROOT, gen.MAIN_KOTLIN, "DesignTokens.kt").read_text(encoding="utf-8")
+        self.assertNotRegex(without_kotlin_comments(source), r"(?i)motion|duration|easing|cubicBezier",
+                            "motion 原生不生成：生成物里不得出现 motion 常量")
         covered = set()
         for prefix, map_name in TOKEN_MAPS.items():
             expected = {path[len(prefix) + 1:]: leaf["value"] for path, leaf in leaves.items()
@@ -519,7 +524,8 @@ class TokensPipeGeneratorTest(SnapshotCase):
             covered.update(path for path in leaves if path.startswith(prefix + "."))
             with self.subTest(section=prefix):
                 self.assertEqual(expected, generated_token_map(source, map_name))
-        self.assertEqual(set(leaves), covered)
+        self.assertEqual(set(leaves) - skipped, covered)
+        self.assertEqual(116, len(covered))
         with self.subTest(section="componentNumber"):
             expected = {path[len("component."):]: leaf["value"] for path, leaf in leaves.items()
                         if path.startswith("component.") and leaf["type"] == "number"}
@@ -541,9 +547,10 @@ class TokensPipeGeneratorTest(SnapshotCase):
             with self.subTest(path=path):
                 self.assertIn(path, leaves)
                 self.assertEqual(value, leaves[path]["value"])
-        # 只钉 value / dark，描述文案和 JSON 排版不影响断言。摘要来自 git show f088f04。
+        # 只钉 value / dark，描述文案和 JSON 排版不影响断言。摘要来自 git show c404003，口径与生成一致：
+        # 不含跳过的顶层 motion（motion 只由 V053_MOTION_LEAVES 钉路径；原生不读它的值）。
         canonical = {path: {key: leaf[key] for key in ("value", "dark") if key in leaf}
-                     for path, leaf in leaves.items()}
+                     for path, leaf in leaves.items() if not path.startswith("motion.")}
         digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         self.assertEqual(V051_LEAF_DIGEST, digest)
 
@@ -564,7 +571,15 @@ class TokensPipeGeneratorTest(SnapshotCase):
                 self.assertEqual(mutated, output.read_text(encoding="utf-8"), "--check 不得覆盖漂移证据")
 
 
-V051_LEAF_DIGEST = "b54f40e96e64623a0ed25dcf8530a2ed273d08db715f9fb2943f085ba6a2ce35"
+# 名字沿用 v051（用例链路好查）；值随锁 c404003（v0.5.3）更新，旧 b54f40e9…ce35（f088f04）。
+V051_LEAF_DIGEST = "d56e2ca979853478da3c4808f51338ed368a46174b610e31a2b502224231c1f5"
+# v0.5.3 新增的顶层 motion：10 个 duration + 5 个 cubicBezier，原生按平台默认动效、不读（00 D37 / D10-837），gen.py 跳过（D10-3147）。
+V053_MOTION_LEAVES = {
+    "motion.duration.instant", "motion.duration.fast", "motion.duration.normal", "motion.duration.emphasized",
+    "motion.duration.slow", "motion.easing.standard", "motion.easing.enter", "motion.easing.exit",
+    "motion.easing.emphasized-enter", "motion.easing.emphasized-exit", "motion.toast.display",
+    "motion.skeleton.shimmer", "motion.skeleton.show-delay", "motion.skeleton.min-visible", "motion.reduced.fade",
+}
 
 
 # ---- TOKENS-PIPE 测试 v2（review-android-r1 S2-2 / S2-3）
@@ -609,7 +624,9 @@ def leaf_at(tokens, dotted):
 class TokensPipeStrictTokensTest(SnapshotCase):
     """S2-2：令牌源里任何生成器不认识的分组 / type 都必须带路径报 GenError，不得静默丢弃。"""
 
-    def write_tokens(self, tokens, version="0.5.1"):
+    # 默认版本须跟真实快照同步（c404003 = 0.5.3）：--check 用例写回源后要与副本生成物的 version 行一致，
+    # real_tokens 在写回后重读也要过版本断言。
+    def write_tokens(self, tokens, version="0.5.3"):
         Path(self.snapshot, "design/design-tokens.json").write_text(
             json.dumps({"metadata": {"version": version}, "tokens": tokens}, ensure_ascii=False), encoding="utf-8")
 
@@ -627,7 +644,7 @@ class TokensPipeStrictTokensTest(SnapshotCase):
 
     def real_tokens(self):
         data = json.loads(Path(self.snapshot, "design/design-tokens.json").read_text(encoding="utf-8"))
-        self.assertEqual("0.5.1", data["metadata"]["version"], "本用例须在 f088f04 升锁副本跑")
+        self.assertEqual("0.5.3", data["metadata"]["version"], "本用例须在 c404003 升锁副本跑")
         return data["tokens"]
 
     def test_samples_are_valid_positive_controls(self):
@@ -638,8 +655,10 @@ class TokensPipeStrictTokensTest(SnapshotCase):
     def test_unknown_groups_fail_with_leaf_path(self):
         base = copy_json(STRICT_SAMPLES["color"][0])
         cases = {
-            # 全新顶层分组
-            "motion.duration": {"motion": {"duration": {"type": "dimension", "value": 200}}},
+            # 全新顶层分组（motion 自 v0.5.3 起是已知、跳过的分组，D10-3147；这里换陌生名，type 用 motion 的 duration）
+            "haptics.duration": {"haptics": {"duration": {"type": "duration", "value": 200}}},
+            # 只认小写顶层 motion：大小写变体照旧是陌生分组
+            "Motion.duration": {"Motion": {"duration": {"type": "duration", "value": 200}}},
             # 已知顶层（font）下的陌生子分组
             "font.tracking.body": {"font": {"tracking": {"body": {"type": "dimension", "value": 1}}}},
             # 已知顶层下直接挂的叶子
@@ -674,7 +693,8 @@ class TokensPipeStrictTokensTest(SnapshotCase):
                 self.assert_rejected_with_path(mutated, path)
 
     def test_unknown_group_in_real_v051_source_fails(self):
-        for path, extra in (("motion.duration", {"motion": {"duration": {"type": "dimension", "value": 200}}}),
+        # 真实源自带顶层 motion：它被跳过，不得连带放过别的陌生分组。
+        for path, extra in (("haptics.duration", {"haptics": {"duration": {"type": "duration", "value": 200}}}),
                             ("font.tracking.body", None)):
             with self.subTest(path=path):
                 tokens = self.real_tokens()
@@ -699,25 +719,134 @@ class TokensPipeStrictTokensTest(SnapshotCase):
         with patch.object(gen, "ROOT", self.out), patch.object(sys, "argv", ["gen.py", "--check"]):
             with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
                 self.assertEqual(0, gen.main(), "未注入前副本须先绿")
-                tokens["motion"] = {"duration": {"type": "dimension", "value": 200}}
+                tokens["haptics"] = {"duration": {"type": "duration", "value": 200}}
                 self.write_tokens(tokens)
                 self.assertEqual(2, gen.main(), "源里多出生成器不认识的分组，--check 不得报一致")
-        self.assertIn("motion.duration", stderr.getvalue())
+        self.assertIn("haptics.duration", stderr.getvalue())
 
     def test_v051_every_leaf_is_consumed_exactly_once(self):
         tokens = self.real_tokens()
         leaves = dict(token_nodes(tokens))
-        self.assertEqual(116, len(leaves))
+        self.assertEqual(131, len(leaves))
+        skipped = {path for path in leaves if path.startswith("motion.")}
+        self.assertEqual(V053_MOTION_LEAVES, skipped)
         source = self.gen_tokens(tokens)
         produced = []
         for prefix, map_name in list(TOKEN_MAPS.items()) + [("component", "componentNumber")]:
             produced += [f"{prefix}.{key}" for key in generated_token_map(source, map_name)]
         self.assertEqual(len(produced), len(set(produced)), "同一叶子不得进两个段")
-        self.assertEqual(set(leaves), set(produced), "消费路径集合必须等于源的全部叶子集合")
+        self.assertEqual(set(leaves) - skipped, set(produced), "消费路径集合必须等于源去掉顶层 motion 后的全部叶子集合")
         for prefix, map_name in (("color", "colorsDark"), ("shadow", "shadowsDark")):
             with self.subTest(section=map_name):
                 self.assertEqual({path for path in leaves if path.startswith(prefix + ".")},
                                  {f"{prefix}.{key}" for key in generated_token_map(source, map_name)})
+
+
+# ---- FU-ANDROID-TOKENS-V053：顶层 motion 是「已知、原生不生成」的分组（D10-3147；依据 00 D37 / D10-837）
+
+# 合成 motion：duration 与 cubicBezier 两种 type，两层、三层嵌套都有。
+MOTION_SAMPLE = {
+    "duration": {"fast": {"type": "duration", "value": 150, "unit": "ms"},
+                 "slow": {"type": "duration", "value": 500, "unit": "ms"}},
+    "easing": {"standard": {"type": "cubicBezier", "value": [0.2, 0, 0, 1]},
+               "emphasized-exit": {"type": "cubicBezier", "value": [0.3, 0, 0.8, 0.15]}},
+    "skeleton": {"show": {"delay": {"type": "duration", "value": 300, "unit": "ms"}}},
+}
+# 只认 tokens 下的顶层 motion：别处的同名分组、相近的顶层名照旧要带路径报错。期望路径 → 注入函数。
+NOT_SKIPPED_MOTION_LIKE = {
+    "font.motion.duration.fast": lambda t: t["font"].__setitem__(
+        "motion", {"duration": {"fast": {"type": "duration", "value": 150, "unit": "ms"}}}),
+    "interaction.motion.fast": lambda t: t["interaction"].__setitem__(
+        "motion", {"fast": {"type": "duration", "value": 150, "unit": "ms"}}),
+    "component.motion.fast": lambda t: t["component"].__setitem__(
+        "motion", {"fast": {"type": "duration", "value": 150, "unit": "ms"}}),
+    "motions.duration.fast": lambda t: t.__setitem__(
+        "motions", {"duration": {"fast": {"type": "duration", "value": 150, "unit": "ms"}}}),
+    "MOTION.easing.standard": lambda t: t.__setitem__(
+        "MOTION", {"easing": {"standard": {"type": "cubicBezier", "value": [0.2, 0, 0, 1]}}}),
+}
+
+
+class TokensPipeSkippedMotionTest(SnapshotCase):
+    """D10-3147：顶层 motion 整段跳过——不生成任何常量、不报错；与陌生分组同在时仍因陌生分组带路径报错。"""
+
+    write_tokens = TokensPipeStrictTokensTest.write_tokens
+    gen_tokens = TokensPipeStrictTokensTest.gen_tokens
+    assert_rejected_with_path = TokensPipeStrictTokensTest.assert_rejected_with_path
+
+    def real_tokens(self):
+        # 写回会覆盖副本里的源：首次读到的原样源要缓存，每次给深拷贝。
+        if not hasattr(self, "_pristine_tokens"):
+            self._pristine_tokens = TokensPipeStrictTokensTest.real_tokens(self)
+        return copy_json(self._pristine_tokens)
+
+    def gen_or_fail(self, tokens):
+        try:
+            return self.gen_tokens(tokens)
+        except gen.GenError as error:
+            self.fail(f"顶层 motion 须跳过，实际报 GenError：{error}")
+
+    def sample_tokens(self):
+        tokens = copy_json(STRICT_SAMPLES["color"][0])
+        tokens.update(copy_json(STRICT_SAMPLES["component"][0]))
+        return tokens
+
+    def test_top_level_motion_is_skipped_without_generating_constants(self):
+        base = self.sample_tokens()
+        expected = self.gen_tokens(copy_json(base))
+        tokens = copy_json(base)
+        tokens["motion"] = copy_json(MOTION_SAMPLE)
+        source = self.gen_or_fail(tokens)
+        self.assertEqual(expected, source, "加了顶层 motion 的生成物必须与没有 motion 时逐字节相同")
+        self.assertNotRegex(without_kotlin_comments(source), r"(?i)motion|duration|easing|cubicBezier|skeleton")
+
+    def test_real_source_motion_is_skipped_without_generating_constants(self):
+        tokens = self.real_tokens()
+        self.assertEqual(V053_MOTION_LEAVES, {path for path, _ in token_nodes({"motion": tokens["motion"]})})
+        without = copy_json(tokens)
+        del without["motion"]
+        expected = self.gen_tokens(without)
+        self.assertEqual(expected, self.gen_or_fail(tokens), "真实源去掉 motion 前后生成物必须逐字节相同")
+
+    def test_motion_with_unknown_group_still_fails_with_its_path(self):
+        for label, tokens in (("sample", dict(self.sample_tokens(), motion=copy_json(MOTION_SAMPLE))),
+                              ("real", self.real_tokens())):
+            with self.subTest(source=label):
+                self.assertIn("motion", tokens)
+                tokens["haptics"] = {"impact": {"type": "duration", "value": 10, "unit": "ms"}}
+                with self.assertRaises(gen.GenError) as caught:
+                    self.gen_tokens(tokens)
+                self.assertIn("haptics.impact", str(caught.exception), "报错必须带出陌生分组的令牌路径")
+                self.assertNotIn("motion", str(caught.exception), "motion 是已知分组，不得被当成陌生路径报出")
+
+    def test_only_top_level_motion_is_skipped(self):
+        for path, inject in NOT_SKIPPED_MOTION_LIKE.items():
+            with self.subTest(path=path):
+                tokens = self.real_tokens()
+                inject(tokens)
+                self.assert_rejected_with_path(tokens, path)
+
+    def test_check_ignores_motion_values_but_still_rejects_unknown_group(self):
+        try:
+            self.generate()
+        except gen.GenError as error:
+            self.fail(f"真实源（含顶层 motion）须能生成，实际报 GenError：{error}")
+        vectors = Path(self.out, gen.HOME_VECTORS)
+        vectors.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(gen.ROOT, gen.HOME_VECTORS), vectors)
+        tokens = self.real_tokens()
+        stderr = io.StringIO()
+        with patch.object(gen, "ROOT", self.out), patch.object(sys, "argv", ["gen.py", "--check"]):
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                self.assertEqual(0, gen.main(), "含 motion 的真实源 --check 须先绿")
+                tokens["motion"]["duration"]["fast"]["value"] = 999
+                tokens["motion"]["easing"]["standard"]["value"] = [1, 1, 1, 1]
+                self.write_tokens(tokens)
+                self.assertEqual(0, gen.main(), "motion 不生成：只改 motion 的值不得被 --check 判成漂移或报错")
+                tokens["haptics"] = {"impact": {"type": "duration", "value": 10, "unit": "ms"}}
+                self.write_tokens(tokens)
+                self.assertEqual(2, gen.main(), "motion 之外的陌生分组，--check 仍须返回 2")
+        self.assertIn("haptics.impact", stderr.getvalue())
 
 
 def copy_json(value):
