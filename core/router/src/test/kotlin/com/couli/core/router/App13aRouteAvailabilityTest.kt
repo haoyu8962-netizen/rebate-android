@@ -8,8 +8,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * APP-13a G01、G21、G43：DeleteAccount 的 since 三端都是 null——默认按升级提示；Debug 路由可用性覆盖放行后，参数一律静默丢弃、照常打开；
- * 深链入口没有声明（in_app、push）被拦；覆盖不影响别的路由。
+ * APP-13a G01、G21、G43（契约层，RouteAvailability / EntryGuard）：DeleteAccount since.android=1.0.0（CT-17i），本端 1.0.0 不加覆盖即可用；
+ * since=null 的路由（例子用 Favorites）默认按升级提示；覆盖放行后参数一律静默丢弃、照常打开；深链入口没有声明（in_app、push）被拦；覆盖不影响别的路由。
+ * App 侧的本地发布闸（FU-AND-DELETION-ENTRY-GATE：没有变体覆盖时 DeleteAccount 按本端未发布）不在这一层，见 app 的 DeletionEntryGateTest。
  */
 class App13aRouteAvailabilityTest {
     private fun state(

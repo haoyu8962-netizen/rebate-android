@@ -328,15 +328,17 @@ class AccountWiringSmokeTest {
         assertFalse(synchronized(requests) { requests.any { it == "POST /v1/me/deletion" } })
     }
 
-    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android=1.0.0，不加覆盖即可进注销页、不弹 10007 提示（原「不可用只提示」前提失效），ruling D10-1664
+    // modify_existing（#24）：FU-AND-DELETION-ENTRY-GATE 本地发布闸（D10-2913 ①、D10-2914、D10-2967）——契约 since.android=1.0.0 不变，
+    // 但没有变体覆盖时 DeleteAccount 按本端未发布：App 内打开只提示 error.10007、不导航（回到 e70dc8c^ 的断言，取代 D10-1664 的「无覆盖即可进」）
     @Test
-    fun deleteAccountWithoutOverrideOpensSinceCt17i() {
+    fun anUnavailableDeleteAccountOnlyPromptsAndDoesNotNavigate() {
         override = emptySet()
         launch()
+        val before = stack()
         val prompts = routing.deletionPrompt.value
         open("DeleteAccount")
-        idleUntil { stack().lastOrNull() == "DeleteAccount" }
-        assertEquals("可用时不弹 10007 提示", prompts, routing.deletionPrompt.value)
+        assertEquals("不导航（不进升级页）", before, stack())
+        assertEquals("只提示 error.10007 一次", prompts + 1, routing.deletionPrompt.value)
     }
 
     @Test
@@ -345,8 +347,8 @@ class AccountWiringSmokeTest {
         launch()
         open("Settings")
         idleUntil { has(MeTags.SETTINGS_PAGE) && has(MeTags.SETTINGS_ROW_PREFIX + "settings.phone") }
-        // modify_existing：CT-17i（锁 d47f660e5）since.android=1.0.0，不加覆盖即显示注销行，ruling D10-1664
-        assertTrue("since=1.0.0 无覆盖即显示（CT-17i）", has(DELETE_ROW))
+        // modify_existing（#24）：FU-AND-DELETION-ENTRY-GATE 本地发布闸（D10-2913 ①、D10-2967）——没有变体覆盖时不显示注销行（契约 since 不变）
+        assertFalse("没有变体覆盖时不显示（本地发布闸）", has(DELETE_ROW))
         composeRule.runOnUiThread { navController.popBackStack() }
         override = setOf("DeleteAccount")
         open("Settings")

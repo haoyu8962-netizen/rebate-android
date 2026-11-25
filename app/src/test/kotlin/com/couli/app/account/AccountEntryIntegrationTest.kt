@@ -30,8 +30,8 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * 入口与强更（brief §0 第 3、4 条，§2 第 8、9 项；AC-S1-83 ⑨–⑬、⑭、⑯）：强更页游客 → 注销账号 → 受限登录 → 注销 → 回强更「撤销注销」→ 撤销 → 回强更；
- * 受限会话只发受限表内接口、不上报推送令牌；access / refresh 过期两组；入口裁剪；DeleteAccount 丢参不记事件、深链被拦；since=null（无覆盖）三处入口隐藏、
- * 强更页无注销链接、10007 cooling 只提示不导航。
+ * 受限会话只发受限表内接口、不上报推送令牌；access / refresh 过期两组；入口裁剪；DeleteAccount 丢参不记事件、深链被拦；没有变体覆盖（本地发布闸，
+ * FU-AND-DELETION-ENTRY-GATE；契约 since.android=1.0.0 不变）时三处入口隐藏、强更页无注销链接、10007 cooling 只提示不导航。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class, sdk = [36], qualifiers = "w390dp-h844dp-xxhdpi")
@@ -185,38 +185,41 @@ class AccountEntryIntegrationTest : AccountHarness() {
         assertFalse(top() == DELETE_ACCOUNT)
     }
 
-    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android=1.0.0，本端 1.0.0 不加覆盖即可用；原「since=null 隐藏入口、只提示 10007」前提失效，
-    // 改为正向断言三处入口显示、Router 直接进注销页且不弹 10007 提示（通用 since=null→升级提示改由 core/router 两条用例以 Favorites 覆盖），ruling D10-1664
+    // modify_existing（#24）：FU-AND-DELETION-ENTRY-GATE 本地发布闸（D10-2913 ①、D10-2914、D10-2967）——契约 since.android=1.0.0 不变（core/router 两条照旧），
+    // 但没有变体覆盖时 DeleteAccount 按本端未发布：三处入口隐藏、10007 只提示不导航（回到 e70dc8c^ 的断言，取代 D10-1664 的正向断言）
     @Test
-    fun g01_since100ShowsTheThreeEntriesAndTheForceUpdateLinkAnd10007OpensDeletion() {
+    fun g01_withoutOverrideHidesTheThreeEntriesAnd10007OnlyPrompts() {
         override = emptySet()
         launch()
         open(SETTINGS)
         idleUntil { has(MeTags.SETTINGS_PAGE) && has(PHONE_ROW) }
-        assertTrue("since=1.0.0 无覆盖也显示设置注销行（CT-17i）", has(DELETE_ROW))
+        assertFalse("设置注销行隐藏（本地发布闸）", has(DELETE_ROW))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
+        // 10007 cooling（写接口得到）只提示、不导航、键不结束
         serverState.risk = "banned"
         open("RiskNotice")
         idleUntil { has(MeTags.RISK_PAGE) && has(MeTags.RISK_CS) }
-        assertTrue("since=1.0.0 无覆盖也显示封禁说明页底部注销入口（CT-17i）", has(AccountTags.RISK_DELETE))
+        assertFalse("封禁说明页底部注销入口隐藏（本地发布闸）", has(AccountTags.RISK_DELETE))
         composeRule.runOnUiThread { navController.popBackStack() }
         settle()
+        val before = stack()
         val prompts = routing.deletionPrompt.value
         composeRule.runOnUiThread { routing.router.open(RouteRequest(DELETE_ACCOUNT, JsonObject(emptyMap()), RouteSource.IN_APP)) }
         settle()
-        idleUntil { top() == DELETE_ACCOUNT }
-        assertEquals("可用时直接进注销页、不弹 10007 提示", prompts, routing.deletionPrompt.value)
-        assertFalse(has(DELETION_PROMPT_TAG))
+        assertEquals("不导航（不进升级页）", before, stack())
+        assertEquals(prompts + 1, routing.deletionPrompt.value)
+        assertTrue(has(DELETION_PROMPT_TAG) || announcedText(t("error.10007")))
     }
 
-    // modify_existing：CT-17i（锁 d47f660e5）DeleteAccount since.android=1.0.0，强更页不加覆盖也显示注销链接，ruling D10-1664
+    // modify_existing（#24）：FU-AND-DELETION-ENTRY-GATE 本地发布闸（D10-2913 ①、D10-2967）——没有变体覆盖时强更页只有隐私政策、无注销链接
+    // （回到 e70dc8c^ 的断言，取代 D10-1664 的正向断言）
     @Test
-    fun g01_since100ForceUpdateShowsPrivacyPolicyAndDeletionLink() {
+    fun g01_withoutOverrideForceUpdateShowsOnlyPrivacyPolicy() {
         override = emptySet()
         launch(forced = true)
         idleUntil { top() == FORCE_UPDATE && has(FORCE_UPDATE_PRIVACY_TAG) }
-        assertTrue("since=1.0.0 无覆盖也显示强更页注销链接（CT-17i）", has(FORCE_UPDATE_DELETE_TAG))
+        assertFalse("强更页无注销链接（本地发布闸）", has(FORCE_UPDATE_DELETE_TAG))
     }
 
     @Test
