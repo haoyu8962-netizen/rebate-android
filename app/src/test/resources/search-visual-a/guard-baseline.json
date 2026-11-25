@@ -31,7 +31,7 @@
     },
     {
       "p": "contract.lock",
-      "h": "cce3b365592c6e26ab2632315b9ee1b2a50ca68808b77de98bde50f2fd8b427c"
+      "h": "2d3f8c2cc521461728cacdf024963fb1a2d6edd2dc7693b8508b1bf8cb6264b2"
     },
     {
       "p": "contracts/snapshot/contracts/agent-stream.schema.json",
@@ -155,7 +155,7 @@
     },
     {
       "p": "contracts/snapshot/design/design-tokens.json",
-      "h": "97d2bf83ada062959987f348bc695c63fabc4adb3647f03e5c0895e2548e491c"
+      "h": "58b5e1ff8a0481381cf428b284d38b2a96b5128641912acf37d54e7e6cf63c93"
     },
     {
       "p": "contracts/snapshot/specs/app-stores.json",
