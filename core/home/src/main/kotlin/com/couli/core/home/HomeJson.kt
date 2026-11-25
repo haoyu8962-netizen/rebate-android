@@ -401,27 +401,91 @@ object HomeJson {
     @Suppress("ReturnCount") // 每个字段不合格各自丢弃
     private fun iconItem(element: JsonElement): IconItem? {
         val json = element as? JsonObject ?: return null
-        val raw = (json["icon"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
-        val icon =
-            when {
-                https(raw) -> {
-                    HomeIcon.Remote(raw)
-                }
-
-                raw.startsWith(HomeBuiltinIcons.PREFIX) && raw.removePrefix(HomeBuiltinIcons.PREFIX) in HomeBuiltinIcons.NAMES -> {
-                    HomeIcon.Builtin(raw.removePrefix(HomeBuiltinIcons.PREFIX))
-                }
-
-                else -> {
-                    return null
-                }
-            }
+        val icon = itemPicture(json) ?: return null
         val title = (json["title"] as? JsonPrimitive)?.takeIf { it.isString && it.content.isNotEmpty() }?.content ?: return null
         val action = RouteTargetCheck.parse(json["action"] as? JsonObject) ?: return null
-        val badge = itemText(json, "badge") ?: return null
+        // 徽标不合法（含契约已不允许的字符串形态）只丢徽标、保留条目（D10-2998 (a)）
+        val badge = badge(json["badge"])
         // 条目级推广标识（G22：条目上非 null 优先于卡片级；类型不符只丢这一条，与 banner 同口径）
         val label = itemText(json, "ad_label") ?: return null
-        return IconItem(icon, title, action, badge.value, label.value)
+        return IconItem(icon, title, action, badge, label.value)
+    }
+
+    /**
+     * 金刚区条目的图片位（契约 icon_grid_item「the picture is image or icon」，D10-2998 (c)）：有 icon（非 null）只看 icon，不合法丢这一条、不回落 image；
+     * 没有 icon 时取 image，只认 https 网络图（与 icon 对象同口径，不认 `builtin:`），否则丢这一条。两者都没有 → 丢这一条。
+     */
+    private fun itemPicture(json: JsonObject): HomeIcon? =
+        when (val icon = json["icon"]) {
+            null, JsonNull -> imageText(json["image"])
+            is JsonObject -> iconAsset(icon)
+            else -> iconText(icon)
+        }
+
+    /** 字符串图标：https 网络图，或 `builtin:<名>` 且名在 [HomeBuiltinIcons.NAMES]；其余为 null。 */
+    private fun iconText(value: JsonElement?): HomeIcon? {
+        val raw = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val builtin = raw.removePrefix(HomeBuiltinIcons.PREFIX)
+        return when {
+            https(raw) -> HomeIcon.Remote(raw)
+            raw.startsWith(HomeBuiltinIcons.PREFIX) && builtin in HomeBuiltinIcons.NAMES -> HomeIcon.Builtin(builtin)
+            else -> null
+        }
+    }
+
+    /** 条目的 image：https 网络图；其余为 null。 */
+    private fun imageText(value: JsonElement?): HomeIcon? =
+        (value as? JsonPrimitive)?.takeIf { it.isString && https(it.content) }?.let { HomeIcon.Remote(it.content) }
+
+    /**
+     * 图标对象（契约 `$defs/icon_asset`，additionalProperties: false）：恰好 url、sha256 两个键，url 合契约 pattern（≤ 2048）、sha256 为 64 位小写 hex
+     * → 按网络图取 url；首页不做摘要校验（BR-TEXT-30 摘要绑定只约束我的页）。url 为 .svg 暂不支持（位图解码，FU-AND-HOME-ICON-SVG）→ 为 null。
+     */
+    @Suppress("ReturnCount") // 键集、url、sha256、svg 各自不合格
+    private fun iconAsset(json: JsonObject): HomeIcon? {
+        if (json.keys != ICON_ASSET_KEYS) return null
+        val url = (json["url"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val sha256 = (json["sha256"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        if (url.length > MAX_ICON_URL || url.any { it.isWhitespace() } || !ICON_ASSET_URL.matches(url)) return null
+        if (!SHA256.matches(sha256)) return null
+        if (url.endsWith(SVG_SUFFIX)) return null
+        return HomeIcon.Remote(url)
+    }
+
+    /**
+     * 徽标（契约 `$defs/badge`，additionalProperties: false）：kind ∈ none / dot / text 必填；text 只在 kind = text 时出现且必填（1–2 个 Unicode 码点）；
+     * expire_at 可选，须合 `$defs/instant`（+08:00）。没给、为 null、不是对象或任一条不符 → null（只丢徽标）。
+     */
+    @Suppress("ReturnCount") // 逐条规则不合格各自返回
+    fun badge(value: JsonElement?): HomeBadge? {
+        val json = value as? JsonObject ?: return null
+        if (!BADGE_KEYS.containsAll(json.keys)) return null
+        val kind = (json["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val expire =
+            when {
+                !json.containsKey("expire_at") -> null
+                else -> contractInstant(json["expire_at"]) ?: return null
+            }
+        // kind ≠ text 时出现 text 键（含 null）即不合法（契约 else 分支 text: false）
+        if (kind != BADGE_TEXT && json.containsKey("text")) return null
+        return when (kind) {
+            BADGE_TEXT -> badgeText(json["text"])?.let { HomeBadge.Text(it, expire) }
+            BADGE_DOT -> HomeBadge.Dot(expire)
+            BADGE_NONE -> HomeBadge.None(expire)
+            else -> null
+        }
+    }
+
+    /** kind = text 的文字：字符串且 1–2 个 Unicode 码点（契约 minLength / maxLength 按码点计）；否则 null。 */
+    private fun badgeText(value: JsonElement?): String? {
+        val text = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        return text.takeIf { it.codePointCount(0, it.length) in 1..MAX_BADGE_POINTS }
+    }
+
+    /** 契约 `$defs/instant`：`yyyy-MM-ddTHH:mm:ss(.f{1,6})?+08:00`（Z 或别的偏移不认）且是真实时刻 → 绝对毫秒；否则 null。 */
+    private fun contractInstant(value: JsonElement?): Long? {
+        val text = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        return if (CONTRACT_INSTANT.matches(text)) instant(value) else null
     }
 
     @Suppress("ReturnCount") // 每个字段不合格各自丢弃
@@ -625,4 +689,17 @@ object HomeJson {
     private val CLOCK = Regex("([0-9]{2}):([0-9]{2})")
     private val FEED_PLATFORMS = setOf("taobao", "jd", "pdd")
     private val NOTICE_KEYS = setOf("item_id", "content_version", "text", "target", "closable", "start_at", "end_at")
+    private val ICON_ASSET_KEYS = setOf("url", "sha256")
+    private const val MAX_ICON_URL = 2048
+    private const val SVG_SUFFIX = ".svg"
+
+    // 契约 pattern 原样；Regex.matches 要求整串匹配，等价于 ^…$（Unicode 空白另由 iconAsset 逐字检查，不用 (?U)：Android 不支持该标志）
+    private val ICON_ASSET_URL = Regex("https://[^\\s/?#]+/([^\\s?#]*/)?[0-9a-f]{64}\\.(png|svg)")
+    private val SHA256 = Regex("[0-9a-f]{64}")
+    private val CONTRACT_INSTANT = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?\\+08:00")
+    private val BADGE_KEYS = setOf("kind", "text", "expire_at")
+    private const val BADGE_TEXT = "text"
+    private const val BADGE_DOT = "dot"
+    private const val BADGE_NONE = "none"
+    private const val MAX_BADGE_POINTS = 2
 }

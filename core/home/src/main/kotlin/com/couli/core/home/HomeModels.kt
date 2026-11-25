@@ -85,11 +85,36 @@ data class BannerItem(
     val alt: String?,
 )
 
+/**
+ * 金刚区条目的徽标（契约 `$defs/badge`，BR-TEXT-29）：kind 为 text / dot / none 三种之一。[expireMs] 是 `expire_at` 换成的绝对毫秒（没给为 null）：
+ * 本机时刻到点起隐藏徽标、保留条目。dot 只钉解析、首页暂不显示（D10-2998 (b)，红点样式见 FU-AND-HOME-BADGE-DOT）。
+ */
+sealed interface HomeBadge {
+    val expireMs: Long?
+
+    /** 本机时刻 [nowMs] 时徽标未到期（`now < expire_at`；没有 expire_at 不过期）。 */
+    fun liveAt(nowMs: Long): Boolean = expireMs.let { it == null || nowMs < it }
+
+    data class Text(
+        val text: String,
+        override val expireMs: Long? = null,
+    ) : HomeBadge
+
+    data class Dot(
+        override val expireMs: Long? = null,
+    ) : HomeBadge
+
+    data class None(
+        override val expireMs: Long? = null,
+    ) : HomeBadge
+}
+
 data class IconItem(
     val icon: HomeIcon,
     val title: String,
     val action: RouteTarget,
-    val badge: String?,
+    /** 徽标；没给或不合法（含旧的字符串形态）为 null（只丢徽标、保留条目，D10-2998 (a)）。 */
+    val badge: HomeBadge?,
     /** 条目级推广标识（G22，同 [BannerItem.adLabel]）。 */
     val adLabel: String? = null,
 )

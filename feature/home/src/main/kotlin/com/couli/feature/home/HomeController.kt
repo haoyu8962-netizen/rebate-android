@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import com.couli.core.designsystem.DisclaimerKeys
 import com.couli.core.designsystem.ProductCardMapper
 import com.couli.core.home.HomeAdLabel
+import com.couli.core.home.HomeBadge
 import com.couli.core.home.HomeCall
 import com.couli.core.home.HomeCard
 import com.couli.core.home.HomeDraftTexts
@@ -95,6 +96,7 @@ class HomeController(
     private val owners = mutableSetOf<CallOwnership>()
     private var coldTimer: (() -> Unit)? = null
     private var noticeTimer: (() -> Unit)? = null
+    private var badgeTimer: (() -> Unit)? = null
     private var popupTimer: (() -> Unit)? = null
     private val products = mutableMapOf<String, ProductState>()
     private val cardSeq = mutableMapOf<String, Long>()
@@ -423,6 +425,7 @@ class HomeController(
             }
         }
         scheduleNoticeExpiry()
+        scheduleBadgeExpiry()
         preparePopup()
     }
 
@@ -516,7 +519,7 @@ class HomeController(
                                 HomeIconCell(
                                     item.icon,
                                     item.title,
-                                    item.badge,
+                                    badgeText(item.badge, now),
                                     HomeTap(
                                         ticket,
                                         card.id,
@@ -860,11 +863,37 @@ class HomeController(
             }
     }
 
+    /**
+     * 金刚区徽标的 expire_at（契约 `$defs/badge`，D10-2998）：照公告条做法，页面停留时在最近一个仍显示的文字徽标到期时重算一次（本机时钟，不轮询网络）；
+     * 到点只隐藏徽标、保留条目。dot / none 不显示，不排重算。
+     */
+    private fun scheduleBadgeExpiry() {
+        badgeTimer?.invoke()
+        badgeTimer = null
+        val current = page ?: return
+        val now = deps.clock()
+        val next =
+            current.cards
+                .filterIsInstance<HomeCard.IconGrid>()
+                .flatMap { card -> card.items.mapNotNull { (it.badge as? HomeBadge.Text)?.expireMs } }
+                .filter { it > now }
+                .minOrNull() ?: return
+        val gen = renderGen
+        badgeTimer =
+            deps.timers.after(next - now) {
+                if (owned() && gen == renderGen) {
+                    publish()
+                    scheduleBadgeExpiry()
+                }
+            }
+    }
+
     /** 测试与时钟推进后的立即重算（例如页面恢复可见）。 */
     fun recomputeNotices() {
         if (!alive) return
         publish()
         scheduleNoticeExpiry()
+        scheduleBadgeExpiry()
     }
 
     // ---------------------------------------------------------------- 弹窗（G14）
@@ -1093,6 +1122,7 @@ class HomeController(
         policy.on(HomeSourceEvent.IdentityChanged)
         coldTimer?.invoke()
         noticeTimer?.invoke()
+        badgeTimer?.invoke()
         popupTimer?.invoke()
         candidate = null
         owners.toList().forEach { deps.api.cancelOwned(it) }
@@ -1110,6 +1140,7 @@ class HomeController(
 
     companion object {
         private val NEXT = AtomicLong(0L)
+
         const val PAGE_KEY = "home"
 
         /** D10-607 D4：空页带游标时自己接着取的上限（首取 1 次 + 至多 3 次）。 */
@@ -1129,5 +1160,11 @@ class HomeController(
         private const val SERVER_DIVISOR = 10_000
         private const val SERVER_CLASS = 5
         private const val TIMEOUT = "timeout"
+
+        /** 金刚区格上显示的徽标文字：只有 kind = text 且本机时刻未到 expire_at 才显示；dot 暂不显示（D10-2998 (b)，FU-AND-HOME-BADGE-DOT）。 */
+        private fun badgeText(
+            badge: HomeBadge?,
+            nowMs: Long,
+        ): String? = (badge as? HomeBadge.Text)?.takeIf { it.liveAt(nowMs) }?.text
     }
 }
