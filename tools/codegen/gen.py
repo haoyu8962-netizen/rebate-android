@@ -1042,6 +1042,11 @@ TOKEN_SECTION_TYPES = {
     "component": {"dimension", "number"},
 }
 
+# 已知、原生不生成的顶层令牌分组：整棵子树不生成常量、不校验 type，也不进 check_all_consumed 的集合核对。
+# motion（v0.5.3 起，duration / cubicBezier）：仅 Web 读；原生三端按平台默认动效、不读这些数（00 D37、D10-837），
+# 本端跳过的裁定见 D10-3147。只认 tokens 下的顶层键；嵌套在别的段里的同名键、以及任何其余陌生分组 / 陌生 type 照旧报错。
+TOKEN_SKIPPED_TOP_LEVEL = frozenset({"motion"})
+
 
 class TokenConsumer:
     """按段取令牌子树，逐叶核 type 并记下消费过的路径；最后与源的全部叶子做集合核对。"""
@@ -1049,8 +1054,10 @@ class TokenConsumer:
     def __init__(self, tokens: dict):
         self.tokens = tokens
         self.consumed = set()
-        # 先整树走一遍：含点号的键在任何层级一律拒绝（与嵌套路径无法区分）。
-        self.leaves = token_node_parts(tokens)
+        # 先整树走一遍（跳过 TOKEN_SKIPPED_TOP_LEVEL 的顶层分组）：含点号的键在任何层级一律拒绝（与嵌套路径无法区分）。
+        self.leaves = token_node_parts(
+            {name: child for name, child in tokens.items() if name not in TOKEN_SKIPPED_TOP_LEVEL}
+        )
 
     def __call__(self, section: str) -> dict:
         allowed = TOKEN_SECTION_TYPES[section]

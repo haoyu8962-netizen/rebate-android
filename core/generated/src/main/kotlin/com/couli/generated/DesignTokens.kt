@@ -4,7 +4,7 @@ package com.couli.generated
 /** 设计令牌原始常量（design/tokens/design-tokens.json）。语义映射在 core:designsystem。 */
 object DesignTokens {
     /** metadata.version */
-    const val version: kotlin.String = "0.5.1"
+    const val version: kotlin.String = "0.5.3"
 
     /** 阴影的一层（shadow.* 的数组元素）：偏移 / 模糊 / 扩展为逻辑像素，color 为 #RRGGBB(AA)，opacity 0–1。 */
     data class ShadowLayer(
@@ -23,11 +23,11 @@ object DesignTokens {
             "brand.emphasis" to "#A83B1F",
             "brand.secondary" to "#26735B",
             "brand.subtle" to "#FBEFE8",
-            "background.canvas" to "#F2EEE6",
+            "background.canvas" to "#F6F5F3",
             "background.admin-canvas" to "#F6F3ED",
             "background.surface" to "#FFFFFF",
-            "background.muted" to "#EFEAE2",
-            "background.placeholder" to "#E9E2D9",
+            "background.muted" to "#F2F1EF",
+            "background.placeholder" to "#EBEAE7",
             "text.primary" to "#28251F",
             "text.secondary" to "#655E57",
             "text.inverse" to "#FFFFFF",
@@ -38,20 +38,20 @@ object DesignTokens {
             "rebate.solid.background" to "#C44820",
             "rebate.solid.text" to "#FFFFFF",
             "status.pending.text" to "#655E57",
-            "status.pending.background" to "#EFEAE2",
+            "status.pending.background" to "#F2F1EF",
             "status.success.text" to "#26735B",
             "status.success.background" to "#EAF4EE",
             "status.warning.text" to "#846020",
             "status.warning.background" to "#FBF2DC",
             "status.error.text" to "#B42345",
             "status.error.background" to "#FDECF0",
-            "border.subtle" to "#E4DED5",
+            "border.subtle" to "#E6E5E3",
             "border.control" to "#8A8177",
             "border.active" to "#28251F",
             "focus.ring" to "#26735B",
             "source.text" to "#655E57",
             "source.background" to "#FFFFFF",
-            "source.border" to "#E4DED5",
+            "source.border" to "#E6E5E3",
             "platform.tag.taobao" to "#D53D00",
             "platform.tag.tmall" to "#EA0031",
             "platform.tag.jd" to "#E02018",
@@ -60,7 +60,7 @@ object DesignTokens {
             "button.primary.default.text" to "#FFFFFF",
             "button.primary.pressed.background" to "#A83B1F",
             "button.primary.pressed.text" to "#FFFFFF",
-            "button.primary.disabled.background" to "#E9E2D9",
+            "button.primary.disabled.background" to "#EBEAE7",
             "button.primary.disabled.text" to "#655E57",
             "button.inverse.background" to "#FFFFFF",
             "button.inverse.text" to "#A83B1F",
