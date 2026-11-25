@@ -9,9 +9,11 @@ import com.couli.app.update.FORCE_UPDATE_DELETE_TAG
 import com.couli.app.update.FORCE_UPDATE_PRIVACY_TAG
 import com.couli.core.router.GuardDecision
 import com.couli.core.router.GuardKind
+import com.couli.core.router.GuardReason
 import com.couli.core.router.RouteAvailability
 import com.couli.core.router.RouteRequest
 import com.couli.core.router.RouteSource
+import com.couli.core.router.UpdateState
 import com.couli.feature.me.AccountTags
 import com.couli.feature.me.MeTags
 import java.io.File
@@ -137,8 +139,9 @@ class DeletionEntryGateTest : AccountHarness() {
         override = emptySet()
         launch()
         val prompts = routing.deletionPrompt.value
-        val decision = openFrom(RouteSource.DEEPLINK)
+        val decision = openWithUpdateOk(RouteSource.DEEPLINK)
         assertEquals("深链打开未发布的 DeleteAccount 给升级提示", GuardKind.UPGRADE, decision.kind)
+        assertEquals("拦在路由判定（本端未发布），不是被别的闸门抢先拦下", GuardReason.UNKNOWN_ROUTE, decision.reason)
         assertNotEquals("不进注销页", DELETE_ACCOUNT, top())
         assertEquals("深链不走 10007 提示", prompts, routing.deletionPrompt.value)
     }
@@ -148,10 +151,22 @@ class DeletionEntryGateTest : AccountHarness() {
         override = emptySet()
         launch()
         val prompts = routing.deletionPrompt.value
-        val decision = openFrom(RouteSource.PUSH)
+        val decision = openWithUpdateOk(RouteSource.PUSH)
         assertEquals("推送打开未发布的 DeleteAccount 给升级提示", GuardKind.UPGRADE, decision.kind)
+        assertEquals("拦在路由判定（本端未发布），不是被别的闸门抢先拦下", GuardReason.UNKNOWN_ROUTE, decision.reason)
         assertNotEquals("不进注销页", DELETE_ACCOUNT, top())
         assertEquals("推送不走 10007 提示", prompts, routing.deletionPrompt.value)
+    }
+
+    /** 上两条的对照：同一前置（强更 OK、真实 AppRouting 组状态）、有覆盖时深链走到路由判定的入口检查，被拦为 entry_not_allowed。 */
+    @Test
+    fun gate_withOverrideADeepLinkReachesTheEntryCheck() {
+        override = setOf(DELETE_ACCOUNT)
+        launch()
+        val decision = openWithUpdateOk(RouteSource.DEEPLINK)
+        assertEquals("有覆盖：深链入口没声明，被拦", GuardKind.REJECT, decision.kind)
+        assertEquals("拦在入口检查（请求确实走到了路由判定）", GuardReason.ENTRY_NOT_ALLOWED, decision.reason)
+        assertNotEquals("不进注销页", DELETE_ACCOUNT, top())
     }
 
     /** 覆盖含 DeleteAccount（Debug / Staging 原设计）：设置注销行显示，App 内打开直接进注销页、不弹 10007 提示。 */
@@ -198,9 +213,13 @@ class DeletionEntryGateTest : AccountHarness() {
         idleUntil("申诉页维持结果的固定栏") { has(MeTags.APPEAL_PAGE) && has(MeTags.APPEAL_AGAIN) && has(MeTags.APPEAL_CS) }
     }
 
-    private fun openFrom(source: RouteSource): GuardDecision {
-        val decision =
-            composeRule.runOnIdle { routing.router.open(RouteRequest(DELETE_ACCOUNT, JsonObject(emptyMap()), source)) }
+    /**
+     * 从 [source] 打开 DeleteAccount，显式给强更结论 OK（仍由真实 AppRouting 组状态，带着本地闸与覆盖）：夹具里强更检查没有结论（UNKNOWN），
+     * 守卫的强更闸门先于路由判定，会把深链 reject、把推送改开 Messages，走不到本单要钉的路由判定。
+     */
+    private fun openWithUpdateOk(source: RouteSource): GuardDecision {
+        val request = RouteRequest(DELETE_ACCOUNT, JsonObject(emptyMap()), source)
+        val decision = composeRule.runOnIdle { routing.router.open(request, routing.guardState(UpdateState.OK)) }
         settle()
         return decision
     }
