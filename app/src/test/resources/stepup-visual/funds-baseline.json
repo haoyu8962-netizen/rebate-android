@@ -6,7 +6,7 @@
     "app/src/test/kotlin/com/couli/app/NetworkCleanupWiringTest.kt": "7ade89f0dad831df8985bd1b2fc6cbd257024ae31e3ca8c4e050460aca989908",
     "app/src/test/kotlin/com/couli/app/account/AccountFollowupAnd0717Test.kt": "117104407aeb5ec236f7c7ec94f47d5c64534f762fa3c490086ada7c119367c0",
     "app/src/test/kotlin/com/couli/app/account/AccountHarness.kt": "8326fff55f71da82c7684c8088cb094317636be5f8070df46b396648ac0dffda",
-    "app/src/test/kotlin/com/couli/app/account/AccountWiringSmokeTest.kt": "1f2a48ba6eae4241c6d7e0d55b3fdd399535dfc39245bb472d31d03f8e83f136",
+    "app/src/test/kotlin/com/couli/app/account/AccountWiringSmokeTest.kt": "2ecf42e10bfc9688047f776bfaf6c04f786b8d4e632cdf644a779a59ca7d0306",
     "app/src/test/kotlin/com/couli/app/account/DeleteAccountIntegrationTest.kt": "bef6fe1e16f133501393aa0977bf8911bb6ae593341cf491d370240220b70b6f",
     "app/src/test/kotlin/com/couli/app/account/PhoneChangeIntegrationTest.kt": "ffb2ca09cc42c990661c6f652ef9540d94e939949039574c5e27dffa3c0af4a2",
     "app/src/test/kotlin/com/couli/app/clipboard/PendingInviteWiring17cTest.kt": "b883df513aa29dd4e525381990982c02aa91fe2262c34e190d997a67ba2d043b",

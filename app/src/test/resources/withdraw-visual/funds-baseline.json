@@ -3,7 +3,7 @@
   "files": {
     "app/src/test/kotlin/com/couli/app/AppStartupTrackerWiringTest.kt": "e717f5ef59913ec12b68ee740d47f5dd2c5584e1e19dc69244c8d3c4845589a2",
     "app/src/test/kotlin/com/couli/app/NetworkCleanupWiringTest.kt": "7ade89f0dad831df8985bd1b2fc6cbd257024ae31e3ca8c4e050460aca989908",
-    "app/src/test/kotlin/com/couli/app/account/AccountWiringSmokeTest.kt": "1f2a48ba6eae4241c6d7e0d55b3fdd399535dfc39245bb472d31d03f8e83f136",
+    "app/src/test/kotlin/com/couli/app/account/AccountWiringSmokeTest.kt": "2ecf42e10bfc9688047f776bfaf6c04f786b8d4e632cdf644a779a59ca7d0306",
     "app/src/test/kotlin/com/couli/app/clipboard/PendingInviteWiring17cTest.kt": "b883df513aa29dd4e525381990982c02aa91fe2262c34e190d997a67ba2d043b",
     "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0714LoginEpochWiringTest.kt": "252ccff8dd519297747fbb685b0a56da4880821675b1cf7dd78dcceea52a5cd3",
     "app/src/test/kotlin/com/couli/app/followup/FollowupAnd0718FlowLockTest.kt": "a4dde7a0be3a76501f269f406b58e9c5e7d8718f526786a1933908fb05170cff",

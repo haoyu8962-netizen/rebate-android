@@ -7,7 +7,7 @@
   {"h": "48b82188f8e1b71fffcda62e54f18baece2ed8b867517c2fd6a7bfbaa41e0fc2", "p": "app/src/main/kotlin/com/couli/app/me/MeRoutes.kt"},
   {"h": "61f2e13dbf517c79e781908d2b23c571429e7d2b3249fb3ca6b430488215d4af", "p": "app/src/main/kotlin/com/couli/app/shell/AppShell.kt"},
   {"h": "add6b906c87d55ed64e6e04d3a137ed3635339251451e95558126de0fd72d299", "p": "app/src/main/kotlin/com/couli/app/wallet/AppWallet.kt"},
-  {"h": "10908fc339f7ecb25dd4b7c143408d7e19a0fa395e26616f71d1a01872aac6c5", "p": "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"},
+  {"h": "40ac0db0904189c53fd4016a953bf405e040706a53f9b2226f70fc372ac7c769", "p": "app/src/test/kotlin/com/couli/app/account/AccountEntryIntegrationTest.kt"},
   {"h": "0965e34ee9a90a25826c9dee7c9e4311c81cbdb7ef3187aa3bf00fec5a173ba8", "p": "app/src/test/kotlin/com/couli/app/me/AppMeIntegrationTest.kt"},
   {"h": "0cce39b7a8c726c30824b2e635e985630efd014b86936182f3ee8bf8ed5c1aaf", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualA11yTest.kt"},
   {"h": "33c6408ae335203972d62b1fc59f6c8b85fa9aa361780d2b191476869958aa01", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualAboutTest.kt"},
@@ -1717,6 +1717,6 @@
   "contracts/snapshot/contracts/routes.json",
   "contracts/snapshot/contracts/texts.default.json"
  ],
- "settingsGuardNormalized": "388956efddb87e752371f1139e6134eacbac27c7b5ea5cba181eb8b916a85fbe",
+ "settingsGuardNormalized": "b2afe4c8fd0a7f6aafc8857cdc441f7d3e30a93b39b81b7369cbcd1e9cdc6772",
  "privacyGuardNormalized": "c7087271637ad382f105e91695389ca3b5fef5e6fb447b1c97be1c3982186376"
 }
