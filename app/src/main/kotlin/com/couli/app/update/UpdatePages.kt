@@ -80,7 +80,7 @@ class ForceUpdateActions(
  * ForceUpdate 全屏拦截页（设计稿 ForceUpdate / ForceUpdateUnavailable；03 §4.1）。
  * - 主按钮【去更新】→ 选店；没有可去的商店时显示 app_update.unavailable 提示条，主按钮换成【重试】（重新检查再选），不给下载地址；
  * - 次要入口「隐私政策」与「注销账号 / 撤销注销」（APP-13a G28：[deleteLabelKey] 由 App 按已登录时取的 getDeletion 决定；null = 不显示——
- *   DeleteAccount 不可用（since=null 且没有 Debug 覆盖，G01 ②）、基本模式（G48）。TODO(N-37) 契约给 since 后自动显示）；
+ *   DeleteAccount 不可用（本地发布闸关着且没有 Debug 覆盖，G01 ②；FU-AND-DELETION-ENTRY-GATE，开门归 APP-13a-OPEN-android）、基本模式（G48））；
  * - 返回键吞掉（不能离开强更页）；内容区可滚动（200% 字号），底部按钮固定。
  */
 @Composable

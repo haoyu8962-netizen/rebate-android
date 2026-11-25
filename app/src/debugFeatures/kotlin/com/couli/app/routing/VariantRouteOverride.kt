@@ -5,9 +5,10 @@ import com.couli.app.DebugMockGate
 import java.io.File
 
 /**
- * debug / staging：路由可用性覆盖（APP-13a G01，编排者补充 1）。DeleteAccount 在三端 since 都是 null，Release 里注销入口全部隐藏；这里给冒烟、设计稿截图与
- * 集成测试一个只在非 Release 编译的开关：状态文件 files/[ROUTE_OVERRIDE_FILE] 每行一个路由名（如 `DeleteAccount`），**并且**统一闸门放行（开关 + MOCK_DATA +
- * 环境就绪，F-X-02）时才生效。每次调用现读（不缓存）；读取出错按空集。release-scan 查 [ROUTE_OVERRIDE_MARKER]（Release 制品里不得出现）。
+ * debug / staging：路由可用性覆盖（APP-13a G01，编排者补充 1）。契约 since.android 已是 1.0.0，DeleteAccount 由 AppRouting 的本地发布闸关门
+ * （FU-AND-DELETION-ENTRY-GATE，开门归 APP-13a-OPEN-android），Release 里注销入口全部隐藏；这里给冒烟、设计稿截图与集成测试一个只在非 Release 编译的开关：
+ * 状态文件 files/[ROUTE_OVERRIDE_FILE] 每行一个路由名（如 `DeleteAccount`），**并且**统一闸门放行（开关 + MOCK_DATA + 环境就绪，F-X-02）时才生效。
+ * 每次调用现读（不缓存）；读取出错按空集。release-scan 查 [ROUTE_OVERRIDE_MARKER]（Release 制品里不得出现）。
  */
 internal fun variantRouteOverrides(context: Context): () -> Set<String> {
     val app = context.applicationContext

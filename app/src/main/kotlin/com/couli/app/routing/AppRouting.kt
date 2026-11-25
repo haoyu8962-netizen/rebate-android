@@ -122,13 +122,19 @@ class AppRouting
         val navTickets = NavTickets()
 
         /**
-         * 路由可用性覆盖（APP-13a G01）：since=null 的路由（DeleteAccount）在 Debug / Staging 由状态文件打开，只给冒烟、截图与集成测试；Release 恒为空集
-         * （变体源码集，release-scan 不得命中开关标记）。守卫与页面入口都按 [availableRoutes] 判定，不写死。
+         * 路由可用性覆盖（APP-13a G01）：本地发布闸里的路由（[RELEASE_GATED_ROUTES]，现只有 DeleteAccount）在 Debug / Staging 由状态文件打开，
+         * 只给冒烟、截图与集成测试；Release 恒为空集（变体源码集，release-scan 不得命中开关标记）。守卫与页面入口都按 [availableRoutes] 判定，不写死。
          */
         var availabilityOverrides: () -> Set<String> = variantRouteOverrides(context)
 
-        /** 本端可用的路由（since 满足或被 Debug 覆盖）：设置、封禁、申诉、强更页的注销入口与 10007 落点的唯一判定（G01）。 */
-        fun availableRoutes(): Set<String> = RouteAvailability.all(BuildConfig.VERSION_NAME, availabilityOverrides()) - UNHOSTED_ROUTES
+        /**
+         * 本端可用的路由（since 满足或被 Debug 覆盖，再去掉本端没有页面的与本地发布闸关着的）：设置、封禁、申诉、强更页的注销入口与 10007 落点的
+         * 唯一判定（G01）。
+         */
+        fun availableRoutes(): Set<String> {
+            val overrides = availabilityOverrides()
+            return RouteAvailability.all(BuildConfig.VERSION_NAME, overrides) - UNHOSTED_ROUTES - closedGatedRoutes(overrides)
+        }
 
         /**
          * 10007 cooling 想打开 DeleteAccount、而它在本端不可用（since=null 且没有覆盖，G01 ③）：不进升级提示、不导航，只提示 error.10007；值为提示的编号
@@ -253,8 +259,9 @@ class AppRouting
         /** 切换环境：由环境切换清理入口调用（AppModule 登记）。 */
         fun onEnvironmentSwitched() = router.onEnvironmentChanged()
 
-        fun guardState(updateState: UpdateState = update.value.toLiveUpdateState()): GuardState =
-            GuardState(
+        fun guardState(updateState: UpdateState = update.value.toLiveUpdateState()): GuardState {
+            val overrides = availabilityOverrides()
+            return GuardState(
                 privacy = privacy.value,
                 update = updateState,
                 // 撤回同意的本地清理没完成：不读任何会话凭据，按游客（R1-01）
@@ -267,9 +274,11 @@ class AppRouting
                 realnameVerified = realnameSource(),
                 externalHosts = webTargets().externalHosts,
                 bridgeOrigins = webTargets().bridgeOrigins,
-                availabilityOverrides = availabilityOverrides(),
-                unhostedRoutes = UNHOSTED_ROUTES,
+                availabilityOverrides = overrides,
+                // 本地发布闸关着的路由与本端没有页面的同样处理：守卫给 UPGRADE / UNKNOWN_ROUTE（先于覆盖与 since 判断）
+                unhostedRoutes = UNHOSTED_ROUTES + closedGatedRoutes(overrides),
             )
+        }
 
         /** Activity 收到的 Intent：只认 data 里的深链（启动参数里的任何 route 都按深链校验，03 §4.4）。 */
         fun onLaunchIntent(
@@ -407,6 +416,18 @@ class AppRouting
 
         private companion object {
             const val DELETE_ACCOUNT = "DeleteAccount"
+
+            /**
+             * 本地发布闸（FU-AND-DELETION-ENTRY-GATE，D10-2913 ①、D10-2914、D10-2967）：契约 since.android 已是 1.0.0，RouteAvailability 会自动判可用，
+             * 本地闸让入口保持关门——不在 [availabilityOverrides] 里时从 [availableRoutes] 去掉，守卫按本端未发布处理（升级提示；App 内的
+             * DeleteAccount 走 [TracingNavigator.showUpgradePrompt] 的 10007 只提示分支）；在覆盖里（只可能是 Debug / Staging 状态文件）照常可用。
+             * 与 iOS DeleteAccountEntry.sinceIOS = nil 同口径（D10-2903 ②(b)）。开门归 APP-13a-OPEN-android：前置见 NATIVE/followups.md 同名一节
+             * （FU-AND-DELETION-10010-REVERIFY、-COOLING-LOCKED-TEXT、-TEXT-KEYS、FU-AND-DELETION-REAPPLY-STALE-KEY 修完 + 注销须知法务定稿）。
+             */
+            val RELEASE_GATED_ROUTES: Set<String> = setOf(DELETE_ACCOUNT)
+
+            /** 本地发布闸里、当前没有被覆盖打开的路由。 */
+            fun closedGatedRoutes(overrides: Set<String>): Set<String> = RELEASE_GATED_ROUTES - overrides
 
             /**
              * 契约已登记（since.android 有值）、本端还没有页面的原生路由（00deded0ef6f 新登记；D10 11:24「P1 取 B」，D10-613 D4 本单只钉这两条）：

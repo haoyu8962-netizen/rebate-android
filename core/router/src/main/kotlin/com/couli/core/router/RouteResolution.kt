@@ -18,10 +18,11 @@ internal object RouteResolution {
         context: GuardContext,
         spec: RouteSpec,
     ): GuardDecision? {
-        // TODO(N-14): since=null（本端尚未上线，如 DeleteAccount、LinkLanding）没有规定各来源的结论；
+        // TODO(N-14): since=null（本端尚未上线，如 LinkLanding）没有规定各来源的结论；
         //  按未知路由处理（升级提示），强更页进 DeleteAccount 的冲突见 rule-gaps G02。
-        // TODO(N-37): APP-13a G01——Debug / Staging 的路由可用性覆盖（[GuardState.availabilityOverrides]）按已上线放行；Release 恒为空
-        // P1 取 B：契约已登记、本端没有页面的路由按未知路由处理（升级提示），与升锁前一致
+        // APP-13a G01——Debug / Staging 的路由可用性覆盖（[GuardState.availabilityOverrides]）按已上线放行；Release 恒为空
+        // P1 取 B：契约已登记、本端没有页面的路由按未知路由处理（升级提示），与升锁前一致；App 的本地发布闸（安卓 DeleteAccount，
+        //  FU-AND-DELETION-ENTRY-GATE）关着时也经 [GuardState.unhostedRoutes] 走这一条
         if (spec.name in context.state.unhostedRoutes) return decision(GuardKind.UPGRADE, null, GuardReason.UNKNOWN_ROUTE)
         if (spec.name in context.state.availabilityOverrides) return null
         val since = spec.sinceAndroid ?: return decision(GuardKind.UPGRADE, null, GuardReason.UNKNOWN_ROUTE)
