@@ -2344,8 +2344,8 @@
   {"h": "6735fa053c6908bef4d34d79b63d039126694f8b46bb0cb598025821367cf820", "p": "core/home/build.gradle.kts"},
   {"h": "14ff33e2a1be77d94328f58630ad637dcd6d42de00ffac1a60feac7166fff634", "p": "core/home/src/debugFeatures/kotlin/com/couli/core/home/HomePreviewPolicy.kt"},
   {"h": "1112cbbe133ead84cffe9d9c2bfdbc8589a33bf080e0dc241af98c4fae4823c4", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeContract.kt"},
-  {"h": "36f6ec1e44fa6abaa704c35c6c568e40351fc3454d064f8ae47bc2a2d9770204", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeJson.kt"},
-  {"h": "7a5009da405b61399e188a1f3ec876248c7a5d41da6ce489f83010a2f2151841", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeModels.kt"},
+  {"h": "d67b5ae9a5bd66ce7db04d33ff28ee5f9a1815e201938c821948ba646f1d7724", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeJson.kt"},
+  {"h": "bd2bb65ab2239b3f39ee6d96da0a9eb366ccfeaee43eb9767d3a696e44121b95", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeModels.kt"},
   {"h": "a8df852811616b35f4bb2bec2fde0a1442ef4d1ed15ce6b604ee2f8a8e576f82", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeRules.kt"},
   {"h": "2a8824bfb29fd94d673194c8c0a9ee396c434d5faa6e1d3e6f2b53b0302d6c0f", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeSourcePolicy.kt"},
   {"h": "0f88c7f5173b381b70d8d69314d0aa71c58ab68ba85dd68254540e3a434396f9", "p": "core/home/src/main/kotlin/com/couli/core/home/HomeStores.kt"},
@@ -2587,7 +2587,7 @@
   {"h": "e07c867c59bbe99b77ccc9032ef44c516ed97e5ebca65e6a2a63205f748d1ff0", "p": "feature/auth/src/main/kotlin/com/couli/feature/auth/AuthFeature.kt"},
   {"h": "f126366e4b7768d7d11bab27588b821373ebb634e1158663c87211f42c67d38b", "p": "feature/home/build.gradle.kts"},
   {"h": "0444b5e82eafb1218fc5e81e2fdcdd89fd0538bb7163b7760d642c3589b426f3", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeCards.kt"},
-  {"h": "3c8426f860035e3879718614f196cd2798d5a0b0c79202a524eac3e16ea2f374", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeController.kt"},
+  {"h": "da0d39ac28b93c4002ac22d747445c77f673a82900c0130fb32b617cc7087a17", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeController.kt"},
   {"h": "472e525d294d73e7eb7d200e2ecf923ed3754f82d73ab002e6e1cf88c67d4803", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeHost.kt"},
   {"h": "41ad460f03c89536af7ab1b1d234427eb32f3cc34f5ab2e000fccb9f385e4a1c", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeScreen.kt"},
   {"h": "e2e9a2ddcf31e017444594c9deb71528bbeb4ff61843f9a326062c5375e610df", "p": "feature/home/src/main/kotlin/com/couli/feature/home/HomeTiles.kt"},
@@ -2864,7 +2864,7 @@
   {"h": "056a6365845ce0302552d2f92889265135b3fb396bcd4ee14cc4ee73eea11cb0", "p": "specs/clipboard-candidates-vectors.json"},
   {"h": "01b01f0172c25954ea397402f5a9cdef742a5f024bae1e150a01b07ed4d113d7", "p": "specs/clipboard-vectors.json"},
   {"h": "614f73c850dfaeff3f279491a71c0cee413d4c685a0ab7109da530a3ccddeab5", "p": "specs/format-vectors.json"},
-  {"h": "70cab00a88a26ce45bcd078bd10178a3f383fa3f07ef6cc14bced87a1d9f100e", "p": "specs/home-sdui-vectors.json"},
+  {"h": "53f478fb6473d2d5d985df703c4820ab2d72b5735b2ea5d5a552bb6762efce74", "p": "specs/home-sdui-vectors.json"},
   {"h": "15bd9929cf6aebc7302fc0dd9a5ea6085f1e9833ee536934475fc9b5472e9446", "p": "specs/login-vectors.json"},
   {"h": "d010d411a363e5da480f7b1544e68d6145af275f582cb1ccb792165d472f7b73", "p": "specs/me-vectors.json"},
   {"h": "ac5220c17cc31ee0660eeed80e90cedec87d091261cd35116bb958ff1bf4f160", "p": "specs/network-vectors.json"},
@@ -2991,12 +2991,12 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "12673c72eeee0b5aa6c2601e2b7fa2d5448c1468ffba1a0597ae4cea65645678",
+   "h": "0385f24935ba3e41622f89a5873a7e98c9811fddb2da21b680bac85c86f05570",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "0cec0c462cdf1a6d561c08021e2e9b6a9417128576bebe28c87894c150e51fb1",
+   "h": "3d359b2316479ecaf79a407b035207af4b9b049bccc0f303e325a2c37ff42856",
    "swaps": 1
   }
  ],
