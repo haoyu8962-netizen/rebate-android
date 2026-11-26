@@ -759,6 +759,9 @@ internal object NumPixels {
     private const val CORNER_DP = 24
     private const val CONNECT_TOLERANCE = 3
 
+    /** 入口容器墨迹：与页面底差 > 3 即算（与连通扩散同一档，互补不留灰区；令牌底色再接近页面底也认得出），不用 [TOLERANCE] 的 12。 */
+    private const val CONTAINER_TOLERANCE = CONNECT_TOLERANCE
+
     fun of(
         rule: ComposeContentTestRule,
         node: SemanticsNode,
@@ -823,7 +826,7 @@ internal object NumPixels {
         val text = textBox(button).inflate(TEXT_PAD_DP * d)
         val background = ringColor(pixels, box, (RING_DP * d).toInt().coerceAtLeast(1))
         val inked = { x: Int, y: Int ->
-            x in 0 until pixels.width && y in 0 until pixels.height && !same(pixels.getPixel(x, y), background)
+            x in 0 until pixels.width && y in 0 until pixels.height && !same(pixels.getPixel(x, y), background, CONTAINER_TOLERANCE)
         }
         val outside = { x: Int, y: Int -> !text.contains(Offset(x + 0.5f, y + 0.5f)) }
         val xs = box.left.toInt() until box.right.toInt()

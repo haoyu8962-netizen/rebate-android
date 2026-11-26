@@ -304,7 +304,7 @@
   {"h": "33c6408ae335203972d62b1fc59f6c8b85fa9aa361780d2b191476869958aa01", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualAboutTest.kt"},
   {"h": "252272405f06e242f9b1374f6011fa3e76f6b0870766bdcd7fd0979ec85066e0", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualAdaptationTest.kt"},
   {"h": "e56e41df441c3ef504f984dba729d90915139da46319e6f57b7e49878089ae85", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualBehaviorTest.kt"},
-  {"h": "3eb2807b58512a14620fd31ff75768bb4cdc6b758cd13512112fb96d5e63cbe0", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualCsSheetTest.kt"},
+  {"h": "7ae8a459b96718657389396159c9158ccaa184f3db0b2cca77244610a6eb129b", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualCsSheetTest.kt"},
   {"h": "5936c3a690a87fea3173bdfd9c3b004297e1198b04cc1bc3fff28d8d2fac18f1", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualEnv.kt"},
   {"h": "5673e0de8f3561feed7a62bd845b4909c83aef4eb484403e3f39c9033b075cce", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualFixtureTest.kt"},
   {"h": "d93796348814f41258e84e14674cb9e865b14c2f204eb19b1a61d7d8ef744305", "p": "app/src/test/kotlin/com/couli/app/me/PrivacyVisualFixtures.kt"},
@@ -2986,17 +2986,17 @@
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "a4736e19e91d4b6c872cf0a2269aa7d67789857c17b32416b32c2946f260b1fa",
+   "h": "9aed7bf0680727608d1c6eed09fac213245ca75003ae247f2983a8a1edbe55aa",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "800c21112a4fe25d06e999d85b6f26880c45f67d1cd77bb73da30575a79ab459",
+   "h": "0ed8d6973c29b7d326003927b36917b5d06a7579aa4b2194fcbca5c444fa7a13",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "3563bc8dfdd8625e5c04f9a838639e3d8504c8aeeac44eecdf532e447e9cbc0e",
+   "h": "465beff56987f14317a00e4cc92d0d4724a586139259b41f5a9ef6d5c2a4adf2",
    "swaps": 1
   }
  ],

@@ -28,7 +28,8 @@ import org.robolectric.annotation.GraphicsMode
  * FU-AND-0728 U9（F-AND-75 ②，APP-12w-c 评审 r1 S2-3）：出口行「联系客服 | 注销账号 | 退出登录」在 200% 下折行时，分隔符「|」不得挂在行尾
  * （与其后的链接同组不分离，或折行时不画行尾分隔符）；去向、顺序不变（既有用例守），分隔符仍不进读屏。
  *
- * 量法（不依赖实现结构）：在出口行纵向范围内、三个链接命中盒之外，找 border.subtle 色的竖向墨迹（≥ 6dp）——即画出来的「|」；
+ * 量法（不依赖实现结构）：在出口行纵向范围内、三个链接命中盒之外，找离 border.subtle 比离页面底 canvas 近的竖向墨迹（≥ 6dp）——即画出来的「|」
+ * （抗锯齿覆盖过半；页面底自身永远不算，令牌 0.5.3 起 subtle 与 canvas 每通道只差 16，旧的「±16 内算 subtle」会把整片页面底认成墨迹）；
  * 每根「|」右侧 24dp 内必须有一个与它同一行（纵向重叠）的链接盒。链接盒用标记（RISK_CS / RISK_DELETE / RISK_LOGOUT，申诉维持页 APPEAL_*）。
  * 底版：200% × w320 / w390 封禁页（「联系客服 | 注销账号 |」换行「退出登录」）红；申诉维持页 200% × w320 推算同样红（同文案、同 RiskExitRow）；
  * 100% 对照与读屏条款绿。修正后全绿。变异：把「| 链接」组拆回独立子项（或恢复行尾分隔符）→ 红。
@@ -93,9 +94,12 @@ class Fu0728ExitRowWrapTest {
             assertTrue("先正：出口行折成多行：$links", links.maxOf { it.top } >= links.minOf { it.bottom } - 1f)
         }
         val image = host.pixels(nodes.first())
+        val gap = channelGap(host.palette.subtle.toArgb(), host.palette.canvas.toArgb())
+        assertTrue("先正：border.subtle 与页面底 canvas 可辨（通道最大差 $gap ≥ $MIN_SEP_CONTRAST）", gap >= MIN_SEP_CONTRAST)
         val separators = separators(image, links, d)
-        assertTrue("先正：至少画出一根分隔符（border.subtle 竖向墨迹）", separators.isNotEmpty())
+        assertTrue("先正：至少画出一根分隔符（离 border.subtle 比离页面底近的竖向墨迹）", separators.isNotEmpty())
         separators.forEach { sep ->
+            assertTrue("分隔符墨迹宽 ≤ ${MAX_SEP_DP}dp（更宽说明把页面底当成了墨迹）：$sep", sep.width <= MAX_SEP_DP * d)
             val follower =
                 links.firstOrNull { link ->
                     link.left >= sep.right - 1f &&
@@ -111,7 +115,7 @@ class Fu0728ExitRowWrapTest {
         return separators.size
     }
 
-    /** 出口行纵向范围内、链接盒之外 border.subtle 色的竖向墨迹列，相邻列归成一根「|」。 */
+    /** 出口行纵向范围内、链接盒之外离 border.subtle 比离页面底近的竖向墨迹列，相邻列归成一根「|」。 */
     private fun separators(
         image: Bitmap,
         links: List<Rect>,
@@ -135,7 +139,7 @@ class Fu0728ExitRowWrapTest {
         return groups
     }
 
-    /** 第 [x] 列在 [rows] 内、链接盒之外最长一段 border.subtle 像素（含两端的行号区间）；没有为 null。 */
+    /** 第 [x] 列在 [rows] 内、链接盒之外最长一段「|」墨迹像素（离 border.subtle 比离页面底近；含两端的行号区间）；没有为 null。 */
     private fun longestRun(
         image: Bitmap,
         links: List<Rect>,
@@ -143,7 +147,9 @@ class Fu0728ExitRowWrapTest {
         rows: IntRange,
     ): IntRange? {
         val subtle = host.palette.subtle.toArgb()
-        val marks = rows.map { y -> links.none { it.contains(Offset(x + .5f, y + .5f)) } && near(image.getPixel(x, y), subtle) }
+        val page = host.palette.canvas.toArgb()
+        val marks =
+            rows.map { y -> links.none { it.contains(Offset(x + .5f, y + .5f)) } && isSeparatorInk(image.getPixel(x, y), subtle, page) }
         var best: IntRange? = null
         var start = -1
         marks.forEachIndexed { i, ink ->
@@ -159,10 +165,12 @@ class Fu0728ExitRowWrapTest {
         return best
     }
 
-    private fun near(
-        a: Int,
-        b: Int,
-    ): Boolean = listOf(16, 8, 0).all { abs((a ushr it and 255) - (b ushr it and 255)) <= SUBTLE_TOLERANCE }
+    /** 「|」墨迹：不透明，且离 border.subtle 比离页面底 canvas 近（抗锯齿覆盖过半）；页面底自身离 canvas 为 0，永远不算。 */
+    private fun isSeparatorInk(
+        p: Int,
+        subtle: Int,
+        page: Int,
+    ): Boolean = (p ushr 24) == 255 && channelGap(p, subtle) < channelGap(p, page)
 
     private fun SemanticsNode.spokenTexts(): List<String> =
         config.getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } +
@@ -173,6 +181,13 @@ class Fu0728ExitRowWrapTest {
         val APPEAL_LINKS = listOf(MeTags.APPEAL_CS, AccountTags.APPEAL_DELETE, MeTags.APPEAL_LOGOUT)
         const val FOLLOW_DP = 24
         const val MIN_RUN_DP = 6f
-        const val SUBTLE_TOLERANCE = 16
+        const val MIN_SEP_CONTRAST = 8
+        const val MAX_SEP_DP = 4f
+
+        /** RGB 三通道差的最大值。 */
+        fun channelGap(
+            a: Int,
+            b: Int,
+        ): Int = listOf(16, 8, 0).maxOf { abs((a ushr it and 255) - (b ushr it and 255)) }
     }
 }

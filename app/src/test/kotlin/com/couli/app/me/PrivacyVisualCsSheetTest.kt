@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -29,7 +30,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * 联系客服半屏（brief-b-android P20–P26，G-P05 / G-P06 / G-P07，画板 CsOpenFailed-v2 / CsWechatMissing-v2）：图标块 56 在上、标题居中、关闭右上
  * （读屏仍 标题 → 关闭）、说明 14 次文字居中、盾牌安全提示新句、打不开时【去帮助中心】为文字链接；动作映射、一次性编号、复制结果留在半屏原样。
- * 图标块无新标记可依，按令牌色像素外接框在标题之上量；半屏是独立窗口，像素取该窗口的 Compose 根。
+ * 图标块无新标记可依，按令牌色像素外接框在标题之上量（令牌 ARGB 整值精确相等：半屏圆角边缘与遮罩混出的中性灰不算）；半屏是独立窗口，像素取该窗口的 Compose 根。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class, sdk = [36], qualifiers = "w390dp-h1032dp-xhdpi")
@@ -102,7 +103,7 @@ class PrivacyVisualCsSheetTest {
                 px.pvColorBox(Rect(0f, strip.top, text.textBox().left, strip.bottom), host.palette.secondary, 40),
             ) { "提示条左侧没有图标" }
         assertTrue("图标 ≤ 20：$icon", icon.width / d <= 20.5f && icon.height / d <= 20.5f)
-        assertTrue("muted 底", sameColor(px.at(text.textBox().left - 2f, text.textBox().center.y), host.palette.muted, 4))
+        assertEquals("muted 底（令牌值精确相等）", host.palette.muted.toArgb(), px.at(text.textBox().left - 2f, text.textBox().center.y))
     }
 
     // ---------------------------------------------------------------- P24 按钮写法（G-P06）
@@ -265,13 +266,35 @@ class PrivacyVisualCsSheetTest {
         assertTrue("图标块装饰、读屏不读：${above.map { it.spokenParts() }}", above.isEmpty())
     }
 
-    /** 标题之上、半屏把手之下的 [color] 外接框。 */
+    /** 标题之上的 [color] 外接框：按令牌 ARGB 整值精确相等（含 alpha，只认不透明实底），半屏边缘与遮罩的抗锯齿混色不算。 */
     private fun badge(
         px: Bitmap,
         title: SemanticsNodeInteraction,
         color: Color,
     ): Rect {
         val area = Rect(0f, title.textBox().top - 120 * title.density(), px.width.toFloat(), title.textBox().top)
-        return requireNotNull(px.pvColorBox(area, color, 3)) { "标题上方没有图标块" }
+        return requireNotNull(px.exactBox(area, color.toArgb())) { "标题上方没有图标块" }
+    }
+
+    /** [rect] 内 ARGB 整值等于 [argb] 的像素外接框；没有为 null。只在本文件用，不动共用的 [pvColorBox]。 */
+    private fun Bitmap.exactBox(
+        rect: Rect,
+        argb: Int,
+    ): Rect? {
+        var left = Int.MAX_VALUE
+        var top = Int.MAX_VALUE
+        var right = Int.MIN_VALUE
+        var bottom = Int.MIN_VALUE
+        for (x in rect.left.toInt().coerceAtLeast(0) until rect.right.toInt().coerceAtMost(width)) {
+            for (y in rect.top.toInt().coerceAtLeast(0) until rect.bottom.toInt().coerceAtMost(height)) {
+                if (getPixel(x, y) == argb) {
+                    left = minOf(left, x)
+                    top = minOf(top, y)
+                    right = maxOf(right, x + 1)
+                    bottom = maxOf(bottom, y + 1)
+                }
+            }
+        }
+        return if (left == Int.MAX_VALUE) null else Rect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
     }
 }
