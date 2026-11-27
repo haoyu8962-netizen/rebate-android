@@ -1,11 +1,11 @@
 {
  "base": "a9fc8ae19d32fe37643145ef2e2ac5d8bf37208f",
  "files": [
-  {"h": "a830bf7082b16200f26dd55a71409850c9876a56b686aa96201dafb0f2ee4c94", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "07577298e0f03535dc7949da70fb88dea0887b76ea29a67b97e90d302254b0ef", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
-  {"h": "6895ab2d6e94fbf34a4a046bf6eced60452d337e7a4670c371af8c6fef63f6a0", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
+  {"h": "db71b28ffecc82a339bd2665e1f672bcbe7c25939a8e39dc4a4c7732fea40091", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},
-  {"h": "7ba43d1a17cbdb18ae9f0ce1a280a722573988ad2cb7cc73102f0fc62a5353f2", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
+  {"h": "19a332f0ddab6f322d03fdd833ced0b619f8c1a056206422a8be2bc0d3511d04", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
   {"h": "cddf1b5111eae52a008882567c77a0099606804d1bf02b59013aae73dfdcd25f", "p": "app/src/main/kotlin/com/couli/app/RootScreen.kt"},
   {"h": "b3823cd9edbbe7d3356574c1f965844af41f9f997d16ef009878461c1a4d665b", "p": "app/src/main/kotlin/com/couli/app/SessionCacheReconciler.kt"},
   {"h": "b791a64321e5dacbe2fe36db803113a2fc8704234ab6f4c56b4630c8a5990544", "p": "app/src/main/kotlin/com/couli/app/account/AppAccount.kt"},
@@ -1727,7 +1727,7 @@
   {"h": "4a32c7fd6a9263244e197f78c2f7243df054db3f1300b124714a4004a41ad929", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentGate.kt"},
   {"h": "1a2c47bcfa4cfee755e8249e4d568f0ce5ee638b979152620f333fb709d5ce45", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentStartupReconciler.kt"},
   {"h": "70cf15b7b856ac5dd9e429fcb8ac82c2ba56a1215f6989aaf4effe4dc59e07ce", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentSwitchCleaner.kt"},
-  {"h": "70bc29fd35df3b9c74787c3eef40252367ae796a8ee4673186d2fb159ef5b8c5", "p": "core/config/src/main/kotlin/com/couli/core/config/SharedPreferencesNamespaceCleaner.kt"},
+  {"h": "f7aeb241b53c34ab4234d5bd220aed928d56f85d548869c30b3943df10528135", "p": "core/config/src/main/kotlin/com/couli/core/config/SharedPreferencesNamespaceCleaner.kt"},
   {"h": "050e09d5c69426d77bc08a9d12fa530c50ef6fb0ed677246ff3a4c1f593d32b0", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateCheckAdapter.kt"},
   {"h": "eac71c5a081b1b4c81a049e06ed6747477b4889a50f27d46324aac4acdae2929", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateGate.kt"},
   {"h": "3afdb76f69939ca4344a916ded7689198fc24470984bcdcbda106279b66212e0", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateModels.kt"},
@@ -2258,15 +2258,15 @@
  "mergedNormalized": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "d5ac1afd4beb47351263f96fbab8abfe91db56f3889fc5fce8dce0a1b1e3bf23"
+   "h": "937ddf8679c8583ece0ada86530ffdb8f213b60f686ab78c31fb2c0be1b4b295"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "b9675c70cc2b98ab129f4fa7d1185fdf68a7d8c2186b449802db564f1732e6b1"
+   "h": "a2c616766b6b318e26f7cb30b179f0087219032b297c55498f55edc92db69295"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "97a034cd5c9d76ebe60b69dffee8b152763e9bc418b7b85108b76fafb2bb7e31"
+   "h": "4747308a455a39088bc5e4baf696477838c6a4f191de16b8697631f90c8fffce"
   }
  ],
  "hostSheetCrops": [

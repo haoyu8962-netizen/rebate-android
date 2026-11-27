@@ -507,7 +507,7 @@
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt",
-      "h": "f7656b43c5029cc399d93fd521b5bca65c8ee0a94f0ab1126cb111c0ed207581"
+      "h": "3951a685617845f104cdd3d122d293ddf64d34da14aba9e671a36d04130b81a2"
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenTradeLogic.kt",
@@ -527,11 +527,23 @@
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeServices.kt",
-      "h": "c1debb2822b1857f0fabc0f234744bb49c6098511ea7b49fdc5e2daba76e085d"
+      "h": "cb5faf0d7088b7e3ae6141b3dfb5077dc7e036e72d34dd42afa4cd6179643f45"
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeUi.kt",
       "h": "6365a95908cc82387747dbce44aa1719159aefe692a095120c57d6a98772a25b"
+    },
+    {
+      "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/WebCodeAttempts.kt",
+      "h": "43d97a139397cb0acd1a017e282ed169507102b4299f00050ef6b3b7648bddff"
+    },
+    {
+      "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/WebCodeCallback.kt",
+      "h": "4e908b03c5a6a9c0f0373f8f4ffd0708c94ffe71991a56754299e5f09eb162f3"
+    },
+    {
+      "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/WebCodeInbox.kt",
+      "h": "aa0591b380e4d5b29999ac179700ec5dbbbab0306702e1e8d66cf7f18d2676e6"
     },
     {
       "p": "specs/search-product-vectors.json",

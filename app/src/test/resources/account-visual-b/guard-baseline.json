@@ -9,7 +9,7 @@
   {"h": "0b90091eb938bc46d04689a93b12b9a35ec8ac0cdcc06229f2404d356fca5152", "p": "AGENTS.md"},
   {"h": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49", "p": "CLAUDE.md"},
   {"h": "fffb98a244cc43d44cfa0256d6c3927e317e4479c446abf206ef64fa57a2f6ea", "p": "README.md"},
-  {"h": "7ee249399f42a1f0dc91072e44924bcf1abd143c625dd523167cbdee60d69e51", "p": "app/build.gradle.kts"},
+  {"h": "76839b65369f9b516c4c10924dc27029f6e4ad5684d218be213b9161393e7d96", "p": "app/build.gradle.kts"},
   {"h": "9f1b7bce87075be31246796abd90f78b28b466bb25fc79061ec7764d36c49d08", "p": "app/proguard-rules.pro"},
   {"h": "9b3ebf529ca41c4bf9134fb97653f76dddc51788359c6be4895f0a9b725ef392", "p": "app/src/androidTest/kotlin/com/couli/app/RootScreenSmokeTest.kt"},
   {"h": "a333e2ee365dbe3fbd9af2720e70f7e63d04accf80180c12e9ebfdd5c1d06b87", "p": "app/src/debug/AndroidManifest.xml"},
@@ -44,15 +44,15 @@
   {"h": "34850f5afc19e7fa09a4fc85d7cae43a377b89d79711fbe8699b8886a26398bc", "p": "app/src/debugFeatures/kotlin/com/couli/app/login/DebugWechatAdapter.kt"},
   {"h": "df64f47e48d74a13e6a6eb706e0e1a265956b973345fe73d61d6264f1181ace8", "p": "app/src/debugFeatures/kotlin/com/couli/app/me/VariantMe.kt"},
   {"h": "e29f34a74dee130dd114fa5afac171edb5b4db45b4658559978b12020769fc10", "p": "app/src/debugFeatures/kotlin/com/couli/app/routing/VariantRouteOverride.kt"},
-  {"h": "082c40ac599fd55246b00234ba61ab787d1b5452556d319096b1de9dd02d7901", "p": "app/src/debugFeatures/kotlin/com/couli/app/trade/VariantTrade.kt"},
+  {"h": "1bb77713e99a3f7300ac9fd7026d1b7402270337d9fcb56adea9b2bc20a56c80", "p": "app/src/debugFeatures/kotlin/com/couli/app/trade/VariantTrade.kt"},
   {"h": "8227121db2ea5192ed8de1afaa3538342c49f4f541db311d2b81379155c1ff50", "p": "app/src/debugFeatures/kotlin/com/couli/app/update/DebugUpdateChecker.kt"},
   {"h": "787c693e2313703181ae6e871a3fd925d7f6a38451f692c609754a0b52d93eca", "p": "app/src/debugFeatures/kotlin/com/couli/app/web/DebugConformance.kt"},
-  {"h": "b90fcf794f1d4ecd61946fe52b4f2764911053379cd7b3ecd2d012e3aef63e38", "p": "app/src/main/AndroidManifest.xml"},
-  {"h": "a830bf7082b16200f26dd55a71409850c9876a56b686aa96201dafb0f2ee4c94", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "66db96688438fd4a416b1fc62dccf57db8088b18e78208d01607d6d060071f0d", "p": "app/src/main/AndroidManifest.xml"},
+  {"h": "07577298e0f03535dc7949da70fb88dea0887b76ea29a67b97e90d302254b0ef", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
-  {"h": "6895ab2d6e94fbf34a4a046bf6eced60452d337e7a4670c371af8c6fef63f6a0", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
+  {"h": "db71b28ffecc82a339bd2665e1f672bcbe7c25939a8e39dc4a4c7732fea40091", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},
-  {"h": "7ba43d1a17cbdb18ae9f0ce1a280a722573988ad2cb7cc73102f0fc62a5353f2", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
+  {"h": "19a332f0ddab6f322d03fdd833ced0b619f8c1a056206422a8be2bc0d3511d04", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
   {"h": "cddf1b5111eae52a008882567c77a0099606804d1bf02b59013aae73dfdcd25f", "p": "app/src/main/kotlin/com/couli/app/RootScreen.kt"},
   {"h": "b3823cd9edbbe7d3356574c1f965844af41f9f997d16ef009878461c1a4d665b", "p": "app/src/main/kotlin/com/couli/app/SessionCacheReconciler.kt"},
   {"h": "b791a64321e5dacbe2fe36db803113a2fc8704234ab6f4c56b4630c8a5990544", "p": "app/src/main/kotlin/com/couli/app/account/AppAccount.kt"},
@@ -129,7 +129,7 @@
   {"h": "26ff1081f36934fb3f304d2038967a03cec064d97c21ae2c381872528145ce34", "p": "app/src/release/kotlin/com/couli/app/login/VariantWechatAdapter.kt"},
   {"h": "d33ffe89a50ab85129cac4816d6c23b49c35789ef544508f1e1c21d6d14a348b", "p": "app/src/release/kotlin/com/couli/app/me/VariantMe.kt"},
   {"h": "4d76615e49b2d7ba5fda31457a89838931ae4a0e2e903270010699dacb58bb6f", "p": "app/src/release/kotlin/com/couli/app/routing/VariantRouteOverride.kt"},
-  {"h": "f53f97d7f468ccb7306c36790495685ad316904ecb475d00fc040e3db1c11588", "p": "app/src/release/kotlin/com/couli/app/trade/VariantTrade.kt"},
+  {"h": "68ee057f1adc207ad3462e101cb8cc15003a9b75650d23ee3f54ea74329b5d8d", "p": "app/src/release/kotlin/com/couli/app/trade/VariantTrade.kt"},
   {"h": "6a1654ed4913c53bb8e295d1052c0113db6911a42fe7e8c9ce7addeae4ddc791", "p": "app/src/release/kotlin/com/couli/app/update/VariantUpdateChecker.kt"},
   {"h": "88711e6fdb6b6e6867970bcc9505b0bc9ff6f435bb529f3c8727147c3a8a47bc", "p": "app/src/staging/AndroidManifest.xml"},
   {"h": "3b2ae3a3987c296c945b95fe84bfddabdc2241375eb3130607aff6693468a17e", "p": "app/src/staging/kotlin/com/couli/app/web/ConformanceSourceVariant.kt"},
@@ -2133,7 +2133,7 @@
   {"h": "4a32c7fd6a9263244e197f78c2f7243df054db3f1300b124714a4004a41ad929", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentGate.kt"},
   {"h": "1a2c47bcfa4cfee755e8249e4d568f0ce5ee638b979152620f333fb709d5ce45", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentStartupReconciler.kt"},
   {"h": "70cf15b7b856ac5dd9e429fcb8ac82c2ba56a1215f6989aaf4effe4dc59e07ce", "p": "core/config/src/main/kotlin/com/couli/core/config/EnvironmentSwitchCleaner.kt"},
-  {"h": "70bc29fd35df3b9c74787c3eef40252367ae796a8ee4673186d2fb159ef5b8c5", "p": "core/config/src/main/kotlin/com/couli/core/config/SharedPreferencesNamespaceCleaner.kt"},
+  {"h": "f7aeb241b53c34ab4234d5bd220aed928d56f85d548869c30b3943df10528135", "p": "core/config/src/main/kotlin/com/couli/core/config/SharedPreferencesNamespaceCleaner.kt"},
   {"h": "050e09d5c69426d77bc08a9d12fa530c50ef6fb0ed677246ff3a4c1f593d32b0", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateCheckAdapter.kt"},
   {"h": "eac71c5a081b1b4c81a049e06ed6747477b4889a50f27d46324aac4acdae2929", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateGate.kt"},
   {"h": "3afdb76f69939ca4344a916ded7689198fc24470984bcdcbda106279b66212e0", "p": "core/config/src/main/kotlin/com/couli/core/update/UpdateModels.kt"},
@@ -2695,12 +2695,12 @@
   {"h": "55433823c9022ca629d5180113e112eb9a48ad47a30d4cf3a1ed94a8306b5393", "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchScreenReviewR2Test.kt"},
   {"h": "c99c86383cb0ced2c09eef6aed5ccc2a1b81ae2f7219f86cec746b253d8e0481", "p": "feature/trade/build.gradle.kts"},
   {"h": "6b2446fec8f60d7f63ed7c1535f63e8b3c9dd2d9713ef363704bfec9919f9220", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/AuthManage.kt"},
-  {"h": "f7656b43c5029cc399d93fd521b5bca65c8ee0a94f0ab1126cb111c0ed207581", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
+  {"h": "3951a685617845f104cdd3d122d293ddf64d34da14aba9e671a36d04130b81a2", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
   {"h": "0ab070506b6d41be2857748658d6d63e1f93258cf90b0e4d41377fef840f7f84", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenTradeLogic.kt"},
   {"h": "e3c1a9f17f41f303bedd777a876338f440027c1825ca194a778c0e75355cdadf", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/PurchaseVisualParts.kt"},
   {"h": "855b3a096f52af637aa24e56f3bf0d122775679d171121fcd8b02d82ef4bfa88", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TaobaoAuthFlow.kt"},
   {"h": "d6a98d2c3ce34337bb1cae548dc971f17909a193bb65c14c80f495e23ecd6003", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeJump.kt"},
-  {"h": "c1debb2822b1857f0fabc0f234744bb49c6098511ea7b49fdc5e2daba76e085d", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeServices.kt"},
+  {"h": "cb5faf0d7088b7e3ae6141b3dfb5077dc7e036e72d34dd42afa4cd6179643f45", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeServices.kt"},
   {"h": "6365a95908cc82387747dbce44aa1719159aefe692a095120c57d6a98772a25b", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeUi.kt"},
   {"h": "01053d4703a6642dacdbe27b7e26ed62b6f133ff7f10f6229e9bf37bff10bf8f", "p": "feature/trade/src/test/kotlin/com/couli/feature/trade/AuthManageControllerTest.kt"},
   {"h": "e59f9aa2c3c8b5b1b417679f1f6be621b62feeeb9d98af8fcde061eca46a8345", "p": "feature/trade/src/test/kotlin/com/couli/feature/trade/AuthManageReviewR2Test.kt"},
@@ -2790,7 +2790,7 @@
   {"h": "4cf4a53a773e4e2233d81cbbce2e433123e2f9f2c0c31117c212e986d7b4c729", "p": "feature/web/src/test/kotlin/com/couli/feature/web/NavBarStateTest.kt"},
   {"h": "64f1049e5ff6cfc00a24594b23218cef16d7dfd0654ad419c3b3d22b13fde5ca", "p": "feature/web/src/test/kotlin/com/couli/feature/web/ReplyConfirmationTest.kt"},
   {"h": "0a6d33e1ca0fa0dd7704fdc5bbeef361b0d8f28114888fdd9e19955745ef8188", "p": "gradle.properties"},
-  {"h": "6437e0dfa7d5ccf3b775f0d867aa48a9af32d39bb2365871a1c7c2ff7b966331", "p": "gradle/libs.versions.toml"},
+  {"h": "3880e87ac0aeb8c8a3febea37757d4df1a9c4bdb68c8b3206fc79340b3920938", "p": "gradle/libs.versions.toml"},
   {"h": "238e777fcddd7e34f9708186085def2abd6e08e658505b38718d79d74c21abd5", "p": "gradle/wrapper/gradle-wrapper.jar"},
   {"h": "d3c8ac7b34869c3184b4c21374153af1ad72c69c1813e723e3cfc7995f3624bd", "p": "gradle/wrapper/gradle-wrapper.properties"},
   {"h": "a5a5c199ba02189ae8c46a334223371a20599d9c298ef65e7540ede4a3f72d59", "p": "gradlew"},
@@ -2843,8 +2843,8 @@
   {"h": "a8863400c05cd9d19b1594c19ebe5fd318820a0739f9bd4ae627e69477595bac", "p": "tools/ci/release-scan.sh"},
   {"h": "a0fb79f52f292ecaf8b5434fffe7af67cdf4ac69fab2d9950a6398b0e1057873", "p": "tools/ci/tests/test_clipboard0724_wiring.py"},
   {"h": "b9601cc554b402f3d7c7644bf0528343a83f44477b45659186bd8b1479a48d30", "p": "tools/ci/ui-tests.sh"},
-  {"h": "3afcd956da9540aedca099705953698ba7f9dcb769869ba8214ee99364370710", "p": "tools/codegen/gen.py"},
-  {"h": "162f05299e223e2581e7ffbe0df23f4d3a8dc1a20de60e7f82d87a716a9951c5", "p": "tools/codegen/test_gen.py"},
+  {"h": "c5c84b63139d1a207466ba2cbba08e7d921488269b6a8dc2969ec2eb5baeb474", "p": "tools/codegen/gen.py"},
+  {"h": "e965013a61dfe219bf4715b225ccd225915148ebd1630427dab84692f508c542", "p": "tools/codegen/test_gen.py"},
   {"h": "da2d10ef4e6ef52a70b85129284a59ff75c9d286638b70e52b82d3853a9f06b5", "p": "tools/contracts/sync.sh"},
   {"h": "4002a1b5a3d412d2c03003a049da3a59eb8685dd8c60d8c2c76d2bec0e9ea04f", "p": "tools/tests/login_17a_guard.py"},
   {"h": "480652649b7b618fb15e01b5cac01c3ecfeb53e953cea7966c060ad92aa02322", "p": "tools/tests/test_login_17a.py"},
@@ -3589,19 +3589,19 @@
  "mergedB": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "56bd6b48f19b232155bc0a3a179cfa6a7ccba5d47093c4a922937cd41286ebeb"
+   "h": "ee4e6190e7b5af50ce4f7ccdac780e425495088ab12332d3a5770d1df087fb31"
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "105add53a5bcb5f4d04f335d4e2cef66b49f16377f55d2a1fcbc0a3fa2467c12"
+   "h": "39dc3f9aebd937d062fb82e0d5e156aaefc1571a4bb6796cc996f6dfbd1ca6f0"
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "80cc936ed6e2337569e5ffa5a3f9059a4342a848b0da4cc913853cfb2267de82"
+   "h": "74cb2254d8a15be17e0a0e55f2944449e3e77e6985246db18f6d6d1c6f38af31"
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "6d0c312729ec6be1efbdb1cf9d60d563a5195699381450abe2ac4e93830777a0"
+   "h": "a3c4f0280773c5568c48819b55de4151856d4f01bc749a6036a1beb8293e3826"
   }
  ],
  "hostSheetCrops": [
