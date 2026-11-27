@@ -14,7 +14,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -154,7 +153,7 @@ class BrowserWebCodeAuthorizerTest {
         runTest {
             val running = start()
             inbox.deliver(WebCodeCallback.Code("CODE_abc-1", STATE))
-            advanceUntilIdle()
+            runCurrent()
             val result = running.result()
             assertTrue("匹配的回跳 → Credential：$result", result is AuthStepResult.Credential)
             val credential = (result as AuthStepResult.Credential).value
@@ -168,11 +167,11 @@ class BrowserWebCodeAuthorizerTest {
         runTest {
             val running = start()
             inbox.deliver(WebCodeCallback.Code("FORGED", "someone-else"))
-            advanceUntilIdle()
+            runCurrent()
             assertFalse("state 不符的回跳丢弃，不打断等待", running.isCompleted)
             assertTrue("等待中的尝试记录还在", attempts.current() != null)
             inbox.deliver(WebCodeCallback.Code("CODE_ok", STATE))
-            advanceUntilIdle()
+            runCurrent()
             val result = running.result()
             assertTrue("之后匹配的回跳照常交付：$result", result is AuthStepResult.Credential)
             assertEquals("CODE_ok", ((result as AuthStepResult.Credential).value as AuthCredential.WebCode).code)
@@ -184,7 +183,7 @@ class BrowserWebCodeAuthorizerTest {
             val running = start()
             assertFalse("打开后等回跳", running.isCompleted)
             inbox.deliver(WebCodeCallback.Incomplete(STATE))
-            advanceUntilIdle()
+            runCurrent()
             assertEquals("error=1 按未完成 → 授权失败二选一（D10-2717）", AuthStepResult.Failed, running.result())
             assertNull("匹配的回跳到了就删除记录", attempts.current())
         }
@@ -197,7 +196,7 @@ class BrowserWebCodeAuthorizerTest {
             runCurrent()
             assertFalse("只离开前台不算取消", running.isCompleted)
             signal.started()
-            advanceUntilIdle()
+            runCurrent()
             assertEquals("拉起后先 stop 再 start、仍无回跳 → Cancelled", AuthStepResult.Cancelled, running.result())
             assertEquals("记录保留（晚到回跳还能核对）", webCodeSha256(STATE), attempts.current()?.stateSha256)
         }
@@ -207,7 +206,7 @@ class BrowserWebCodeAuthorizerTest {
         runTest {
             val running = start()
             signal.started()
-            advanceUntilIdle()
+            runCurrent()
             assertFalse("只有 start、没有先 stop：不判取消，继续等", running.isCompleted)
             assertEquals("仍在等待：已打开授权页", listOf(OK_URL), launcher.opened)
         }
@@ -222,7 +221,7 @@ class BrowserWebCodeAuthorizerTest {
             inbox.deliver(WebCodeCallback.Code("CODE_first", STATE))
             runCurrent()
             signal.started()
-            advanceUntilIdle()
+            runCurrent()
             val result = running.result()
             assertTrue("回跳先到：Credential，不是 Cancelled：$result", result is AuthStepResult.Credential)
         }

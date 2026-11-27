@@ -21,7 +21,12 @@ class WebCodeNoLeakSourceScanTest {
     }
 
     private fun kt(dir: String): List<File> =
-        File(root, dir).takeIf { it.isDirectory }?.walkTopDown()?.filter { it.isFile && it.extension == "kt" }?.toList().orEmpty()
+        File(root, dir)
+            .takeIf { it.isDirectory }
+            ?.walkTopDown()
+            ?.filter { it.isFile && it.extension == "kt" }
+            ?.toList()
+            .orEmpty()
 
     /** 去掉块注释与行注释（不去字符串）。 */
     private fun code(file: File) =

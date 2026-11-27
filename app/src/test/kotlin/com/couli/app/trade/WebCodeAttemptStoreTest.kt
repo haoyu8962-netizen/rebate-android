@@ -12,7 +12,6 @@ import com.couli.feature.trade.WebCodeInbox
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -36,8 +35,7 @@ class WebCodeAttemptStoreTest {
     private val prefs: SharedPreferences = context.getSharedPreferences("webcode-attempts-test", Context.MODE_PRIVATE)
 
     /** SharedPreferences 的全部键与值（按文本）。 */
-    private fun stored(): String =
-        prefs.all.entries.joinToString("\n") { (key, value) -> "$key=$value" }
+    private fun stored(): String = prefs.all.entries.joinToString("\n") { (key, value) -> "$key=$value" }
 
     /** 数据目录下全部文件的文本（apply 未落盘时可能为空，只用来核对「没有」）。 */
     private fun onDisk(): String =
@@ -99,7 +97,7 @@ class WebCodeAttemptStoreTest {
             runCurrent()
             assertEquals("打开后记下的是哈希", webCodeSha256(PLAIN_STATE), store.current()?.stateSha256)
             inbox.deliver(WebCodeCallback.Code(SECRET_CODE, PLAIN_STATE))
-            advanceUntilIdle()
+            runCurrent()
             assertTrue("拿到凭证", running.isCompleted && running.getCompleted() is AuthStepResult.Credential)
             val everything = stored() + "\n" + onDisk()
             assertFalse("code 不落盘", everything.contains(SECRET_CODE))

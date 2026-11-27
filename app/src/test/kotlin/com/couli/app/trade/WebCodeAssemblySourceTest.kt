@@ -37,7 +37,10 @@ class WebCodeAssemblySourceTest {
                 .find(compact)
                 ?.groupValues
                 ?.get(1)
-        assertTrue("release 须有表达式体的 variantWebCodeAuthorizer(context: Context, real: WebCodeAuthorizer): WebCodeAuthorizer = …", body != null)
+        assertTrue(
+            "release 须有表达式体的 variantWebCodeAuthorizer(context: Context, real: WebCodeAuthorizer): WebCodeAuthorizer = …",
+            body != null,
+        )
         assertEquals("release 直接用真实授权器（设计稿 §7）", "real", body)
     }
 

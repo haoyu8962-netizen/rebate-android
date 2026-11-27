@@ -46,6 +46,7 @@ private class CountingAuthorizer(
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class)
+@Suppress("FunctionNaming") // 用例名前缀 g01_…g07_ 是用例编号（同 N22R1RuntimeEnvironmentWiringTest 的做法）
 class GatedWebCodeAuthorizerTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val switcher = EnvironmentSwitcher(context, buildDefaultEnvironment(), EnvironmentSwitchCleanerRegistry())

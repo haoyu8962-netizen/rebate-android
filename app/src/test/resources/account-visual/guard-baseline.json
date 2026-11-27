@@ -1,7 +1,7 @@
 {
  "base": "a9fc8ae19d32fe37643145ef2e2ac5d8bf37208f",
  "files": [
-  {"h": "07577298e0f03535dc7949da70fb88dea0887b76ea29a67b97e90d302254b0ef", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "d5a740e73d3aef285a2c1f3ae08b263a61802e3cc2bfff15e436a290389d9810", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
   {"h": "db71b28ffecc82a339bd2665e1f672bcbe7c25939a8e39dc4a4c7732fea40091", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},

@@ -15,6 +15,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.File
+import java.util.Properties
 
 /**
  * FU-AND-TB-WEBCODE-A 测试：合并后的清单（设计稿 §5.2；intent-filter 由 tools/codegen 生成到 core/generated 的库清单，靠清单合并进 App）。
@@ -34,6 +36,15 @@ class InboundManifestWiringTest {
                     .setPackage(app.packageName),
                 PackageManager.MATCH_ALL,
             ).map { it.activityInfo.name }
+
+    /** 合并清单（AGP 给 Robolectric 的 test_config.properties 里的 android_merged_manifest）里 InboundSchemeActivity 的 <activity …> 开标签。 */
+    private fun inboundActivityElement(): String {
+        val props = Properties()
+        checkNotNull(javaClass.classLoader?.getResourceAsStream("com/android/tools/test_config.properties")) { "缺 test_config.properties" }
+            .use { props.load(it) }
+        val text = File(checkNotNull(props.getProperty("android_merged_manifest")) { "缺 android_merged_manifest" }).readText()
+        return Regex("<activity\\b[^>]*>").findAll(text).map { it.value }.first { InboundSchemeActivity::class.java.name in it }
+    }
 
     @Test
     fun m01_couliViewBrowsableResolvesOnlyToTheInboundActivity() {
@@ -73,7 +84,11 @@ class InboundManifestWiringTest {
         assertTrue("不留历史（noHistory）", (info.flags and ActivityInfo.FLAG_NO_HISTORY) != 0)
         assertTrue("不进最近任务（excludeFromRecents）", (info.flags and ActivityInfo.FLAG_EXCLUDE_FROM_RECENTS) != 0)
         assertTrue("taskAffinity=\"\"（解析后为空或 null，不是包名默认值）：${info.taskAffinity}", info.taskAffinity.isNullOrEmpty())
-        assertEquals("persistableMode = persistNever", ActivityInfo.PERSIST_NEVER, info.persistableMode)
+        // persistableMode 改读合并清单文本（D10-3587）：Robolectric 的 ActivityInfo 拷贝构造不带这个字段，PackageManager 读出恒为 0；期望值不变
+        assertTrue(
+            "persistableMode = persistNever（合并清单）",
+            inboundActivityElement().contains("android:persistableMode=\"persistNever\""),
+        )
         assertEquals("无界面主题", android.R.style.Theme_NoDisplay, info.theme)
     }
 }

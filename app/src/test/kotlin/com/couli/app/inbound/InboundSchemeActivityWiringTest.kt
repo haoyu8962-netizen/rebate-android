@@ -119,10 +119,11 @@ class InboundSchemeActivityWiringTest {
 
     @Test
     fun w06_recentsRelaunchAndRecreationDoNotHandleAgain() {
-        Robolectric.buildActivity(
-            InboundSchemeActivity::class.java,
-            view(CALLBACK, flags = Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY),
-        ).create()
+        Robolectric
+            .buildActivity(
+                InboundSchemeActivity::class.java,
+                view(CALLBACK, flags = Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY),
+            ).create()
         assertTrue("最近任务恢复不处理", app.received.isEmpty())
         Robolectric.buildActivity(InboundSchemeActivity::class.java, view(CALLBACK)).create(Bundle())
         assertTrue("重建（有保存状态）不处理", app.received.isEmpty())
@@ -156,7 +157,11 @@ class InboundSchemeActivityWiringTest {
         assertEquals(ComponentName(app, MainActivity::class.java), main.component)
         assertNull("MainActivity 的 Intent 不带 data（不转发 couli URI）", main.data)
         val extras = main.extras
-        val texts = extras?.keySet()?.flatMap { listOf(it, extras.getString(it).orEmpty(), extras.getCharSequence(it)?.toString().orEmpty()) }.orEmpty()
+        val texts =
+            extras
+                ?.keySet()
+                ?.flatMap { listOf(it, extras.getString(it).orEmpty(), extras.getCharSequence(it)?.toString().orEmpty()) }
+                .orEmpty()
         assertTrue("MainActivity 的 extras 不含 code / state 明文：$texts", texts.none { "c0de_1" in it || "st_1" in it })
         assertTrue((main.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
         assertTrue((main.flags and Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0)

@@ -48,7 +48,7 @@
   {"h": "8227121db2ea5192ed8de1afaa3538342c49f4f541db311d2b81379155c1ff50", "p": "app/src/debugFeatures/kotlin/com/couli/app/update/DebugUpdateChecker.kt"},
   {"h": "787c693e2313703181ae6e871a3fd925d7f6a38451f692c609754a0b52d93eca", "p": "app/src/debugFeatures/kotlin/com/couli/app/web/DebugConformance.kt"},
   {"h": "66db96688438fd4a416b1fc62dccf57db8088b18e78208d01607d6d060071f0d", "p": "app/src/main/AndroidManifest.xml"},
-  {"h": "07577298e0f03535dc7949da70fb88dea0887b76ea29a67b97e90d302254b0ef", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "d5a740e73d3aef285a2c1f3ae08b263a61802e3cc2bfff15e436a290389d9810", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
   {"h": "db71b28ffecc82a339bd2665e1f672bcbe7c25939a8e39dc4a4c7732fea40091", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},
@@ -3601,7 +3601,7 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "a3c4f0280773c5568c48819b55de4151856d4f01bc749a6036a1beb8293e3826"
+   "h": "b3dc63d31586af17856e77f2487b1ad31d01fcdb441d007fc0257e9fa10016d5"
   }
  ],
  "hostSheetCrops": [

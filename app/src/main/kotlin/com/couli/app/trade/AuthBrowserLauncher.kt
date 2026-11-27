@@ -124,8 +124,7 @@ class CustomTabAuthBrowserLauncher(
     private fun supportsCustomTabs(
         manager: PackageManager,
         browserPackage: String,
-    ): Boolean =
-        manager.resolveService(Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION).setPackage(browserPackage), 0) != null
+    ): Boolean = manager.resolveService(Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION).setPackage(browserPackage), 0) != null
 
     /** 拉起失败（没有能处理的 Activity、被系统拒绝）按打不开处理。 */
     private inline fun start(launch: () -> Unit): Boolean =

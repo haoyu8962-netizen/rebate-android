@@ -2,7 +2,6 @@ package com.couli.app
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
@@ -59,6 +58,7 @@ import com.couli.app.trade.variantBrowserNoticeMillis
 import com.couli.app.trade.variantImageSource
 import com.couli.app.trade.variantJumpPorts
 import com.couli.app.trade.variantWebCodeAuthorizer
+import com.couli.app.trade.webCodeAttemptPreferences
 import com.couli.app.update.AndroidStoreAccess
 import com.couli.app.update.AppUpdate
 import com.couli.app.update.variantUpdateChecker
@@ -1418,10 +1418,6 @@ private object TrackerQueueFile {
     /** 按绝对路径各一份（生产只有一个 filesDir；单测每个用例的 filesDir 不同）。 */
     val instances = mutableMapOf<String, AtomicTextFile>()
 }
-
-/** 淘宝 web_code 授权的本机尝试记录（FU-AND-TB-WEBCODE-A）：只存 sha256(state) 与时间；切换环境时随 couli. 命名空间清理。 */
-internal fun webCodeAttemptPreferences(context: Context): SharedPreferences =
-    context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.WEBCODE_ATTEMPTS, Context.MODE_PRIVATE)
 
 /** 「我的」的设备级本机偏好（APP-12）：进程内一份（网络层、隐私中心、撤回清理共用）。 */
 internal fun meLocalStore(context: Context): MeLocalStore =

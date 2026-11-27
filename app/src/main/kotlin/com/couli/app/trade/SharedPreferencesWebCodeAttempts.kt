@@ -1,6 +1,9 @@
 package com.couli.app.trade
 
+import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
+import com.couli.core.config.CouliPreferenceNamespaces
 import com.couli.feature.trade.WebCodeAttempt
 import com.couli.feature.trade.WebCodeAttemptStore
 import com.couli.feature.trade.webCodeStateSha256
@@ -16,12 +19,11 @@ class SharedPreferencesWebCodeAttempts(
         state: String,
         nowMillis: Long,
     ) {
-        prefs
-            .edit()
-            .clear()
-            .putString(KEY_STATE_SHA256, webCodeStateSha256(state))
-            .putLong(KEY_STARTED_AT, nowMillis)
-            .apply()
+        prefs.edit {
+            clear()
+            putString(KEY_STATE_SHA256, webCodeStateSha256(state))
+            putLong(KEY_STARTED_AT, nowMillis)
+        }
     }
 
     override fun current(): WebCodeAttempt? {
@@ -30,7 +32,7 @@ class SharedPreferencesWebCodeAttempts(
     }
 
     override fun clear() {
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
     }
 
     private companion object {
@@ -39,3 +41,7 @@ class SharedPreferencesWebCodeAttempts(
         val SHA256_HEX = Regex("[0-9a-f]{64}")
     }
 }
+
+/** 淘宝 web_code 授权的本机尝试记录（FU-AND-TB-WEBCODE-A）：只存 sha256(state) 与时间；切换环境时随 couli. 命名空间清理。 */
+internal fun webCodeAttemptPreferences(context: Context): SharedPreferences =
+    context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.WEBCODE_ATTEMPTS, Context.MODE_PRIVATE)
