@@ -12,6 +12,17 @@ import com.couli.feature.trade.WebCodeAuthorizer
 @Suppress("UnusedParameter") // 与 debug / staging 源码集同一签名
 internal fun variantWebCodeAuthorizer(context: Context): WebCodeAuthorizer = UnavailableWebCodeAuthorizer
 
+/**
+ * Release 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：直接用真实授权器 [real]。
+ *
+ * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在仍不可执行；实现时改为 `= real`，并删掉上面单参数的旧装配。
+ */
+@Suppress("UnusedParameter") // 接口桩
+internal fun variantWebCodeAuthorizer(
+    context: Context,
+    real: WebCodeAuthorizer,
+): WebCodeAuthorizer = UnavailableWebCodeAuthorizer
+
 /** 「将通过浏览器打开」的提示停留时长。 */
 internal fun variantBrowserNoticeMillis(): Long = OpenPurchaseController.BROWSER_NOTICE_MILLIS
 

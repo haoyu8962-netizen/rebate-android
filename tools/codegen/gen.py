@@ -1774,6 +1774,17 @@ object BundledHome {
     ]
 
 
+def gen_android_inbound(out_root: str) -> list:
+    """FU-AND-TB-WEBCODE-A（设计稿 §5.2；D10-2717）：apps.json inbound 里 platforms 含 android 的 custom_scheme →
+    core/generated/src/main/AndroidManifest.xml（InboundSchemeActivity 的 VIEW / BROWSABLE filter，每个 scheme 一个、只写 scheme）与
+    core/generated/src/main/kotlin/com/couli/generated/InboundCallbacks.kt（ANDROID_CUSTOM_SCHEMES）。没有 android 条目不产出清单；
+    scheme 非法、在 forbidden_schemes 里、与外跳目标重名时报 GenError。
+
+    TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在不产出任何文件、也未接入 generate()；实现时接入并纳入 --check 的归属。"""
+    del out_root
+    return []
+
+
 # ---------------------------------------------------------------- 入口
 
 

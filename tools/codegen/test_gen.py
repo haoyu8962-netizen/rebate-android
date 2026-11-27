@@ -1385,5 +1385,181 @@ class CompileProbeTest(SnapshotCase):
         )
 
 
+
+# ---- FU-AND-TB-WEBCODE-A：apps.json inbound → 安卓入站清单与 InboundCallbacks（设计稿 §5.2；D10-2717 / D10-3561）
+
+import xml.etree.ElementTree as ET  # noqa: E402
+
+ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+INBOUND_MANIFEST = "core/generated/src/main/AndroidManifest.xml"
+INBOUND_ACTIVITY = "com.couli.app.inbound.InboundSchemeActivity"
+
+
+class AndroidInboundTest(SnapshotCase):
+    """gen_android_inbound：只取 platforms 含 android 的 custom_scheme；清单把 VIEW / DEFAULT / BROWSABLE + scheme 的 filter 挂在
+    InboundSchemeActivity 上（每个 scheme 一个，只写 scheme，host 分流由中转 Activity 做）；InboundCallbacks.kt 给 ANDROID_CUSTOM_SCHEMES；
+    没有 android 条目不产出清单；scheme 非法、在 forbidden_schemes 里、与外跳目标重名报 GenError；--check 覆盖生成的清单。"""
+
+    def edit_inbound(self, mutate):
+        path = os.path.join(self.snapshot, "contracts", "apps.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        mutate(data["inbound"])
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+
+    def manifest_path(self) -> Path:
+        return Path(self.out, INBOUND_MANIFEST)
+
+    def callbacks_path(self) -> Path:
+        return Path(self.out, gen.MAIN_KOTLIN, "InboundCallbacks.kt")
+
+    def manifest(self) -> ET.Element:
+        path = self.manifest_path()
+        self.assertTrue(path.is_file(), f"应生成 {INBOUND_MANIFEST}")
+        return ET.parse(path).getroot()
+
+    def activity(self, root: ET.Element) -> ET.Element:
+        activities = root.findall("./application/activity")
+        self.assertEqual([INBOUND_ACTIVITY], [a.get(ANDROID_NS + "name") for a in activities], "清单只声明入站中转 Activity")
+        return activities[0]
+
+    def filter_schemes(self, activity: ET.Element) -> list:
+        schemes = []
+        for intent_filter in activity.findall("intent-filter"):
+            actions = [a.get(ANDROID_NS + "name") for a in intent_filter.findall("action")]
+            categories = sorted(c.get(ANDROID_NS + "name") for c in intent_filter.findall("category"))
+            self.assertEqual(["android.intent.action.VIEW"], actions)
+            self.assertEqual(["android.intent.category.BROWSABLE", "android.intent.category.DEFAULT"], categories)
+            data = intent_filter.findall("data")
+            self.assertEqual(1, len(data), "每个 filter 一个 data")
+            attributes = {key.replace(ANDROID_NS, "") for key in data[0].attrib}
+            self.assertEqual({"scheme"}, attributes, "只写 scheme，不加 host / path（host 分流由中转 Activity 做）")
+            schemes.append(data[0].get(ANDROID_NS + "scheme"))
+        return schemes
+
+    def callbacks_schemes(self) -> list:
+        path = self.callbacks_path()
+        self.assertTrue(path.is_file(), "应生成 InboundCallbacks.kt")
+        source = path.read_text(encoding="utf-8")
+        self.assertIn("object InboundCallbacks", source)
+        found = re.search(r"val ANDROID_CUSTOM_SCHEMES\s*:\s*kotlin\.collections\.List<kotlin\.String>\s*=\s*"
+                          r"kotlin\.collections\.listOf\(([^)]*)\)", source)
+        self.assertIsNotNone(found, "ANDROID_CUSTOM_SCHEMES: kotlin.collections.List<kotlin.String> = kotlin.collections.listOf(…)")
+        return re.findall(r'"([^"]*)"', found.group(1))
+
+    def test_real_snapshot_generates_the_couli_filter_on_the_inbound_activity(self):
+        written = self.generate()
+        self.assertIn(INBOUND_MANIFEST, written, "generate() 要接入 gen_android_inbound")
+        self.assertIn(f"{gen.MAIN_KOTLIN}/InboundCallbacks.kt", written)
+        root = self.manifest()
+        activity = self.activity(root)
+        expected = {
+            "exported": "true",
+            "noHistory": "true",
+            "excludeFromRecents": "true",
+            "taskAffinity": "",
+            "persistableMode": "persistNever",
+            "theme": "@android:style/Theme.NoDisplay",
+        }
+        for key, value in expected.items():
+            self.assertEqual(value, activity.get(ANDROID_NS + key), f"InboundSchemeActivity 的 android:{key}")
+        self.assertEqual(["couli"], self.filter_schemes(activity))
+        self.assertEqual(["couli"], self.callbacks_schemes())
+
+    def test_manifest_is_marked_generated(self):
+        self.generate()
+        text = self.manifest_path().read_text(encoding="utf-8") if self.manifest_path().is_file() else ""
+        self.assertIn("生成物，禁止手改", text, "生成的清单带生成物标记")
+        self.assertIn("apps.json", text, "注明来源 apps.json inbound")
+
+    def test_generator_function_returns_its_outputs(self):
+        gen._WRITTEN.clear()
+        written = gen.gen_android_inbound(self.out)
+        self.assertEqual(sorted([INBOUND_MANIFEST, f"{gen.MAIN_KOTLIN}/InboundCallbacks.kt"]), sorted(written))
+
+    def test_each_android_scheme_gets_its_own_filter_in_order(self):
+        self.edit_inbound(lambda inbound: inbound.append(
+            {"kind": "custom_scheme", "purpose": "probe", "source_sdk": None, "platforms": ["android"], "scheme": "couliprobe"}))
+        self.generate()
+        self.assertEqual(["couli", "couliprobe"], self.filter_schemes(self.activity(self.manifest())))
+        self.assertEqual(["couli", "couliprobe"], self.callbacks_schemes())
+
+    def test_entries_without_android_are_skipped(self):
+        self.edit_inbound(lambda inbound: inbound.append(
+            {"kind": "custom_scheme", "purpose": "probe", "source_sdk": None, "platforms": ["ios", "harmony"], "scheme": "couliios"}))
+        self.generate()
+        self.assertEqual(["couli"], self.filter_schemes(self.activity(self.manifest())))
+        self.assertEqual(["couli"], self.callbacks_schemes())
+        self.assertNotIn("couliios", self.manifest_path().read_text(encoding="utf-8"))
+
+    def test_no_android_entry_generates_no_manifest(self):
+        def ios_only(inbound):
+            for entry in inbound:
+                entry["platforms"] = [p for p in entry["platforms"] if p != "android"]
+        self.edit_inbound(ios_only)
+        written = self.generate()
+        self.assertNotIn(INBOUND_MANIFEST, written, "没有 android 条目不产出清单")
+        self.assertFalse(self.manifest_path().exists())
+        if self.callbacks_path().is_file():
+            self.assertEqual([], self.callbacks_schemes(), "没有 android 条目时 ANDROID_CUSTOM_SCHEMES 为空")
+
+    def test_invalid_scheme_fails(self):
+        bad = {
+            "空串": "",
+            "大写": "Couli",
+            "数字开头": "1couli",
+            "含空格": "cou li",
+            "含下划线": "cou_li",
+            "带 ://": "couli://",
+            "不是字符串": 123,
+            "forbidden_schemes：https": "https",
+            "forbidden_schemes：intent": "intent",
+            "与外跳目标重名：taobao": "taobao",
+        }
+        for label, scheme in bad.items():
+            with self.subTest(case=label):
+                self.tearDown()
+                self.setUp()
+
+                def mutate(inbound, value=scheme):
+                    inbound[0]["scheme"] = value
+                self.edit_inbound(mutate)
+                with self.assertRaises(gen.GenError, msg=f"scheme 非法应报 GenError：{label} {scheme!r}"):
+                    self.generate()
+
+    def test_missing_scheme_fails(self):
+        self.edit_inbound(lambda inbound: inbound[0].pop("scheme"))
+        with self.assertRaises(gen.GenError):
+            self.generate()
+
+    def test_output_is_repeatable(self):
+        self.generate()
+        first = self.manifest_path().read_bytes() if self.manifest_path().is_file() else b""
+        shutil.rmtree(self.out)
+        self.generate()
+        second = self.manifest_path().read_bytes() if self.manifest_path().is_file() else b""
+        self.assertTrue(first, "应生成清单")
+        self.assertEqual(first, second, "输出可重复（不含时间戳）")
+
+    def test_check_detects_hand_edits_to_the_generated_manifest(self):
+        self.generate()
+        vectors = Path(self.out, gen.HOME_VECTORS)
+        vectors.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(gen.ROOT, gen.HOME_VECTORS), vectors)
+        manifest = self.manifest_path()
+        self.assertTrue(manifest.is_file(), f"应生成 {INBOUND_MANIFEST}")
+        with patch.object(gen, "ROOT", self.out), patch.object(sys, "argv", ["gen.py", "--check"]):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(0, gen.main(), "未变异的副本须先绿")
+                manifest.write_text(manifest.read_text(encoding="utf-8").replace('android:scheme="couli"', 'android:scheme="couli2"'),
+                                    encoding="utf-8")
+                self.assertEqual(1, gen.main(), "手改生成的清单必须由 --check 拒绝")
+            self.assertIn(INBOUND_MANIFEST, err.getvalue())
+            manifest.unlink()
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(1, gen.main(), "删掉生成的清单也必须由 --check 发现")
+
+
 if __name__ == "__main__":
     unittest.main()

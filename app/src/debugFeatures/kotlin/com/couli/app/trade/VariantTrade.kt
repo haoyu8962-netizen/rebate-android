@@ -19,6 +19,37 @@ import kotlinx.coroutines.delay
 internal fun variantWebCodeAuthorizer(context: Context): WebCodeAuthorizer = DebugWebCodeAuthorizer(DebugMockGate.of(context))
 
 /**
+ * debug / staging 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：闸门委派 [GatedWebCodeAuthorizer]——假服务闸门开着用
+ * [DebugWebCodeAuthorizer]，关着用真实授权器 [real]，每次调用现判闸门。
+ *
+ * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在忽略 [real]、与旧装配相同。
+ */
+@Suppress("UnusedParameter") // 接口桩
+internal fun variantWebCodeAuthorizer(
+    context: Context,
+    real: WebCodeAuthorizer,
+): WebCodeAuthorizer = DebugWebCodeAuthorizer(DebugMockGate.of(context))
+
+/**
+ * 闸门委派（设计稿 §3.2）：[available] = gate() || real.available；[authorize] 开始时 gate() 为真交给 [debug]，为假交给 [real]。
+ *
+ * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在 available=false、authorize 恒返回 Failed。
+ */
+@Suppress("UnusedPrivateProperty") // 接口桩
+internal class GatedWebCodeAuthorizer(
+    private val gate: () -> Boolean,
+    private val debug: WebCodeAuthorizer,
+    private val real: WebCodeAuthorizer,
+) : WebCodeAuthorizer {
+    override val available: Boolean get() = false
+
+    override suspend fun authorize(
+        authUrl: String,
+        state: String,
+    ): AuthStepResult = AuthStepResult.Failed
+}
+
+/**
  * 假 web_code 授权（F-X-02）：可用与否、开始授权、交出假授权码三处都过统一闸门；等待期间切到 prod 的不交出假授权码（与 Release 一样失败）。
  */
 internal class DebugWebCodeAuthorizer(
