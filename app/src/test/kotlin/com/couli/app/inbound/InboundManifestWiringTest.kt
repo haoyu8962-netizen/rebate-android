@@ -9,14 +9,14 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.MainActivity
+import java.io.File
+import java.util.Properties
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
-import java.io.File
-import java.util.Properties
 
 /**
  * FU-AND-TB-WEBCODE-A 测试：合并后的清单（设计稿 §5.2；intent-filter 由 tools/codegen 生成到 core/generated 的库清单，靠清单合并进 App）。
