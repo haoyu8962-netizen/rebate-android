@@ -13,8 +13,7 @@
   python3 tools/codegen/gen.py --check   在临时目录生成后逐字比较；不一致退出 1 并列出文件
 
 APP-03a 加：openapi 每个 operation 的登记表 → ApiOperations（包 com.couli.core.generated；不生成请求 / 响应模型）。
-本任务生成：枚举、错误码、路由、桥、文案、令牌；不生成 OpenAPI 客户端、事件、apps.json 片段
-（分别归 APP-03、APP-03、APP-04/06）。API 形状见 APP-01-android 任务书 §5。
+本任务生成：枚举、错误码、路由、桥、文案、令牌；不生成 OpenAPI 客户端、事件（分别归 APP-03、APP-03）。API 形状见 APP-01-android 任务书 §5。
 APP-02c 加：商店对照表 specs/app-stores.yaml → AppStores（main）；openapi GET /v1/app-versions/check 的 200 响应示例
 → AppVersionCheckExample（debugFeatures，调试面板的版本检查假数据，Release 里没有）。
 APP-03b 加（包 com.couli.core.clientcore，三端测试接线约定）：
@@ -27,6 +26,9 @@ APP-11 加：specs/home-sdui-vectors.json 的 goldenPages.default_home → 资�
 三端逐字一致；--check 保证与向量一致）。
 APP-04 加：contracts/bridge.schema.json 原样复制为资源 bridge.schema.json（BridgeProtocol 按方法的 params schema 校验、
 按 levels / signed_paths / events / not_exposed 判定）；contracts/apps.json 的 trade_only 目标 → BridgeAppTargets（ext.openApp 的 90403）。
+FU-AND-TB-WEBCODE-A 加（D10-2717 批准生成 apps.json 入站声明，CSB-11「入站声明只来自生成物」）：contracts/apps.json 的 inbound 里 platforms 含
+android 的 custom_scheme → core/generated/src/main/AndroidManifest.xml（入站中转 InboundSchemeActivity 的 VIEW / DEFAULT / BROWSABLE filter，
+作为库清单合并进 App）与 InboundCallbacks.kt（ANDROID_CUSTOM_SCHEMES）。--check 同样覆盖这份清单。
 只用 Python 3 标准库；输出不含时间戳，可重复。
 
 命名规则（防止契约里的名字遮蔽 Kotlin 标准类型或生成器自用名；tools/codegen/test_gen.py 用探针输入覆盖）：
@@ -74,6 +76,9 @@ API_KOTLIN = "core/generated/src/main/kotlin/" + API_PACKAGE.replace(".", "/")
 CLIENT_CORE_PACKAGE = "com.couli.core.clientcore"
 CLIENT_CORE_KOTLIN = "core/generated/src/main/kotlin/" + CLIENT_CORE_PACKAGE.replace(".", "/")
 OWNED_DIRS = [MAIN_KOTLIN, DEBUG_KOTLIN, RESOURCES, API_KOTLIN, CLIENT_CORE_KOTLIN]
+# FU-AND-TB-WEBCODE-A：生成的入站清单（单文件归属：所在目录 src/main 里还有不归生成器管的子目录）。
+INBOUND_MANIFEST = "core/generated/src/main/AndroidManifest.xml"
+OWNED_FILES = [INBOUND_MANIFEST]
 
 HEADER = "// 生成物，禁止手改；来源 contract.lock（tools/codegen/gen.py 由 contracts/snapshot/ 生成）\n"
 
@@ -107,6 +112,7 @@ GENERATOR_TYPE_NAMES = {
     "DeviceHashSeeds",
     "BundledConfig",
     "BundledHome",
+    "InboundCallbacks",
 }
 # Kotlin 默认导入（kotlin.*、kotlin.collections.* 等）里常见的类型名；同包声明会遮蔽它们。
 KOTLIN_STANDARD_TYPE_NAMES = {
@@ -1774,15 +1780,135 @@ object BundledHome {
     ]
 
 
+INBOUND_ACTIVITY = "com.couli.app.inbound.InboundSchemeActivity"
+SECURITY_BASELINE = "specs/client-security-baseline.json"
+# 自定义 scheme：小写字母开头，后接小写字母、数字、+ . -（RFC 3986 scheme 语法收紧为小写；Android 的 intent-filter 按大小写敏感匹配）。
+CUSTOM_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*")
+
+
+def outbound_schemes(apps_doc: dict) -> set:
+    """apps.json 里外跳目标与 SDK 查询用到的名字（apps 的键与 platform、ios / harmony 的 query_schemes、sdk_queries 的 scheme）：入站 scheme 不得与之重名。"""
+    names = set()
+    apps = apps_doc.get("apps")
+    if isinstance(apps, dict):
+        for key, app in apps.items():
+            names.add(str(key))
+            if not isinstance(app, dict):
+                continue
+            if isinstance(app.get("platform"), str):
+                names.add(app["platform"])
+            for side in ("ios", "harmony"):
+                block = app.get(side)
+                if isinstance(block, dict) and isinstance(block.get("query_schemes"), list):
+                    names.update(str(v) for v in block["query_schemes"])
+    queries = apps_doc.get("sdk_queries")
+    if isinstance(queries, list):
+        for entry in queries:
+            if isinstance(entry, dict):
+                for field in ("ios_scheme", "harmony_scheme"):
+                    if isinstance(entry.get(field), str):
+                        names.add(entry[field])
+    return {name.casefold() for name in names}
+
+
+def android_custom_schemes() -> list:
+    """apps.json inbound 里 platforms 含 android 的 custom_scheme，按文件顺序；逐条校验（CSB-11、设计稿 §5.2）。"""
+    apps_doc = load("contracts/apps.json")
+    inbound = apps_doc.get("inbound")
+    if not isinstance(inbound, list):
+        raise GenError("apps.json 的 inbound 应为数组")
+    baseline = load(SECURITY_BASELINE)
+    forbidden = baseline.get("forbidden_schemes")
+    if not isinstance(forbidden, list):
+        raise GenError(SECURITY_BASELINE + " 缺 forbidden_schemes")
+    forbidden = {str(v).casefold() for v in forbidden}
+    outbound = outbound_schemes(apps_doc)
+    schemes = []
+    for index, entry in enumerate(inbound):
+        where = f"apps.json inbound[{index}]"
+        if not isinstance(entry, dict):
+            raise GenError(f"{where} 应为对象")
+        platforms = entry.get("platforms")
+        if not isinstance(platforms, list) or not all(isinstance(p, str) for p in platforms):
+            raise GenError(f"{where} 的 platforms 应为字符串数组")
+        if "android" not in platforms:
+            continue
+        kind = entry.get("kind")
+        if kind != "custom_scheme":
+            # verified_link（App Links）要等 own_link_hosts 与正式签名（06 Q-C9 / N-04）；生成器支持之前明确失败，不静默漏掉入站声明
+            raise GenError(f"{where} 的 kind {kind!r}：安卓入站目前只支持 custom_scheme")
+        if "scheme" not in entry:
+            raise GenError(f"{where} 缺 scheme")
+        scheme = entry["scheme"]
+        if not isinstance(scheme, str) or not CUSTOM_SCHEME.fullmatch(scheme):
+            raise GenError(f"{where} 的 scheme 非法（只允许小写字母开头的 [a-z0-9+.-]）：{scheme!r}")
+        if scheme.casefold() in forbidden:
+            raise GenError(f"{where} 的 scheme {scheme!r} 在 forbidden_schemes 里（{SECURITY_BASELINE}）")
+        if scheme.casefold() in outbound:
+            raise GenError(f"{where} 的 scheme {scheme!r} 与外跳目标或 SDK 查询重名")
+        if scheme in schemes:
+            raise GenError(f"{where} 的 scheme {scheme!r} 重复")
+        schemes.append(scheme)
+    return schemes
+
+
 def gen_android_inbound(out_root: str) -> list:
     """FU-AND-TB-WEBCODE-A（设计稿 §5.2；D10-2717）：apps.json inbound 里 platforms 含 android 的 custom_scheme →
     core/generated/src/main/AndroidManifest.xml（InboundSchemeActivity 的 VIEW / BROWSABLE filter，每个 scheme 一个、只写 scheme）与
-    core/generated/src/main/kotlin/com/couli/generated/InboundCallbacks.kt（ANDROID_CUSTOM_SCHEMES）。没有 android 条目不产出清单；
-    scheme 非法、在 forbidden_schemes 里、与外跳目标重名时报 GenError。
+    core/generated/src/main/kotlin/com/couli/generated/InboundCallbacks.kt（ANDROID_CUSTOM_SCHEMES）。没有 android 条目不产出清单
+    （InboundCallbacks 照常生成，列表为空）；scheme 非法、在 forbidden_schemes 里、与外跳目标重名时报 GenError。"""
+    schemes = android_custom_schemes()
+    written = []
+    if schemes:
+        filters = []
+        for scheme in schemes:
+            filters.append(
+                f"""            <!-- apps.json inbound custom_scheme {scheme}：host 分流由中转 Activity 做 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
 
-    TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在不产出任何文件、也未接入 generate()；实现时接入并纳入 --check 的归属。"""
-    del out_root
-    return []
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="{scheme}" />
+            </intent-filter>"""
+            )
+        manifest = f"""<?xml version="1.0" encoding="utf-8"?>
+<!-- 生成物，禁止手改；来源 contracts/apps.json inbound（tools/codegen/gen.py 由 contracts/snapshot/ 生成） -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!--
+            入站中转（设计稿 §5.2、§5.3）：只读 data，当场交给进程内收件箱或转给 MainActivity，然后 finish。不留历史、不进最近任务、
+            不持久化启动 Intent（回跳里的授权码不留在最近任务里）、无界面。类在 app 模块，靠清单合并生效。
+        -->
+        <activity
+            android:name="{INBOUND_ACTIVITY}"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:persistableMode="persistNever"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay"
+            tools:ignore="MissingClass">
+{chr(10).join(filters)}
+        </activity>
+    </application>
+</manifest>
+"""
+        written.append(write(out_root, INBOUND_MANIFEST, manifest))
+    listed = ", ".join(kstr(s) for s in schemes)
+    body_kt = f"""/**
+ * apps.json inbound 里本端（android）登记的自定义 scheme（FU-AND-TB-WEBCODE-A）：入站中转 Activity 只处理这些 scheme 的 data。
+ * intent-filter 在同一次生成的 core/generated/src/main/AndroidManifest.xml 里，两处同源。
+ */
+object InboundCallbacks {{
+    val ANDROID_CUSTOM_SCHEMES: kotlin.collections.List<kotlin.String> = kotlin.collections.listOf({listed})
+}}
+"""
+    written.append(write(out_root, f"{MAIN_KOTLIN}/InboundCallbacks.kt", kotlin_file(body_kt)))
+    return written
 
 
 # ---------------------------------------------------------------- 入口
@@ -1803,6 +1929,7 @@ def generate(out_root: str) -> list:
     written += gen_device_hash_seeds(out_root)
     written += gen_bundled_config(out_root)
     written += gen_bundled_home(out_root)
+    written += gen_android_inbound(out_root)
     return sorted(written)
 
 
@@ -1816,6 +1943,9 @@ def owned_files(root: str) -> set:
             for name in names:
                 full = os.path.join(directory, name)
                 found.add(os.path.relpath(full, root).replace(os.sep, "/"))
+    for rel in OWNED_FILES:
+        if os.path.isfile(os.path.join(root, rel)):
+            found.add(rel)
     return found
 
 

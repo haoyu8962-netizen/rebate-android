@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 生成物，禁止手改；来源 contracts/apps.json inbound（tools/codegen/gen.py 由 contracts/snapshot/ 生成） -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!--
+            入站中转（设计稿 §5.2、§5.3）：只读 data，当场交给进程内收件箱或转给 MainActivity，然后 finish。不留历史、不进最近任务、
+            不持久化启动 Intent（回跳里的授权码不留在最近任务里）、无界面。类在 app 模块，靠清单合并生效。
+        -->
+        <activity
+            android:name="com.couli.app.inbound.InboundSchemeActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:persistableMode="persistNever"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay"
+            tools:ignore="MissingClass">
+            <!-- apps.json inbound custom_scheme couli：host 分流由中转 Activity 做 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="couli" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

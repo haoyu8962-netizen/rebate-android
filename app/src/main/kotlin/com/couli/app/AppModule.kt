@@ -2,6 +2,7 @@ package com.couli.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
@@ -47,9 +48,13 @@ import com.couli.app.routing.RoutingPrivacyHooks
 import com.couli.app.routing.WebTargets
 import com.couli.app.search.AppSearch
 import com.couli.app.search.SearchDraftTexts
+import com.couli.app.trade.ActivityAuthReturnSignal
 import com.couli.app.trade.AndroidJumpPorts
 import com.couli.app.trade.AppProductImages
 import com.couli.app.trade.AppTrade
+import com.couli.app.trade.BrowserWebCodeAuthorizer
+import com.couli.app.trade.CustomTabAuthBrowserLauncher
+import com.couli.app.trade.SharedPreferencesWebCodeAttempts
 import com.couli.app.trade.variantBrowserNoticeMillis
 import com.couli.app.trade.variantImageSource
 import com.couli.app.trade.variantJumpPorts
@@ -129,6 +134,7 @@ import com.couli.core.wallet.WalletStaleCache
 import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
+import com.couli.feature.trade.WebCodeInbox
 import com.couli.feature.wallet.ApiClientWalletApi
 import com.couli.feature.wallet.RemoteLaborBackend
 import com.couli.feature.wallet.RemoteRealNameBackend
@@ -1146,9 +1152,27 @@ object AppModule {
             partitionTracked = true,
         ).also { wallet -> wallet.connectSession() }
 
+    /** 淘宝 web_code 授权回跳的进程内收件箱（FU-AND-TB-WEBCODE-A；只在内存）：入站中转 Activity 交付，真实授权器认领。 */
+    @Provides
+    @Singleton
+    fun webCodeInbox(): WebCodeInbox = WebCodeInbox()
+
+    /** 淘宝授权页的打开方式（Custom Tab，没有就系统浏览器；FU-AND-TB-WEBCODE-A）：MainActivity 挂上 / 摘下当前 Activity。 */
+    @Provides
+    @Singleton
+    fun authBrowserLauncher(
+        @ApplicationContext context: Context,
+    ): CustomTabAuthBrowserLauncher = CustomTabAuthBrowserLauncher(context)
+
+    /** MainActivity 的可见性信号（FU-AND-TB-WEBCODE-A）：真实授权器据它判断用户从授权页回到了 App。 */
+    @Provides
+    @Singleton
+    fun authReturnSignal(): ActivityAuthReturnSignal = ActivityAuthReturnSignal()
+
     /**
      * 购买、外跳与授权（APP-06b）：open 经 ApiClient（请求带页面归属）；百川是不可用实现（SDK 未引入、AppKey 占位，TODO(N-28)）；
-     * web_code 授权在回跳 scheme 登记前不可执行（release），debug / staging 用本机假授权；link_jump 进 Tracker 本地队列。
+     * web_code 授权用真实授权器（Custom Tab + couli://auth/taobao 回跳，FU-AND-TB-WEBCODE-A），debug / staging 假服务开着时用本机假授权；
+     * link_jump 进 Tracker 本地队列。
      */
     @Provides
     @Singleton
@@ -1161,6 +1185,10 @@ object AppModule {
         tracker: Provider<TrackerQueue>,
         privacy: Provider<AppPrivacy>,
         clipboard: AppClipboard,
+        // 单测按位置只传前 7 项时用各自的新实例（与 MainActivity / 收件箱不连通，测试不经真实授权页）
+        webCodeInbox: WebCodeInbox = WebCodeInbox(),
+        authBrowser: CustomTabAuthBrowserLauncher = CustomTabAuthBrowserLauncher(context),
+        authReturns: ActivityAuthReturnSignal = ActivityAuthReturnSignal(),
     ): AppTrade =
         AppTrade(
             api = ApiClientPageApi(client),
@@ -1168,7 +1196,16 @@ object AppModule {
             routing = routing,
             tracker = tracker,
             baichuan = UnavailableBaichuan(),
-            webCode = variantWebCodeAuthorizer(context),
+            webCode =
+                variantWebCodeAuthorizer(
+                    context,
+                    BrowserWebCodeAuthorizer(
+                        launcher = authBrowser,
+                        inbox = webCodeInbox,
+                        attempts = SharedPreferencesWebCodeAttempts(webCodeAttemptPreferences(context)),
+                        returns = authReturns,
+                    ),
+                ),
             // copy_tpwd 经剪贴板唯一写入口（写入前记 hash，APP-07）
             ports = variantJumpPorts(context, AndroidJumpPorts(context, writer = clipboard.writer)),
             browserNoticeMillis = variantBrowserNoticeMillis(),
@@ -1381,6 +1418,10 @@ private object TrackerQueueFile {
     /** 按绝对路径各一份（生产只有一个 filesDir；单测每个用例的 filesDir 不同）。 */
     val instances = mutableMapOf<String, AtomicTextFile>()
 }
+
+/** 淘宝 web_code 授权的本机尝试记录（FU-AND-TB-WEBCODE-A）：只存 sha256(state) 与时间；切换环境时随 couli. 命名空间清理。 */
+internal fun webCodeAttemptPreferences(context: Context): SharedPreferences =
+    context.applicationContext.getSharedPreferences(CouliPreferenceNamespaces.WEBCODE_ATTEMPTS, Context.MODE_PRIVATE)
 
 /** 「我的」的设备级本机偏好（APP-12）：进程内一份（网络层、隐私中心、撤回清理共用）。 */
 internal fun meLocalStore(context: Context): MeLocalStore =

@@ -194,8 +194,9 @@ sealed interface AuthStepResult {
 }
 
 /**
- * 淘宝 web_code 授权的本端能力（App 给）：用系统浏览器（或淘宝官方授权页）打开 auth_url，等本 App 自己的回跳 scheme 带回授权码。
- * 回跳 scheme 在 apps.json inbound 登记前（为空，TODO(N-28)）生产实现 [available] = false。
+ * 淘宝 web_code 授权的本端能力（App 给）：用 Custom Tab（没有就用系统浏览器）打开 auth_url，等本 App 自己的回跳
+ * `couli://auth/taobao`（apps.json inbound 的 couli，由生成器登记）带回授权码。生产实现是 App 的 BrowserWebCodeAuthorizer
+ * （FU-AND-TB-WEBCODE-A，D10-2717）。
  */
 interface WebCodeAuthorizer {
     val available: Boolean
@@ -206,7 +207,7 @@ interface WebCodeAuthorizer {
     ): AuthStepResult
 }
 
-/** 生产：回跳 scheme 未登记，web_code 不可执行（TODO(N-28)：apps.json inbound 补上后接系统浏览器 + 回跳）。 */
+/** 不可执行的 web_code 授权（测试与兜底用；生产装配用 App 的真实授权器）。 */
 object UnavailableWebCodeAuthorizer : WebCodeAuthorizer {
     override val available: Boolean get() = false
 

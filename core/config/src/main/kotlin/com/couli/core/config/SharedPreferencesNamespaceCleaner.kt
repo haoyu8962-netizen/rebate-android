@@ -33,7 +33,13 @@ object CouliPreferenceNamespaces {
      */
     const val UPDATE_DEBUG = "couli.update_debug"
 
-    val registered: List<String> = listOf(SESSION, CACHE, ROUTER, UPDATE, UPDATE_DEBUG)
+    /**
+     * 淘宝 web_code 授权的本机尝试记录（FU-AND-TB-WEBCODE-A，设计稿 §3.1、§8）：只有 sha256(state) 与发起时间；属于连接的那套服务器，
+     * 切换环境时清。
+     */
+    const val WEBCODE_ATTEMPTS = "couli.webcode_attempts"
+
+    val registered: List<String> = listOf(SESSION, CACHE, ROUTER, UPDATE, UPDATE_DEBUG, WEBCODE_ATTEMPTS)
 
     /**
      * 本机隐私决定（APP-02b PrivacyGate：同意的决定、同意时的政策版本与点击时间、基本模式）。

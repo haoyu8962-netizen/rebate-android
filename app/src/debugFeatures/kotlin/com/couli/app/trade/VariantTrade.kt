@@ -13,40 +13,30 @@ import java.io.File
 import kotlinx.coroutines.delay
 
 /**
- * debug / staging：本机假服务打开时（同一个开关文件，APP-05a）用假的 web_code 授权跑通 AuthSheet → bindings → 自动执行一次 open 的链路
- * （设计稿比对与冒烟用；不打开任何授权页，返回演示用的假授权码）。假服务关着时与 release 相同：不可执行。Release 没有这段。
+ * debug / staging 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：闸门委派 [GatedWebCodeAuthorizer]——本机假服务打开时（同一个开关文件，
+ * APP-05a）用 [DebugWebCodeAuthorizer] 跑通 AuthSheet → bindings → 自动执行一次 open 的链路（设计稿比对与冒烟用；不打开任何授权页，返回演示用的
+ * 假授权码）；假服务关着（连真 test / staging / prod）时用真实授权器 [real]。每次调用现判闸门。Release 没有这段。
  */
-internal fun variantWebCodeAuthorizer(context: Context): WebCodeAuthorizer = DebugWebCodeAuthorizer(DebugMockGate.of(context))
-
-/**
- * debug / staging 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：闸门委派 [GatedWebCodeAuthorizer]——假服务闸门开着用
- * [DebugWebCodeAuthorizer]，关着用真实授权器 [real]，每次调用现判闸门。
- *
- * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在忽略 [real]、与旧装配相同。
- */
-@Suppress("UnusedParameter") // 接口桩
 internal fun variantWebCodeAuthorizer(
     context: Context,
     real: WebCodeAuthorizer,
-): WebCodeAuthorizer = DebugWebCodeAuthorizer(DebugMockGate.of(context))
+): WebCodeAuthorizer {
+    val gate = DebugMockGate.of(context)
+    return GatedWebCodeAuthorizer(gate, DebugWebCodeAuthorizer(gate), real)
+}
 
-/**
- * 闸门委派（设计稿 §3.2）：[available] = gate() || real.available；[authorize] 开始时 gate() 为真交给 [debug]，为假交给 [real]。
- *
- * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在 available=false、authorize 恒返回 Failed。
- */
-@Suppress("UnusedPrivateProperty") // 接口桩
+/** 闸门委派（设计稿 §3.2）：[available] = gate() || real.available；[authorize] 开始时 gate() 为真交给 [debug]，为假交给 [real]。 */
 internal class GatedWebCodeAuthorizer(
     private val gate: () -> Boolean,
     private val debug: WebCodeAuthorizer,
     private val real: WebCodeAuthorizer,
 ) : WebCodeAuthorizer {
-    override val available: Boolean get() = false
+    override val available: Boolean get() = gate() || real.available
 
     override suspend fun authorize(
         authUrl: String,
         state: String,
-    ): AuthStepResult = AuthStepResult.Failed
+    ): AuthStepResult = if (gate()) debug.authorize(authUrl, state) else real.authorize(authUrl, state)
 }
 
 /**

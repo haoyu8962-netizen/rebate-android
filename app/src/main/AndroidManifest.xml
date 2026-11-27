@@ -11,6 +11,13 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.APP_BROWSER" />
         </intent>
+        <!--
+            淘宝 web_code 授权页（FU-AND-TB-WEBCODE-A，设计稿 §4.2）：只查浏览器有没有 Custom Tab 服务，有就用 Custom Tab 打开，没有就退回系统浏览器。
+            couli 回跳的入站中转 InboundSchemeActivity 与它的 intent-filter 由 tools/codegen 生成到 core/generated 的库清单，靠清单合并进来，这里不手写。
+        -->
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
     </queries>
 
     <application

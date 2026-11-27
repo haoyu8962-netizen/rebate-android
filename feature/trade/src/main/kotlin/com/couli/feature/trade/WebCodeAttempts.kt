@@ -1,5 +1,7 @@
 package com.couli.feature.trade
 
+import java.security.MessageDigest
+
 /** 本机发起过的一次 web_code 尝试：只有 sha256(state)（小写十六进制）与发起时间，没有 state 原文、没有 code。 */
 data class WebCodeAttempt(
     val stateSha256: String,
@@ -21,3 +23,10 @@ interface WebCodeAttemptStore {
 
     fun clear()
 }
+
+/** sha256([state])：UTF-8 字节的小写十六进制（尝试记录、收件箱认领共用同一算法）。 */
+fun webCodeStateSha256(state: String): String =
+    MessageDigest
+        .getInstance("SHA-256")
+        .digest(state.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }

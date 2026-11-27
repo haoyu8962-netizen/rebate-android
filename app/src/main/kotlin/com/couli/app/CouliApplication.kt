@@ -4,6 +4,9 @@ import android.app.Application
 import com.couli.app.clipboard.AppClipboard
 import com.couli.app.clipboard.ShareIntake
 import com.couli.app.clipboard.ShareIntakeProvider
+import com.couli.app.inbound.WebCodeCallbackSinkProvider
+import com.couli.feature.trade.WebCodeCallbackSink
+import com.couli.feature.trade.WebCodeInbox
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import javax.inject.Provider
@@ -12,7 +15,8 @@ import javax.inject.Provider
 @HiltAndroidApp
 class CouliApplication :
     Application(),
-    ShareIntakeProvider {
+    ShareIntakeProvider,
+    WebCodeCallbackSinkProvider {
     @Inject
     lateinit var startup: AppStartup
 
@@ -21,6 +25,12 @@ class CouliApplication :
     lateinit var clipboard: Provider<AppClipboard>
 
     override fun shareIntake(): ShareIntake = ShareIntake { mime, text -> clipboard.get().receiveShare(mime, text) }
+
+    /** 淘宝 web_code 授权回跳（FU-AND-TB-WEBCODE-A）：入站中转 Activity 经它把回跳交给进程内收件箱（只在内存）。 */
+    @Inject
+    lateinit var webCodeInbox: Provider<WebCodeInbox>
+
+    override fun webCodeCallbackSink(): WebCodeCallbackSink = webCodeInbox.get()
 
     override fun onCreate() {
         super.onCreate()

@@ -106,6 +106,8 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     // ApiClient 的 OkHttpClient 由 App 按构建类型给（debug / staging 带本机假登录服务，APP-05a）
     implementation(libs.okhttp)
+    // 淘宝 web_code 授权页的 Custom Tab（FU-AND-TB-WEBCODE-A，D10-3568）
+    implementation(libs.androidx.browser)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

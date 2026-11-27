@@ -24,7 +24,9 @@ import com.couli.app.routing.AppRouting
 import com.couli.app.routing.LaunchIntentSanitizer
 import com.couli.app.search.AppSearch
 import com.couli.app.shell.AppShell
+import com.couli.app.trade.ActivityAuthReturnSignal
 import com.couli.app.trade.AppProductImages
+import com.couli.app.trade.CustomTabAuthBrowserLauncher
 import com.couli.app.update.AppUpdate
 import com.couli.app.wallet.AppWallet
 import com.couli.app.web.AppWeb
@@ -97,6 +99,14 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var agent: AppAgent
 
+    /** 淘宝 web_code 授权页从当前 Activity 以 Custom Tab 打开（FU-AND-TB-WEBCODE-A）。 */
+    @Inject
+    lateinit var authBrowser: CustomTabAuthBrowserLauncher
+
+    /** 用户从授权页回到 App 的信号（onStop / onStart，配置变更除外；FU-AND-TB-WEBCODE-A）。 */
+    @Inject
+    lateinit var authReturns: ActivityAuthReturnSignal
+
     private val permissionHost = ActivityPermissionHost(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,6 +114,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // 系统权限申请只经 PermissionRequester（APP-03b，03 §4.9）；这里只提供当前 Activity 的系统授权框
         permissionSystem.host = permissionHost
+        // 淘宝授权页的 Custom Tab 从当前 Activity 启动，留在本任务里（设计稿 §4.2）
+        authBrowser.attach(this)
         // 重建（旋转、进程恢复）时不重放启动意图：它是一次性的。
         if (savedInstanceState == null) appRouting.onLaunchIntent(intent?.dataString, coldStart = true)
         // 原始 data 已交给 Router；Navigation 只能看到清洗后的 Intent（不带 data 与框架导航 extras，R1-01）
@@ -150,6 +162,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // 淘宝 web_code 授权（FU-AND-TB-WEBCODE-A）：拉起授权页之后先 stop、再 start = 用户回到了 App
+        authReturns.started()
         // 首页（APP-11）：App 在前台（弹窗、轮播的可见性）
         home.onForeground(true)
         // Agent 页（APP-10）：App 在前台（可见性：进后台时关连接、停计时）
@@ -167,6 +181,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (permissionSystem.host === permissionHost) permissionSystem.host = null
+        authBrowser.detach(this)
         // Agent 页实例真正销毁（配置重建除外，brief §3 Android：配置重建只在内存保留对话）：page_destroyed，清空消息，不发 cancel
         if (!isChangingConfigurations) agent.onPageDestroyed()
         super.onDestroy()
@@ -189,6 +204,8 @@ class MainActivity : ComponentActivity() {
         home.onForeground(false)
         agent.onForeground(false)
         if (!isChangingConfigurations) search.trade?.onAppBackground()
+        // 淘宝 web_code 授权：离开前台（旋转等配置变更的重建不算）
+        if (!isChangingConfigurations) authReturns.stopped()
         // 导航票据（APP-12 G09）：真正进入后台算一次（回前台后，进后台之前发起的请求得到 10006 不再导航）
         if (!isChangingConfigurations) appRouting.navTickets.onBackground()
         // 旋转等配置变更的重建不算回前台

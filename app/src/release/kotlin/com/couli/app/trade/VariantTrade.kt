@@ -3,25 +3,14 @@ package com.couli.app.trade
 import android.content.Context
 import com.couli.feature.trade.JumpPorts
 import com.couli.feature.trade.OpenPurchaseController
-import com.couli.feature.trade.UnavailableWebCodeAuthorizer
 import com.couli.feature.trade.WebCodeAuthorizer
 
-/**
- * Release：淘宝 web_code 授权的回跳 scheme 在 apps.json inbound 登记前不可执行（TODO(N-28)），按「本端执行不了」处理（授权失败二选一）。
- */
+/** Release 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：直接用真实授权器 [real]（Custom Tab + couli://auth/taobao 回跳）。 */
 @Suppress("UnusedParameter") // 与 debug / staging 源码集同一签名
-internal fun variantWebCodeAuthorizer(context: Context): WebCodeAuthorizer = UnavailableWebCodeAuthorizer
-
-/**
- * Release 的 web_code 装配（FU-AND-TB-WEBCODE-A，设计稿 §7）：直接用真实授权器 [real]。
- *
- * TODO(FU-AND-TB-WEBCODE-A 实现)：接口桩，现在仍不可执行；实现时改为 `= real`，并删掉上面单参数的旧装配。
- */
-@Suppress("UnusedParameter") // 接口桩
 internal fun variantWebCodeAuthorizer(
     context: Context,
     real: WebCodeAuthorizer,
-): WebCodeAuthorizer = UnavailableWebCodeAuthorizer
+): WebCodeAuthorizer = real
 
 /** 「将通过浏览器打开」的提示停留时长。 */
 internal fun variantBrowserNoticeMillis(): Long = OpenPurchaseController.BROWSER_NOTICE_MILLIS
