@@ -94,7 +94,7 @@
   {"h": "6a7d88b5918a846a28b2fa01f3967435e2c054dddfc82dcaa007d27dbaddff61", "p": "app/src/main/kotlin/com/couli/app/shell/TabShell.kt"},
   {"h": "d259cdc8f03512d86e2616b766e19f96eda29a778877f9862e1123af2e901684", "p": "app/src/main/kotlin/com/couli/app/trade/AndroidJumpPorts.kt"},
   {"h": "f2fea2fdb89889a1a866945bb955429c52c500606c526a2ef3581102dcdce3b6", "p": "app/src/main/kotlin/com/couli/app/trade/AppProductImages.kt"},
-  {"h": "1b2cc25a6c7250e5fddecdd0e9049c3d13a2644ee4c4091d8ceab8487ab21812", "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt"},
+  {"h": "8fa6a6f61561d98be6b9acad0bd7080d01741cdda6ba3e814d91fc58a9fc304c", "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt"},
   {"h": "c1a59d014b51b100a6e2c71d3b48403e801427a0cfc68132e76a25b5bfa666b1", "p": "app/src/main/kotlin/com/couli/app/trade/AuthManageRoute.kt"},
   {"h": "48b4895d3e2475d625faf2dc90571f72e80d02ef44f13608423c214580b7d794", "p": "app/src/main/kotlin/com/couli/app/trade/TradeDraftTexts.kt"},
   {"h": "966baeb2f2cba220886a7940efb5c7cf870d2316c011dc57c59d98e2dd280c5d", "p": "app/src/main/kotlin/com/couli/app/update/AndroidStoreAccess.kt"},
@@ -3601,7 +3601,7 @@
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "4a711e8e5e59dba99cbee8b60f49e4416b2c5d5a200d8a90f4976723addb3f6f"
+   "h": "3b99688011368a6c38577d0966e89a1e0c62eea0f93ab3a4da71288c44e3868e"
   }
  ],
  "hostSheetCrops": [

@@ -27,7 +27,7 @@
     },
     {
       "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt",
-      "h": "1b2cc25a6c7250e5fddecdd0e9049c3d13a2644ee4c4091d8ceab8487ab21812"
+      "h": "8fa6a6f61561d98be6b9acad0bd7080d01741cdda6ba3e814d91fc58a9fc304c"
     },
     {
       "p": "contract.lock",
@@ -547,7 +547,7 @@
     },
     {
       "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/WebCodeOrphanResume.kt",
-      "h": "b734f5938c8dc2af8e7513840081f095d7d36ea9556986ce2bc471712cf41b21"
+      "h": "382395478794e55c1f49833571bec5869962078ddc977b8848e225fae174b882"
     },
     {
       "p": "specs/search-product-vectors.json",
