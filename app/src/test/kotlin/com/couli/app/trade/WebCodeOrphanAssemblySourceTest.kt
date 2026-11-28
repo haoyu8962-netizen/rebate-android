@@ -30,6 +30,7 @@ class WebCodeOrphanAssemblySourceTest {
             .replace(Regex("""\s+"""), "")
 
     /** [text] 里从 [start] 起、括号配平的那一段调用（含括号）；找不到为空串。 */
+    @Suppress("ReturnCount") // 找不到起点、配平即返回、扫到末尾仍未配平，三个出口
     private fun call(
         text: String,
         start: String,

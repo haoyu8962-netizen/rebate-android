@@ -61,7 +61,12 @@ class AuthManageBindingChangeTest {
             assertEquals("收到绑定变化：再 load() 一次", 2, lists())
             api.succeed(api.calls.last(), """{"items":[{"platform":"taobao","status":"active"}]}""")
             runCurrent()
-            assertTrue("刷新后显示已授权", c.state.value.rows.first { it.platform == "taobao" }.authorized)
+            assertTrue(
+                "刷新后显示已授权",
+                c.state.value.rows
+                    .first { it.platform == "taobao" }
+                    .authorized,
+            )
             assertNoReplay()
         }
 

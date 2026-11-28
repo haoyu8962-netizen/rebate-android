@@ -205,7 +205,12 @@ class AppTradeWebCodeOrphanWiringTest {
         succeed(calls.single(), ACTIVE)
         idle()
         assertFalse("结束后浮层消失", trade.webCodeOverlay.value.confirming)
-        assertEquals("没有购买待办：只提示再点一次", "auth.taobao.completed_tap_again", trade.webCodeOverlay.value.toast?.key)
+        assertEquals(
+            "没有购买待办：只提示再点一次",
+            "auth.taobao.completed_tap_again",
+            trade.webCodeOverlay.value.toast
+                ?.key,
+        )
         trade.consumeWebCodeToast()
         assertNull("提示可消费", trade.webCodeOverlay.value.toast)
         assertEquals("不重放 open", 0, count(TradeOperations.OPEN_LINK))
