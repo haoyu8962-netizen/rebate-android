@@ -13,6 +13,7 @@ import com.couli.core.clientcore.LinkJumpResult
 import com.couli.core.clientcore.LinkJumpStep
 import com.couli.core.clientcore.LinkJumpUnionPlatform
 import com.couli.core.clientcore.TrackerQueue
+import com.couli.core.network.CallOwnership
 import com.couli.core.network.PageApi
 import com.couli.core.router.PrivacyState
 import com.couli.core.router.RouteRequest
@@ -31,15 +32,22 @@ import com.couli.feature.trade.OpenPurchaseController
 import com.couli.feature.trade.PlatformStatusOverrides
 import com.couli.feature.trade.PurchaseEnv
 import com.couli.feature.trade.PurchasePending
+import com.couli.feature.trade.PurchaseToast
+import com.couli.feature.trade.TaobaoAuthFlow
 import com.couli.feature.trade.TradeJumpExecutor
 import com.couli.feature.trade.TradeTexts
+import com.couli.feature.trade.UnavailableWebCodeAuthorizer
 import com.couli.feature.trade.WebCodeAttemptStore
 import com.couli.feature.trade.WebCodeAuthorizer
 import com.couli.feature.trade.WebCodeCallback
 import com.couli.feature.trade.WebCodeInbox
 import com.couli.feature.trade.WebCodeOrphanGate
+import com.couli.feature.trade.WebCodeOrphanHandler
 import com.couli.feature.trade.WebCodeOrphanOverlay
 import com.couli.feature.trade.WebCodeOrphanStartup
+import com.couli.feature.trade.WebCodeOrphanUi
+import com.couli.feature.trade.webCodeAccountTag
+import java.util.UUID
 import javax.inject.Provider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -82,8 +90,8 @@ class AppTrade(
     /**
      * 冷启动 / 晚到回跳（FU-AND-TB-WEBCODE-B，设计稿 §6.4）的装配。四项都有缺省，用 UnavailableWebCodeAuthorizer 构造本类的旧测试不用改：
      * [webCodeAttempts] / [webCodeInbox] 为与真实授权器共用的那一份（AppModule 给；没接为 null，回跳一律丢弃、登出不清）；
-     * [webCodeGate] 是启动闸门（缺省保守：版本未知，不提交）；[processStartedAtMillis] 用来区分冷启动回跳与本进程的晚到回跳。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：四项桩里都不用。
+     * [webCodeGate] 是启动闸门（缺省保守：版本未知，不提交）；[processStartedAtMillis] 用来区分冷启动回跳与本进程的晚到回跳——缺省取本类构造
+     * 时刻：真实授权器与本类在同一处装配，本进程记下的尝试一定不早于它。
      */
     private val webCodeAttempts: WebCodeAttemptStore? = null,
     private val webCodeInbox: WebCodeInbox? = null,
@@ -114,27 +122,78 @@ class AppTrade(
     /** 冷启动恢复槽（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 6 步）：进程里一份，交给每个发起页的执行器（[purchaseController]）。 */
     val coldResume = ColdAuthResume()
 
+    private val mutableWebCodeOverlay = MutableStateFlow(WebCodeOrphanOverlay())
+    private var webCodeToastSeq = 0L
+
     /**
      * 冷启动 / 晚到回跳的前台浮层（FU-AND-TB-WEBCODE-B）：提交 bindings 期间 confirming = true（不可关闭的「正在确认授权结果」），结束后 false；
-     * 结果提示放 toast（[consumeWebCodeToast] 消费）。TODO(FU-AND-TB-WEBCODE-B 接口桩)：恒为初值。
+     * 结果提示放 toast（[consumeWebCodeToast] 消费）。
      */
-    val webCodeOverlay: StateFlow<WebCodeOrphanOverlay> = MutableStateFlow(WebCodeOrphanOverlay()).asStateFlow()
+    val webCodeOverlay: StateFlow<WebCodeOrphanOverlay> = mutableWebCodeOverlay.asStateFlow()
 
-    /** TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。 */
-    fun consumeWebCodeToast() = Unit
-
-    /**
-     * 没有等待者认领的回跳（WebCodeInboundDispatcher 在下一轮主线程循环交来）：交给 WebCodeOrphanHandler（设计稿 §6.4）。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。
-     */
-    @Suppress("UNUSED_PARAMETER", "UnusedParameter") // 接口桩，实现方替换
-    fun onUnclaimedWebCode(callback: WebCodeCallback) = Unit
+    /** 界面已显示过 [webCodeOverlay] 的轻提示。 */
+    fun consumeWebCodeToast() {
+        mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(toast = null)
+    }
 
     /**
-     * 退出登录、切换账号（设计稿 §8；甲评审 S3 移交）：清尝试记录、清空收件箱、作废恢复槽。会话由已登录变为游客时本类自己调；切换账号由 App 调。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。
+     * 无人认领回跳的处理器（设计稿 §6.4）：没接尝试记录（旧式构造）就没有，回跳一律丢弃。bindings 只经 [TaobaoAuthFlow.submit] 发（不拉起授权，
+     * 所以授权器给不可用实现），每次新键；请求归属不随页面（冷启动时还没有发起页）。
      */
-    fun onSessionEnded() = Unit
+    private val orphanHandler: WebCodeOrphanHandler? =
+        webCodeAttempts?.let { attempts ->
+            WebCodeOrphanHandler(
+                flow =
+                    TaobaoAuthFlow(
+                        api,
+                        UnavailableWebCodeAuthorizer,
+                        baichuan,
+                        keyGenerator = { UUID.randomUUID().toString() },
+                        owner = { CallOwnership(api.epochs()) { true } },
+                        alive = { true },
+                        installed = ports::installed,
+                    ),
+                attempts = attempts,
+                pending = pending,
+                gate = webCodeGate,
+                accountTag = { sessionAccount()?.let(::webCodeAccountTag) },
+                resume = coldResume,
+                bindingChanges = bindingChanges,
+                ui = OverlayUi(),
+                scope = scope,
+                processStartedAtMillis = processStartedAtMillis,
+            )
+        }
+
+    /**
+     * 没有等待者认领的回跳（WebCodeInboundDispatcher 在下一轮主线程循环交来）：交给 WebCodeOrphanHandler（设计稿 §6.4）。主线程调用。
+     */
+    fun onUnclaimedWebCode(callback: WebCodeCallback) {
+        val handler = orphanHandler ?: return
+        scope.launch { handler.handle(callback) }
+    }
+
+    /**
+     * 退出登录、切换账号（设计稿 §8；甲评审 S3 移交）：清尝试记录、清空收件箱、作废恢复槽。会话由已登录变为游客时本类自己调；切换账号由 App 调
+     * （AppRouting.onAccountSwitched 仍是 TODO(APP-05b)，本线不接）。
+     */
+    fun onSessionEnded() {
+        webCodeAttempts?.clear()
+        webCodeInbox?.clear()
+        coldResume.clear()
+    }
+
+    /** orphan 处理器的前台提示 → [webCodeOverlay]（主线程）。 */
+    private inner class OverlayUi : WebCodeOrphanUi {
+        override fun confirming(shown: Boolean) {
+            mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(confirming = shown)
+        }
+
+        override fun toast(key: String) {
+            webCodeToastSeq += 1
+            mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(toast = PurchaseToast(key, id = webCodeToastSeq))
+        }
+    }
 
     /** 点击结果确认的平台购买状态（50301），进程里一份；分界之后发出并生效的配置覆盖它。 */
     val overrides = PlatformStatusOverrides(issuedMark = { store?.issuedFetchId ?: 0L }, appliedMark = { store?.appliedFetchId ?: 0L })
@@ -148,6 +207,8 @@ class AppTrade(
         }
         scope.launch {
             routing.session.drop(1).collect { state ->
+                // 退出登录（会话变为游客）：web_code 的尝试记录、收件箱与恢复槽一并作废（设计稿 §8）
+                if (state == SessionState.GUEST) onSessionEnded()
                 // 登录完成：待办暂缓期间（绑手机引导、phone_bound 未查清）不恢复；执行入口 resumeAfterLogin 本身也查暂缓（投递之后才开始的暂缓、
                 // 延后到回前台的续执行同样挡住）
                 if (state.loggedIn() &&
@@ -188,6 +249,7 @@ class AppTrade(
             baichuan = baichuan,
             scope = scope,
             browserNoticeMillis = browserNoticeMillis,
+            coldResume = coldResume,
         ).also {
             it.onAuthOverlay = { onSensitiveOverlay() }
             it.onJumpingChanged = ::refreshJumpInProgress
@@ -220,7 +282,7 @@ class AppTrade(
     }
 
     fun authManageController(scope: CoroutineScope): AuthManageController =
-        AuthManageController(api, executor, ports, webCode, baichuan, scope)
+        AuthManageController(api, executor, ports, webCode, baichuan, scope, bindingChanges = bindingChanges)
 
     /** App 回到前台 / 进入后台（AuthSheet 计数：后台 ≥ 1800 秒清零，BR-ID-18）。 */
     fun onAppForeground() = counter.onForeground()

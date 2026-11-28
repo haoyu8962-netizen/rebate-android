@@ -59,6 +59,7 @@ import com.couli.core.designsystem.ProductCardTexts
 import com.couli.core.designsystem.WholeNumberText
 import com.couli.core.network.ResultSignals
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonObject
 
 /** 购买流程与授权管理的文案（App 给：契约字典 → 草稿表）。 */
@@ -114,6 +115,9 @@ object TradeKeys {
     const val FAILED_TITLE = "error.30104.credential_invalid"
     const val FAILED_BODY = "trade.auth_failed.body"
     const val UNAVAILABLE_BODY = "trade.auth_unavailable.body"
+
+    /** 「正在确认授权结果」（AuthSheet 确认中、冷启动回跳的浮层；D10-3680，契约补键前走 App 的草稿，TODO(N-28)）。 */
+    const val CONFIRMING = WebCodeOrphanHandler.CONFIRMING_KEY
     const val OK = "trade.ok"
     const val TIP_TITLE = "trade.jump_tip.title"
     const val TIP_LINE_1 = "trade.jump_tip.line1"
@@ -144,6 +148,9 @@ object TradeTags {
     const val BROWSER = "trade_browser_notice"
     const val AUTH_SHEET = "trade_auth_sheet"
     const val AUTHORIZE = "trade_authorize"
+
+    /** 冷启动 / 晚到回跳「正在确认授权结果」的阻断层（FU-AND-TB-WEBCODE-B）。 */
+    const val CONFIRMING = "trade_webcode_confirming"
     const val JUMP_TIP = "trade_jump_tip"
     const val TOAST = "trade_toast"
     const val COMPARE = "trade_compare"
@@ -275,39 +282,68 @@ fun PurchaseOverlay(
         )
     }
     state.dialog?.let { PurchaseDialogs(it, controller, texts, vars, buyFocus) }
-    state.toast?.let { toast ->
-        LaunchedEffect(toast.id) {
-            delay(TOAST_MILLIS)
-            controller.consumeToast()
-        }
-        Box(modifier = Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
-            val kind = toastKind(toast.key)
-            CouliToast(
-                message = ResultSignals.withTrace6(texts.format(toast.key, vars), toast.traceId),
-                modifier =
-                    Modifier
-                        .padding(
-                            top = CouliSpacing.space12,
-                            start = CouliSpacing.space4,
-                            end = CouliSpacing.space4,
-                        ).testTag(TradeTags.TOAST),
-                icon = toastIcon(toast.key),
-                announcementId = toast.id,
-                iconTint = if (kind == ToastKind.WARNING) CouliColors.statusWarningText else CouliColors.textSecondary,
-            )
-        }
+    state.toast?.let { toast -> TradeToast(toast, texts.format(toast.key, vars), controller::consumeToast) }
+}
+
+/**
+ * 冷启动 / 晚到回跳的前台浮层（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 4 步）：提交 bindings 期间不可关闭的轻量阻断层「正在确认授权结果」
+ * （auth.confirming，没有【取消】，返回键与点外部都不关），结果提示走同一个轻提示（文案只经键取）。App 在根部挂一份。
+ */
+@Composable
+fun WebCodeOrphanOverlayHost(
+    overlay: StateFlow<WebCodeOrphanOverlay>,
+    texts: TradeTexts,
+    onToastShown: () -> Unit,
+) {
+    val state by overlay.collectAsStateWithLifecycle()
+    if (state.confirming) BlockingLayer(texts.text(TradeKeys.CONFIRMING), cancel = null, onCancel = {}, tag = TradeTags.CONFIRMING)
+    state.toast?.let { toast -> TradeToast(toast, texts.format(toast.key, emptyMap()), onToastShown) }
+}
+
+/** 顶部轻提示：显示 [TOAST_MILLIS] 后调 [onShown]（消费）。[message] 已按键取好；5xxxx 带 trace6。 */
+@Composable
+private fun TradeToast(
+    toast: PurchaseToast,
+    message: String,
+    onShown: () -> Unit,
+) {
+    LaunchedEffect(toast.id) {
+        delay(TOAST_MILLIS)
+        onShown()
+    }
+    Box(modifier = Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
+        val kind = toastKind(toast.key)
+        CouliToast(
+            message = ResultSignals.withTrace6(message, toast.traceId),
+            modifier =
+                Modifier
+                    .padding(
+                        top = CouliSpacing.space12,
+                        start = CouliSpacing.space4,
+                        end = CouliSpacing.space4,
+                    ).testTag(TradeTags.TOAST),
+            icon = toastIcon(toast.key),
+            announcementId = toast.id,
+            iconTint = if (kind == ToastKind.WARNING) CouliColors.statusWarningText else CouliColors.textSecondary,
+        )
     }
 }
 
-/** 居中的阻断层：转圈 + 一句 +【取消】（返回键 = 取消；点外部不关）。只写平台名，不显示任何金额（03 §4.5）。 */
+/**
+ * 居中的阻断层：转圈 + 一句 +【取消】（返回键 = 取消；点外部不关）。只写平台名，不显示任何金额（03 §4.5）。[cancel] 为 null 时没有【取消】、
+ * 返回键也不关（冷启动回跳的「正在确认」）。
+ */
 @Composable
 private fun BlockingLayer(
     message: String,
-    cancel: String,
+    cancel: String?,
     onCancel: () -> Unit,
     tag: String,
 ) {
-    Dialog(onDismissRequest = onCancel, properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(dismissOnBackPress = cancel != null, dismissOnClickOutside = false, usePlatformDefaultWidth = false),
+    ) {
         // 遮罩用令牌 overlay.scrim（关系统 dim，ProductBuyOpening-v2）
         CouliDialogScrim(CouliColors.overlayScrim)
         Column(
@@ -335,13 +371,15 @@ private fun BlockingLayer(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
             )
-            CouliButton(
-                text = cancel,
-                onClick = onCancel,
-                variant = CouliButtonVariant.TEXT,
-                size = CouliButtonSize.COMPACT,
-                modifier = Modifier.testTag(TradeTags.LOADING_CANCEL),
-            )
+            if (cancel != null) {
+                CouliButton(
+                    text = cancel,
+                    onClick = onCancel,
+                    variant = CouliButtonVariant.TEXT,
+                    size = CouliButtonSize.COMPACT,
+                    modifier = Modifier.testTag(TradeTags.LOADING_CANCEL),
+                )
+            }
         }
     }
 }
@@ -594,7 +632,21 @@ private fun AuthSheet(
                 texts.text(TradeKeys.AUTH_PRIVACY).takeIf { taobao },
                 texts.text(TradeKeys.REBIND_NOTE).takeIf { taobao },
             ).filter(String::isNotEmpty)
-        Box(Modifier.testTag(TradeTags.AUTH_SHEET)) { BulletLines(lines, boxed = true) }
+        if (!dialog.confirming) {
+            Box(Modifier.testTag(TradeTags.AUTH_SHEET)) { BulletLines(lines, boxed = true) }
+        } else {
+            // 拿到授权码、bindings 还没结果（设计稿 §6.1「确认中」）：半屏仍 busy（不可关闭、不可再点），说明框下提示正在确认
+            Column(verticalArrangement = Arrangement.spacedBy(CouliSpacing.space3)) {
+                Box(Modifier.testTag(TradeTags.AUTH_SHEET)) { BulletLines(lines, boxed = true) }
+                Text(
+                    text = texts.text(TradeKeys.CONFIRMING),
+                    style = CouliTypography.footnote,
+                    color = CouliColors.textSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+        }
     }
 }
 

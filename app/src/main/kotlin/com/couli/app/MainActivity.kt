@@ -35,6 +35,7 @@ import com.couli.core.designsystem.CouliTheme
 import com.couli.core.designsystem.LocalProductImageLoader
 import com.couli.core.privacy.AndroidPermissionRequester
 import com.couli.core.privacy.AndroidPermissionSystem
+import com.couli.feature.trade.WebCodeOrphanOverlayHost
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -156,6 +157,8 @@ class MainActivity : ComponentActivity() {
                 }
                 // 系统权限的用途说明浮层与【去设置】引导（APP-03b）
                 PermissionPromptHost(prompts = permissions.prompts)
+                // 淘宝 web_code 冷启动 / 晚到回跳（FU-AND-TB-WEBCODE-B）：提交 bindings 期间不可关闭的「正在确认授权结果」与结果提示
+                search.trade?.let { trade -> WebCodeOrphanOverlayHost(trade.webCodeOverlay, trade.texts, trade::consumeWebCodeToast) }
             }
         }
     }

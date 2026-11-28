@@ -53,6 +53,7 @@ import com.couli.app.trade.AppProductImages
 import com.couli.app.trade.AppTrade
 import com.couli.app.trade.BrowserWebCodeAuthorizer
 import com.couli.app.trade.CustomTabAuthBrowserLauncher
+import com.couli.app.trade.RoutingWebCodeOrphanGate
 import com.couli.app.trade.SharedPreferencesWebCodeAttempts
 import com.couli.app.trade.variantBrowserNoticeMillis
 import com.couli.app.trade.variantImageSource
@@ -135,6 +136,7 @@ import com.couli.feature.login.LastLoginMethodStore
 import com.couli.feature.login.LegalVersions
 import com.couli.feature.login.PendingInviteCode
 import com.couli.feature.trade.WebCodeInbox
+import com.couli.feature.trade.webCodeAccountTag
 import com.couli.feature.wallet.ApiClientWalletApi
 import com.couli.feature.wallet.RemoteLaborBackend
 import com.couli.feature.wallet.RemoteRealNameBackend
@@ -1189,8 +1191,10 @@ object AppModule {
         webCodeInbox: WebCodeInbox = WebCodeInbox(),
         authBrowser: CustomTabAuthBrowserLauncher = CustomTabAuthBrowserLauncher(context),
         authReturns: ActivityAuthReturnSignal = ActivityAuthReturnSignal(),
-    ): AppTrade =
-        AppTrade(
+    ): AppTrade {
+        // 真实授权器与冷启动 / 晚到回跳的处理器共用同一份尝试记录与收件箱（FU-AND-TB-WEBCODE-B，设计稿 §6.4）
+        val attempts = SharedPreferencesWebCodeAttempts(webCodeAttemptPreferences(context))
+        return AppTrade(
             api = ApiClientPageApi(client),
             store = config.store,
             routing = routing,
@@ -1202,8 +1206,10 @@ object AppModule {
                     BrowserWebCodeAuthorizer(
                         launcher = authBrowser,
                         inbox = webCodeInbox,
-                        attempts = SharedPreferencesWebCodeAttempts(webCodeAttemptPreferences(context)),
+                        attempts = attempts,
                         returns = authReturns,
+                        // 记尝试时带上发起时的账号标签（用户 id 的哈希，不落原文）
+                        accountTag = { client.activeUserId()?.let(::webCodeAccountTag) },
                     ),
                 ),
             // copy_tpwd 经剪贴板唯一写入口（写入前记 hash，APP-07）
@@ -1212,12 +1218,17 @@ object AppModule {
             // 基本模式下点购买：弹补同意（与 Router 的补同意同一个弹窗，A-R1-04）
             consentPrompt = { privacy.get().requestFullFunction() },
             sessionAccount = { client.activeUserId() },
+            // 无人认领的回跳（设计稿 §6.4）：同一份尝试记录与收件箱；启动闸门读守卫的同一套状态（03 §4.4，最多等 5 秒；D10-3681 B-4）
+            webCodeAttempts = attempts,
+            webCodeInbox = webCodeInbox,
+            webCodeGate = RoutingWebCodeOrphanGate(routing, account = { client.activeUserId() }),
         ).also { trade ->
             // AuthSheet 出现时同步作废剪贴板在途的 parse 与提示条（APP-07，A-R1-04）
             trade.onSensitiveOverlay = clipboard::onSensitiveOverlay
             // 剪贴板多卡弹层的商品卡按同一平台购买状态映射（APP-07 共性第 32 条）；AppTrade 依赖 AppClipboard，所以在这里接
             clipboard.connectPurchaseStatus(trade, config.store)
         }
+    }
 
     /** 商品图加载（APP-06a 共性第 22 条）：经 App 的 HTTP 客户端（debug 带本机假服务）取 https 图片。 */
     @Provides

@@ -123,11 +123,15 @@ class AuthManageController(
     private val keyGenerator: () -> String = { UUID.randomUUID().toString() },
     clock: () -> Long = System::currentTimeMillis,
     /**
-     * 「绑定变化」信号（FU-AND-TB-WEBCODE-B，设计稿 §6.5）：冷启动 / 晚到回跳绑定成功后，本页可见时再 load() 一次，不重放任何 open；离开时退订。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：桩里不订阅。
+     * 「绑定变化」信号（FU-AND-TB-WEBCODE-B，设计稿 §6.5）：冷启动 / 晚到回跳绑定成功后，本页可见时再 load() 一次，不重放任何 open；
+     * 不可见时记下，回到可见时刷新一次；离开时退订。
      */
-    private val bindingChanges: BindingChanges? = null,
+    bindingChanges: BindingChanges? = null,
 ) {
+    /** 不可见时收到了绑定变化：回到可见（[onForeground]）时刷新一次。 */
+    private var changedWhileHidden = false
+    private val unsubscribe: (() -> Unit)? = bindingChanges?.subscribe(::onBindingChanged)
+
     private val gate = RetryAfterGate(clock)
     private var gateTimer: Job? = null
     private val mutableState = MutableStateFlow(AuthManageState())
@@ -338,14 +342,23 @@ class AuthManageController(
         done(outcome.textKey ?: GENERIC_KEY, failure.traceId.takeIf { outcome.showTrace6 })
     }
 
-    /** 回到前台：拼多多授权跳转之后刷新本页（服务端按 authority.query 复查）。 */
+    /** 回到前台：拼多多授权跳转之后、或不可见期间收到过绑定变化，刷新本页一次（服务端按 authority.query 复查）。 */
     fun onForeground() {
         if (left) return
         foreground = true
-        if (!awaitingReturn) return
-        awaitingReturn = false
-        leftApp = false
-        load()
+        val reload = awaitingReturn || changedWhileHidden
+        changedWhileHidden = false
+        if (awaitingReturn) {
+            awaitingReturn = false
+            leftApp = false
+        }
+        if (reload) load()
+    }
+
+    /** 绑定变化（冷启动 / 晚到回跳绑定成功，设计稿 §6.5）：可见就再 load() 一次，不重放任何 open；不可见先记下。 */
+    private fun onBindingChanged() {
+        if (left) return
+        if (foreground) load() else changedWhileHidden = true
     }
 
     /** 被覆盖或进入后台（ON_STOP）：作废授权外跳许可（共性第 25、31 条）；授权跳转在途或等回流时记下「离开过 App」（共性第 38 条）。 */
@@ -358,6 +371,8 @@ class AuthManageController(
 
     fun leave() {
         left = true
+        unsubscribe?.invoke()
+        changedWhileHidden = false
         permit?.valid = false
         permit = null
         gateTimer?.cancel()

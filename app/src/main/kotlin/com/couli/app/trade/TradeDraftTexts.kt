@@ -59,6 +59,9 @@ internal object TradeDraftTexts : TradeTexts {
             "trade.auth_failed.body" to "未授权将无法获得返利。可以重新授权，或不授权直接去{platform_name}购买（这笔订单不计返利）。",
             "trade.auth_unavailable.body" to "商品信息保留在本页，稍后可以再点购买。",
             "trade.ok" to "知道了",
+            // ---- 淘宝 web_code 确认中 / 冷启动回跳（FU-AND-TB-WEBCODE-B，D10-3680 / D10-3577；契约 BR-TEXT-14 补键前的草稿，TODO(N-28)）
+            "auth.confirming" to "正在确认授权结果",
+            "auth.taobao.completed_tap_again" to "淘宝授权已完成，请再点一次购买",
             // ---- JumpTip（BR-ATTR-21；文案后台可配 jump_tip.<platform>，配置为空时用画板的两句）
             "trade.jump_tip.title" to "下单须知",
             "trade.jump_tip.line1" to "在打开的商品页直接下单",

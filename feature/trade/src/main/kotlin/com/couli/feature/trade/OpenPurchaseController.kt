@@ -1200,7 +1200,21 @@ class OpenPurchaseController(
             installed = ports::installed,
             // 每次拉起授权（含 30104 恢复后的再次授权）之前：用户点【去授权】发出的许可仍有效、页面在前台（共性第 25、31 条）
             canJump = { authJumpAllowed(permit, context, gen) },
+            onCredential = { confirming(context, gen) },
         )
+
+    /**
+     * 拿到授权凭证、bindings 还没结果（设计稿 §6.1「确认中」）：AuthSheet 显示「正在确认授权结果」（界面按 confirming 取 auth.confirming），
+     * 仍为 busy（不可关闭、不可再点）。只改本次授权仍有效时那张 AuthSheet。
+     */
+    private fun confirming(
+        context: AuthContext,
+        gen: Long,
+    ) {
+        if (!authLive(context, gen)) return
+        val sheet = mutableState.value.dialog as? PurchaseDialog.AuthSheet ?: return
+        mutableState.value = mutableState.value.copy(dialog = sheet.copy(busy = true, confirming = true))
+    }
 
     /** 授权归属仍有效（A-R3-01）：页面没离开、世代没变、授权上下文仍是它、购买尝试仍是当前的。 */
     private fun authLive(
@@ -1409,11 +1423,27 @@ class OpenPurchaseController(
     /**
      * 认领冷启动恢复槽（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 6 步）：本页在前台、没离开、没有在途请求或弹窗，且 [card] 的 link_id 或 product_key
      * 与槽位一致时取走那张票（同一张只能认领一次）、删除购买待办，用新的幂等键对**票里（购买待办里）的 link_id** 发一次 open，之后照常按 jump 外跳
-     * （视为用户点击触发，BR-ID-10）。认领了返回 true。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：恒返回 false，什么都不做。
+     * （视为用户点击触发，BR-ID-10）。认领了返回 true。平台与票不同、此刻不可购（下架、平台维护或未上线）、42901 禁用期间、待办被暂缓时都不认领（票留着，
+     * 到期由 WebCodeOrphanHandler 只提示再点一次）。
      */
-    @Suppress("UNUSED_PARAMETER", "UnusedParameter", "FunctionOnlyReturningConstant") // 接口桩，实现方替换
-    fun claimColdAuthResume(card: JsonObject): Boolean = false
+    @Suppress("ReturnCount", "ComplexCondition") // 没接恢复槽、页面状态、没有票、平台或可购、票不符五个出口；页面状态逐项
+    fun claimColdAuthResume(card: JsonObject): Boolean {
+        val slot = coldResume ?: return false
+        if (left || !foreground || busy() || gate.active || pending.held) return false
+        val offered = slot.peek() ?: return false
+        if (card.text("platform") != offered.platform || !purchasable(card, notify = false)) return false
+        val ticket = slot.claim(card.text("link_id"), card.text("product_key")) ?: return false
+        // 认领时删除购买待办（冷启动前那个页面登记的，归属已不是本页）：只删这张票对应的淘宝授权待办
+        pending
+            .peek()
+            ?.takeIf { it.text("kind") == PENDING_AUTH && it.text("link_id") == ticket.linkId }
+            ?.let { pending.clear() }
+        spm = null
+        // open 打票里（待办里）的 link_id（BR-ID-17「同一 link_id」），新键
+        val target = card.with("link_id", JsonPrimitive(ticket.linkId))
+        startClick(target, keys.resendAfterAuth(), noRebate = false, noRebateReason = null, userAuthRetry = false)
+        return true
+    }
 
     /** 二选一的【重试】、50303 的【重试】：一次新的点击（新键）；二选一里的【重试】是用户主动授权，不受自动弹出次数限制（A-R1-10）。 */
     fun retryPurchase() {

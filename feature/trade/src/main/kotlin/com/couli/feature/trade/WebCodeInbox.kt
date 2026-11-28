@@ -80,10 +80,16 @@ class WebCodeInbox(
     /**
      * 中转 Activity 交付之后的下一轮主线程循环里取「仍没有等待认领」的回跳（FU-AND-TB-WEBCODE-B，设计稿 §6.4「什么时候触发」）：槽位里这条
      * 的哈希等于 [stateSha256] 就取走并记为已交付（之后同一 state 再来的回跳丢弃），返回它；已被等待认领、槽位里是别的、或已作废：null。
-     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：恒返回 null。
      */
-    @Suppress("UNUSED_PARAMETER", "UnusedParameter", "FunctionOnlyReturningConstant") // 接口桩，实现方替换
-    fun takeUnclaimed(stateSha256: String): WebCodeCallback? = null
+    fun takeUnclaimed(stateSha256: String): WebCodeCallback? =
+        synchronized(lock) {
+            val now = clock()
+            prune(now)
+            val held = slot?.takeIf { it.stateSha256 == stateSha256 } ?: return@synchronized null
+            slot = null
+            consumed[stateSha256] = now
+            held.callback
+        }
 
     /** 退出登录、切换账号、切换环境时清空。 */
     fun clear() {
