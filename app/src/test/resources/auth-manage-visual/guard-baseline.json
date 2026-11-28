@@ -48,11 +48,11 @@
   {"h": "8227121db2ea5192ed8de1afaa3538342c49f4f541db311d2b81379155c1ff50", "p": "app/src/debugFeatures/kotlin/com/couli/app/update/DebugUpdateChecker.kt"},
   {"h": "787c693e2313703181ae6e871a3fd925d7f6a38451f692c609754a0b52d93eca", "p": "app/src/debugFeatures/kotlin/com/couli/app/web/DebugConformance.kt"},
   {"h": "66db96688438fd4a416b1fc62dccf57db8088b18e78208d01607d6d060071f0d", "p": "app/src/main/AndroidManifest.xml"},
-  {"h": "d5a740e73d3aef285a2c1f3ae08b263a61802e3cc2bfff15e436a290389d9810", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
+  {"h": "fa4ce4ef5637252fa783623d71b60c4592aedf70979aaab0ccf1286449d409ed", "p": "app/src/main/kotlin/com/couli/app/AppModule.kt"},
   {"h": "4dabe710975d7d8700c5a347e9bb517bc08268edac782360cc0172208fca6b62", "p": "app/src/main/kotlin/com/couli/app/AppStartup.kt"},
-  {"h": "db71b28ffecc82a339bd2665e1f672bcbe7c25939a8e39dc4a4c7732fea40091", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
+  {"h": "88bc1fc1c4d7c7d804a882fddb95a89a4748c8f62a91408af6954697dad1bbe6", "p": "app/src/main/kotlin/com/couli/app/CouliApplication.kt"},
   {"h": "1e0710fd3dde6cc5efbaa7756c29d2065ee3f3b282c10e62d041966842c877ed", "p": "app/src/main/kotlin/com/couli/app/CredentialBarrierWiring.kt"},
-  {"h": "19a332f0ddab6f322d03fdd833ced0b619f8c1a056206422a8be2bc0d3511d04", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
+  {"h": "95db3204fc86ccd5bc3f54285438250a911476169f77a4293d4ca4b517cc449b", "p": "app/src/main/kotlin/com/couli/app/MainActivity.kt"},
   {"h": "cddf1b5111eae52a008882567c77a0099606804d1bf02b59013aae73dfdcd25f", "p": "app/src/main/kotlin/com/couli/app/RootScreen.kt"},
   {"h": "b3823cd9edbbe7d3356574c1f965844af41f9f997d16ef009878461c1a4d665b", "p": "app/src/main/kotlin/com/couli/app/SessionCacheReconciler.kt"},
   {"h": "b791a64321e5dacbe2fe36db803113a2fc8704234ab6f4c56b4630c8a5990544", "p": "app/src/main/kotlin/com/couli/app/account/AppAccount.kt"},
@@ -86,7 +86,7 @@
   {"h": "0e982298b50ab1a9805fdfbb0ffabf46838ce215acf6a1184bd3ae8efa900c04", "p": "app/src/main/kotlin/com/couli/app/routing/AppRouting.kt"},
   {"h": "abb8c6317be825b0f135ba202a00d91f94a269f8d8dd804aa121cad499006666", "p": "app/src/main/kotlin/com/couli/app/routing/LaunchIntentSanitizer.kt"},
   {"h": "5ec16e7f069cbd4d76a4ea8a5bfa93772e4603eda8d69aceeb8170542ca4b61a", "p": "app/src/main/kotlin/com/couli/app/routing/NavTickets.kt"},
-  {"h": "92e9abac61a8b197dcdb5231d3fd1a738fb786a2a22ca17cc8a8c19b3c7ea50f", "p": "app/src/main/kotlin/com/couli/app/search/AppSearch.kt"},
+  {"h": "2bb039de6f9f2be415ec456b1cbda3f332281b17ebb39a73258ac508faa5e4aa", "p": "app/src/main/kotlin/com/couli/app/search/AppSearch.kt"},
   {"h": "8bb7b0007919845bd217a4b07535bf8650ae63bf3d4bbac75ad683aa53c5492f", "p": "app/src/main/kotlin/com/couli/app/search/SearchDraftTexts.kt"},
   {"h": "61f2e13dbf517c79e781908d2b23c571429e7d2b3249fb3ca6b430488215d4af", "p": "app/src/main/kotlin/com/couli/app/shell/AppShell.kt"},
   {"h": "b9742a11cda5152dd57281ca579c11fa78735456bed4b9444d95f1a8b0499779", "p": "app/src/main/kotlin/com/couli/app/shell/AppShellUpdate.kt"},
@@ -95,9 +95,9 @@
   {"h": "6a7d88b5918a846a28b2fa01f3967435e2c054dddfc82dcaa007d27dbaddff61", "p": "app/src/main/kotlin/com/couli/app/shell/TabShell.kt"},
   {"h": "d259cdc8f03512d86e2616b766e19f96eda29a778877f9862e1123af2e901684", "p": "app/src/main/kotlin/com/couli/app/trade/AndroidJumpPorts.kt"},
   {"h": "f2fea2fdb89889a1a866945bb955429c52c500606c526a2ef3581102dcdce3b6", "p": "app/src/main/kotlin/com/couli/app/trade/AppProductImages.kt"},
-  {"h": "a12af7e36fcb9072c121c395e9d8124eccbefe4a6d76fc84e73dd0587488fe44", "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt"},
+  {"h": "1b2cc25a6c7250e5fddecdd0e9049c3d13a2644ee4c4091d8ceab8487ab21812", "p": "app/src/main/kotlin/com/couli/app/trade/AppTrade.kt"},
   {"h": "c1a59d014b51b100a6e2c71d3b48403e801427a0cfc68132e76a25b5bfa666b1", "p": "app/src/main/kotlin/com/couli/app/trade/AuthManageRoute.kt"},
-  {"h": "b07d87999226dabaaa33108e084a824e2f60d689339f61cbb08f6f279be07b12", "p": "app/src/main/kotlin/com/couli/app/trade/TradeDraftTexts.kt"},
+  {"h": "48b4895d3e2475d625faf2dc90571f72e80d02ef44f13608423c214580b7d794", "p": "app/src/main/kotlin/com/couli/app/trade/TradeDraftTexts.kt"},
   {"h": "966baeb2f2cba220886a7940efb5c7cf870d2316c011dc57c59d98e2dd280c5d", "p": "app/src/main/kotlin/com/couli/app/update/AndroidStoreAccess.kt"},
   {"h": "fcb51079e7fd86721ad9486c038e78f254407043d49f85e570bfff0f71b4fc2b", "p": "app/src/main/kotlin/com/couli/app/update/AppUpdate.kt"},
   {"h": "b4ed68c6346aed427c55e340399dcb635177a24d6005e7ccda44976d132709ba", "p": "app/src/main/kotlin/com/couli/app/update/UpdateDraftTexts.kt"},
@@ -2754,13 +2754,13 @@
   {"h": "5877e69e09f1bdf3a44d725ef33b74f0e8067906c6f4604305b73d4c73e45918", "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchScreenReviewR1Test.kt"},
   {"h": "55433823c9022ca629d5180113e112eb9a48ad47a30d4cf3a1ed94a8306b5393", "p": "feature/search/src/test/kotlin/com/couli/feature/search/SearchScreenReviewR2Test.kt"},
   {"h": "c99c86383cb0ced2c09eef6aed5ccc2a1b81ae2f7219f86cec746b253d8e0481", "p": "feature/trade/build.gradle.kts"},
-  {"h": "3951a685617845f104cdd3d122d293ddf64d34da14aba9e671a36d04130b81a2", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
+  {"h": "fbbeb05565a530da279bb75d7e1ff7a6c8a0a37a30070075466e76f000fbca53", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenPurchaseController.kt"},
   {"h": "0ab070506b6d41be2857748658d6d63e1f93258cf90b0e4d41377fef840f7f84", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/OpenTradeLogic.kt"},
   {"h": "e3c1a9f17f41f303bedd777a876338f440027c1825ca194a778c0e75355cdadf", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/PurchaseVisualParts.kt"},
-  {"h": "855b3a096f52af637aa24e56f3bf0d122775679d171121fcd8b02d82ef4bfa88", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TaobaoAuthFlow.kt"},
+  {"h": "48f51c9239202c7e7e6744cc9dfd1418cf4bd6adc1f213c481dcf4309b36e768", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TaobaoAuthFlow.kt"},
   {"h": "d6a98d2c3ce34337bb1cae548dc971f17909a193bb65c14c80f495e23ecd6003", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeJump.kt"},
   {"h": "cb5faf0d7088b7e3ae6141b3dfb5077dc7e036e72d34dd42afa4cd6179643f45", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeServices.kt"},
-  {"h": "6365a95908cc82387747dbce44aa1719159aefe692a095120c57d6a98772a25b", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeUi.kt"},
+  {"h": "3f2b24371e3be9f7670f78b5075c9d56fc081d53059cc7d503df2221b733f1ab", "p": "feature/trade/src/main/kotlin/com/couli/feature/trade/TradeUi.kt"},
   {"h": "01053d4703a6642dacdbe27b7e26ed62b6f133ff7f10f6229e9bf37bff10bf8f", "p": "feature/trade/src/test/kotlin/com/couli/feature/trade/AuthManageControllerTest.kt"},
   {"h": "e59f9aa2c3c8b5b1b417679f1f6be621b62feeeb9d98af8fcde061eca46a8345", "p": "feature/trade/src/test/kotlin/com/couli/feature/trade/AuthManageReviewR2Test.kt"},
   {"h": "0f15d0798eea5879c93ce8fe5175d1986ab3b51338f47b05edd9314efc3b1ee5", "p": "feature/trade/src/test/kotlin/com/couli/feature/trade/CtLock01JumpStepSdkTest.kt"},
@@ -2910,7 +2910,7 @@
   {"h": "480652649b7b618fb15e01b5cac01c3ecfeb53e953cea7966c060ad92aa02322", "p": "tools/tests/test_login_17a.py"},
   {"h": "dea10a5d144d02045c09ce389b245c6e6bfecd34a34431cd57dcb6ebe03c9161", "p": "tools/tests/test_login_17a_guard.py"}
  ],
- "pageHead": "da57da8d22b901b2a5988c0576bafa0ba0724119f949894c160e69043c157e9b",
+ "pageHead": "d46a12f9e175bd46e2fc2391b223bff54b19478adcaa8adb7aa82b92599d1590",
  "pageHeadLines": 491,
  "errorHead": "c8b87bdfb5ca1ef51c8cc96d37e29a473637b37c48508b4e38964e53155b4bed",
  "callbacks": {
@@ -2976,27 +2976,27 @@
  "mergedAm": [
   {
    "p": "app/src/test/resources/settings-visual/guard-baseline.json",
-   "h": "a5cba4ccad1807e479842a8ec9d5eaffb89e869f600ae65fdf9e77472a186209",
+   "h": "fddd149da341f6d48363a99c9c940f4157518d5afcd540696aad84ae3471bd4d",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/privacy-visual/guard-baseline.json",
-   "h": "af5a8b7870cc979459947ba6ba967c52a77da4e4513bffd3201f653b17431bc4",
+   "h": "a852fd5d6816028c8af47abad35fb9e3bf7737afb2ca9b401f33895854fce387",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/risk-visual/guard-baseline.json",
-   "h": "cd0fc38e1241f72445d2702a4e50712c5a2a764874f8376f9afbaa95bbfdec7d",
+   "h": "968dfde825c1ef745553ec8c944772a574650cd1a23edc342b7430387014da42",
    "swaps": 1
   },
   {
    "p": "app/src/test/resources/account-visual/guard-baseline.json",
-   "h": "23f66ab936aef30a87dbec2eb48704ea0cb8100fbedaa7b0ab742f02867efdb9",
+   "h": "2697cce51f6f7cb8734d775e587f43ff02dd231057a0268c42281543221308e7",
    "swaps": 0
   },
   {
    "p": "app/src/test/resources/account-visual-b/guard-baseline.json",
-   "h": "b1dc03e4aa7c590a2ea9f560ecadaa8c50d6ae42722bdfb05c8ce376f107fd11",
+   "h": "e186957265acd2f0e4a302caab0a769b9922d422d41454f399bebcb65331d14d",
    "swaps": 1
   }
  ],
