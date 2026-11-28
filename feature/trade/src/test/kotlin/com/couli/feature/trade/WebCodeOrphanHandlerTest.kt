@@ -64,8 +64,42 @@ internal class RecordingOrphanUi : WebCodeOrphanUi {
         events += "confirming:$shown"
     }
 
-    override fun toast(key: String) {
+    /** 每次提示带的 traceId（与 [toasts] 一一对应；不是 5xxxx 为 null）。 */
+    val traces = mutableListOf<String?>()
+
+    override fun toast(
+        key: String,
+        traceId: String?,
+    ) {
         events += "toast:$key"
+        traces += traceId
+    }
+}
+
+/** 可以设成「被暂缓」的购买待办（FU-AND-0716 ①）：记下 peek / stepDone / clear 各被调了几次。 */
+internal class HoldablePending(
+    private val inner: MemoryPurchasePending,
+    override var held: Boolean = true,
+) : PurchasePending {
+    var peeks = 0
+    var stepDones = 0
+    var clears = 0
+
+    override fun register(params: JsonObject): Boolean = inner.register(params)
+
+    override fun peek(): JsonObject? {
+        peeks += 1
+        return inner.peek()
+    }
+
+    override fun stepDone() {
+        stepDones += 1
+        inner.stepDone()
+    }
+
+    override fun clear() {
+        clears += 1
+        inner.clear()
     }
 }
 
@@ -100,7 +134,7 @@ class WebCodeOrphanHandlerTest {
     private lateinit var pending: MemoryPurchasePending
     private lateinit var resume: ColdAuthResume
 
-    private fun TestScope.handler(): WebCodeOrphanHandler {
+    private fun TestScope.handler(port: PurchasePending? = null): WebCodeOrphanHandler {
         val clock = { testScheduler.currentTime }
         pending = if (::pending.isInitialized) pending else MemoryPurchasePending(clock)
         resume = if (::resume.isInitialized) resume else ColdAuthResume(clock)
@@ -120,7 +154,7 @@ class WebCodeOrphanHandlerTest {
         return WebCodeOrphanHandler(
             flow = flow,
             attempts = attempts,
-            pending = pending,
+            pending = port ?: pending,
             gate = gate,
             accountTag = { currentTag },
             resume = resume,
@@ -224,6 +258,7 @@ class WebCodeOrphanHandlerTest {
                 )
             cases.forEach { (name, arrange) ->
                 arrange()
+                val before = attempts.current()
                 val h = handler()
                 backgroundScope.async { h.handle(WebCodeCallback.Code(CODE, STATE)) }
                 backgroundScope.async { h.handle(WebCodeCallback.Incomplete(STATE)) }
@@ -231,7 +266,24 @@ class WebCodeOrphanHandlerTest {
                 assertTrue("$name：不发任何请求：${api.ops()}", api.calls.isEmpty())
                 assertTrue("$name：静默（没有浮层、没有提示）：${ui.events}", ui.events.isEmpty())
                 assertNotNull("$name：待办不动", pending.peek())
+                // 评审 r1 F3：核对不符不删记录（伪造的回跳删不掉真实尝试的记录）
+                assertEquals("$name：尝试记录仍是原来那条", before, attempts.current())
             }
+            // 评审 r1 F3：哈希不符、账号不符两种各自单独再核一遍，记录逐字段不变
+            record(COLD_AT, state = "st_other")
+            val wrongHash = attempts.current()
+            assertNotNull("前提：有一条别的 state 的记录", wrongHash)
+            val h1 = handler()
+            backgroundScope.async { h1.handle(WebCodeCallback.Code(CODE, STATE)) }
+            runCurrent()
+            assertEquals("sha256(state) 不符：记录仍在", WebCodeAttempt(orphanSha("st_other"), COLD_AT, TAG_A), attempts.current())
+            record(COLD_AT, tag = "tag-B")
+            val h2 = handler()
+            backgroundScope.async { h2.handle(WebCodeCallback.Code(CODE, STATE)) }
+            backgroundScope.async { h2.handle(WebCodeCallback.Incomplete(STATE)) }
+            runCurrent()
+            assertEquals("账号标签不符：记录仍在", WebCodeAttempt(orphanSha(STATE), COLD_AT, "tag-B"), attempts.current())
+            assertTrue("都不发请求：${api.ops()}", api.calls.isEmpty())
         }
 
     @Test
@@ -473,6 +525,12 @@ class WebCodeOrphanHandlerTest {
                 runCurrent()
                 assertEquals("$name：提示一次：${ui.toasts}", 1, ui.toasts.size)
                 assertTrue("$name：网络或服务错误文案：${ui.toasts}", expected(ui.toasts.single()))
+                // 评审 r1 F6：5xxxx 带 trace6（与购买页同一个码一致）；42901、传输失败不带
+                assertEquals(
+                    "$name：traceId",
+                    listOf(if (name == "50001") FakeTradeApi.TRACE else null),
+                    ui.traces.takeLast(1),
+                )
                 assertNotNull("$name：保留待办", pending.peek())
                 assertNull("$name：不登记恢复槽", resume.peek())
                 assertTrue("$name：浮层已收起", !ui.confirming)
@@ -496,6 +554,154 @@ class WebCodeOrphanHandlerTest {
             assertEquals("只提示再点一次", listOf("auth.taobao.completed_tap_again"), ui.toasts)
             assertNoOpen()
         }
+
+    // ---------------------------------------------------------------- 修改 2（评审 r1 F5、F6）
+
+    @Test
+    fun o19_successButNotActiveClearsTheColdPendingAndToasts20004() =
+        runTest {
+            // 自定口径 (1)：200 但 status 不是 active → 按授权未完成：删冷启动的有效待办、提示 error.20004
+            registerPending()
+            submitCode()
+            api.succeed(binds().single(), """{"platform":"taobao","status":"pending"}""")
+            runCurrent()
+            assertEquals("提示 error.20004", listOf("error.20004"), ui.toasts)
+            assertNull("删掉冷启动的有效待办", pending.peek())
+            assertNull("不登记恢复槽", resume.peek())
+            assertEquals("不发「绑定变化」信号", 0, changed)
+            assertTrue("浮层已收起", !ui.confirming)
+            assertNoOpen()
+            advanceTimeBy(WebCodeOrphanHandler.RESUME_WINDOW_MILLIS + 1)
+            runCurrent()
+            assertEquals("之后也没有「再点一次」的提示", listOf("error.20004"), ui.toasts)
+        }
+
+    @Test
+    fun o19b_lateSuccessButNotActiveToasts20004AndLeavesThePendingAlone() =
+        runTest {
+            registerPending()
+            submitCode(startedAt = LATE_AT)
+            api.succeed(binds().single(), """{"platform":"taobao"}""")
+            runCurrent()
+            assertEquals("没有 status 也按授权未完成", listOf("error.20004"), ui.toasts)
+            assertNotNull("晚到回跳不动待办", pending.peek())
+            assertNull(resume.peek())
+            assertEquals(0, changed)
+        }
+
+    @Test
+    fun o20_aHeldPendingCountsAsNoPendingForActive() =
+        runTest {
+            // 自定口径 (3)：待办被暂缓（FU-AND-0716 ①）时当作没有待办：不读、不续时、不删，只提示再点一次
+            registerPending()
+            val held = HoldablePending(pending)
+            record(COLD_AT)
+            val h = handler(held)
+            backgroundScope.async { h.handle(WebCodeCallback.Code(CODE, STATE)) }
+            runCurrent()
+            assertEquals(1, binds().size)
+            api.succeed(binds().single(), ACTIVE)
+            runCurrent()
+            assertEquals("发出「绑定变化」信号", 1, changed)
+            assertEquals("只提示再点一次", listOf("auth.taobao.completed_tap_again"), ui.toasts)
+            assertNull("不登记恢复槽", resume.peek())
+            assertEquals("暂缓期间不读待办", 0, held.peeks)
+            assertEquals("不 stepDone", 0, held.stepDones)
+            assertEquals("不删", 0, held.clears)
+            assertNotNull("待办原样留着", pending.peek())
+            assertNoOpen()
+        }
+
+    @Test
+    fun o20b_aHeldPendingIsNotClearedByIncompleteOrStateExpired() =
+        runTest {
+            registerPending()
+            val held = HoldablePending(pending)
+            record(COLD_AT)
+            val h = handler(held)
+            backgroundScope.async { h.handle(WebCodeCallback.Incomplete(STATE)) }
+            runCurrent()
+            assertTrue("暂缓的待办当作没有：error=1 不提示：${ui.events}", ui.events.isEmpty())
+            record(COLD_AT)
+            backgroundScope.async { h.handle(WebCodeCallback.Code(CODE, STATE)) }
+            runCurrent()
+            api.fail(binds().single(), 30104)
+            runCurrent()
+            assertEquals("30104 照样提示", listOf("error.30104"), ui.toasts)
+            assertEquals("暂缓的待办不读", 0, held.peeks)
+            assertEquals("暂缓的待办不删", 0, held.clears)
+            assertNotNull("待办原样留着", pending.peek())
+        }
+
+    @Test
+    fun o21_serverErrorsCarryTheSameTextAndTrace6AsThePurchasePage() =
+        runTest {
+            // 评审 r1 F6：冷启动回跳 bindings 返回 5xxxx → 提示与购买页同一个码的提示一致（同一文案键、带 trace6，A-R3-04）
+            listOf(50001, 50303).forEach { code ->
+                ui.events.clear()
+                ui.traces.clear()
+                api.calls.clear()
+                registerPending()
+                submitCode()
+                api.fail(binds().single(), code)
+                runCurrent()
+                val page = purchasePageBindFailure(code)
+                assertNotNull("$code：前提：购买页给的是 AuthCheckFailed", page)
+                assertEquals("$code：与购买页同一个文案键", listOf(page!!.textKey), ui.toasts)
+                assertEquals("$code：带 trace6（与购买页同一个 traceId）", listOf(page.traceId), ui.traces)
+                assertEquals("$code：traceId 来自响应", FakeTradeApi.TRACE, ui.traces.single())
+                assertNotNull("$code：保留待办", pending.peek())
+            }
+            listOf(30199, 42901).forEach { code ->
+                ui.events.clear()
+                ui.traces.clear()
+                api.calls.clear()
+                registerPending()
+                submitCode()
+                api.fail(binds().single(), code)
+                runCurrent()
+                assertEquals("$code：不是 5xxxx，不带 trace6", listOf<String?>(null), ui.traces)
+            }
+        }
+
+    /** 购买页里同一个码的 bindings 失败给出的弹窗（热路径：open 30101 → AuthSheet → web_code → bindings 失败）。 */
+    private fun TestScope.purchasePageBindFailure(code: Int): PurchaseDialog.AuthCheckFailed? {
+        val pageApi = FakeTradeApi()
+        val ports = FakePorts()
+        val baichuan = FakeBaichuan()
+        val env = FakeEnv()
+        val executor = TradeJumpExecutor(ports, baichuan, { }, { testScheduler.currentTime }, { TradeFixtures.NOW })
+        val c =
+            OpenPurchaseController(
+                api = pageApi,
+                executor = executor,
+                ports = ports,
+                env = env,
+                pending = MemoryPurchasePending { testScheduler.currentTime },
+                counter = AuthSheetCounter(),
+                tips = JumpTipService(pageApi) { "session" },
+                webCode = FakeWebCode(),
+                baichuan = baichuan,
+                scope = backgroundScope,
+                clock = { testScheduler.currentTime },
+                keyGenerator = { "page-key-${pageApi.calls.size}" },
+                browserNoticeMillis = 0L,
+            )
+        env.card = TradeFixtures.card()
+        c.buy(env.card!!, null)
+        runCurrent()
+        pageApi.fail(
+            pageApi.last(TradeOperations.OPEN_LINK),
+            30101,
+            """{"auth_url":"https://oauth.taobao.com/a","state":"st_01","auth_methods":["web_code"]}""",
+        )
+        runCurrent()
+        c.authorize()
+        runCurrent()
+        pageApi.fail(pageApi.last(TradeOperations.BIND_UNION), code)
+        runCurrent()
+        return c.state.value.dialog as? PurchaseDialog.AuthCheckFailed
+    }
 
     private companion object {
         const val STATE = "st_cold_1"

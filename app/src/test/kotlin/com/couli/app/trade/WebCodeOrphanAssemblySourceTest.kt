@@ -124,4 +124,33 @@ class WebCodeOrphanAssemblySourceTest {
         assertTrue("AppSearch 仍有 SearchRoute", searchRoute.isNotEmpty())
         assertFalse("搜索页回到前台不认领", searchRoute.contains("claimColdAuthResume"))
     }
+
+    /** 评审 r1 F2 ①：sink 真的是那个分发器，分发器的 orphans 交给 AppTrade.onUnclaimedWebCode（q02 只查到「出现过 WebCodeInboundDispatcher(」）。 */
+    @Test
+    fun q08_theCallbackSinkIsTheDispatcherThatHandsOrphansToAppTrade() {
+        val application = code(read("app/src/main/kotlin/com/couli/app/CouliApplication.kt"))
+        assertTrue(
+            "webCodeCallbackSink() 返回的是分发器（不是收件箱本身）",
+            application.contains("overridefunwebCodeCallbackSink():WebCodeCallbackSink=webCodeDispatcher"),
+        )
+        val dispatcher = application.substringAfter("privatevalwebCodeDispatcher:WebCodeCallbackSinkbylazy{", missingDelimiterValue = "")
+        assertTrue("CouliApplication 有 webCodeDispatcher（按需构造）", dispatcher.isNotEmpty())
+        val built = call(dispatcher, "WebCodeInboundDispatcher(")
+        assertTrue("webCodeDispatcher 就是 WebCodeInboundDispatcher：$dispatcher", dispatcher.startsWith("WebCodeInboundDispatcher("))
+        assertTrue("分发器把回跳交给进程内收件箱：$built", built.startsWith("WebCodeInboundDispatcher(webCodeInbox.get(),"))
+        assertTrue("无人认领的交给 AppTrade.onUnclaimedWebCode：$built", built.contains("orphans={trade.get().onUnclaimedWebCode(it)}"))
+        assertFalse("sink 不是直接给收件箱", application.contains("webCodeCallbackSink():WebCodeCallbackSink=webCodeInbox"))
+    }
+
+    /** 评审 r1 F2 ②：MainActivity 的界面里挂着冷启动 / 晚到回跳的「正在确认」浮层与结果提示。 */
+    @Test
+    fun q09_mainActivityHostsTheOrphanOverlay() {
+        val activity = code(read("app/src/main/kotlin/com/couli/app/MainActivity.kt"))
+        val content = activity.substringAfter("setContent{", missingDelimiterValue = "")
+        assertTrue("MainActivity 仍有 setContent", content.isNotEmpty())
+        val host = "search.trade?.let{trade->WebCodeOrphanOverlayHost(trade.webCodeOverlay,trade.texts,trade::consumeWebCodeToast)}"
+        assertTrue("setContent 里挂着 WebCodeOrphanOverlayHost（浮层状态、文案、提示消费都接 AppTrade）", content.contains(host))
+        val prompts = content.indexOf("PermissionPromptHost(prompts=permissions.prompts)")
+        assertTrue("与权限说明浮层同一层（挂在它之后，盖在页面上面）", prompts >= 0 && content.indexOf(host) > prompts)
+    }
 }

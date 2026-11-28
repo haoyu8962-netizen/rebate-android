@@ -37,6 +37,15 @@ class AuthManageBindingChangeTest {
 
     private fun lists() = api.calls.count { it.call.operationId == TradeOperations.LIST_UNION_BINDINGS }
 
+    /**
+     * [BindingChanges] 此刻登记着的订阅数（评审 r1 F7）：读它私有的订阅表（只在测试里用反射读，不给生产代码加口子）。离开后数目回到原值，
+     * 才说明真的退订了——不是靠页面的 left 标记把回调挡掉。
+     */
+    private fun subscribers(): Int {
+        val field = BindingChanges::class.java.getDeclaredField("entries").apply { isAccessible = true }
+        return (field.get(changes) as Collection<*>).size
+    }
+
     private fun TestScope.loaded(c: AuthManageController) {
         c.load()
         runCurrent()
@@ -92,12 +101,19 @@ class AuthManageBindingChangeTest {
     @Test
     fun m03_aLeftPageIgnoresBindingChanges() =
         runTest {
+            val before = subscribers()
             val c = controller()
+            assertEquals("前提：页面订阅了绑定变化", before + 1, subscribers())
             loaded(c)
             c.leave()
+            assertEquals("离开就退订：订阅数回到原值（评审 r1 F7）", before, subscribers())
+            var others = 0
+            val unsubscribe = changes.subscribe { others += 1 }
             changes.notifyChanged()
             runCurrent()
             assertEquals("离开后不再刷新", 1, lists())
+            assertEquals("通知照常发给别的订阅者（只是本页不在里面）", 1, others)
+            unsubscribe()
         }
 
     @Test

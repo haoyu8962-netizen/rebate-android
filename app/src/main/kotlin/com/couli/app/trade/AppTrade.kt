@@ -204,9 +204,12 @@ class AppTrade(
             mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(confirming = shown)
         }
 
-        override fun toast(key: String) {
+        override fun toast(
+            key: String,
+            traceId: String?,
+        ) {
             webCodeToastSeq += 1
-            mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(toast = PurchaseToast(key, id = webCodeToastSeq))
+            mutableWebCodeOverlay.value = mutableWebCodeOverlay.value.copy(toast = PurchaseToast(key, traceId, webCodeToastSeq))
         }
     }
 

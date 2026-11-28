@@ -121,6 +121,15 @@ class ProductColdResumeClaimWiringTest {
 
     private fun page(): OpenPurchaseController = checkNotNull(search.purchaseController(ENTRY))
 
+    /**
+     * 恢复槽此刻登记着的订阅数（评审 r1 F7）：读 [ColdAuthResume] 私有的订阅表（只在测试里用反射读，不给生产代码加口子）。页面离开后数目回到原值，
+     * 才说明真的退订了——不是靠执行器已作废、或切主线程时的 active 标记把回调挡掉。
+     */
+    private fun coldResumeSubscribers(): Int {
+        val field = ColdAuthResume::class.java.getDeclaredField("entries").apply { isAccessible = true }
+        return (field.get(trade.coldResume) as Collection<*>).size
+    }
+
     /** 打开详情页：正式 productConfig 的 bindController 拿到真实的 ProductDetailController，再按路由参数取详情（替身直接返回 [card]）。 */
     private fun openDetail(): ProductDetailController {
         api.product = card
@@ -186,15 +195,21 @@ class ProductColdResumeClaimWiringTest {
 
     @Test
     fun w04_aLeftDetailPageNoLongerClaims() {
+        val before = coldResumeSubscribers()
         openDetail()
+        assertEquals("前提：详情页订阅了恢复槽", before + 1, coldResumeSubscribers())
         // 页面出栈（回退栈里没有本页条目）：执行器作废、退订恢复槽
         search.followBackStackIds(setOf("another-entry"))
         assertNull("执行器已作废", search.purchaseController(ENTRY))
+        assertEquals("离开就退订：订阅数回到原值（评审 r1 F7）", before, coldResumeSubscribers())
         trade.coldResume.offer(ticket())
         idle()
         assertTrue("离开后票刚登记也不认领", opens().isEmpty())
         assertNotNull("票留着（到期由处理器只提示再点一次）", trade.coldResume.peek())
         assertFalse(search.claimColdAuthResume(ENTRY))
+        idle()
+        trade.coldResume.offer(ticket())
+        assertTrue("再登记一次：本页的订阅不再被调用，主线程上没有排进任何认领", shadowOf(Looper.getMainLooper()).isIdle)
     }
 
     private companion object {

@@ -14,7 +14,10 @@ import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallEpochs
 import com.couli.core.network.CallOwnership
+import com.couli.core.network.ErrorEffect
+import com.couli.core.network.ErrorEffectKind
 import com.couli.core.network.PageApi
+import com.couli.core.network.ReplayMode
 import com.couli.core.router.SessionState
 import com.couli.core.tradejump.UnavailableBaichuan
 import com.couli.feature.trade.ColdAuthResume
@@ -306,6 +309,25 @@ class AppTradeWebCodeOrphanWiringTest {
         val waiting = scope.async(start = CoroutineStart.UNDISPATCHED) { inbox.await(webCodeSha256(STATE)) }
         assertFalse("切换环境：等待者也拿不到旧回跳", waiting.isCompleted)
         waiting.cancel()
+    }
+
+    /** 评审 r1 F6：冷启动回跳的 bindings 返回 5xxxx → 浮层的提示带 traceId（界面据此显示 trace6，与购买页一致）；4xxxx 不带。 */
+    @Test
+    fun t08_aServerErrorToastCarriesTheTraceIdIntoTheOverlay() {
+        val trade = trade(routing())
+        listOf(50001 to "trace-5xx-1", 42901 to null).forEach { (code, expected) ->
+            coldAttempt()
+            trade.onUnclaimedWebCode(WebCodeCallback.Code(CODE, STATE))
+            idle()
+            val bind = calls.last { it.call.operationId == TradeOperations.BIND_UNION }
+            val effect = ErrorEffect(code, ErrorEffectKind.PAGE_ACTION, ReplayMode.NONE, registerPending = false)
+            bind.result.complete(ApiResult.Failure(code, "", JsonObject(emptyMap()), "trace-5xx-1", effect, bind.call.idempotencyKey))
+            idle()
+            val toast = trade.webCodeOverlay.value.toast
+            assertNotNull("$code：有提示", toast)
+            assertEquals("$code：提示里的 traceId", expected, toast!!.traceId)
+            trade.consumeWebCodeToast()
+        }
     }
 
     private companion object {

@@ -146,8 +146,11 @@ interface WebCodeOrphanUi {
     /** 不可关闭的轻量浮层「正在确认授权结果」（auth.confirming）：提交 bindings 期间 true，结束后 false。 */
     fun confirming(shown: Boolean)
 
-    /** 轻提示（文案键）。 */
-    fun toast(key: String)
+    /** 轻提示（文案键）；[traceId] 只在 5xxxx 时给，提示末尾带 trace6（与购买页同一个码的提示一致，A-R3-04）。 */
+    fun toast(
+        key: String,
+        traceId: String? = null,
+    )
 }
 
 /** App 层的冷启动 / 晚到回跳浮层状态（AppTrade 对外；界面按它画不可关闭的「正在确认」浮层与轻提示）。 */
@@ -281,6 +284,7 @@ class WebCodeOrphanHandler(
         val code = failure.code
         val key: String
         val dropPending: Boolean
+        var traceId: String? = null
         when {
             code == TaobaoAuthFlow.STATE_OR_CREDENTIAL || code == 20001 -> {
                 // state 过期或已用：不自动拉起授权
@@ -304,13 +308,15 @@ class WebCodeOrphanHandler(
             }
 
             else -> {
-                // 5xxxx 与表外的码：保留待办（用户再点购买时 open 按服务端实际的绑定状态处理）
-                key = OpenErrorAction.map(code, failure.data).textKey ?: OpenPurchaseController.GENERIC_KEY
+                // 5xxxx 与表外的码：保留待办（用户再点购买时 open 按服务端实际的绑定状态处理）；5xxxx 带 trace6，同购买页
+                val outcome = OpenErrorAction.map(code, failure.data)
+                key = outcome.textKey ?: OpenPurchaseController.GENERIC_KEY
+                traceId = failure.traceId.takeIf { outcome.showTrace6 }
                 dropPending = false
             }
         }
         if (dropPending && record != null) pending.clear()
-        ui.toast(key)
+        ui.toast(key, traceId)
     }
 
     /** 此刻有效的淘宝授权待办（kind=auth、platform=taobao，未过期）；没有、或待办被暂缓（不读不清，FU-AND-0716 ①）为 null。 */

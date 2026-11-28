@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -34,7 +35,10 @@ class OpenPurchaseColdResumeTest {
     private lateinit var pending: MemoryPurchasePending
     private lateinit var resume: ColdAuthResume
 
-    private fun TestScope.controller(webCode: WebCodeAuthorizer = web): OpenPurchaseController {
+    private fun TestScope.controller(
+        webCode: WebCodeAuthorizer = web,
+        port: PurchasePending? = null,
+    ): OpenPurchaseController {
         if (!::pending.isInitialized) pending = MemoryPurchasePending { testScheduler.currentTime }
         if (!::resume.isInitialized) resume = ColdAuthResume { testScheduler.currentTime }
         val executor = TradeJumpExecutor(ports, baichuan, { }, { testScheduler.currentTime }, { TradeFixtures.NOW })
@@ -43,7 +47,7 @@ class OpenPurchaseColdResumeTest {
             executor = executor,
             ports = ports,
             env = env,
-            pending = pending,
+            pending = port ?: pending,
             counter = counter,
             tips = JumpTipService(api) { "session" },
             webCode = webCode,
@@ -285,5 +289,99 @@ class OpenPurchaseColdResumeTest {
             assertFalse("过了 deadline 不认领", c.claimColdAuthResume(TradeFixtures.card(linkId = "link-new", id = "c1")))
             runCurrent()
             assertTrue(opens().isEmpty())
+        }
+
+    // ---------------------------------------------------------------- 修改 2（评审 r1 F4）：不认领的出口与 spm
+
+    /** 不认领时的共同结果：返回 false 之后不发 open、待办与票都留着。 */
+    private fun TestScope.assertNotClaimed(name: String) {
+        runCurrent()
+        assertTrue("$name：不发 open：${api.ops()}", opens().isEmpty())
+        assertNotNull("$name：待办不动", pending.peek())
+        assertEquals("$name：票留着", ColdAuthResume.Ticket("link-old", "tb:c1", "taobao", 600_000L), resume.peek())
+    }
+
+    @Test
+    fun c11_noClaimWhileRateLimitedBy42901() =
+        runTest {
+            coldResumeWaiting()
+            val c = controller()
+            val other = TradeFixtures.card(platform = "pdd", linkId = "link-p", id = "p1")
+            env.card = other
+            c.buy(other, null)
+            runCurrent()
+            api.fail(opens().single(), 42901, disableMillis = 30_000L)
+            runCurrent()
+            assertTrue("前提：42901 禁用中", c.state.value.rateLimited)
+            assertNull("前提：没有弹窗", c.state.value.dialog)
+            assertEquals("前提：没有在途请求", PurchasePhase.IDLE, c.state.value.phase)
+            api.calls.clear()
+            val card = TradeFixtures.card(linkId = "link-new", id = "c1")
+            assertFalse("42901 禁用期间不认领", c.claimColdAuthResume(card))
+            assertNotClaimed("42901 禁用中")
+            advanceTimeBy(30_001L)
+            runCurrent()
+            assertTrue("禁用结束后照常认领（不认领只因为 42901）", c.claimColdAuthResume(card))
+            runCurrent()
+            assertEquals(1, opens().size)
+        }
+
+    @Test
+    fun c12_noClaimWhileThePendingIsHeld() =
+        runTest {
+            coldResumeWaiting()
+            val held = HoldablePending(pending)
+            val c = controller(port = held)
+            val card = TradeFixtures.card(linkId = "link-new", id = "c1")
+            assertFalse("待办被暂缓（FU-AND-0716 ①）时不认领", c.claimColdAuthResume(card))
+            assertEquals("暂缓的待办不删", 0, held.clears)
+            assertNotClaimed("待办暂缓")
+            held.held = false
+            assertTrue("暂缓释放后照常认领（不认领只因为暂缓）", c.claimColdAuthResume(card))
+            runCurrent()
+            assertEquals(1, opens().size)
+        }
+
+    @Test
+    fun c13_noClaimForACardThatCannotBeBoughtNow() =
+        runTest {
+            coldResumeWaiting()
+            val c = controller()
+            val card = TradeFixtures.card(linkId = "link-new", id = "c1")
+            val offShelf = card.with("availability", JsonPrimitive(BuyBlock.OFF_SHELF))
+            assertFalse("下架的卡不认领", c.claimColdAuthResume(offShelf))
+            assertNotClaimed("下架")
+            listOf(BuyBlock.MAINTENANCE, BuyBlock.NOT_LAUNCHED).forEach { status ->
+                env.status = status
+                assertFalse("平台 $status 不认领", c.claimColdAuthResume(card))
+                assertNotClaimed("平台 $status")
+                assertNull("平台 $status：认领检查不出提示", c.state.value.toast)
+            }
+            env.status = "on"
+            assertTrue("能买了照常认领（不认领只因为不可购）", c.claimColdAuthResume(card))
+            runCurrent()
+            assertEquals(1, opens().size)
+        }
+
+    @Test
+    fun c14_theClaimedOpenCarriesNoSpm() =
+        runTest {
+            // 自定口径 (5)：认领时去掉 spm，open 请求体里没有 spm
+            coldResumeWaiting()
+            val c = controller()
+            val other = TradeFixtures.card(platform = "pdd", linkId = "link-p", id = "p1")
+            env.card = other
+            c.buy(other, "detail.buy.1")
+            runCurrent()
+            val first = opens().single()
+            assertEquals("前提：页面点购买时 open 带 spm", JsonPrimitive("detail.buy.1"), obj(first.call.body!!)["spm"])
+            api.fail(first, 50001)
+            runCurrent()
+            assertNull("前提：没有弹窗", c.state.value.dialog)
+            assertTrue("认领", c.claimColdAuthResume(TradeFixtures.card(linkId = "link-new", id = "c1")))
+            runCurrent()
+            val claimed = opens().last()
+            assertEquals("认领的 open 打票里的 link_id", mapOf("link_id" to "link-old"), claimed.call.pathParams)
+            assertFalse("认领的 open 请求体不带 spm：${claimed.call.body}", obj(claimed.call.body!!).containsKey("spm"))
         }
 }
