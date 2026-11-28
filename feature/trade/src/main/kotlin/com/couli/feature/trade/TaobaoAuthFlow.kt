@@ -68,6 +68,11 @@ class TaobaoAuthFlow(
      * 设成「正在确认授权结果」。取消、失败不调。
      */
     private val onCredential: () -> Unit = {},
+    /**
+     * bindings 返回 30104、开始恢复（重新取授权上下文，之后可能再次拉起授权页）时回调一次（每次恢复一次；D10-3690 口径 (6)）：这个凭证的服务端
+     * 结果已到，购买页据此把 AuthSheet 从「确认中」回到「等待授权」。恢复次数用完（按授权失败）时不调。
+     */
+    private val onRecovery: () -> Unit = {},
 ) {
     /** 本端能执行的方式（按本端能力，不看下发顺序）。 */
     private fun supported(): List<String> =
@@ -124,6 +129,7 @@ class TaobaoAuthFlow(
             recoveries += 1
             if (recoveries > MAX_RECOVERIES) return TaobaoAuthOutcome.Failed
             if (result.data.text("reason") == CREDENTIAL_INVALID) invalid += method
+            onRecovery()
             val refreshed = authUrl(platform)
             if (!alive()) return TaobaoAuthOutcome.Abandoned
             data = (refreshed as? ApiResult.Success)?.data as? JsonObject ?: return TaobaoAuthOutcome.RequestFailed(refreshed)

@@ -17,7 +17,8 @@ import org.junit.Test
 
 /**
  * FU-AND-TB-WEBCODE-B 测试：购买执行器的「确认中」与冷启动恢复槽认领（设计稿 §3.2 OpenPurchaseController ① ②、§6.1「确认中」、§6.4 第 6 步）。
- * - 拿到授权码后 AuthSheet 进入 confirming（文案键 auth.confirming 由界面按 confirming 取；不可关闭）；
+ * - 拿到授权码后 AuthSheet 进入 confirming（文案键 auth.confirming 由界面按 confirming 取；不可关闭）；30104 恢复后再次拉起授权页时回到等待授权
+ *   （busy、不是 confirming；D10-3690 口径 (6)）；
  * - [OpenPurchaseController.claimColdAuthResume]：前台、没有在途请求或弹窗、卡片 link_id 或 product_key 与槽位一致才认领；用**待办里的 link_id**
  *   和新幂等键发一次 open，然后照常外跳；同一个槽只能认领一次；认领时删掉购买待办。
  */
@@ -33,7 +34,7 @@ class OpenPurchaseColdResumeTest {
     private lateinit var pending: MemoryPurchasePending
     private lateinit var resume: ColdAuthResume
 
-    private fun TestScope.controller(): OpenPurchaseController {
+    private fun TestScope.controller(webCode: WebCodeAuthorizer = web): OpenPurchaseController {
         if (!::pending.isInitialized) pending = MemoryPurchasePending { testScheduler.currentTime }
         if (!::resume.isInitialized) resume = ColdAuthResume { testScheduler.currentTime }
         val executor = TradeJumpExecutor(ports, baichuan, { }, { testScheduler.currentTime }, { TradeFixtures.NOW })
@@ -45,7 +46,7 @@ class OpenPurchaseColdResumeTest {
             pending = pending,
             counter = counter,
             tips = JumpTipService(api) { "session" },
-            webCode = web,
+            webCode = webCode,
             baichuan = baichuan,
             scope = backgroundScope,
             clock = { testScheduler.currentTime },
@@ -125,6 +126,58 @@ class OpenPurchaseColdResumeTest {
             seen += c.state.value.dialog
             assertFalse("取消不进确认中：$seen", seen.any { it is PurchaseDialog.AuthSheet && it.confirming })
             assertEquals(PurchaseDialog.AuthDeclined("taobao", failed = false), c.state.value.dialog)
+        }
+
+    /** D10-3690 口径 (6)：30104 恢复后再次拉起授权页时，半屏回到「等待授权」（busy、不是 confirming）；confirming 只在拿到凭证、等 bindings 结果时。 */
+    @Test
+    fun c10_after30104TheRelaunchedAuthorizationShowsWaitingNotConfirming() =
+        runTest {
+            lateinit var c: OpenPurchaseController
+            val atLaunch = mutableListOf<PurchaseDialog?>()
+            val recording =
+                object : WebCodeAuthorizer {
+                    override val available: Boolean = true
+
+                    override suspend fun authorize(
+                        authUrl: String,
+                        state: String,
+                    ): AuthStepResult {
+                        atLaunch += c.state.value.dialog
+                        return AuthStepResult.Credential(AuthCredential.WebCode("fixture-web-code"))
+                    }
+                }
+            c = controller(recording)
+            env.card = TradeFixtures.card()
+            c.buy(env.card!!, null)
+            runCurrent()
+            api.fail(opens().single(), 30101, """{"auth_url":"https://oauth.taobao.com/a","state":"st_01","auth_methods":["web_code"]}""")
+            runCurrent()
+            c.authorize()
+            runCurrent()
+            assertEquals("第一个凭证：确认中", PurchaseDialog.AuthSheet("taobao", busy = true, confirming = true), c.state.value.dialog)
+            api.fail(binds().single(), 30104, """{"reason":"method_not_allowed"}""")
+            runCurrent()
+            assertEquals(
+                "30104 已有结果、重新取授权上下文期间：回到等待授权",
+                PurchaseDialog.AuthSheet("taobao", busy = true, confirming = false),
+                c.state.value.dialog,
+            )
+            api.succeed(
+                api.last(TradeOperations.GET_UNION_AUTH_URL),
+                """{"auth_url":"https://oauth.taobao.com/b","state":"st_02","auth_methods":["web_code"]}""",
+            )
+            runCurrent()
+            assertEquals("拉起了两次授权页：$atLaunch", 2, atLaunch.size)
+            assertEquals(
+                "再次拉起时半屏是等待授权，不是确认中",
+                PurchaseDialog.AuthSheet("taobao", busy = true, confirming = false),
+                atLaunch[1],
+            )
+            assertEquals("第二个凭证到了：再进确认中", PurchaseDialog.AuthSheet("taobao", busy = true, confirming = true), c.state.value.dialog)
+            api.succeed(binds().last(), """{"platform":"taobao","status":"active"}""")
+            runCurrent()
+            assertNull("确认完成：弹层关掉", c.state.value.dialog)
+            assertEquals("Bound 后新键 open 一次", 2, opens().size)
         }
 
     // ---------------------------------------------------------------- 认领恢复槽

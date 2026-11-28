@@ -6,8 +6,10 @@ import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.couli.app.routing.AppRouting
+import com.couli.core.config.AppEnvironment
 import com.couli.core.config.EnvironmentGate
 import com.couli.core.config.EnvironmentStartupReconciler
+import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.network.ApiCall
 import com.couli.core.network.ApiResult
 import com.couli.core.network.CallEpochs
@@ -25,6 +27,7 @@ import com.couli.feature.trade.WebCodeInbox
 import com.couli.feature.trade.WebCodeOrphanGate
 import com.couli.feature.trade.WebCodeOrphanStartup
 import com.couli.feature.trade.webCodeAccountTag
+import com.couli.feature.trade.webCodeStateSha256
 import javax.inject.Provider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -52,7 +55,8 @@ import org.robolectric.annotation.Config
  * - 新增的构造参数都有缺省：照旧只传原有参数（UnavailableWebCodeAuthorizer）也能构造，回跳一律不提交；
  * - 接上尝试记录、收件箱、启动闸门后：无人认领的 Code → bindings（提交期间「正在确认」浮层）→ active：授权管理页再 load() 一次、有效待办登记恢复槽、
  *   发起页 [com.couli.feature.trade.OpenPurchaseController.claimColdAuthResume] 用待办里的 link_id 发 open；
- * - 退出登录（会话由已登录变为游客）或 [AppTrade.onSessionEnded]：清尝试记录、清空收件箱、作废恢复槽。
+ * - 退出登录（会话由已登录变为游客）或 [AppTrade.onSessionEnded]：清尝试记录、清空收件箱、作废恢复槽；
+ * - 切换环境（D10-3690 口径 (7)，同 N-22 clearForEnvironmentSwitch）：登记进清理表后，清理时清空收件箱、作废恢复槽。
  */
 @RunWith(AndroidJUnit4::class)
 @Config(application = Application::class)
@@ -280,6 +284,22 @@ class AppTradeWebCodeOrphanWiringTest {
         assertNull("换账号：清尝试记录", attempts.current())
         val waiting = scope.async(start = CoroutineStart.UNDISPATCHED) { inbox.await(webCodeSha256(STATE)) }
         assertFalse("换账号：收件箱已清空", waiting.isCompleted)
+        waiting.cancel()
+    }
+
+    @Test
+    fun t07_anEnvironmentSwitchEmptiesTheInboxAndTheResumeSlot() {
+        val trade = trade(routing())
+        val cleaners = EnvironmentSwitchCleanerRegistry()
+        trade.connectEnvironmentCleanup(cleaners)
+        inbox.deliver(WebCodeCallback.Code(CODE, STATE))
+        trade.coldResume.offer(ColdAuthResume.Ticket("link-old", "tb:1", "taobao", Long.MAX_VALUE))
+        assertNotNull("前提：恢复槽里有票", trade.coldResume.peek())
+        cleaners.cleanAll(AppEnvironment.TEST, AppEnvironment.STAGING)
+        assertNull("切换环境：恢复槽作废", trade.coldResume.peek())
+        assertNull("切换环境：收件箱已清空（下一轮取不到旧回跳）", inbox.takeUnclaimed(webCodeStateSha256(STATE)))
+        val waiting = scope.async(start = CoroutineStart.UNDISPATCHED) { inbox.await(webCodeSha256(STATE)) }
+        assertFalse("切换环境：等待者也拿不到旧回跳", waiting.isCompleted)
         waiting.cancel()
     }
 

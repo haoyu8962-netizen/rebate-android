@@ -40,7 +40,8 @@ class BindingChanges {
  * - [offer]：登记（新的覆盖旧的）；
  * - [claim]：卡片的 link_id 或 product_key 与槽位一致、且没到 deadline → 取走并返回（同一张只能被认领一次），否则 null；
  * - [takeExpired]：过了 deadline 还没人认领 → 取走并返回一次（调用方据此只提示 auth.taobao.completed_tap_again，不自动打开任何页面）；
- * - [peek]：没到期的那张；[clear]：退出登录、切换账号、切换环境时作废。
+ * - [peek]：没到期的那张；[clear]：退出登录、切换账号、切换环境时作废；
+ * - [subscribe]：变化通知（D10-3690）。登记、认领成功、到期取出、作废了一张票时，在锁外同步通知全部订阅者；发起页据此试认领一次（「票刚登记」）。
  * 「到期」= 此刻晚于 deadline（deadline 那一毫秒仍可认领）。线程安全。
  */
 class ColdAuthResume(
@@ -54,11 +55,25 @@ class ColdAuthResume(
         val deadlineMillis: Long,
     )
 
+    /** 每次订阅一个独立的登记项（同一个 listener 订阅两次也各自退订）。 */
+    private class Entry(
+        val listener: () -> Unit,
+    )
+
     private val lock = Any()
     private var ticket: Ticket? = null
+    private val entries = CopyOnWriteArrayList<Entry>()
+
+    /** 登记订阅；返回取消订阅。通知在调用 [offer] / [claim] / [takeExpired] / [clear] 的线程上同步发出（不持锁）。 */
+    fun subscribe(listener: () -> Unit): () -> Unit {
+        val entry = Entry(listener)
+        entries += entry
+        return { entries.remove(entry) }
+    }
 
     fun offer(ticket: Ticket) {
         synchronized(lock) { this.ticket = ticket }
+        changed()
     }
 
     fun peek(): Ticket? = synchronized(lock) { ticket?.takeIf { !expired(it) } }
@@ -71,17 +86,27 @@ class ColdAuthResume(
             val held = ticket?.takeIf { !expired(it) && matches(it, linkId, productKey) }
             if (held != null) ticket = null
             held
-        }
+        }?.also { changed() }
 
     fun takeExpired(): Ticket? =
         synchronized(lock) {
             val held = ticket?.takeIf(::expired)
             if (held != null) ticket = null
             held
-        }
+        }?.also { changed() }
 
     fun clear() {
-        synchronized(lock) { ticket = null }
+        val dropped =
+            synchronized(lock) {
+                val had = ticket != null
+                ticket = null
+                had
+            }
+        if (dropped) changed()
+    }
+
+    private fun changed() {
+        entries.forEach { it.listener() }
     }
 
     private fun expired(ticket: Ticket): Boolean = clock() > ticket.deadlineMillis

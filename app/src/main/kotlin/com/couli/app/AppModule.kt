@@ -1191,6 +1191,8 @@ object AppModule {
         webCodeInbox: WebCodeInbox = WebCodeInbox(),
         authBrowser: CustomTabAuthBrowserLauncher = CustomTabAuthBrowserLauncher(context),
         authReturns: ActivityAuthReturnSignal = ActivityAuthReturnSignal(),
+        // 切换环境的清理表（D10-3690 口径 (7)）；单测按位置只传前 7 项时是一份不会被执行的新表
+        cleaners: EnvironmentSwitchCleanerRegistry = EnvironmentSwitchCleanerRegistry(),
     ): AppTrade {
         // 真实授权器与冷启动 / 晚到回跳的处理器共用同一份尝试记录与收件箱（FU-AND-TB-WEBCODE-B，设计稿 §6.4）
         val attempts = SharedPreferencesWebCodeAttempts(webCodeAttemptPreferences(context))
@@ -1227,6 +1229,8 @@ object AppModule {
             trade.onSensitiveOverlay = clipboard::onSensitiveOverlay
             // 剪贴板多卡弹层的商品卡按同一平台购买状态映射（APP-07 共性第 32 条）；AppTrade 依赖 AppClipboard，所以在这里接
             clipboard.connectPurchaseStatus(trade, config.store)
+            // 切换环境：清空 web_code 收件箱、作废冷启动恢复槽（D10-3690 口径 (7)，同 N-22 clearForEnvironmentSwitch；尝试记录随 couli. 命名空间清）
+            trade.connectEnvironmentCleanup(cleaners)
         }
     }
 

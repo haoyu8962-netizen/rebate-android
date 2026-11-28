@@ -15,7 +15,7 @@ import org.junit.Test
 /**
  * FU-AND-TB-WEBCODE-B 测试：冷启动 / 晚到回跳用到的几个小部件（设计稿 §6.4）。
  * - [WebCodeInbox.takeUnclaimed]：中转交付后下一轮主线程循环取「仍没人认领」的回跳；
- * - [ColdAuthResume]：恢复槽只放一张票，link_id 或 product_key 对上才认领、只认领一次，到期取出一次；
+ * - [ColdAuthResume]：恢复槽只放一张票，link_id 或 product_key 对上才认领、只认领一次，到期取出一次；登记 / 认领 / 到期 / 作废时通知订阅者（D10-3690）；
  * - [BindingChanges]：通知全部订阅者，退订后不再通知；
  * - [webCodeAccountTag]：账号标签是用户 id 的 sha256（不是原文）。
  */
@@ -132,6 +132,40 @@ class WebCodeOrphanPartsTest {
         resume.clear()
         assertNull("clear 后作废", resume.peek())
         assertNull(resume.claim("link-2", "tb:c2"))
+    }
+
+    @Test
+    fun r05_subscribersHearOfferClaimExpiryAndClearUntilUnsubscribed() {
+        val resume = ColdAuthResume(clock = { now })
+        val seen = mutableListOf<ColdAuthResume.Ticket?>()
+        var other = 0
+        val unsubscribe = resume.subscribe { seen += resume.peek() }
+        resume.subscribe { other += 1 }
+        resume.offer(ticket())
+        assertEquals("登记：通知一次，通知时已看得到票", listOf<ColdAuthResume.Ticket?>(ticket()), seen)
+        assertNull("认领不到不通知", resume.claim("link-x", "tb:x"))
+        assertEquals(1, seen.size)
+        assertEquals(ticket(), resume.claim("link-old", null))
+        assertEquals("认领：再通知一次，通知时槽位已空", listOf(ticket(), null), seen)
+
+        resume.offer(ticket())
+        now += 600_001L
+        assertEquals(ticket(deadline = now - 1), resume.takeExpired())
+        assertEquals("登记、到期取出各通知一次", 4, seen.size)
+        assertNull("到期取出后槽位空", seen.last())
+        assertNull("已取空：takeExpired 不通知", resume.takeExpired())
+        assertEquals(4, seen.size)
+
+        resume.offer(ColdAuthResume.Ticket("link-2", "tb:c2", "taobao", now + 600_000L))
+        resume.clear()
+        assertEquals("作废一张票也通知", 6, seen.size)
+        resume.clear()
+        assertEquals("槽位本来就空：clear 不通知", 6, seen.size)
+
+        unsubscribe()
+        resume.offer(ticket(deadline = now + 600_000L))
+        assertEquals("取消订阅后不再收到", 6, seen.size)
+        assertEquals("别的订阅者照常收到（登记 4 次、认领 1 次、到期 1 次、作废 1 次）", 7, other)
     }
 
     // ---------------------------------------------------------------- 绑定变化信号

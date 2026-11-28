@@ -11,7 +11,8 @@ import org.junit.Test
  * - 文案键 auth.confirming、auth.taobao.completed_tap_again：契约补键前取得到 TradeDraftTexts 草稿（TODO(N-28)）；只认键名，不钉中文原文；
  * - CouliApplication 交给入站中转的是 WebCodeInboundDispatcher（交收件箱 + 下一轮交 orphan）；
  * - AppModule 给真实授权器传账号标签，给 AppTrade 传与授权器共用的尝试记录、收件箱和启动闸门；
- * - orphan 逻辑不经 Router 打开任何页面（D10-3681 C-4：恢复槽到期只提示，不自动打开商品页）。
+ * - orphan 逻辑不经 Router 打开任何页面（D10-3681 C-4：恢复槽到期只提示，不自动打开商品页）；
+ * - 切换环境的清理表交给 AppTrade（D10-3690 口径 (7)）；商品详情页接认领冷启动恢复槽，搜索页不接（D10-3690 接入点）。
  */
 class WebCodeOrphanAssemblySourceTest {
     private val root: File by lazy {
@@ -90,5 +91,36 @@ class WebCodeOrphanAssemblySourceTest {
         listOf("Router", "RouteRequest", "ProductDetail", "OPEN_LINK", ".open(").forEach {
             assertFalse("orphan 逻辑不出现 $it（C-4：到期只提示，不打开页面、不重放 open）", orphan.contains(it))
         }
+    }
+
+    @Test
+    fun q06_appModuleRegistersTheTradeEnvironmentCleanup() {
+        val module = code(read("app/src/main/kotlin/com/couli/app/AppModule.kt"))
+        val provider = module.substringAfter("funappTrade(", missingDelimiterValue = "").substringBefore("@Provides")
+        assertTrue("AppModule 仍有 appTrade", provider.isNotEmpty())
+        assertTrue(
+            "appTrade 注入切换环境的清理表：$provider",
+            provider.substringBefore("):AppTrade{").contains("cleaners:EnvironmentSwitchCleanerRegistry"),
+        )
+        assertTrue("appTrade 把清理表交给 AppTrade（connectEnvironmentCleanup）", provider.contains("connectEnvironmentCleanup(cleaners)"))
+    }
+
+    @Test
+    fun q07_onlyTheProductDetailPageClaimsTheColdResumeSlot() {
+        val search = code(read("app/src/main/kotlin/com/couli/app/search/AppSearch.kt"))
+        val product =
+            search.substringAfter("funproductConfig(", missingDelimiterValue = "").substringBefore("privatesuspendfunawaitUpdateCheck")
+        val list = search.substringAfter("funsearchConfig(", missingDelimiterValue = "").substringBefore("privatefunonMainThread")
+        assertTrue(
+            "详情页 bindController 接认领（bindProduct）：$product",
+            product.contains("bindController={controller->purchase?.bindProduct(controller)}"),
+        )
+        assertTrue("AppSearch 仍有 searchConfig", list.isNotEmpty())
+        assertFalse("搜索页不接认领（票到期照 C-4 只提示）", list.contains("bindProduct") || list.contains("claimColdAuthResume"))
+        val route = search.substringAfter("funProductDetailRoute(", missingDelimiterValue = "").substringBefore("@Composable")
+        assertTrue("详情页回到前台试认领一次：$route", route.contains("search.claimColdAuthResume(entryId)"))
+        val searchRoute = search.substringAfter("funSearchRoute(", missingDelimiterValue = "").substringBefore("@Composable")
+        assertTrue("AppSearch 仍有 SearchRoute", searchRoute.isNotEmpty())
+        assertFalse("搜索页回到前台不认领", searchRoute.contains("claimColdAuthResume"))
     }
 }

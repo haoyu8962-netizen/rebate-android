@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
@@ -48,6 +49,7 @@ import com.couli.feature.product.ProductDetailController
 import com.couli.feature.product.ProductDetailScreen
 import com.couli.feature.product.ProductPageActions
 import com.couli.feature.product.ProductPageConfig
+import com.couli.feature.product.ProductPhase
 import com.couli.feature.product.ProductPurchaseSlots
 import com.couli.feature.search.SearchConfigPort
 import com.couli.feature.search.SearchController
@@ -71,13 +73,17 @@ import com.couli.feature.trade.searchPurchaseButton
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -121,9 +127,51 @@ class AppSearch(
     ) : PurchaseEnv {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         var product: ProductDetailController? = null
+            private set
         var search: SearchController? = null
         val controller: OpenPurchaseController = trade.purchaseController(this, scope)
         private val owner = trade
+        private var cardReadyWatch: Job? = null
+        private var unsubscribeColdResume: (() -> Unit)? = null
+
+        /**
+         * 详情页的执行器建好了（D10-3690 接入点 1）：记下它；之后详情卡每次就绪（进入内容态）、恢复槽每次有变化（票刚登记）都试认领一次冷启动恢复槽
+         * （[claimColdResume]）。回到前台那一次由 [ProductDetailRoute] 的 ON_START 调 [AppSearch.claimColdAuthResume]。恢复槽的通知切到主线程，
+         * 页面离开（[release]）之后已排进主线程的也不再认领。
+         */
+        fun bindProduct(detail: ProductDetailController) {
+            product = detail
+            cardReadyWatch?.cancel()
+            cardReadyWatch =
+                scope.launch {
+                    detail.state
+                        .map { it.phase == ProductPhase.CONTENT && it.product != null }
+                        .distinctUntilChanged()
+                        .collect { ready -> if (ready) claimColdResume() }
+                }
+            if (unsubscribeColdResume == null) {
+                val active = AtomicBoolean(true)
+                val unsubscribe = owner.coldResume.subscribe { main.post { if (active.get()) claimColdResume() } }
+                unsubscribeColdResume = {
+                    active.set(false)
+                    unsubscribe()
+                }
+            }
+        }
+
+        /**
+         * 用此刻的详情卡试认领一次冷启动恢复槽（设计稿 §6.4 第 6 步）：卡没就绪不试；前台、无在途请求或弹窗、link_id / product_key 对上等条件由
+         * [OpenPurchaseController.claimColdAuthResume] 判，同一张票只能被认领一次。认领了返回 true。
+         */
+        fun claimColdResume(): Boolean {
+            val card =
+                product
+                    ?.state
+                    ?.value
+                    ?.takeIf { it.phase == ProductPhase.CONTENT }
+                    ?.product
+            return card != null && controller.claimColdAuthResume(card)
+        }
 
         override fun loggedIn(): Boolean = owner.loggedIn()
 
@@ -174,6 +222,8 @@ class AppSearch(
         }
 
         fun release() {
+            unsubscribeColdResume?.invoke()
+            unsubscribeColdResume = null
             owner.release(controller)
             scope.cancel()
         }
@@ -435,6 +485,12 @@ class AppSearch(
     /** 发起页的生命周期（ON_STOP：被盖住或进入后台，之后到达的响应只更新卡片；ON_START：拼多多授权回来后复查）。 */
     fun purchaseController(entryId: String?): OpenPurchaseController? = entryId?.let { purchases[it]?.controller }
 
+    /**
+     * 详情页回到前台（ON_START，执行器 onForeground 之后；D10-3690 接入点 1）：用此刻的详情卡试认领一次冷启动恢复槽。没接购买、没有这一页、
+     * 卡没就绪或条件不满足为 false。
+     */
+    fun claimColdAuthResume(entryId: String?): Boolean = entryId?.let { purchases[it] }?.claimColdResume() == true
+
     @Suppress("ReturnCount") // 路由参数不全即 null
     fun productConfig(
         destination: RouteDestination,
@@ -469,7 +525,8 @@ class AppSearch(
             bindLeave = { leave -> bind(entryId, leave) },
             creditEnabled = ::creditEnabled,
             purchase = purchase?.let { productSlots(it, entryId) } ?: ProductPurchaseSlots(),
-            bindController = { controller -> purchase?.product = controller },
+            // 详情卡就绪、票刚登记时试认领冷启动恢复槽（D10-3690；搜索页不接，票到期照 C-4 只提示再点一次）
+            bindController = { controller -> purchase?.bindProduct(controller) },
             subscribeConfig = { listener -> configPort.subscribe(listener) },
             restoreGate = ::awaitUpdateCheck,
             // 剪贴板 parse 只有 1 张卡时的进程内种子（APP-07 G09）：沿用 parse 卡的 link_id
@@ -640,23 +697,40 @@ fun ProductDetailRoute(
         return
     }
     ProductDetailScreen(config)
-    PurchaseLifecycle(search.purchaseController(entryId))
+    // 回到前台：执行器先 onForeground，再试认领冷启动恢复槽（D10-3690）
+    PurchaseLifecycle(search.purchaseController(entryId), onStart = { search.claimColdAuthResume(entryId) })
     PendingPageLifecycle(search.orders?.pendingFor(entryId))
     BuyIntentNotice(search)
 }
 
-/** 发起页的生命周期交给购买执行器：ON_STOP（被盖住、进入后台）→ 之后的响应只更新卡片；ON_START → 授权回来后复查。 */
+/**
+ * 发起页的生命周期交给购买执行器：ON_STOP（被盖住、进入后台）→ 之后的响应只更新卡片；ON_START → 授权回来后复查，然后调 [onStart]（详情页：试认领
+ * 冷启动恢复槽）。
+ */
 @Composable
-private fun PurchaseLifecycle(controller: OpenPurchaseController?) {
+private fun PurchaseLifecycle(
+    controller: OpenPurchaseController?,
+    onStart: () -> Unit = {},
+) {
     controller ?: return
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val started by rememberUpdatedState(onStart)
     DisposableEffect(lifecycle, controller) {
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_STOP -> controller.onBackground()
-                    Lifecycle.Event.ON_START -> controller.onForeground()
-                    else -> Unit
+                    Lifecycle.Event.ON_STOP -> {
+                        controller.onBackground()
+                    }
+
+                    Lifecycle.Event.ON_START -> {
+                        controller.onForeground()
+                        started()
+                    }
+
+                    else -> {
+                        Unit
+                    }
                 }
             }
         lifecycle.addObserver(observer)

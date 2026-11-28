@@ -13,6 +13,7 @@ import com.couli.core.clientcore.LinkJumpResult
 import com.couli.core.clientcore.LinkJumpStep
 import com.couli.core.clientcore.LinkJumpUnionPlatform
 import com.couli.core.clientcore.TrackerQueue
+import com.couli.core.config.EnvironmentSwitchCleanerRegistry
 import com.couli.core.network.CallOwnership
 import com.couli.core.network.PageApi
 import com.couli.core.router.PrivacyState
@@ -181,6 +182,20 @@ class AppTrade(
         webCodeAttempts?.clear()
         webCodeInbox?.clear()
         coldResume.clear()
+    }
+
+    /**
+     * 切换环境（D10-3690 口径 (7)，同 N-22 ConfigStore.clearForEnvironmentSwitch）：清空收件箱、作废恢复槽——回跳与票都属于旧环境的那套服务器。
+     * 尝试记录在 couli.webcode_attempts 命名空间里，由 SharedPreferencesNamespaceCleaner 随命名空间清掉，这里不重复清。
+     */
+    fun clearForEnvironmentSwitch() {
+        webCodeInbox?.clear()
+        coldResume.clear()
+    }
+
+    /** 把 [clearForEnvironmentSwitch] 登记进切换环境的清理表（AppModule 与测试共用；同 AppOrders.connectCleanup）。 */
+    fun connectEnvironmentCleanup(cleaners: EnvironmentSwitchCleanerRegistry?) {
+        cleaners?.register { _, _ -> clearForEnvironmentSwitch() }
     }
 
     /** orphan 处理器的前台提示 → [webCodeOverlay]（主线程）。 */

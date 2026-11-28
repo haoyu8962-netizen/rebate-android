@@ -30,6 +30,9 @@ class TaobaoAuthFlowSubmitTest {
     /** 每次 onCredential 被调时，此刻已发出的 operationId（看它是否早于 bindings）。 */
     private val credentialSeen = mutableListOf<List<String>>()
 
+    /** 每次 onRecovery 被调时，此刻已发出的 operationId（看它是否晚于那次 bindings、早于重新取 auth-url）。 */
+    private val recoverySeen = mutableListOf<List<String>>()
+
     private fun flow(): TaobaoAuthFlow =
         TaobaoAuthFlow(
             api = api,
@@ -43,6 +46,7 @@ class TaobaoAuthFlowSubmitTest {
             alive = { true },
             installed = { "unknown" },
             onCredential = { credentialSeen += api.ops() },
+            onRecovery = { recoverySeen += api.ops() },
         )
 
     private fun obj(text: String): JsonObject = Json.parseToJsonElement(text).jsonObject
@@ -134,6 +138,43 @@ class TaobaoAuthFlowSubmitTest {
             val result = running.getCompleted()
             assertTrue("30104 原样返回：$result", result is ApiResult.Failure && result.code == 30104)
             assertEquals("不做 30104 恢复：没有再取 auth-url", listOf(TradeOperations.BIND_UNION), api.ops())
+        }
+
+    @Test
+    fun f06_onRecoveryIsCalledOncePer30104AfterItsBindingsAndBeforeTheNewAuthUrl() =
+        runTest {
+            val running = start()
+            runCurrent()
+            assertTrue("还没有 30104：不回调", recoverySeen.isEmpty())
+            api.fail(binds().single(), 30104, """{"reason":"method_not_allowed"}""")
+            runCurrent()
+            assertEquals("30104 开始恢复：回调一次：$recoverySeen", 1, recoverySeen.size)
+            assertEquals("回调时 bindings 已有结果、还没重新取 auth-url", listOf(TradeOperations.BIND_UNION), recoverySeen.single())
+            api.succeed(
+                api.last(TradeOperations.GET_UNION_AUTH_URL),
+                """{"auth_url":"https://oauth.taobao.com/b","state":"st_02","auth_methods":["web_code"]}""",
+            )
+            runCurrent()
+            assertEquals("再次拉起之后拿到第二个凭证", 2, credentialSeen.size)
+            api.succeed(binds().last(), """{"platform":"taobao","status":"active"}""")
+            runCurrent()
+            assertEquals(TaobaoAuthOutcome.Bound, running.getCompleted())
+            assertEquals("bindings 成功不回调", 1, recoverySeen.size)
+        }
+
+    @Test
+    fun f07_onRecoveryIsNotCalledWithoutA30104() =
+        runTest {
+            val running = start()
+            runCurrent()
+            api.fail(binds().single(), 50001)
+            runCurrent()
+            assertTrue("其它失败原样交调用方：${running.getCompleted()}", running.getCompleted() is TaobaoAuthOutcome.RequestFailed)
+            assertTrue("不回调：$recoverySeen", recoverySeen.isEmpty())
+            web.result = AuthStepResult.Cancelled
+            start()
+            runCurrent()
+            assertTrue("取消不回调", recoverySeen.isEmpty())
         }
 
     private companion object {

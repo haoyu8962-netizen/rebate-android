@@ -1201,6 +1201,7 @@ class OpenPurchaseController(
             // 每次拉起授权（含 30104 恢复后的再次授权）之前：用户点【去授权】发出的许可仍有效、页面在前台（共性第 25、31 条）
             canJump = { authJumpAllowed(permit, context, gen) },
             onCredential = { confirming(context, gen) },
+            onRecovery = { awaitingAuthorization(context, gen) },
         )
 
     /**
@@ -1214,6 +1215,19 @@ class OpenPurchaseController(
         if (!authLive(context, gen)) return
         val sheet = mutableState.value.dialog as? PurchaseDialog.AuthSheet ?: return
         mutableState.value = mutableState.value.copy(dialog = sheet.copy(busy = true, confirming = true))
+    }
+
+    /**
+     * bindings 返回 30104、开始恢复（D10-3690 口径 (6)）：这个凭证已有服务端结果，AuthSheet 回到「等待授权」（busy、不是 confirming），30104 恢复后
+     * 再次拉起授权页时停在这一态；下一个凭证到了再由 [confirming] 进确认中。只改本次授权仍有效时那张 AuthSheet。
+     */
+    private fun awaitingAuthorization(
+        context: AuthContext,
+        gen: Long,
+    ) {
+        if (!authLive(context, gen)) return
+        val sheet = mutableState.value.dialog as? PurchaseDialog.AuthSheet ?: return
+        mutableState.value = mutableState.value.copy(dialog = sheet.copy(busy = true, confirming = false))
     }
 
     /** 授权归属仍有效（A-R3-01）：页面没离开、世代没变、授权上下文仍是它、购买尝试仍是当前的。 */
