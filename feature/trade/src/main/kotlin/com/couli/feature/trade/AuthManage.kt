@@ -122,6 +122,11 @@ class AuthManageController(
     private val scope: CoroutineScope,
     private val keyGenerator: () -> String = { UUID.randomUUID().toString() },
     clock: () -> Long = System::currentTimeMillis,
+    /**
+     * 「绑定变化」信号（FU-AND-TB-WEBCODE-B，设计稿 §6.5）：冷启动 / 晚到回跳绑定成功后，本页可见时再 load() 一次，不重放任何 open；离开时退订。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：桩里不订阅。
+     */
+    private val bindingChanges: BindingChanges? = null,
 ) {
     private val gate = RetryAfterGate(clock)
     private var gateTimer: Job? = null

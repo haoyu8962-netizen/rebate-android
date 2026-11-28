@@ -21,6 +21,8 @@ import com.couli.core.router.SessionState
 import com.couli.core.tradejump.BaichuanAdapter
 import com.couli.feature.trade.AuthManageController
 import com.couli.feature.trade.AuthSheetCounter
+import com.couli.feature.trade.BindingChanges
+import com.couli.feature.trade.ColdAuthResume
 import com.couli.feature.trade.JumpPorts
 import com.couli.feature.trade.JumpTipService
 import com.couli.feature.trade.JumpTypes
@@ -31,7 +33,13 @@ import com.couli.feature.trade.PurchaseEnv
 import com.couli.feature.trade.PurchasePending
 import com.couli.feature.trade.TradeJumpExecutor
 import com.couli.feature.trade.TradeTexts
+import com.couli.feature.trade.WebCodeAttemptStore
 import com.couli.feature.trade.WebCodeAuthorizer
+import com.couli.feature.trade.WebCodeCallback
+import com.couli.feature.trade.WebCodeInbox
+import com.couli.feature.trade.WebCodeOrphanGate
+import com.couli.feature.trade.WebCodeOrphanOverlay
+import com.couli.feature.trade.WebCodeOrphanStartup
 import javax.inject.Provider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +79,16 @@ class AppTrade(
     private val consentPrompt: () -> Unit = {},
     /** 当前会员账号（App 给 ApiClient.activeUserId；游客、读不出为 null）：open 发出时固定它（03 §4.2）。 */
     private val sessionAccount: () -> String? = { null },
+    /**
+     * 冷启动 / 晚到回跳（FU-AND-TB-WEBCODE-B，设计稿 §6.4）的装配。四项都有缺省，用 UnavailableWebCodeAuthorizer 构造本类的旧测试不用改：
+     * [webCodeAttempts] / [webCodeInbox] 为与真实授权器共用的那一份（AppModule 给；没接为 null，回跳一律丢弃、登出不清）；
+     * [webCodeGate] 是启动闸门（缺省保守：版本未知，不提交）；[processStartedAtMillis] 用来区分冷启动回跳与本进程的晚到回跳。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：四项桩里都不用。
+     */
+    private val webCodeAttempts: WebCodeAttemptStore? = null,
+    private val webCodeInbox: WebCodeInbox? = null,
+    private val webCodeGate: WebCodeOrphanGate = WebCodeOrphanGate { WebCodeOrphanStartup.VERSION_UNKNOWN },
+    private val processStartedAtMillis: Long = System.currentTimeMillis(),
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -89,6 +107,34 @@ class AppTrade(
      */
     @Volatile
     private var live: List<OpenPurchaseController> = emptyList()
+
+    /** 「绑定变化」信号（FU-AND-TB-WEBCODE-B）：冷启动 / 晚到回跳绑定成功后发出；授权管理页订阅（[authManageController]）。 */
+    val bindingChanges = BindingChanges()
+
+    /** 冷启动恢复槽（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 6 步）：进程里一份，交给每个发起页的执行器（[purchaseController]）。 */
+    val coldResume = ColdAuthResume()
+
+    /**
+     * 冷启动 / 晚到回跳的前台浮层（FU-AND-TB-WEBCODE-B）：提交 bindings 期间 confirming = true（不可关闭的「正在确认授权结果」），结束后 false；
+     * 结果提示放 toast（[consumeWebCodeToast] 消费）。TODO(FU-AND-TB-WEBCODE-B 接口桩)：恒为初值。
+     */
+    val webCodeOverlay: StateFlow<WebCodeOrphanOverlay> = MutableStateFlow(WebCodeOrphanOverlay()).asStateFlow()
+
+    /** TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。 */
+    fun consumeWebCodeToast() = Unit
+
+    /**
+     * 没有等待者认领的回跳（WebCodeInboundDispatcher 在下一轮主线程循环交来）：交给 WebCodeOrphanHandler（设计稿 §6.4）。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。
+     */
+    @Suppress("UNUSED_PARAMETER", "UnusedParameter") // 接口桩，实现方替换
+    fun onUnclaimedWebCode(callback: WebCodeCallback) = Unit
+
+    /**
+     * 退出登录、切换账号（设计稿 §8；甲评审 S3 移交）：清尝试记录、清空收件箱、作废恢复槽。会话由已登录变为游客时本类自己调；切换账号由 App 调。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：什么都不做。
+     */
+    fun onSessionEnded() = Unit
 
     /** 点击结果确认的平台购买状态（50301），进程里一份；分界之后发出并生效的配置覆盖它。 */
     val overrides = PlatformStatusOverrides(issuedMark = { store?.issuedFetchId ?: 0L }, appliedMark = { store?.appliedFetchId ?: 0L })

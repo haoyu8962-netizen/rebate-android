@@ -32,6 +32,11 @@ class BrowserWebCodeAuthorizer(
     private val attempts: WebCodeAttemptStore,
     private val returns: AuthReturnSignal,
     private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * 此刻的账号标签（webCodeAccountTag(用户 id)；游客为 null）：记尝试时一起记下，冷启动 / 晚到回跳据此核对账号（FU-AND-TB-WEBCODE-B，设计稿 §2 ②）。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：桩里不用；实现时改调 attempts.record(state, now, accountTag())，删记录改用 attempts.clearIfCurrent(哈希)（评审 S3 F2）。
+     */
+    private val accountTag: () -> String? = { null },
 ) : WebCodeAuthorizer {
     override val available: Boolean get() = true
 

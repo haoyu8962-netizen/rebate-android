@@ -63,6 +63,11 @@ class TaobaoAuthFlow(
     private val alive: () -> Boolean,
     private val installed: (String) -> String,
     private val canJump: () -> Boolean = { true },
+    /**
+     * 拿到授权凭证之后、调 bindings 之前回调一次（每个凭证一次；FU-AND-TB-WEBCODE-B，设计稿 §3.2 ①、§6.1「确认中」）：购买页据此把 AuthSheet
+     * 设成「正在确认授权结果」。TODO(FU-AND-TB-WEBCODE-B 接口桩)：桩里不调用。
+     */
+    private val onCredential: () -> Unit = {},
 ) {
     /** 本端能执行的方式（按本端能力，不看下发顺序）。 */
     private fun supported(): List<String> =
@@ -155,6 +160,18 @@ class TaobaoAuthFlow(
             ),
         )
 
+    /**
+     * 只提交 bindings（FU-AND-TB-WEBCODE-B，设计稿 §3.2 ②、§6.4 第 4 步；冷启动 / 晚到回跳的 WebCodeOrphanHandler 复用，不复制请求体规则）：
+     * 请求体只有 state、auth_method 与凭证字段（[bindBody]），每次一个新的幂等键，不取 auth-url、不拉起授权、不做 30104 恢复，结果原样返回。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：不发请求，恒返回 LocalReject。
+     */
+    @Suppress("UNUSED_PARAMETER", "UnusedParameter", "FunctionOnlyReturningConstant") // 接口桩，实现方替换
+    internal suspend fun submit(
+        platform: String,
+        state: String,
+        credential: AuthCredential,
+    ): ApiResult = ApiResult.LocalReject(SUBMIT_STUB)
+
     /** auth-url：重新取 state 与方式列表。 */
     suspend fun authUrl(platform: String): ApiResult =
         api.send(
@@ -173,5 +190,8 @@ class TaobaoAuthFlow(
         const val CREDENTIAL_INVALID = "credential_invalid"
         const val METHOD_NOT_ALLOWED = "method_not_allowed"
         private const val ACTIVE = "active"
+
+        /** TODO(FU-AND-TB-WEBCODE-B 接口桩)：[submit] 桩的返回原因，实现时删除。 */
+        private const val SUBMIT_STUB = "stub_not_sent"
     }
 }

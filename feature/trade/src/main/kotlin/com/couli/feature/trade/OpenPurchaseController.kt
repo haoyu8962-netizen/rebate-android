@@ -62,10 +62,14 @@ sealed interface PurchaseDialog {
     /** 比价无返利（ProductPriceCompareNoRebate，BR-PRICE-08）。 */
     data object CompareNoRebate : PurchaseDialog
 
-    /** 平台授权说明半屏（ProductAuthSheet）。 */
+    /**
+     * 平台授权说明半屏（ProductAuthSheet）。[confirming]：已拿到授权凭证、bindings 还没结果，显示「正在确认授权结果」（auth.confirming；
+     * FU-AND-TB-WEBCODE-B，设计稿 §6.1「确认中」）；此时 [busy] 也为 true（不可关闭、不可再点）。
+     */
     data class AuthSheet(
         val platform: String,
         val busy: Boolean = false,
+        val confirming: Boolean = false,
     ) : PurchaseDialog
 
     /** 关闭授权（ProductAuthDeclined）/ 授权失败（[failed]，ProductAuthFailed）：【重试】【仍去购买（无返利）】（BR-ID-18）。 */
@@ -280,6 +284,8 @@ class OpenPurchaseController(
     private val keyGenerator: () -> String = { UUID.randomUUID().toString() },
     private val timeoutMillis: Long = TIMEOUT_MILLIS,
     private val browserNoticeMillis: Long = BROWSER_NOTICE_MILLIS,
+    /** 冷启动恢复槽（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 6 步；App 的 AppTrade 给进程里那一份）；没接为 null（[claimColdAuthResume] 恒 false）。 */
+    private val coldResume: ColdAuthResume? = null,
 ) {
     private val keys = OpenAttempt(keyGenerator)
     private val mutableState = MutableStateFlow(PurchaseState())
@@ -1399,6 +1405,15 @@ class OpenPurchaseController(
         clearMine()
         showDialog(PurchaseDialog.AuthDeclined(platform, failed = true))
     }
+
+    /**
+     * 认领冷启动恢复槽（FU-AND-TB-WEBCODE-B，设计稿 §6.4 第 6 步）：本页在前台、没离开、没有在途请求或弹窗，且 [card] 的 link_id 或 product_key
+     * 与槽位一致时取走那张票（同一张只能认领一次）、删除购买待办，用新的幂等键对**票里（购买待办里）的 link_id** 发一次 open，之后照常按 jump 外跳
+     * （视为用户点击触发，BR-ID-10）。认领了返回 true。
+     * TODO(FU-AND-TB-WEBCODE-B 接口桩)：恒返回 false，什么都不做。
+     */
+    @Suppress("UNUSED_PARAMETER", "UnusedParameter", "FunctionOnlyReturningConstant") // 接口桩，实现方替换
+    fun claimColdAuthResume(card: JsonObject): Boolean = false
 
     /** 二选一的【重试】、50303 的【重试】：一次新的点击（新键）；二选一里的【重试】是用户主动授权，不受自动弹出次数限制（A-R1-10）。 */
     fun retryPurchase() {
